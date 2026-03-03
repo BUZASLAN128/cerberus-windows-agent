@@ -1,0 +1,35 @@
+name: Feature Request
+description: Propose a new capability or improvement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: What should change?
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact / Risks
+      description: Security, compatibility, operational impacts
+  - type: dropdown
+    id: branch_target
+    attributes:
+      label: Target Branch
+      options:
+        - dev
+        - develop
+        - main (manual promotion only)
+    validations:
+      required: true
+

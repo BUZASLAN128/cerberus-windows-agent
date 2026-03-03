@@ -1,0 +1,44 @@
+name: Bug Report
+description: Report an unexpected behavior or failure
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please include reproducible steps and environment details."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: Clear bug summary
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction Steps
+      description: Exact steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Screenshots
+      description: Redact secrets before pasting
+  - type: input
+    id: version
+    attributes:
+      label: Agent Version
+      placeholder: e.g. 0.1.123-dev.abc12345
+

@@ -1,0 +1,139 @@
+name: auto-publish-exe
+
+on:
+  push:
+    branches:
+      - dev
+      - develop
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Required on main. Example: 1.0.0 or v1.0.0"
+        required: false
+        type: string
+      release_notes:
+        description: "Optional custom notes for manual release"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Compute Release Metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $branch = "${{ github.ref_name }}"
+          $safeBranch = $branch -replace '[^A-Za-z0-9._-]', '-'
+          $sha = "${{ github.sha }}".Substring(0, 8)
+          $run = "${{ github.run_number }}"
+          $manualVersionRaw = "${{ inputs.release_version }}"
+          $manualNotes = "${{ inputs.release_notes }}"
+
+          if ($branch -eq "main") {
+            if ([string]::IsNullOrWhiteSpace($manualVersionRaw)) {
+              throw "Main branch manual release requires 'release_version' input."
+            }
+            $tag = if ($manualVersionRaw.StartsWith("v")) { $manualVersionRaw } else { "v$manualVersionRaw" }
+            $semver = $tag.Substring(1)
+            $name = "Release $tag"
+            $prerelease = "false"
+            $makeLatest = "true"
+            $notes = if ([string]::IsNullOrWhiteSpace($manualNotes)) { "Manual main release." } else { $manualNotes }
+          } else {
+            $semver = "0.1.$run-$safeBranch.$sha"
+            $tag = "v$semver"
+            $name = "Prerelease $safeBranch #$run"
+            $prerelease = "true"
+            $makeLatest = "false"
+            $notes = "Automatic prerelease from $branch."
+          }
+
+          $assetBase = "Cerberus.Agent.App-$safeBranch-$sha"
+
+          "safe_branch=$safeBranch" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "short_sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "semver=$semver" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "prerelease=$prerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "make_latest=$makeLatest" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          @"
+          Channel: $safeBranch
+          Version: $semver
+          Commit: ${{ github.sha }}
+          Run: ${{ github.run_number }}
+
+          $notes
+          "@ | Set-Content -Path out/release-notes.md -Encoding utf8
+
+      - name: Publish Win-x64 EXE
+        run: >
+          dotnet publish src/Cerberus.Agent.App/Cerberus.Agent.App.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:Version=${{ steps.meta.outputs.semver }}
+          -o out/release
+
+      - name: Prepare Release Asset
+        shell: pwsh
+        run: |
+          $assetBase = "${{ steps.meta.outputs.asset_base }}"
+          $exe = "out/release/$assetBase.exe"
+          $zip = "out/release/$assetBase.zip"
+          $checksums = "out/release/$assetBase.sha256"
+
+          Copy-Item "out/release/Cerberus.Agent.App.exe" $exe -Force
+          Compress-Archive -Path $exe -DestinationPath $zip -Force
+
+          $exeHash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          @(
+            "$exeHash  $assetBase.exe",
+            "$zipHash  $assetBase.zip"
+          ) | Set-Content -Path $checksums -Encoding utf8
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-windows-agent-${{ steps.meta.outputs.safe_branch }}-exe
+          path: |
+            out/release/${{ steps.meta.outputs.asset_base }}.exe
+            out/release/${{ steps.meta.outputs.asset_base }}.zip
+            out/release/${{ steps.meta.outputs.asset_base }}.sha256
+          if-no-files-found: error
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          makeLatest: ${{ steps.meta.outputs.make_latest }}
+          allowUpdates: true
+          bodyFile: out/release-notes.md
+          artifacts: |
+            out/release/${{ steps.meta.outputs.asset_base }}.exe
+            out/release/${{ steps.meta.outputs.asset_base }}.zip
+            out/release/${{ steps.meta.outputs.asset_base }}.sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
