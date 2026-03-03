@@ -2,11 +2,6 @@ name: windows-agent-ci
 
 on:
   push:
-    branches:
-      - dev
-      - develop
-      - main
-      - master
   pull_request:
 
 jobs:
