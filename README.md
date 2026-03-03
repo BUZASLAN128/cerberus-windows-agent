@@ -2,6 +2,21 @@
 
 Single Windows executable for endpoint onboarding, secure agent identity, service-mode polling, and remote command execution.
 
+## Quick Links
+
+- Repository: https://github.com/BUZASLAN128/cerberus-windows-agent
+- Releases: https://github.com/BUZASLAN128/cerberus-windows-agent/releases
+- Latest Release: https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest
+- Auto Publish Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
+- CI Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml
+- Create Main Manual Release: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
+
+Badges:
+
+[![CI](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml)
+[![Auto Publish](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml)
+[![Latest Release](https://img.shields.io/github/v/release/BUZASLAN128/cerberus-windows-agent)](https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest)
+
 ## 1) Purpose
 
 This project provides a Windows endpoint agent that:
@@ -235,19 +250,37 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 
 - Runs automatically on every `push` to `dev` and `develop`.
 - For `main`, run manually with `workflow_dispatch`.
-- Publishes self-contained EXE.
-- Uploads `.exe` workflow artifact.
-- Creates a GitHub **pre-release** per update with unique tag:
-  - format: `auto-{branch}-{run_number}-{short_sha}`
-  - asset: `Cerberus.Agent.App-{branch}-{short_sha}.exe`
+- Calculates release metadata and semantic version:
+  - `dev/develop`: auto prerelease version `0.1.{run}-{branch}.{sha8}`
+  - `main` manual: uses provided `release_version` input (e.g. `1.2.0`)
+- Publishes self-contained EXE with computed `Version`.
+- Produces full release package:
+  - `*.exe`
+  - `*.zip`
+  - `*.sha256`
+- Uploads package files as workflow artifacts.
+- Creates/updates GitHub release with package assets and notes.
 
-This means every update on `dev/develop` automatically gets a downloadable EXE pre-release.
+This means every update on `dev/develop` automatically gets a versioned prerelease package, while `main` is manual and version-controlled.
 
 ## 10) Branch Policy
 
 - Default integration branch is `dev`.
 - All new work and updates should go to `dev` (or PRs targeting `dev`).
 - `main` is reserved for explicit manual promotion/merge.
+
+## Repository Standards
+
+The repository includes multi-contributor baseline governance files:
+
+- `CODEOWNERS`
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+- `SUPPORT.md`
+- `CODE_OF_CONDUCT.md`
+- PR template
+- Issue templates (bug/feature/config)
+- Dependabot configuration
 
 ## 11) Service Behavior
 

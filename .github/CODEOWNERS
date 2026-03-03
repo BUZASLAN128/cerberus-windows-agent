@@ -1,0 +1,8 @@
+# Default ownership
+* @buzaslan129
+
+# Security and release critical paths
+.github/workflows/* @buzaslan129
+src/Cerberus.Agent.Security/* @buzaslan129
+scripts/* @buzaslan129
+

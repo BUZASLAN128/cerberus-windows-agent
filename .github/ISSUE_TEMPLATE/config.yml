@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Report (Private)
+    url: https://github.com/BUZASLAN128/cerberus-windows-agent/security/advisories/new
+    about: Use private advisories for vulnerabilities.
+  - name: Support
+    url: https://github.com/BUZASLAN128/cerberus-windows-agent/blob/dev/SUPPORT.md
+    about: Read support channels and triage rules.
+
