@@ -2,6 +2,9 @@ name: auto-publish-exe
 
 on:
   push:
+    branches:
+      - dev
+      - develop
   workflow_dispatch:
 
 permissions:

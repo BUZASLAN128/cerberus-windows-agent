@@ -226,22 +226,30 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 
 ### `ci.yml`
 
-- Runs on every `push` and every `pull_request`.
+- Runs automatically for `dev` and `develop` on `push` and `pull_request`.
+- For `main`, run manually with `workflow_dispatch`.
 - Performs restore/build/test.
 - Publishes self-contained `win-x64` output as workflow artifact.
 
 ### `auto-publish-exe.yml`
 
-- Runs on every `push` and manually via `workflow_dispatch`.
+- Runs automatically on every `push` to `dev` and `develop`.
+- For `main`, run manually with `workflow_dispatch`.
 - Publishes self-contained EXE.
 - Uploads `.exe` workflow artifact.
 - Creates a GitHub **pre-release** per update with unique tag:
   - format: `auto-{branch}-{run_number}-{short_sha}`
   - asset: `Cerberus.Agent.App-{branch}-{short_sha}.exe`
 
-This means each commit/update automatically gets a downloadable EXE release artifact.
+This means every update on `dev/develop` automatically gets a downloadable EXE pre-release.
 
-## 10) Service Behavior
+## 10) Branch Policy
+
+- Default integration branch is `dev`.
+- All new work and updates should go to `dev` (or PRs targeting `dev`).
+- `main` is reserved for explicit manual promotion/merge.
+
+## 11) Service Behavior
 
 Service name:
 - `CerberusAgent` (display name: `CERBERUS Windows Agent`)
@@ -256,7 +264,7 @@ Execution loop:
 - command dispatch with idempotency cache (`%ProgramData%\CerberusAgent\idempotency.json`),
 - degraded mode on transient failures with retry delay.
 
-## 11) Troubleshooting
+## 12) Troubleshooting
 
 - Registration fails with config errors:
   - verify `CERBERUS_BACKEND_URL`, `CERBERUS_SSO_BASE_URL`, `CERBERUS_SSO_CLIENT_ID`.
