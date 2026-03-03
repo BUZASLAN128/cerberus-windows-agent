@@ -1,0 +1,143 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace Cerberus.Agent.Core;
+
+/// <summary>
+/// Client for communicating with the CERBERUS agent API backend.
+/// Handles authentication, request signing, and API operations.
+/// </summary>
+public sealed class AgentApiClient
+{
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    private readonly HttpClient _http;
+    private readonly ISecretStore _secrets;
+    private readonly ITokenManager _tokens;
+    private readonly IRequestSigner _signer;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AgentApiClient"/> class.
+    /// </summary>
+    /// <param name="http">HTTP client for API requests.</param>
+    /// <param name="secrets">Secret store for agent credentials.</param>
+    /// <param name="tokens">Token manager for access token refresh.</param>
+    /// <param name="signer">Request signer for cryptographic signatures.</param>
+    public AgentApiClient(HttpClient http, ISecretStore secrets, ITokenManager tokens, IRequestSigner signer)
+    {
+        _http = http;
+        _secrets = secrets;
+        _tokens = tokens;
+        _signer = signer;
+    }
+
+    /// <summary>
+    /// Sends a heartbeat to the backend and retrieves pending commands.
+    /// </summary>
+    /// <param name="body">Heartbeat request body containing agent status.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Heartbeat response with pending commands and next poll interval.</returns>
+    /// <exception cref="HttpRequestException">Thrown when the API request fails.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the response is invalid.</exception>
+    public async Task<HeartbeatResponse> HeartbeatAsync(object body, CancellationToken ct)
+    {
+        return await RetryHelper.WithRetryAsync(async () =>
+        {
+            var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+            var path = $"/api/v1/agents/{id.AgentId}/heartbeat";
+
+            using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+
+            var payload = await resp.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOpts, ct).ConfigureAwait(false);
+            return payload ?? throw new InvalidOperationException("Heartbeat response missing.");
+        }, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Submits the result of a command execution to the backend.
+    /// </summary>
+    /// <param name="commandId">Command identifier.</param>
+    /// <param name="body">Command result body containing status, exit code, and output.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="HttpRequestException">Thrown when the API request fails.</exception>
+    public async Task SubmitCommandResultAsync(string commandId, object body, CancellationToken ct)
+    {
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/commands/{commandId}/result";
+
+        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    /// <summary>
+    /// Requests a fresh Tailscale preauth key from the backend.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Tuple containing login server URL and auth key.</returns>
+    /// <exception cref="HttpRequestException">Thrown when the API request fails.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the response is invalid.</exception>
+    public async Task<(string LoginServer, string AuthKey)> GetTailscalePreauthAsync(CancellationToken ct)
+    {
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/tailscale/preauth";
+
+        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, new { }, ct).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            // Surface backend reason (usually generic in prod, but helpful in dev).
+            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (body.Length > 800) body = body[..800] + "...";
+            throw new HttpRequestException($"Tailscale preauth failed: {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}");
+        }
+
+        var payload = await resp.Content.ReadFromJsonAsync<TailscalePreauthResponse>(JsonOpts, ct).ConfigureAwait(false);
+        if (payload is null ||
+            string.IsNullOrWhiteSpace(payload.TailscaleLoginServer) ||
+            string.IsNullOrWhiteSpace(payload.TailscaleAuthkey))
+            throw new InvalidOperationException("Tailscale preauth response missing.");
+
+        return (payload.TailscaleLoginServer, payload.TailscaleAuthkey);
+    }
+
+    private async Task<HttpRequestMessage> BuildSignedRequestAsync(HttpMethod method, string path, object body, CancellationToken ct)
+    {
+        var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
+
+        var json = JsonSerializer.Serialize(body, JsonOpts);
+        var bodyBytes = Encoding.UTF8.GetBytes(json);
+        var bodyHash = _signer.ComputeBodyHash(bodyBytes);
+
+        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+        var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var canonical = _signer.CanonicalString(method.Method, path, nonce, ts, bodyHash);
+        var sig = _signer.Sign(canonical);
+
+        var req = new HttpRequestMessage(method, path)
+        {
+            Content = new ByteArrayContent(bodyBytes),
+        };
+        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        req.Headers.Add("X-Agent-Id", id.AgentId);
+        req.Headers.Add("X-Nonce", nonce);
+        req.Headers.Add("X-Timestamp", ts.ToString());
+        req.Headers.Add("X-Body-Hash", bodyHash);
+        req.Headers.Add("X-Signature", sig);
+
+        return req;
+    }
+
+    private sealed record TailscalePreauthResponse(
+        [property: JsonPropertyName("tailscale_login_server")] string TailscaleLoginServer,
+        [property: JsonPropertyName("tailscale_authkey")] string TailscaleAuthkey);
+}

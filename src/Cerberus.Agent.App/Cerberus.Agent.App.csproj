@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Integrations.Tailscale\Cerberus.Agent.Integrations.Tailscale.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Integrations.Ad\Cerberus.Agent.Integrations.Ad.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <StartupObject>Cerberus.Agent.App.Program</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

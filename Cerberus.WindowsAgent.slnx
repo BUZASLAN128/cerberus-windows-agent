@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" />
+    <Project Path="src/Cerberus.Agent.Core/Cerberus.Agent.Core.csproj" />
+    <Project Path="src/Cerberus.Agent.Integrations.Ad/Cerberus.Agent.Integrations.Ad.csproj" />
+    <Project Path="src/Cerberus.Agent.Integrations.Tailscale/Cerberus.Agent.Integrations.Tailscale.csproj" />
+    <Project Path="src/Cerberus.Agent.Observability/Cerberus.Agent.Observability.csproj" />
+    <Project Path="src/Cerberus.Agent.Security/Cerberus.Agent.Security.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj" />
+  </Folder>
+</Solution>

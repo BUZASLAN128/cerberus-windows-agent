@@ -1,0 +1,42 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Tt]est[Rr]esults/
+out/
+artifacts/
+
+# IDE and user-specific
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.VC.db
+*.VC.VC.opendb
+
+# Package managers
+packages/
+*.nupkg
+*.snupkg
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# Coverage and reports
+coverage/
+coverage.*
+*.trx
+*.coverage
+*.coveragexml
+
+# JetBrains / ReSharper
+_ReSharper*/
+*.DotSettings.user
+
+# OS files
+Thumbs.db
+Desktop.ini
