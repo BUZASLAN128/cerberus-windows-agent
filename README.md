@@ -31,3 +31,7 @@ Build:
 ```powershell
 dotnet build Cerberus.WindowsAgent.slnx -c Release
 ```
+
+CI/CD:
+- `ci.yml`: runs restore/build/test on pushes and PRs (`dev`, `develop`, `main`, `master`).
+- `auto-publish-exe.yml`: on every push to `dev`, publishes a self-contained `win-x64` EXE and creates a GitHub pre-release asset automatically.
