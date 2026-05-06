@@ -1,5 +1,8 @@
 name: windows-agent-ci
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
