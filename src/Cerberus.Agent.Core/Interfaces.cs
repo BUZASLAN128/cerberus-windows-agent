@@ -13,6 +13,8 @@ public interface ISecretStore
 
     Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)>
         LoadAsync(CancellationToken ct);
+
+    Task ClearAsync(CancellationToken ct);
 }
 
 public interface IRequestSigner
@@ -38,6 +40,19 @@ public interface ICommandHandler
 public interface IAgentStatusProvider
 {
     Task<object?> GetTailscaleAsync(CancellationToken ct);
+}
+
+public interface IAgentTelemetryProvider
+{
+    Task<AgentSnapshotRequest> BuildSnapshotAsync(
+        AgentBuildMetadata metadata,
+        HeartbeatResponse? lastHeartbeat,
+        CancellationToken ct);
+}
+
+public interface IAgentUpdateCoordinator
+{
+    Task HandleUpdateAsync(HeartbeatResponse response, CancellationToken ct);
 }
 
 public sealed record CommandResult(string Status, int? ExitCode, string? Stdout, string? Stderr, object? PostVerify);

@@ -38,7 +38,7 @@ public sealed class AgentTokenManager : ITokenManager
 
     public async Task RefreshAsync(CancellationToken ct)
     {
-        var (id, refreshToken, _, _, _, _) = await _secrets.LoadAsync(ct);
+        var (id, refreshToken, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
 
         var req = new { agent_id = id.AgentId, refresh_token = refreshToken };
         var resp = await _http.PostAsJsonAsync("/api/v1/agents/token", req, cancellationToken: ct);
@@ -53,8 +53,6 @@ public sealed class AgentTokenManager : ITokenManager
         // Rotation support: backend may return a new refresh token.
         if (!string.IsNullOrWhiteSpace(payload.RefreshToken))
         {
-            // Preserve existing private key as-is.
-            var (_, _, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
             await _secrets.SaveAsync(id, payload.RefreshToken!, privateKeyPem, backendUrl, tsLogin, tsAuthkey, ct);
         }
     }

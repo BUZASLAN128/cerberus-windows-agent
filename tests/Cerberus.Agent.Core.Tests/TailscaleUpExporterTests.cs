@@ -102,5 +102,7 @@ public sealed class TailscaleUpExporterTests
                 _loginServer,
                 _authKey));
         }
+
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }

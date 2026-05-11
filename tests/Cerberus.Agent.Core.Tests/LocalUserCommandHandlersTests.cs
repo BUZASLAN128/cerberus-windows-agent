@@ -1,0 +1,375 @@
+using Cerberus.Agent.Core;
+using Cerberus.Agent.Integrations.Ad;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace Cerberus.Agent.Core.Tests;
+
+public sealed class LocalUserCommandHandlersTests
+{
+    [Fact]
+    public async Task CreateTestUser_RejectsUsernameWithoutLabPrefix()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "Administrator", audit_correlation_id = "audit-id" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("local account limits", result.Stderr);
+    }
+
+    [Fact]
+    public async Task DeleteTestUser_RejectsMissingAuditCorrelation()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.delete_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "cerbtest_unit" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("audit correlation", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_AcceptsManagedUsernameShapeBeforeAuditGate()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "sennurcop_k7m2q6x4aa" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("audit correlation", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsUsernameOverWindowsLocalLimit()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "cerbtest_abcdefghijkl", audit_correlation_id = "audit-id" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("local account limits", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsManagedUsernameWithInvalidBase32Suffix()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "sennurcop_k7m2q9x409", audit_correlation_id = "audit-id" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("local account limits", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsInvalidCredentialPublicKeyBeforeMutation()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "sennurcop_k7m2q6x4aa",
+                audit_correlation_id = "audit-id",
+                credential_public_key_pem = "not-a-pem",
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("public key", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsWeakCredentialPublicKeyBeforeMutation()
+    {
+        using var rsa = RSA.Create(1024);
+        var publicPem = PublicKeyPem(rsa);
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "sennurcop_k7m2q6x4aa",
+                audit_correlation_id = "audit-id",
+                credential_public_key_pem = publicPem,
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("2048", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsCredentialPublicKeyFingerprintMismatchBeforeMutation()
+    {
+        using var rsa = RSA.Create(2048);
+        var publicPem = PublicKeyPem(rsa);
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "sennurcop_k7m2q6x4aa",
+                audit_correlation_id = "audit-id",
+                credential_public_key_pem = publicPem,
+                credential_key_fingerprint = new string('0', 64),
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("fingerprint", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsInvalidRdpPublicKeyBeforeMutation()
+    {
+        var aad = "tenant|credential|rdp|1";
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "sennurcop_k7m2q6x4aa",
+                audit_correlation_id = "audit-id",
+                rdp_credential_profile_id = Guid.NewGuid().ToString(),
+                rdp_tenant_key_id = "tenant-key",
+                rdp_key_version = 1,
+                rdp_public_key_pem = "not-a-pem",
+                rdp_cipher_alg = "aes256gcm+rsa-oaep",
+                rdp_aad = aad,
+                rdp_aad_hash = Sha256Hex(aad),
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("RDP credential public key", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsRdpAadHashMismatchBeforeMutation()
+    {
+        using var rsa = RSA.Create(2048);
+        var publicPem = PublicKeyPem(rsa);
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "sennurcop_k7m2q6x4aa",
+                audit_correlation_id = "audit-id",
+                rdp_credential_profile_id = Guid.NewGuid().ToString(),
+                rdp_tenant_key_id = "tenant-key",
+                rdp_key_version = 1,
+                rdp_public_key_pem = publicPem,
+                rdp_public_key_fingerprint = Sha256HexAscii(publicPem),
+                rdp_cipher_alg = "aes256gcm+rsa-oaep",
+                rdp_aad = "tenant|credential|rdp|1",
+                rdp_aad_hash = new string('0', 64),
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("AAD hash", result.Stderr);
+    }
+
+    [Fact]
+    public void BuildRdpCredentialEnvelope_EncryptsPasswordWithoutPlaintextFields()
+    {
+        using var rsa = RSA.Create(2048);
+        var publicPem = PublicKeyPem(rsa);
+        var credentialId = Guid.NewGuid().ToString();
+        var aad = $"tenant-id|{credentialId}|rdp|1";
+        var payload = LocalUserPayload(
+            username: "sennurcop_k7m2q6x4aa",
+            credentialProfileId: credentialId,
+            tenantKeyId: "tenant-key",
+            publicPem: publicPem,
+            aad: aad);
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("BuildRdpCredentialEnvelope", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var envelope = Assert.IsType<Dictionary<string, object?>>(
+            method.Invoke(null, new[] { "S3cure!Password42", payload }));
+
+        Assert.Equal("password", envelope["auth_type"]);
+        Assert.Equal(credentialId, envelope["credential_id"]);
+        Assert.Equal("sennurcop_k7m2q6x4aa", envelope["username_hint"]);
+        Assert.Equal("tenant-key", envelope["tenant_key_id"]);
+        Assert.Equal("aes256gcm+rsa-oaep", envelope["cipher_alg"]);
+        Assert.DoesNotContain("S3cure!Password42", Convert.ToString(envelope["ciphertext"]));
+
+        var wrappedDek = Convert.FromBase64String(Assert.IsType<string>(envelope["wrapped_dek"]));
+        var nonce = Convert.FromBase64String(Assert.IsType<string>(envelope["cipher_nonce"]));
+        var cipherWithTag = Convert.FromBase64String(Assert.IsType<string>(envelope["ciphertext"]));
+        var dek = rsa.Decrypt(wrappedDek, RSAEncryptionPadding.OaepSHA256);
+        var ciphertext = cipherWithTag[..^16];
+        var tag = cipherWithTag[^16..];
+        var plaintext = new byte[ciphertext.Length];
+        using var aes = new AesGcm(dek, 16);
+        aes.Decrypt(nonce, ciphertext, tag, plaintext, Encoding.UTF8.GetBytes(aad));
+        var json = Encoding.UTF8.GetString(plaintext);
+        Assert.Contains("S3cure!Password42", json);
+        Assert.Contains("sennurcop_k7m2q6x4aa", json);
+    }
+
+    [Fact]
+    public void GeneratePassword_HasNoFixedSuffixAndSatisfiesComplexity()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("GeneratePassword", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var password = Assert.IsType<string>(method.Invoke(null, Array.Empty<object>()));
+
+        Assert.True(password.Length >= 24);
+        Assert.False(password.EndsWith("aA1!", StringComparison.Ordinal));
+        Assert.Matches("[a-z]", password);
+        Assert.Matches("[A-Z]", password);
+        Assert.Matches("[0-9]", password);
+        Assert.Matches("[!@#$%^*\\-_+=]", password);
+    }
+
+    [Fact]
+    public void ManagedMarkerToken_IncludesTerminatorToPreventPrefixMatch()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("ManagedMarkerToken", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var marker = Assert.IsType<string>(method.Invoke(null, ["123"]));
+        var longerMarkerDescription = "cerberus-managed-local-user:12345; assignment=a; account=b";
+
+        Assert.Equal("cerberus-managed-local-user:123;", marker);
+        Assert.DoesNotContain(marker, longerMarkerDescription, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IsDomainControllerProductType_OnlyMatchesLanmanNt()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("IsDomainControllerProductType", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, ["LanmanNT"])));
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, ["lanmannt"])));
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, ["ServerNT"])));
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, ["WinNT"])));
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, [null])));
+    }
+
+    private static string PublicKeyPem(RSA rsa)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("-----BEGIN PUBLIC KEY-----");
+        builder.AppendLine(Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo(), Base64FormattingOptions.InsertLineBreaks));
+        builder.AppendLine("-----END PUBLIC KEY-----");
+        return builder.ToString();
+    }
+
+    private static string Sha256Hex(string value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+
+    private static string Sha256HexAscii(string value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.ASCII.GetBytes(value))).ToLowerInvariant();
+
+    private static object LocalUserPayload(
+        string username,
+        string credentialProfileId,
+        string tenantKeyId,
+        string publicPem,
+        string aad)
+    {
+        var payloadType = typeof(LocalUserCommandHandlers)
+            .GetNestedType("LocalUserPayload", BindingFlags.NonPublic);
+        Assert.NotNull(payloadType);
+        return Activator.CreateInstance(
+            payloadType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                username,
+                "audit-id",
+                "Sennur Copcu",
+                "managed-account-id",
+                "assignment-id",
+                "marker-id",
+                "credential-request-id",
+                null,
+                null,
+                credentialProfileId,
+                tenantKeyId,
+                1,
+                publicPem,
+                Sha256HexAscii(publicPem),
+                "aes256gcm+rsa-oaep",
+                aad,
+                Sha256Hex(aad),
+                null,
+            ],
+            culture: null)!;
+    }
+}

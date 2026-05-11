@@ -76,6 +76,43 @@ public sealed class AgentApiClient
         resp.EnsureSuccessStatusCode();
     }
 
+    public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
+        SubmitIngestAsync("snapshot", body, ct);
+
+    public Task<AgentIngestAckResponse> SubmitEventsAsync(AgentEventBatchRequest body, CancellationToken ct) =>
+        SubmitIngestAsync("events", body, ct);
+
+    public Task<AgentIngestAckResponse> SubmitProbeResultAsync(AgentProbeResultRequest body, CancellationToken ct) =>
+        SubmitIngestAsync("probe-results", body, ct);
+
+    public async Task<AgentDiagnosticBundleAckResponse> SubmitDiagnosticBundleAsync(
+        AgentDiagnosticBundleRequest body,
+        CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(body, JsonOpts);
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/diagnostic-bundles";
+
+        using var req = await BuildSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+
+        var payload = await resp.Content.ReadFromJsonAsync<AgentDiagnosticBundleAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+        return payload ?? throw new InvalidOperationException("Agent diagnostic bundle response missing.");
+    }
+
+    public async Task<AgentIngestAckResponse> SubmitOfflineTelemetryAsync(OfflineTelemetryRecord record, CancellationToken ct)
+    {
+        var endpoint = record.Kind switch
+        {
+            OfflineTelemetryKinds.Snapshot => "snapshot",
+            OfflineTelemetryKinds.Events => "events",
+            OfflineTelemetryKinds.ProbeResult => "probe-results",
+            _ => throw new InvalidOperationException($"Unknown offline telemetry kind: {record.Kind}"),
+        };
+        return await SubmitIngestJsonAsync(endpoint, record.Json, ct).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Requests a fresh Tailscale preauth key from the backend.
     /// </summary>
@@ -107,11 +144,35 @@ public sealed class AgentApiClient
         return (payload.TailscaleLoginServer, payload.TailscaleAuthkey);
     }
 
+    private async Task<AgentIngestAckResponse> SubmitIngestAsync(string endpoint, object body, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(body, JsonOpts);
+        return await SubmitIngestJsonAsync(endpoint, json, ct).ConfigureAwait(false);
+    }
+
+    private async Task<AgentIngestAckResponse> SubmitIngestJsonAsync(string endpoint, string json, CancellationToken ct)
+    {
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
+
+        using var req = await BuildSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+
+        var payload = await resp.Content.ReadFromJsonAsync<AgentIngestAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+        return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
+    }
+
     private async Task<HttpRequestMessage> BuildSignedRequestAsync(HttpMethod method, string path, object body, CancellationToken ct)
+    {
+        var json = JsonSerializer.Serialize(body, JsonOpts);
+        return await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
+    }
+
+    private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)
     {
         var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
 
-        var json = JsonSerializer.Serialize(body, JsonOpts);
         var bodyBytes = Encoding.UTF8.GetBytes(json);
         var bodyHash = _signer.ComputeBodyHash(bodyBytes);
 

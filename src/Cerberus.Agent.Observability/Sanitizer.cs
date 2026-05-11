@@ -5,7 +5,7 @@ namespace Cerberus.Agent.Observability;
 public static class Sanitizer
 {
     private static readonly Regex SecretLike = new(
-        "(token|secret|password|authorization|private[_-]?key)\\s*[:=]\\s*[^\\s]+",
+        "(token|secret|password|authorization|private[_-]?key|api[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token)\\s*[:=]\\s*[^\\s]+",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex JwtLike = new(
@@ -19,6 +19,19 @@ public static class Sanitizer
         "hskey-(api|auth)-[A-Za-z0-9_-]+",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex TailscaleKeyLike = new(
+        // tskey-auth-..., tskey-client-...
+        "tskey-(auth|client)-[A-Za-z0-9_-]+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex OpenAiKeyLike = new(
+        "\\b(sk|pk)-[A-Za-z0-9][A-Za-z0-9_-]{16,}\\b",
+        RegexOptions.Compiled);
+
+    private static readonly Regex LongBase64SecretLike = new(
+        "\\b(?:[A-Za-z0-9+/]{48,}={0,2}|[A-Za-z0-9_-]{48,})\\b",
+        RegexOptions.Compiled);
+
     public static string Redact(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -26,7 +39,10 @@ public static class Sanitizer
         var v = value;
         v = SecretLike.Replace(v, "$1=[REDACTED]");
         v = HeadscaleKeyLike.Replace(v, "hskey-$1-[REDACTED]");
+        v = TailscaleKeyLike.Replace(v, "tskey-$1-[REDACTED]");
         v = JwtLike.Replace(v, "[REDACTED_JWT]");
+        v = OpenAiKeyLike.Replace(v, "[REDACTED_API_KEY]");
+        v = LongBase64SecretLike.Replace(v, "[REDACTED_SECRET]");
         return v;
     }
 }

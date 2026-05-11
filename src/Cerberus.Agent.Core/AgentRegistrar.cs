@@ -54,6 +54,9 @@ public sealed class AgentRegistrar
         string backendUrlForStorage,
         string deviceFingerprint,
         string agentVersion,
+        string? buildId,
+        string? buildChannel,
+        string bootstrapDescriptor,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(oauthToken))
@@ -64,6 +67,8 @@ public sealed class AgentRegistrar
             throw new ArgumentException("deviceFingerprint is required.", nameof(deviceFingerprint));
         if (string.IsNullOrWhiteSpace(agentVersion))
             throw new ArgumentException("agentVersion is required.", nameof(agentVersion));
+        if (string.IsNullOrWhiteSpace(bootstrapDescriptor))
+            throw new ArgumentException("bootstrapDescriptor is required.", nameof(bootstrapDescriptor));
 
         var (privPem, pubPem) = _keyPairs.GenerateKeyPair(2048);
 
@@ -71,10 +76,17 @@ public sealed class AgentRegistrar
             OauthToken: oauthToken.Trim(),
             AgentPublicKeyPem: pubPem,
             DeviceFingerprint: deviceFingerprint,
-            AgentVersion: agentVersion);
+            AgentVersion: agentVersion,
+            BuildId: string.IsNullOrWhiteSpace(buildId) ? agentVersion : buildId.Trim(),
+            BuildChannel: string.IsNullOrWhiteSpace(buildChannel) ? "dev" : buildChannel.Trim(),
+            SupportedSchemaVersions: new[] { "agent.enroll.v1", "agent.heartbeat.v1" },
+            BootstrapDescriptor: bootstrapDescriptor,
+            DisplayName: Environment.MachineName,
+            PurposeNote: "Self-enrolled Windows agent",
+            LocationHint: null);
 
         _log.Info("Registering agent...");
-        using var resp = await _http.PostAsJsonAsync("/api/v1/agents/register", req, JsonOpts, ct).ConfigureAwait(false);
+        using var resp = await _http.PostAsJsonAsync("/api/v1/agents/bootstrap/enroll", req, JsonOpts, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
             throw new HttpRequestException($"Register failed ({(int)resp.StatusCode}). {body}");
@@ -88,7 +100,7 @@ public sealed class AgentRegistrar
             identity,
             parsed.AgentRefreshToken,
             privPem,
-            backendUrlForStorage,
+            string.IsNullOrWhiteSpace(parsed.TelemetryBaseUrl) ? backendUrlForStorage : parsed.TelemetryBaseUrl.TrimEnd('/'),
             parsed.TailscaleLoginServer,
             parsed.TailscaleAuthkey,
             ct).ConfigureAwait(false);
@@ -142,7 +154,14 @@ public sealed class AgentRegistrar
         [property: JsonPropertyName("oauth_token")] string OauthToken,
         [property: JsonPropertyName("agent_public_key_pem")] string AgentPublicKeyPem,
         [property: JsonPropertyName("device_fingerprint")] string DeviceFingerprint,
-        [property: JsonPropertyName("agent_version")] string AgentVersion);
+        [property: JsonPropertyName("agent_version")] string AgentVersion,
+        [property: JsonPropertyName("build_id")] string BuildId,
+        [property: JsonPropertyName("build_channel")] string BuildChannel,
+        [property: JsonPropertyName("supported_schema_versions")] IReadOnlyList<string> SupportedSchemaVersions,
+        [property: JsonPropertyName("bootstrap_descriptor")] string BootstrapDescriptor,
+        [property: JsonPropertyName("display_name")] string DisplayName,
+        [property: JsonPropertyName("purpose_note")] string? PurposeNote,
+        [property: JsonPropertyName("location_hint")] string? LocationHint);
 
     private sealed record AgentRegisterResponse(
         [property: JsonPropertyName("agent_id")] string AgentId,
@@ -151,5 +170,7 @@ public sealed class AgentRegistrar
         [property: JsonPropertyName("tailscale_authkey")] string? TailscaleAuthkey,
         [property: JsonPropertyName("agent_refresh_token")] string AgentRefreshToken,
         [property: JsonPropertyName("agent_access_token")] string? AgentAccessToken,
-        [property: JsonPropertyName("jwt_public_key_pem")] string? JwtPublicKeyPem);
+        [property: JsonPropertyName("jwt_public_key_pem")] string? JwtPublicKeyPem,
+        [property: JsonPropertyName("telemetry_base_url")] string? TelemetryBaseUrl,
+        [property: JsonPropertyName("version_policy")] VersionPolicy? VersionPolicy);
 }

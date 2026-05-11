@@ -8,11 +8,14 @@ internal sealed record AgentArgs(
     bool StartService,
     bool StopService,
     bool Register,
+    bool HeartbeatOnce,
     bool ExportTailscaleUp,
     bool SelfTest,
     bool SelfTestJson,
     string? SelfTestOutFile,
-    string? CasdoorTokenFile);
+    string? CasdoorTokenFile,
+    string? ApplyUpdatePlan,
+    string? ApplyUpdateTarget);
 
 internal static class Args
 {
@@ -45,14 +48,17 @@ internal static class Args
         var startService = Has("--start-service");
         var stopService = Has("--stop-service");
         var register = Has("--register");
+        var heartbeatOnce = Has("--heartbeat-once");
         var exportTailscaleUp = Has("--export-tailscale-up");
         var selfTest = Has("--self-test");
         var selfTestJson = Has("--self-test-json") || Has("--json");
         var selfTestOutFile = Value("--self-test-out");
         var casdoorTokenFile = Value("--casdoor-token-file") ?? Value("--token-file");
+        var applyUpdatePlan = Value("--apply-staged-update");
+        var applyUpdateTarget = Value("--update-target");
 
         // Default behavior: tray if no mode provided.
-        if (!tray && !service && !install && !uninstall && !startService && !stopService && !register && !exportTailscaleUp && !selfTest)
+        if (!tray && !service && !install && !uninstall && !startService && !stopService && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
             tray = true;
 
         return new AgentArgs(
@@ -63,10 +69,13 @@ internal static class Args
             startService,
             stopService,
             register,
+            heartbeatOnce,
             exportTailscaleUp,
             selfTest,
             selfTestJson,
             selfTestOutFile,
-            casdoorTokenFile);
+            casdoorTokenFile,
+            applyUpdatePlan,
+            applyUpdateTarget);
     }
 }

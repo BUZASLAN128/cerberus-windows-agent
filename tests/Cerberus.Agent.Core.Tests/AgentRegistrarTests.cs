@@ -22,7 +22,16 @@ public sealed class AgentRegistrarTests
                       "tailscale_authkey": null,
                       "agent_refresh_token": "rt1",
                       "agent_access_token": null,
-                      "jwt_public_key_pem": null
+                      "jwt_public_key_pem": null,
+                      "telemetry_base_url": "http://telemetry.test",
+                      "version_policy": {
+                        "minimum_supported_version": null,
+                        "latest_recommended_version": null,
+                        "blocked_versions": [],
+                        "decision": "accepted",
+                        "reason": null,
+                        "download_hint": null
+                      }
                     }
                     """,
                     Encoding.UTF8,
@@ -39,6 +48,9 @@ public sealed class AgentRegistrarTests
             backendUrlForStorage: "http://backend",
             deviceFingerprint: "fp",
             agentVersion: "1.2.3",
+            buildId: "build-abc",
+            buildChannel: "dev",
+            bootstrapDescriptor: """{"payload":{"schema_version":"agent.bootstrap.v1"},"signature":"sig"}""",
             ct: CancellationToken.None);
 
         Assert.Equal("a1", identity.AgentId);
@@ -46,7 +58,7 @@ public sealed class AgentRegistrarTests
 
         Assert.NotNull(handler.CapturedRequest);
         Assert.Equal(HttpMethod.Post, handler.CapturedRequest!.Method);
-        Assert.Equal("/api/v1/agents/register", handler.CapturedRequest!.RequestUri!.AbsolutePath);
+        Assert.Equal("/api/v1/agents/bootstrap/enroll", handler.CapturedRequest!.RequestUri!.AbsolutePath);
 
         Assert.NotNull(handler.CapturedBody);
         using var doc = JsonDocument.Parse(handler.CapturedBody!);
@@ -56,13 +68,16 @@ public sealed class AgentRegistrarTests
         Assert.Equal("pub-pem", root.GetProperty("agent_public_key_pem").GetString());
         Assert.Equal("fp", root.GetProperty("device_fingerprint").GetString());
         Assert.Equal("1.2.3", root.GetProperty("agent_version").GetString());
+        Assert.Equal("build-abc", root.GetProperty("build_id").GetString());
+        Assert.Equal("dev", root.GetProperty("build_channel").GetString());
+        Assert.Contains("agent.bootstrap.v1", root.GetProperty("bootstrap_descriptor").GetString());
 
         Assert.NotNull(secrets.LastSaved);
         Assert.Equal("a1", secrets.LastSaved!.Value.Identity.AgentId);
         Assert.Equal("t1", secrets.LastSaved!.Value.Identity.TenantId);
         Assert.Equal("rt1", secrets.LastSaved!.Value.RefreshToken);
         Assert.Equal("priv-pem", secrets.LastSaved!.Value.PrivateKeyPem);
-        Assert.Equal("http://backend", secrets.LastSaved!.Value.BackendUrl);
+        Assert.Equal("http://telemetry.test", secrets.LastSaved!.Value.BackendUrl);
     }
 
     private sealed class CaptureHandler : HttpMessageHandler
@@ -107,6 +122,8 @@ public sealed class AgentRegistrarTests
         {
             throw new NotSupportedException();
         }
+
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
     }
 
     private sealed class StubKeyPairs : IKeyPairGenerator

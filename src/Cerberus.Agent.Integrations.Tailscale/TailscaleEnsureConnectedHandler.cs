@@ -1,7 +1,9 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
+using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text.Json;
 
 namespace Cerberus.Agent.Integrations.Tailscale;
 
@@ -9,13 +11,31 @@ namespace Cerberus.Agent.Integrations.Tailscale;
 // This is safe for environments where Tailscale is managed externally.
 public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
 {
+    private readonly Func<CancellationToken, Task<(bool Installed, bool Connected, object? Snapshot, string? Error)>> _probe;
+    private readonly Func<ISecretStore> _secretStoreFactory;
+    private readonly Func<bool> _allowUpCommandExport;
+    private readonly string? _baseDir;
+    private readonly bool _applyAcl;
+
+    public TailscaleEnsureConnectedHandler(
+        Func<CancellationToken, Task<(bool Installed, bool Connected, object? Snapshot, string? Error)>>? probe = null,
+        Func<ISecretStore>? secretStoreFactory = null,
+        Func<bool>? allowUpCommandExport = null,
+        string? baseDir = null,
+        bool applyAcl = true)
+    {
+        _probe = probe ?? (ct => TailscaleStatusProbe.ProbeAsync(TimeSpan.FromSeconds(10), ct));
+        _secretStoreFactory = secretStoreFactory ?? (() => new DpapiSecretStore(SecretStoreScope.Machine));
+        _allowUpCommandExport = allowUpCommandExport ?? IsDebugTailscaleUpEnabled;
+        _baseDir = baseDir;
+        _applyAcl = applyAcl;
+    }
+
     public string Type => "tailscale.ensure_connected";
 
     public async Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
     {
-        var (installed, connected, snapshot, err) = await TailscaleStatusProbe.ProbeAsync(
-            timeout: TimeSpan.FromSeconds(10),
-            ct: ct);
+        var (installed, connected, snapshot, err) = await _probe(ct).ConfigureAwait(false);
 
         if (!installed)
         {
@@ -29,8 +49,26 @@ public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
 
         if (!connected)
         {
+            if (!_allowUpCommandExport())
+            {
+                return new CommandResult(
+                    Status: "FAILED",
+                    ExitCode: 3,
+                    Stdout: null,
+                    Stderr: "Tailscale activation is disabled. Public agent mode is read-only unless debug lab export is explicitly enabled.",
+                    PostVerify: new
+                    {
+                        installed = true,
+                        connected = false,
+                        error = err,
+                        status = snapshot,
+                        up_command_written = false,
+                        debug_required = true,
+                    });
+            }
+
             // Service-mode runs as LocalSystem and uses machine-scope secrets.
-            var secrets = new DpapiSecretStore(SecretStoreScope.Machine);
+            var secrets = _secretStoreFactory();
             var (_, _, _, _, loginServer, authKey) = await secrets.LoadAsync(ct);
             if (string.IsNullOrWhiteSpace(loginServer) || string.IsNullOrWhiteSpace(authKey))
             {
@@ -42,16 +80,34 @@ public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
                     PostVerify: new { installed = true, connected = false, error = err, status = snapshot });
             }
 
-            // Do NOT run `tailscale up` automatically yet. Write the command to a locked-down file.
-            var baseDir = Path.Combine(
+            // Do NOT run `tailscale up` automatically. Debug export is short-lived and locked down.
+            var baseDir = _baseDir ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "CerberusAgent",
                 "tailscale");
             Directory.CreateDirectory(baseDir);
-            var cmdPath = Path.Combine(baseDir, "tailscale-up.cmd");
+            var exportId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+            var cmdPath = Path.Combine(baseDir, $"tailscale-up-{exportId}.cmd");
+            var metadataPath = Path.Combine(baseDir, $"tailscale-up-{exportId}.metadata.json");
+            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(10);
             var cmdText = TailscaleUpCommand.Build(loginServer, authKey);
             await File.WriteAllTextAsync(cmdPath, cmdText, ct);
-            LockDownAcl(cmdPath);
+            await File.WriteAllTextAsync(
+                metadataPath,
+                JsonSerializer.Serialize(new
+                {
+                    schema_version = "cerberus.tailscale-debug-export.v1",
+                    created_at_utc = DateTimeOffset.UtcNow.ToString("O"),
+                    expires_at_utc = expiresAt.ToString("O"),
+                    command_path = cmdPath,
+                    contains_plaintext_authkey = true,
+                }),
+                ct);
+            if (_applyAcl)
+            {
+                LockDownAcl(cmdPath);
+                LockDownAcl(metadataPath);
+            }
 
             return new CommandResult(
                 Status: "DONE",
@@ -66,6 +122,7 @@ public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
                     error = err,
                     up_command_written = true,
                     up_command_path = cmdPath,
+                    expires_at_utc = expiresAt.ToString("O"),
                 });
         }
 
@@ -97,4 +154,10 @@ public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
 
         fileInfo.SetAccessControl(fs);
     }
+
+    private static bool IsDebugTailscaleUpEnabled()
+        => string.Equals(
+            Environment.GetEnvironmentVariable("CERBERUS_AGENT_DEBUG_TAILSCALE_UP"),
+            "1",
+            StringComparison.Ordinal);
 }

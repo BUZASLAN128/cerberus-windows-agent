@@ -1,5 +1,6 @@
 using System.Windows;
-using MessageBox = System.Windows.MessageBox;
+using Cerberus.Agent.App.Actions;
+using Cerberus.Agent.App.Updates;
 
 namespace Cerberus.Agent.App;
 
@@ -14,6 +15,21 @@ internal static class Program
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             return RegisterMode.RunAsync(parsed, cts.Token).GetAwaiter().GetResult();
+        }
+
+        if (parsed.HeartbeatOnce)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            return HeartbeatOnceMode.RunAsync(cts.Token).GetAwaiter().GetResult();
+        }
+
+        if (!string.IsNullOrWhiteSpace(parsed.ApplyUpdatePlan))
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            return UpdateApplyMode
+                .RunAsync(parsed.ApplyUpdatePlan, parsed.ApplyUpdateTarget, cts.Token)
+                .GetAwaiter()
+                .GetResult();
         }
 
         if (parsed.ExportTailscaleUp)
@@ -37,13 +53,13 @@ internal static class Program
         {
             try
             {
-                ServiceInstaller.InstallOrThrow();
-                MessageBox.Show("Service installed and started.", "CERBERUS Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+                AgentServiceProvisioning.InstallOrThrow();
+                Console.WriteLine("Service installed and started.");
                 return 0;
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "Service Install Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                Console.Error.WriteLine(ex.Message);
                 return 2;
             }
         }
@@ -52,13 +68,13 @@ internal static class Program
         {
             try
             {
-                ServiceInstaller.UninstallOrThrow();
-                MessageBox.Show("Service uninstalled.", "CERBERUS Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+                AgentServiceProvisioning.UninstallOrThrow();
+                Console.WriteLine("Service uninstalled.");
                 return 0;
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "Service Uninstall Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                Console.Error.WriteLine(ex.Message);
                 return 2;
             }
         }

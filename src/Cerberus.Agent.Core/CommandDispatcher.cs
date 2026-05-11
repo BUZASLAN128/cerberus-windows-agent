@@ -17,6 +17,9 @@ public sealed class CommandDispatcher
     public IReadOnlyList<string> HandlerTypes => _handlerTypes;
 
     public async Task<CommandResult> DispatchAsync(AgentCommand cmd, CancellationToken ct)
+        => await DispatchAsync(cmd, timeout: null, ct).ConfigureAwait(false);
+
+    public async Task<CommandResult> DispatchAsync(AgentCommand cmd, TimeSpan? timeout, CancellationToken ct)
     {
         if (_idempotency.TryGet(cmd.IdempotencyKey, out var cached))
             return cached;
@@ -33,7 +36,39 @@ public sealed class CommandDispatcher
             return unknown;
         }
 
-        var res = await handler.HandleAsync(cmd, ct);
+        CommandResult res;
+        try
+        {
+            if (timeout is null)
+            {
+                res = await handler.HandleAsync(cmd, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(timeout.Value);
+                res = await handler.HandleAsync(cmd, timeoutCts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeout is not null)
+        {
+            res = new CommandResult(
+                Status: "FAILED",
+                ExitCode: null,
+                Stdout: null,
+                Stderr: $"Command timed out after {Math.Ceiling(timeout.Value.TotalSeconds)} seconds.",
+                PostVerify: new { code = "command_timeout" });
+        }
+        catch (Exception ex)
+        {
+            res = new CommandResult(
+                Status: "FAILED",
+                ExitCode: null,
+                Stdout: null,
+                Stderr: $"Command handler failed: {ex.GetType().Name}: {ex.Message}",
+                PostVerify: new { code = "command_handler_exception" });
+        }
+
         _idempotency.Set(cmd.IdempotencyKey, res);
         return res;
     }

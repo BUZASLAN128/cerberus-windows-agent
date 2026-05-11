@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -14,14 +15,12 @@ internal sealed class CasdoorOAuthClient
 
     private readonly Uri _baseUri;
     private readonly string _clientId;
-    private readonly string? _clientSecret;
     private readonly string _scope;
 
     public CasdoorOAuthClient(Uri baseUri, string clientId, string? clientSecret, string scope)
     {
         _baseUri = baseUri;
         _clientId = clientId;
-        _clientSecret = clientSecret;
         _scope = scope;
     }
 
@@ -60,16 +59,7 @@ internal sealed class CasdoorOAuthClient
         // Casdoor token endpoint (common default).
         var tokenEndpoint = new Uri(_baseUri, "/api/login/oauth/access_token");
 
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "authorization_code",
-            ["client_id"] = _clientId,
-            ["code"] = callback.Code,
-            ["redirect_uri"] = redirect.ToString(),
-            ["code_verifier"] = verifier,
-        };
-        if (!string.IsNullOrWhiteSpace(_clientSecret))
-            form["client_secret"] = _clientSecret!;
+        var form = BuildTokenExchangeForm(_clientId, callback.Code, redirect, verifier);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint)
         {
@@ -91,12 +81,55 @@ internal sealed class CasdoorOAuthClient
 
     private static void OpenBrowser(Uri uri)
     {
+        if (IsManualBrowserMode())
+        {
+            WriteManualBrowserUrl(
+                uri,
+                Environment.GetEnvironmentVariable("CERBERUS_AGENT_OAUTH_URL_FILE"));
+            Console.WriteLine($"CERBERUS_AGENT_OAUTH_URL={uri}");
+            return;
+        }
+
         Process.Start(new ProcessStartInfo
         {
             FileName = uri.ToString(),
             UseShellExecute = true,
         });
     }
+
+    private static bool IsManualBrowserMode()
+    {
+        var raw = Environment.GetEnvironmentVariable("CERBERUS_AGENT_OAUTH_BROWSER");
+        return string.Equals(raw, "manual", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "print", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "none", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static void WriteManualBrowserUrl(Uri uri, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        var fullPath = Path.GetFullPath(path);
+        var dir = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+            Directory.CreateDirectory(dir);
+        File.WriteAllText(fullPath, uri.ToString(), Encoding.UTF8);
+    }
+
+    internal static Dictionary<string, string> BuildTokenExchangeForm(
+        string clientId,
+        string code,
+        Uri redirect,
+        string verifier)
+        => new()
+        {
+            ["grant_type"] = "authorization_code",
+            ["client_id"] = clientId,
+            ["code"] = code,
+            ["redirect_uri"] = redirect.ToString(),
+            ["code_verifier"] = verifier,
+        };
 
     private static string Base64Url(byte[] bytes)
         => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -107,4 +140,3 @@ internal sealed class CasdoorOAuthClient
         [property: JsonPropertyName("expires_in")] int? ExpiresIn,
         [property: JsonPropertyName("refresh_token")] string? RefreshToken);
 }
-

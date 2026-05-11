@@ -10,9 +10,9 @@ namespace Cerberus.Agent.Integrations.Ad;
 public sealed class AdDirectoryProvider : IDirectoryProvider
 {
     public DirectoryCapabilities Capabilities { get; } = new(
-        SupportsCreate: true,
-        SupportsUpdate: true,
-        SupportsDisable: true,
+        SupportsCreate: false,
+        SupportsUpdate: false,
+        SupportsDisable: false,
         DomainScopes: Array.Empty<string>());
 
     public Task<DirectoryResult> CreateUserAsync(DirectoryCreateUserRequest request, CancellationToken ct)
@@ -44,4 +44,3 @@ public sealed class AdDirectoryProvider : IDirectoryProvider
             PostVerify: new { domain_joined = true, domain, email });
     }
 }
-

@@ -1,8 +1,7 @@
+using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
-using Cerberus.Agent.Security;
 using System.IO;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -96,7 +95,7 @@ public partial class MainWindow : Window
         TailscaleValue.Text = ts.Text;
         RegisteredValue.Text = registered ? "yes" : "no";
 
-        var cfgOk = IsConfigReadyForOnboarding(_config);
+        var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
         OnboardBtn.IsEnabled = !_busy && !registered && cfgOk;
         if (registered)
         {
@@ -133,22 +132,6 @@ public partial class MainWindow : Window
             : (File.Exists(machineCmdPath) ? machineCmdPath : "cmd not exported yet");
     }
 
-    private static bool IsConfigReadyForOnboarding(RuntimeUiConfig cfg)
-    {
-        var backendUrl = (cfg.BackendUrl ?? "").Trim().TrimEnd('/');
-        if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out _))
-            return false;
-
-        var ssoBase = (cfg.CasdoorEndpoint ?? "").Trim().TrimEnd('/');
-        if (!Uri.TryCreate(ssoBase, UriKind.Absolute, out _))
-            return false;
-
-        if (string.IsNullOrWhiteSpace(cfg.CasdoorClientId))
-            return false;
-
-        return true;
-    }
-
     private async void Onboard_Click(object sender, RoutedEventArgs e)
     {
         if (_busy)
@@ -167,7 +150,7 @@ public partial class MainWindow : Window
             Log("Starting SSO sign-in (browser will open)...");
 
             _config = UiConfigStore.LoadMergedWithEnv();
-            if (!IsConfigReadyForOnboarding(_config))
+            if (!AgentOnboardingFlow.IsConfigReady(_config))
             {
                 System.Windows.MessageBox.Show(
                     this,
@@ -179,50 +162,17 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var backendUrl = _config.BackendUrl.Trim().TrimEnd('/');
-            var backend = new Uri(backendUrl);
-            var ssoBaseUrl = _config.CasdoorEndpoint.Trim().TrimEnd('/');
-            var ssoBase = new Uri(ssoBaseUrl);
-
-            var clientId = _config.CasdoorClientId.Trim();
-            var clientSecret = _config.CasdoorClientSecret;
-            var scope = _config.CasdoorScope;
-            var redirectPort = _config.OAuthRedirectPort;
-
-            var oauth = new CasdoorOAuthClient(
-                ssoBase,
-                clientId,
-                string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret,
-                scope);
-            var token = await oauth.LoginWithPkceAsync(redirectPort, CancellationToken.None);
-
-            Log("Login ok. Registering agent...");
-
             using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
-            using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-            var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            var registrar = new AgentRegistrar(http, secrets, keyPairs: null, log: log);
-
-            var identity = await registrar.RegisterAsync(
-                token.AccessToken,
-                backendUrlForStorage: backendUrl,
-                deviceFingerprint: WindowsDeviceInfo.ComputeDeviceFingerprint(),
-                agentVersion: WindowsDeviceInfo.GetAgentVersion(),
+            var result = await new AgentOnboardingFlow().RunAsync(
+                _config,
+                log,
+                progress: Log,
                 ct: CancellationToken.None);
 
-            Log($"Registered. agent_id={identity.AgentId} tenant_id={identity.TenantId}");
+            Log($"Registered. agent_id={result.Identity.AgentId} tenant_id={result.Identity.TenantId}");
 
-            var cmdPath = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-            if (cmdPath is null)
-            {
-                // Register tries to create a preauth key, but Headscale may be configured later or
-                // temporarily unavailable. Try once more via the dedicated endpoint.
-                if (await TryFetchTailscalePreauthAsync(backend, CancellationToken.None))
-                    cmdPath = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-            }
-
-            if (cmdPath is not null)
-                Log($"Wrote tailscale up cmd: {cmdPath}");
+            if (result.TailscaleCommandPath is not null)
+                Log($"Wrote tailscale up cmd: {result.TailscaleCommandPath}");
             else
                 Log("No tailscale cmd exported.");
         }
@@ -239,118 +189,49 @@ public partial class MainWindow : Window
 
     private void InstallSvc_Click(object sender, RoutedEventArgs e)
     {
-        if (!Elevation.IsAdministrator())
-        {
-            Elevation.TryRunElevated("--install-service");
-            Log("Requested elevation for install.");
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.InstallOrThrow();
-            Log("Service installed and started.");
-        }
-        catch (Exception ex)
-        {
-            Log($"Install failed: {ex.Message}");
-        }
+        RunServiceCommand(ServiceControlCommand.Install);
     }
 
     private void UninstallSvc_Click(object sender, RoutedEventArgs e)
     {
-        if (!Elevation.IsAdministrator())
-        {
-            Elevation.TryRunElevated("--uninstall-service");
-            Log("Requested elevation for uninstall.");
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.UninstallOrThrow();
-            Log("Service uninstalled.");
-        }
-        catch (Exception ex)
-        {
-            Log($"Uninstall failed: {ex.Message}");
-        }
+        RunServiceCommand(ServiceControlCommand.Uninstall);
     }
 
     private void StartSvc_Click(object sender, RoutedEventArgs e)
     {
-        if (!Elevation.IsAdministrator())
-        {
-            Elevation.TryRunElevated("--start-service");
-            Log("Requested elevation for start.");
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.StartOrThrow();
-            Log("Service started.");
-        }
-        catch (Exception ex)
-        {
-            Log($"Start failed: {ex.Message}");
-        }
+        RunServiceCommand(ServiceControlCommand.Start);
     }
 
     private void StopSvc_Click(object sender, RoutedEventArgs e)
     {
-        if (!Elevation.IsAdministrator())
-        {
-            Elevation.TryRunElevated("--stop-service");
-            Log("Requested elevation for stop.");
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.StopOrThrow();
-            Log("Service stopped.");
-        }
-        catch (Exception ex)
-        {
-            Log($"Stop failed: {ex.Message}");
-        }
+        RunServiceCommand(ServiceControlCommand.Stop);
     }
 
     private async void ExportTs_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            var path = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-            if (path is null)
+            var export = await VpnCommandExportService.ExportAsync(
+                VpnCommandExportService.TryGetConfiguredBackend(_config),
+                Log,
+                CancellationToken.None);
+            if (export.CommandPath is null)
             {
-                // Try to fetch preauth after-the-fact (agent already registered).
-                var backendUrl = _config.BackendUrl.Trim().TrimEnd('/');
-                if (Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend) &&
-                    await TryFetchTailscalePreauthAsync(backend, CancellationToken.None))
-                {
-                    path = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-                }
-
-                if (path is null)
-                {
-                    TsCmdPathLabel.Text = "VPN provisioning not available.";
-                    System.Windows.MessageBox.Show(
-                        this,
-                        "Bu cihaz icin VPN yetkilendirme bilgisi su an alinmadi.\n\n"
-                        + "Kurulusunuz icin VPN entegrasyonu henuz etkin olmayabilir veya gecici olarak erisilemiyor olabilir.\n\n"
-                        + "Lutfen daha sonra tekrar deneyin veya sistem yoneticinizle iletisime gecin.",
-                        "VPN",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Information);
-                    Log("VPN provisioning is not available (preauth missing).");
-                }
+                TsCmdPathLabel.Text = "VPN provisioning not available.";
+                System.Windows.MessageBox.Show(
+                    this,
+                    "Bu cihaz icin VPN yetkilendirme bilgisi su an alinmadi.\n\n"
+                    + "Kurulusunuz icin VPN entegrasyonu henuz etkin olmayabilir veya gecici olarak erisilemiyor olabilir.\n\n"
+                    + "Lutfen daha sonra tekrar deneyin veya sistem yoneticinizle iletisime gecin.",
+                    "VPN",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                Log("VPN provisioning is not available (preauth missing).");
             }
-
-            if (path is not null)
+            else
             {
-                TsCmdPathLabel.Text = path;
-                Log($"Wrote cmd: {path}");
+                TsCmdPathLabel.Text = export.CommandPath;
+                Log($"Wrote cmd: {export.CommandPath}");
             }
         }
         catch (Exception ex)
@@ -363,37 +244,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<bool> TryFetchTailscalePreauthAsync(Uri backend, CancellationToken ct)
+    private void RunServiceCommand(ServiceControlCommand command)
     {
-        try
-        {
-            var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            var (_, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct);
-
-            using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-            var tokens = new AgentTokenManager(http, secrets);
-            var signer = new RequestSigner(privateKeyPem);
-            var api = new AgentApiClient(http, secrets, tokens, signer);
-
-            var (loginServer, authKey) = await api.GetTailscalePreauthAsync(ct);
-
-            // Rotation-safe: reload secrets to avoid overwriting a newly rotated refresh token.
-            var (id2, refresh2, priv2, backendUrl2, _, _) = await secrets.LoadAsync(ct);
-            await secrets.SaveAsync(id2, refresh2, priv2, backendUrl2, loginServer, authKey, ct);
-
-            Log("Fetched VPN preauth key.");
-            return true;
-        }
-        catch (FileNotFoundException)
-        {
-            // Not registered yet.
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Log($"Preauth fetch failed: {Sanitizer.Redact(ex.Message)}");
-            return false;
-        }
+        var result = ServiceControlAction.Run(command);
+        Log(result.Message);
     }
 
     private async void InstallTs_Click(object sender, RoutedEventArgs e)

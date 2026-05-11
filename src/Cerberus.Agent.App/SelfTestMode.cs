@@ -1,4 +1,5 @@
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
@@ -46,6 +47,27 @@ internal static class SelfTestMode
             $"AD probed (joined={adJoined})",
             data: new { joined = adJoined, domain = adDomain, error = adErr }));
 
+        try
+        {
+            var collector = new WindowsTelemetryCollector();
+            var snapshot = await collector.BuildSnapshotAsync(
+                BuildMetadata(),
+                lastHeartbeat: null,
+                ct: ct).ConfigureAwait(false);
+            report.Steps.Add(SelfTestStep.Ok(
+                "offline.telemetry.snapshot",
+                "Telemetry snapshot built locally without submitting.",
+                data: new
+                {
+                    sections = snapshot.Sections.Keys.OrderBy(k => k).ToArray(),
+                    payload_bytes = AgentTelemetryLimits.EstimateJsonBytes(snapshot),
+                }));
+        }
+        catch (Exception ex)
+        {
+            report.Steps.Add(SelfTestStep.Fail("offline.telemetry.snapshot", "Telemetry snapshot build failed", ex));
+        }
+
         // Online probes require stored agent secrets (at least refresh token + signing key).
         var userSecrets = await TryLoadSecretsAsync(scope: SecretStoreScope.User, ct: ct);
         var machineSecrets = userSecrets is null
@@ -72,7 +94,7 @@ internal static class SelfTestMode
 
         report.Steps.Add(SelfTestStep.Ok(
             "online.prereq",
-            $"Using stored secrets (scope={scopeUsed}) and backend={backendUrl}."));
+            $"Using stored secrets (scope={scopeUsed}) and configured backend."));
 
         using var http = new HttpClient
         {
@@ -95,78 +117,9 @@ internal static class SelfTestMode
             return await EmitAsync(report, json: json, outFile: outFile, log: log, ct: ct);
         }
 
-        // Agent API calls.
-        var (_, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct);
-        var signer = new RequestSigner(privateKeyPem);
-        var tokens = new AgentTokenManager(http, secrets);
-        var api = new AgentApiClient(http, secrets, tokens, signer);
-
-        try
-        {
-            _ = await tokens.GetAccessTokenAsync(ct);
-            report.Steps.Add(SelfTestStep.Ok("online.agent.token", "Agent access token ok"));
-        }
-        catch (Exception ex)
-        {
-            report.Steps.Add(SelfTestStep.Fail("online.agent.token", "Agent access token refresh failed", ex));
-            Finalize(report, started);
-            return await EmitAsync(report, json: json, outFile: outFile, log: log, ct: ct);
-        }
-
-        try
-        {
-            var hb = await api.HeartbeatAsync(new { status = "connected", capabilities = Array.Empty<string>() }, ct);
-            report.Steps.Add(SelfTestStep.Ok(
-                "online.agent.heartbeat",
-                $"Heartbeat ok (pending={hb.PendingCommands?.Count ?? 0}, next_poll={hb.NextPollSeconds})"));
-        }
-        catch (Exception ex)
-        {
-            report.Steps.Add(SelfTestStep.Fail("online.agent.heartbeat", "Heartbeat failed", ex));
-            Finalize(report, started);
-            return await EmitAsync(report, json: json, outFile: outFile, log: log, ct: ct);
-        }
-
-        try
-        {
-            var (loginServer, authKey) = await api.GetTailscalePreauthAsync(ct);
-            report.Steps.Add(SelfTestStep.Ok(
-                "online.agent.tailscale_preauth",
-                "Preauth ok",
-                data: new { login_server = loginServer, authkey_prefix = authKey[..Math.Min(12, authKey.Length)] + "..." }));
-
-            // Validate the "export tailscale up cmd" UX end-to-end without requiring secrets persistence.
-            var baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CerberusAgent",
-                "selftest",
-                "tailscale");
-            Directory.CreateDirectory(baseDir);
-            var cmdPath = Path.Combine(baseDir, "tailscale-up.cmd");
-            var cmdText = TailscaleUpCommand.Build(loginServer.Trim(), authKey.Trim());
-            await File.WriteAllTextAsync(cmdPath, cmdText, ct);
-            report.Steps.Add(SelfTestStep.Ok("online.agent.tailscale_export", $"Wrote tailscale cmd: {cmdPath}"));
-        }
-        catch (Exception ex)
-        {
-            report.Steps.Add(SelfTestStep.Fail("online.agent.tailscale_preauth", "Preauth fetch failed", ex));
-            // Preauth may be optional depending on tenant provisioning; don't hard fail overall.
-            // We still continue to export if existing secret is present.
-        }
-
-        // Back-compat check: if secrets already contain preauth, exporter should work too.
-        try
-        {
-            var path = await TailscaleUpExporter.ExportAsync(ct);
-            if (path is not null)
-                report.Steps.Add(SelfTestStep.Ok("online.agent.tailscale_export_from_secrets", $"Exported tailscale cmd from secrets: {path}"));
-            else
-                report.Steps.Add(SelfTestStep.Skip("online.agent.tailscale_export_from_secrets", "No preauth present in secrets yet."));
-        }
-        catch (Exception ex)
-        {
-            report.Steps.Add(SelfTestStep.Fail("online.agent.tailscale_export_from_secrets", "Tailscale export (from secrets) failed", ex));
-        }
+        report.Steps.Add(SelfTestStep.Skip(
+            "online.agent.telemetry_submit",
+            "Self-test is read-only in 7FC; heartbeat, snapshot, preauth, and tailscale export are not submitted."));
 
         Finalize(report, started);
         return await EmitAsync(report, json: json, outFile: outFile, log: log, ct: ct);
@@ -177,6 +130,13 @@ internal static class SelfTestMode
         report.FinishedAtUtc = DateTimeOffset.UtcNow;
         report.DurationSeconds = (int)Math.Max(0, (report.FinishedAtUtc.Value - started).TotalSeconds);
     }
+
+    private static AgentBuildMetadata BuildMetadata() => new(
+        AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
+        BuildId: WindowsDeviceInfo.GetBuildId(),
+        BuildChannel: WindowsDeviceInfo.GetBuildChannel(),
+        BootId: Guid.NewGuid().ToString("N"),
+        SupportedSchemaVersions: AgentSchemaVersions.All);
 
     private sealed class LoadedSecrets
     {

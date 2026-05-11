@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -61,6 +62,7 @@ public sealed class DpapiSecretStore : ISecretStore
         CancellationToken ct)
     {
         var payload = new SecretPayload(
+            "cerberus-agent-secret.v2",
             identity.AgentId,
             identity.TenantId,
             refreshToken,
@@ -75,7 +77,7 @@ public sealed class DpapiSecretStore : ISecretStore
             _scope == SecretStoreScope.User ? DataProtectionScope.CurrentUser : DataProtectionScope.LocalMachine);
 
         await File.WriteAllBytesAsync(_path, enc, ct).ConfigureAwait(false);
-        LockDownAcl(_path);
+        LockDownAcl(_path, _scope);
     }
 
     /// <summary>
@@ -105,7 +107,38 @@ public sealed class DpapiSecretStore : ISecretStore
         );
     }
 
-    private static void LockDownAcl(string filePath)
+    public async Task ClearAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!File.Exists(_path))
+            return;
+
+        var length = new FileInfo(_path).Length;
+        if (length > 0)
+        {
+            await using var stream = new FileStream(
+                _path,
+                FileMode.Open,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.WriteThrough | FileOptions.Asynchronous);
+            var zeros = new byte[Math.Min(length, 8192)];
+            var remaining = length;
+            while (remaining > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                var write = (int)Math.Min(zeros.Length, remaining);
+                await stream.WriteAsync(zeros.AsMemory(0, write), ct).ConfigureAwait(false);
+                remaining -= write;
+            }
+            await stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        File.Delete(_path);
+    }
+
+    private static void LockDownAcl(string filePath, SecretStoreScope scope)
     {
         // Best-effort ACL hardening. This runs in user context during onboarding and can be
         // restricted by local policy; do not fail registration if hardening cannot be applied.
@@ -117,7 +150,8 @@ public sealed class DpapiSecretStore : ISecretStore
             fs.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
 
             // Setting owner to SYSTEM may require elevation; ignore failures.
-            try { fs.SetOwner(new NTAccount("SYSTEM")); } catch { }
+            try { fs.SetOwner(new NTAccount("SYSTEM")); }
+            catch (Exception ex) { Trace.TraceWarning($"Cerberus agent secret owner hardening failed: {ex.GetType().Name}"); }
 
             fs.AddAccessRule(new FileSystemAccessRule(
                 new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
@@ -129,27 +163,31 @@ public sealed class DpapiSecretStore : ISecretStore
                 FileSystemRights.FullControl,
                 AccessControlType.Allow));
 
-            // Ensure the current interactive user can still read/write during tray-mode operation.
-            // Service-mode runs as LocalSystem and is covered by the rule above.
-            var me = WindowsIdentity.GetCurrent().User;
-            if (me is not null)
+            // User-scope onboarding secrets must remain available to the tray user.
+            // Machine-scope service secrets must not add an explicit interactive-user ACE.
+            if (scope == SecretStoreScope.User)
             {
-                fs.AddAccessRule(new FileSystemAccessRule(
-                    me,
-                    FileSystemRights.FullControl,
-                    AccessControlType.Allow));
+                var me = WindowsIdentity.GetCurrent().User;
+                if (me is not null)
+                {
+                    fs.AddAccessRule(new FileSystemAccessRule(
+                        me,
+                        FileSystemRights.FullControl,
+                        AccessControlType.Allow));
+                }
             }
 
             fileInfo.SetAccessControl(fs);
         }
-        catch
+        catch (Exception ex)
         {
-            // Intentionally ignored.
+            Trace.TraceWarning($"Cerberus agent secret ACL hardening failed: {ex.GetType().Name}");
         }
     }
 
     // Backward compatible: older payloads won't have tailscale fields; they deserialize as null.
     private sealed record SecretPayload(
+        string? SchemaVersion,
         string AgentId,
         string TenantId,
         string RefreshToken,

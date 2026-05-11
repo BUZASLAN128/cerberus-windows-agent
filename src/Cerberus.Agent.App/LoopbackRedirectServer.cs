@@ -117,9 +117,9 @@ internal sealed class LoopbackRedirectServer : IDisposable
             if (ch != '\r')
                 sb.Append(ch);
 
-            // Limit line length to avoid weird clients.
+            // Limit line length to avoid oversized redirect/header lines.
             if (sb.Length > 8192)
-                break;
+                throw new InvalidOperationException("OAuth redirect request line is too long.");
         }
         return sb.ToString();
     }

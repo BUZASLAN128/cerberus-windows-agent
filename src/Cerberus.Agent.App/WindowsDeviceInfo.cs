@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32;
+using System.Reflection;
 
 namespace Cerberus.Agent.App;
 
@@ -17,6 +18,26 @@ internal static class WindowsDeviceInfo
         {
             return "0.0.0";
         }
+    }
+
+    public static string GetBuildId()
+    {
+        try
+        {
+            var asm = typeof(Program).Assembly;
+            var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            return string.IsNullOrWhiteSpace(info) ? GetAgentVersion() : info;
+        }
+        catch
+        {
+            return GetAgentVersion();
+        }
+    }
+
+    public static string GetBuildChannel()
+    {
+        var raw = Environment.GetEnvironmentVariable("CERBERUS_AGENT_BUILD_CHANNEL");
+        return string.IsNullOrWhiteSpace(raw) ? "dev" : raw.Trim();
     }
 
     public static string ComputeDeviceFingerprint()
@@ -41,4 +62,3 @@ internal static class WindowsDeviceInfo
         }
     }
 }
-

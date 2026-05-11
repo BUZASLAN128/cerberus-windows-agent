@@ -24,6 +24,8 @@
     <ProjectReference Include="..\..\src\Cerberus.Agent.App\Cerberus.Agent.App.csproj" />
     <ProjectReference Include="..\..\src\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
     <ProjectReference Include="..\..\src\Cerberus.Agent.Integrations.Tailscale\Cerberus.Agent.Integrations.Tailscale.csproj" />
+    <ProjectReference Include="..\..\src\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />
+    <ProjectReference Include="..\..\src\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
   </ItemGroup>
 
 </Project>

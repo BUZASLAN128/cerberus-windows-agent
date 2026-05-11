@@ -19,7 +19,8 @@ internal sealed record RuntimeUiConfig(
     string CasdoorClientId,
     string CasdoorScope,
     int OAuthRedirectPort,
-    string? CasdoorClientSecret);
+    string? CasdoorClientSecret,
+    string? BootstrapDescriptorUrl);
 
 internal static class UiConfigStore
 {
@@ -35,8 +36,9 @@ internal static class UiConfigStore
     private static string ConfigPath => Path.Combine(ConfigDir, "ui-config.json");
 
     private static PersistedUiConfig Default => new(
-        // Default to local dev (cerberus-app uvicorn). Override via env for other deployments.
-        BackendUrl: "http://127.0.0.1:8000",
+        // Public builds must not bake a tenant/backend URL. Dev can opt in via
+        // CERBERUS_BACKEND_URL or CERBERUS_AGENT_DEV_BOOTSTRAP=true.
+        BackendUrl: "",
         // Default to the dev/test SSO endpoint. Override via env or ui-config for other deployments.
         CasdoorEndpoint: "http://100.101.130.51:31080",
         // NOTE: client_id is public (not a secret). Keep override via env/config for other deployments.
@@ -118,6 +120,8 @@ internal static class UiConfigStore
         var cfg = Load();
 
         var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? cfg.BackendUrl).Trim();
+        if (string.IsNullOrWhiteSpace(backendUrl) && IsExplicitDevBootstrap())
+            backendUrl = "http://127.0.0.1:8000";
 
         // Support both generic SSO env vars and legacy CERBERUS_CASDOOR_* ones.
         // Do NOT read plain CASDOOR_* env vars to avoid accidental localhost misconfig on dev machines.
@@ -151,6 +155,22 @@ internal static class UiConfigStore
             CasdoorClientId: clientId,
             CasdoorScope: string.IsNullOrWhiteSpace(scope) ? Default.CasdoorScope : scope,
             OAuthRedirectPort: redirectPort,
-            CasdoorClientSecret: string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret);
+            CasdoorClientSecret: string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret,
+            BootstrapDescriptorUrl: NormalizeOptional(
+                Environment.GetEnvironmentVariable("CERBERUS_AGENT_BOOTSTRAP_DESCRIPTOR_URL")));
+    }
+
+    private static string? NormalizeOptional(string? value)
+    {
+        var normalized = (value ?? "").Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static bool IsExplicitDevBootstrap()
+    {
+        var raw = Environment.GetEnvironmentVariable("CERBERUS_AGENT_DEV_BOOTSTRAP");
+        return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 }

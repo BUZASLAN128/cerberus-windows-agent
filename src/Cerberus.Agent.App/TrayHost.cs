@@ -1,8 +1,6 @@
+using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.Observability;
-using Cerberus.Agent.Security;
-using Cerberus.Agent.Core;
 using System.Drawing;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -17,8 +15,6 @@ namespace Cerberus.Agent.App;
 
 internal sealed class TrayHost : IDisposable
 {
-    private const string ServiceName = ServiceInstaller.ServiceName;
-
     private readonly NotifyIcon _icon;
     private readonly ToolStripMenuItem _statusHeader;
     private readonly ToolStripMenuItem _serviceStatus;
@@ -53,25 +49,17 @@ internal sealed class TrayHost : IDisposable
             using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
             try
             {
-                var path = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-                if (path is null)
-                {
-                    // Agent might have been registered when VPN provisioning was temporarily unavailable.
-                    // Try to fetch a fresh preauth key and retry export.
-                    var cfg = UiConfigStore.LoadMergedWithEnv();
-                    var backendUrl = (cfg.BackendUrl ?? "").Trim().TrimEnd('/');
-                    if (Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend) &&
-                        await TryFetchTailscalePreauthAsync(backend, CancellationToken.None))
-                    {
-                        path = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-                    }
-                }
-                if (path is null)
+                var cfg = UiConfigStore.LoadMergedWithEnv();
+                var export = await VpnCommandExportService.ExportAsync(
+                    VpnCommandExportService.TryGetConfiguredBackend(cfg),
+                    message => log.Info(message),
+                    CancellationToken.None);
+                if (export.CommandPath is null)
                 {
                     ShowBalloon("VPN", "VPN provisioning is not available. Contact your administrator.", ToolTipIcon.Warning);
                     return;
                 }
-                ShowBalloon("VPN", $"Wrote: {path}", ToolTipIcon.Info);
+                ShowBalloon("VPN", $"Wrote: {export.CommandPath}", ToolTipIcon.Info);
             }
             catch (Exception ex)
             {
@@ -99,52 +87,16 @@ internal sealed class TrayHost : IDisposable
         };
 
         _startService = new ToolStripMenuItem("Start service");
-        _startService.Click += (_, _) => StartService();
+        _startService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Start);
 
         _stopService = new ToolStripMenuItem("Stop service");
-        _stopService.Click += (_, _) => StopService();
+        _stopService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Stop);
 
         _installService = new ToolStripMenuItem("Install service");
-        _installService.Click += (_, _) =>
-        {
-            if (!Elevation.IsAdministrator())
-            {
-                if (Elevation.TryRunElevated("--install-service"))
-                    ShowBalloon("Service", "UAC prompt opened for install.", ToolTipIcon.Info);
-                return;
-            }
-
-            try
-            {
-                ServiceInstaller.InstallOrThrow();
-                ShowBalloon("Service", "Installed and started.", ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                ShowBalloon("Service", ex.Message, ToolTipIcon.Error);
-            }
-        };
+        _installService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Install);
 
         _uninstallService = new ToolStripMenuItem("Uninstall service");
-        _uninstallService.Click += (_, _) =>
-        {
-            if (!Elevation.IsAdministrator())
-            {
-                if (Elevation.TryRunElevated("--uninstall-service"))
-                    ShowBalloon("Service", "UAC prompt opened for uninstall.", ToolTipIcon.Info);
-                return;
-            }
-
-            try
-            {
-                ServiceInstaller.UninstallOrThrow();
-                ShowBalloon("Service", "Uninstalled.", ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                ShowBalloon("Service", ex.Message, ToolTipIcon.Error);
-            }
-        };
+        _uninstallService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Uninstall);
 
         var exit = new ToolStripMenuItem("Exit");
         exit.Click += (_, _) =>
@@ -211,7 +163,7 @@ internal sealed class TrayHost : IDisposable
         _registeredStatus.Text = $"Registered: {(registered ? "yes" : "no")}";
 
         var cfg = UiConfigStore.LoadMergedWithEnv();
-        var cfgOk = IsConfigReadyForOnboarding(cfg);
+        var cfgOk = AgentOnboardingFlow.IsConfigReady(cfg);
         _onboard.Enabled = !_onboarding && !registered && cfgOk;
         _startService.Enabled = svc.CanStart;
         _stopService.Enabled = svc.CanStop;
@@ -289,34 +241,6 @@ internal sealed class TrayHost : IDisposable
         });
     }
 
-    private static async Task<bool> TryFetchTailscalePreauthAsync(Uri backend, CancellationToken ct)
-    {
-        try
-        {
-            // Best-effort: if the device is registered, use agent auth to request a fresh
-            // VPN preauth key (single-use) and persist it for export/service usage.
-            var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            var (_, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct);
-
-            using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-            var tokens = new AgentTokenManager(http, secrets);
-            var signer = new RequestSigner(privateKeyPem);
-            var api = new AgentApiClient(http, secrets, tokens, signer);
-
-            var (loginServer, authKey) = await api.GetTailscalePreauthAsync(ct);
-
-            // Rotation-safe: reload secrets to avoid overwriting a newly rotated refresh token.
-            var (id2, refresh2, priv2, backendUrl2, _, _) = await secrets.LoadAsync(ct);
-            await secrets.SaveAsync(id2, refresh2, priv2, backendUrl2, loginServer, authKey, ct);
-
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private async Task OnboardAsync()
     {
         if (_onboarding)
@@ -335,54 +259,21 @@ internal sealed class TrayHost : IDisposable
             using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
 
             var cfg = UiConfigStore.LoadMergedWithEnv();
-
-            var backendUrl = cfg.BackendUrl.Trim().TrimEnd('/');
-            if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
+            if (!AgentOnboardingFlow.IsConfigReady(cfg))
             {
                 ShowBalloon("Sign-in", "Not configured. Contact your administrator.", ToolTipIcon.Error);
                 return;
             }
-
-            var casdoorEndpoint = cfg.CasdoorEndpoint.Trim().TrimEnd('/');
-            if (string.IsNullOrWhiteSpace(casdoorEndpoint) || !Uri.TryCreate(casdoorEndpoint, UriKind.Absolute, out var casdoorBase))
-            {
-                ShowBalloon("Sign-in", "Not configured. Contact your administrator.", ToolTipIcon.Error);
-                return;
-            }
-
-            var clientId = cfg.CasdoorClientId.Trim();
-            if (string.IsNullOrWhiteSpace(clientId))
-            {
-                ShowBalloon("Sign-in", "Not configured. Contact your administrator.", ToolTipIcon.Error);
-                return;
-            }
-
-            var clientSecret = cfg.CasdoorClientSecret;
-            var scope = cfg.CasdoorScope;
-            var redirectPort = cfg.OAuthRedirectPort;
 
             ShowBalloon("Sign-in", "Opening browser for SSO sign-in...", ToolTipIcon.Info);
-            var oauth = new CasdoorOAuthClient(
-                casdoorBase,
-                clientId,
-                string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret,
-                scope);
-            var token = await oauth.LoginWithPkceAsync(redirectPort, CancellationToken.None);
-
-            using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-            var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            var registrar = new AgentRegistrar(http, secrets, keyPairs: null, log: log);
-
-            var identity = await registrar.RegisterAsync(
-                token.AccessToken,
-                backendUrlForStorage: backendUrl,
-                deviceFingerprint: WindowsDeviceInfo.ComputeDeviceFingerprint(),
-                agentVersion: WindowsDeviceInfo.GetAgentVersion(),
+            var result = await new AgentOnboardingFlow().RunAsync(
+                cfg,
+                log,
+                progress: message => log.Info(message),
                 ct: CancellationToken.None);
 
-            var cmdPath = await TailscaleUpExporter.ExportAsync(CancellationToken.None);
-            if (cmdPath is not null)
-                ShowBalloon("Sign-in", $"Registered. Wrote tailscale cmd: {cmdPath}", ToolTipIcon.Info);
+            if (result.TailscaleCommandPath is not null)
+                ShowBalloon("Sign-in", $"Registered. Wrote tailscale cmd: {result.TailscaleCommandPath}", ToolTipIcon.Info);
             else
                 ShowBalloon("Sign-in", $"Registered. (No tailscale cmd.)", ToolTipIcon.Info);
         }
@@ -397,60 +288,10 @@ internal sealed class TrayHost : IDisposable
         }
     }
 
-    private static bool IsConfigReadyForOnboarding(RuntimeUiConfig cfg)
+    private void RunServiceCommand(ServiceControlCommand command)
     {
-        var backendUrl = (cfg.BackendUrl ?? "").Trim().TrimEnd('/');
-        if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out _))
-            return false;
-
-        var ssoBase = (cfg.CasdoorEndpoint ?? "").Trim().TrimEnd('/');
-        if (!Uri.TryCreate(ssoBase, UriKind.Absolute, out _))
-            return false;
-
-        if (string.IsNullOrWhiteSpace(cfg.CasdoorClientId))
-            return false;
-
-        return true;
-    }
-
-    private void StartService()
-    {
-        if (!Elevation.IsAdministrator())
-        {
-            if (Elevation.TryRunElevated("--start-service"))
-                ShowBalloon("Service", "UAC prompt opened to start service.", ToolTipIcon.Info);
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.StartOrThrow();
-            ShowBalloon("Service", "Started.", ToolTipIcon.Info);
-        }
-        catch (Exception ex)
-        {
-            ShowBalloon("Service", ex.Message, ToolTipIcon.Error);
-        }
-    }
-
-    private void StopService()
-    {
-        if (!Elevation.IsAdministrator())
-        {
-            if (Elevation.TryRunElevated("--stop-service"))
-                ShowBalloon("Service", "UAC prompt opened to stop service.", ToolTipIcon.Info);
-            return;
-        }
-
-        try
-        {
-            ServiceInstaller.StopOrThrow();
-            ShowBalloon("Service", "Stopped.", ToolTipIcon.Info);
-        }
-        catch (Exception ex)
-        {
-            ShowBalloon("Service", ex.Message, ToolTipIcon.Error);
-        }
+        var result = ServiceControlAction.Run(command);
+        ShowBalloon("Service", result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
     }
 
     private void ShowBalloon(string title, string msg, ToolTipIcon icon)

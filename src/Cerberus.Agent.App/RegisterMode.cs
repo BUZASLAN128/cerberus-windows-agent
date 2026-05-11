@@ -13,15 +13,7 @@ internal static class RegisterMode
 
         try
         {
-            var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? "http://127.0.0.1:8000")
-                .Trim()
-                .TrimEnd('/');
-            if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
-            {
-                log.Error("Invalid backend URL (CERBERUS_BACKEND_URL).");
-                return 2;
-            }
-
+            var uiConfig = UiConfigStore.LoadMergedWithEnv();
             // Single onboarding flow: PKCE via loopback redirect.
             // We intentionally do not support token env/file in this mode to avoid dual paths.
             if (!string.IsNullOrWhiteSpace(args.CasdoorTokenFile) ||
@@ -32,33 +24,25 @@ internal static class RegisterMode
                 return 2;
             }
 
-            var casdoorEndpoint = (Environment.GetEnvironmentVariable("CERBERUS_SSO_BASE_URL")
-                                   ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_ENDPOINT")
-                                   ?? "http://100.101.130.51:31080").Trim().TrimEnd('/');
+            var casdoorEndpoint = uiConfig.CasdoorEndpoint.Trim().TrimEnd('/');
             if (!Uri.TryCreate(casdoorEndpoint, UriKind.Absolute, out var casdoorBase))
             {
                 log.Error("Invalid SSO endpoint (CERBERUS_SSO_BASE_URL / CERBERUS_CASDOOR_ENDPOINT).");
                 return 2;
             }
 
-            var clientId = (Environment.GetEnvironmentVariable("CERBERUS_SSO_CLIENT_ID")
-                            ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_CLIENT_ID")
-                            ?? UiConfigStore.Load().CasdoorClientId
-                            ?? "").Trim();
+            var bootstrap = await BootstrapResolver.ResolveAsync(uiConfig, casdoorBase, ct);
+
+            var clientId = uiConfig.CasdoorClientId.Trim();
             if (string.IsNullOrWhiteSpace(clientId))
             {
                 log.Error("SSO client_id missing (CERBERUS_SSO_CLIENT_ID / CERBERUS_CASDOOR_CLIENT_ID).");
                 return 2;
             }
 
-            var clientSecret = (Environment.GetEnvironmentVariable("CERBERUS_SSO_CLIENT_SECRET")
-                                ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_CLIENT_SECRET")
-                                ?? "").Trim();
-            var scope = (Environment.GetEnvironmentVariable("CERBERUS_SSO_SCOPE")
-                         ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_SCOPE")
-                         ?? "openid profile email").Trim();
-            var redirectPortStr = Environment.GetEnvironmentVariable("CERBERUS_OAUTH_REDIRECT_PORT") ?? "19823";
-            var redirectPort = int.TryParse(redirectPortStr, out var p) ? p : 19823;
+            var clientSecret = uiConfig.CasdoorClientSecret ?? "";
+            var scope = uiConfig.CasdoorScope;
+            var redirectPort = uiConfig.OAuthRedirectPort;
 
             log.Info("Starting SSO sign-in (browser will open)...");
             var oauth = new CasdoorOAuthClient(
@@ -75,19 +59,24 @@ internal static class RegisterMode
             var secrets = new DpapiSecretStore(SecretStoreScope.User);
             using var http = new HttpClient
             {
-                BaseAddress = backend,
+                BaseAddress = bootstrap.Backend,
                 Timeout = TimeSpan.FromSeconds(30),
             };
 
             var registrar = new AgentRegistrar(http, secrets, keyPairs: null, log: log);
             var fingerprint = WindowsDeviceInfo.ComputeDeviceFingerprint();
             var version = WindowsDeviceInfo.GetAgentVersion();
+            var buildId = WindowsDeviceInfo.GetBuildId();
+            var buildChannel = WindowsDeviceInfo.GetBuildChannel();
 
             await registrar.RegisterAsync(
                 oauthToken,
-                backendUrlForStorage: backendUrl,
+                backendUrlForStorage: bootstrap.BackendUrl,
                 deviceFingerprint: fingerprint,
                 agentVersion: version,
+                buildId: buildId,
+                buildChannel: buildChannel,
+                bootstrapDescriptor: bootstrap.RawDescriptor,
                 ct);
 
             var cmdPath = await TailscaleUpExporter.ExportAsync(ct);
@@ -104,4 +93,5 @@ internal static class RegisterMode
             return 2;
         }
     }
+
 }

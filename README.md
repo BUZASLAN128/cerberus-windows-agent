@@ -1,6 +1,6 @@
 # CERBERUS Windows Agent
-HOBBAAA
-Single Windows executable for endpoint onboarding, secure agent identity, service-mode polling, and remote command execution.
+
+Single Windows executable for endpoint onboarding, secure agent identity, service-mode polling, telemetry, and governed operations.
 
 ## Quick Links
 
@@ -9,7 +9,7 @@ Single Windows executable for endpoint onboarding, secure agent identity, servic
 - Latest Release: https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest
 - Auto Publish Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
 - CI Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml
-- Create Main Manual Release: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
+- Create Public Release: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
 
 Badges:
 
@@ -23,13 +23,13 @@ This project provides a Windows endpoint agent that:
 - onboards a machine/user via SSO (Casdoor PKCE),
 - registers the device to CERBERUS backend with an RSA public key,
 - stores agent secrets securely with Windows DPAPI,
-- runs as a Windows Service for continuous heartbeat + command execution,
-- reports command results back to backend with signed requests.
+- runs as a Windows Service for heartbeat, telemetry, and governed command handling,
+- reports telemetry and command results back to backend with signed requests.
 
 Primary use cases:
 - device onboarding for tenant-aware access,
-- secure remote execution bridge (AD/Tailscale operations),
-- operational visibility via heartbeat and status snapshots.
+- safe operational visibility via heartbeat and status snapshots,
+- governed update and diagnostics flow for public agent releases.
 
 ## 2) Runtime Modes
 
@@ -37,6 +37,7 @@ CLI flags are handled in `Program.cs` and `Args.cs`.
 
 - `--tray` (default if no mode is given): WPF tray app for onboarding + status.
 - `--register`: non-GUI registration flow (still opens browser for PKCE).
+- `--heartbeat-once`: foreground validation path for registered user-scope credentials; sends one heartbeat, one `agent.started` event, and one snapshot, then exits.
 - `--service`: polling worker loop (service/runtime mode).
 - `--install-service`: installs Windows service (`CerberusAgent`) and starts it.
 - `--uninstall-service`: removes installed service.
@@ -46,6 +47,8 @@ CLI flags are handled in `Program.cs` and `Args.cs`.
 - `--self-test`: runs offline and online smoke checks.
 - `--self-test-json` / `--json`: JSON output for self-test.
 - `--self-test-out <path>`: write self-test JSON report to file.
+- `--apply-staged-update <plan>`: apply a previously verified staged update plan.
+- `--update-target <path>`: explicit target executable for staged update apply.
 
 Notes:
 - Token/file based register flow is intentionally disabled in `--register`; PKCE browser flow is the single onboarding path.
@@ -56,11 +59,11 @@ Notes:
 - `src/Cerberus.Agent.App`
   - mode selection, tray UX, service install/start/stop, onboarding orchestration.
 - `src/Cerberus.Agent.Core`
-  - API client, heartbeat loop, command dispatcher, contracts/models, idempotency cache.
+  - API client, heartbeat loop, command dispatcher, telemetry/update contracts, idempotency cache.
 - `src/Cerberus.Agent.Security`
   - DPAPI secret store, RSA request signer, token refresh manager.
 - `src/Cerberus.Agent.Integrations.Ad`
-  - AD command handlers (`ad.user.create`, `ad.user.update`, `ad.user.disable`).
+  - AD readiness and guarded module boundary. AD mutation executors are not implemented in this foundation build.
 - `src/Cerberus.Agent.Integrations.Tailscale`
   - status probe and `tailscale.ensure_connected` handler (safe/verify-first behavior).
 - `src/Cerberus.Agent.Observability`
@@ -70,9 +73,12 @@ Notes:
 
 Core endpoints currently used by the agent:
 
-- `POST /api/v1/agents/register`
-  - called by `AgentRegistrar` with OAuth token + generated RSA public key + fingerprint + agent version.
-  - persists returned `agent_id`, `tenant_id`, `agent_refresh_token`, optional Tailscale preauth data.
+- `GET /api/v1/agents/bootstrap/descriptor`
+  - returns the signed bootstrap descriptor that resolves backend ownership.
+
+- `POST /api/v1/agents/bootstrap/enroll`
+  - called by `AgentRegistrar` with OAuth token, bootstrap descriptor, generated RSA public key, fingerprint, and build metadata.
+  - persists returned `agent_id`, `tenant_id`, `agent_refresh_token`, and server-owned telemetry config.
 
 - `POST /api/v1/agents/token`
   - called by `AgentTokenManager` to refresh access token using refresh token.
@@ -85,6 +91,12 @@ Core endpoints currently used by the agent:
 - `POST /api/v1/agents/{agentId}/commands/{commandId}/result`
   - called by `AgentApiClient.SubmitCommandResultAsync`.
   - sends command result (`status`, `exit_code`, `stdout`, `stderr`, `post_verify`).
+
+- `POST /api/v1/agents/{agentId}/snapshot`
+- `POST /api/v1/agents/{agentId}/events`
+- `POST /api/v1/agents/{agentId}/probe-results`
+- `POST /api/v1/agents/{agentId}/diagnostic-bundles`
+  - signed telemetry and diagnostics endpoints. Payloads are allowlisted and redacted.
 
 - `POST /api/v1/agents/{agentId}/tailscale/preauth`
   - called by `AgentApiClient.GetTailscalePreauthAsync`.
@@ -125,6 +137,8 @@ Dispatched by `CommandDispatcher` and idempotency-protected.
 - `ad.user.update`
 - `ad.user.disable`
 
+AD and Windows mutation commands are not enabled as real executors in this foundation build. Windows mutation command families must pass explicit approval/audit guardrails and still fail closed until a governed executor is implemented.
+
 Unknown command types are returned as `FAILED` with reason text and cached via idempotency key.
 
 ## 6) Security Model
@@ -157,6 +171,40 @@ ACL hardening is applied best-effort:
 
 - Every agent API request body is hashed and signed.
 - Nonce + timestamp headers support replay protections on backend side.
+
+## 7) Public Release Requirements
+
+Public agent releases must be produced through `.github/workflows/auto-publish-exe.yml` or `scripts/build-public-release.ps1`.
+
+Required release inputs:
+
+- `WINDOWS_SIGNING_CERT_BASE64`: base64-encoded PFX code-signing certificate.
+- `WINDOWS_SIGNING_CERT_PASSWORD`: PFX password.
+- `AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM`: Cerberus-owned RSA private key used only to sign update manifests.
+- `AGENT_RELEASE_ARTIFACT_BASE_URL`: Cerberus-owned release artifact URL prefix.
+- Optional: `TimestampUrl`, defaults to `http://timestamp.digicert.com`.
+
+Release gate output includes:
+
+- signed `.exe`
+- `.zip`
+- `.sha256`
+- `.sbom.json`
+- `.provenance.json`
+- `.release-gate.json`
+- `.update-manifest.json`
+
+Unsigned public releases are denied. Tenant-controlled backend, update URL, signing key, channel, or artifact source is not supported.
+
+## 8) Local Smoke
+
+Use the clean-install smoke helper for local verification:
+
+```powershell
+.\scripts\clean-install-smoke.ps1 -RunEnrollment
+```
+
+The smoke is read-only until `-RunEnrollment`, `-InstallService`, or `-StartService` is explicitly provided. It does not run `tailscale up`, create Windows users, or mutate Headscale/Tailscale state.
 
 ### Redaction and Logging
 

@@ -1,4 +1,6 @@
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
@@ -24,31 +26,60 @@ internal static class ServiceMode
         var signer = new RequestSigner(privateKeyPem);
         var tokens = new AgentTokenManager(http, secrets);
         var api = new AgentApiClient(http, secrets, tokens, signer);
+        var agentVersion = WindowsDeviceInfo.GetAgentVersion();
+        var buildId = WindowsDeviceInfo.GetBuildId();
+        var buildChannel = WindowsDeviceInfo.GetBuildChannel();
+        var metadata = new AgentBuildMetadata(
+            AgentVersion: agentVersion,
+            BuildId: buildId,
+            BuildChannel: buildChannel,
+            BootId: Guid.NewGuid().ToString("N"),
+            SupportedSchemaVersions: AgentSchemaVersions.All);
 
         var cachePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "CerberusAgent",
             "idempotency.json");
         var idempotency = new IdempotencyCache(cachePath, maxEntries: 5000, ttl: TimeSpan.FromHours(24));
-
-        var directoryProvider = new AdDirectoryProvider();
+        var telemetryBuffer = new OfflineTelemetryBuffer(
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "CerberusAgent",
+                "telemetry-offline.json"),
+            maxEntries: 200,
+            maxBytes: 512 * 1024,
+            ttl: TimeSpan.FromHours(24));
 
         var handlers = new List<ICommandHandler>
         {
             new HealthSnapshotHandler(),
             new TailscaleEnsureConnectedHandler(),
         };
-        handlers.AddRange(AdUserCommandHandlers.CreateDefaultHandlers(directoryProvider));
+        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers());
 
         var dispatcher = new CommandDispatcher(handlers, idempotency);
         var statusProvider = new TailscaleStatusProvider();
+        var updateCoordinator = BuildUpdateCoordinator(http, log);
         var loop = new HeartbeatLoop(
             api,
             dispatcher,
             minDelayOnError: TimeSpan.FromSeconds(10),
             statusProvider: statusProvider,
             adStatusProvider: _ => Task.FromResult<object?>(BuildAdStatus()),
-            log: log);
+            agentVersion: agentVersion,
+            buildId: buildId,
+            buildChannel: buildChannel,
+            responseHandler: new HeartbeatResponseHandler(
+                secrets,
+                log,
+                updateCoordinator,
+                updateFailureReporter: (response, exception, cancel) =>
+                    ReportUpdateFailureAsync(api, metadata, response, exception, cancel)),
+            telemetryProvider: new WindowsTelemetryCollector(),
+            telemetryBuffer: telemetryBuffer,
+            log: log,
+            commandTimeout: TimeSpan.FromSeconds(120),
+            metadata: metadata);
 
         try
         {
@@ -58,6 +89,58 @@ internal static class ServiceMode
         {
             log.Info("Service mode stopped.");
         }
+    }
+
+    private static IAgentUpdateCoordinator? BuildUpdateCoordinator(HttpClient http, IAgentLogger log)
+    {
+        var publicKey = (Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_PEM") ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(publicKey))
+            return null;
+
+        var channel = WindowsDeviceInfo.GetBuildChannel();
+        var prefixes = SplitCsv(Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES"));
+        var stagingRoot = AgentUpdateStager.DefaultStagingRoot;
+        var trust = new AgentUpdateTrust(
+            ManifestPublicKeyPem: publicKey,
+            ExpectedChannel: channel,
+            AllowedArtifactPrefixes: prefixes,
+            CurrentVersion: WindowsDeviceInfo.GetAgentVersion());
+        return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, stagingRoot), log);
+    }
+
+    private static async Task ReportUpdateFailureAsync(
+        AgentApiClient api,
+        AgentBuildMetadata metadata,
+        HeartbeatResponse response,
+        Exception exception,
+        CancellationToken ct)
+    {
+        var eventId = $"agent.update.failed:{metadata.BootId}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var item = new AgentEventItem(
+            EventId: eventId,
+            Type: "agent.update.failed",
+            OccurredAt: DateTimeOffset.UtcNow.ToString("O"),
+            Severity: "warning",
+            Payload: new Dictionary<string, object?>
+            {
+                ["exception_type"] = exception.GetType().Name,
+                ["message"] = Sanitizer.Redact(exception.Message),
+                ["lifecycle_state"] = response.LifecycleState,
+                ["agent_status"] = response.AgentStatus,
+            });
+        await api.SubmitEventsAsync(
+            AgentTelemetryFactory.CreateEvents(metadata, new[] { item }),
+            ct).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<string> SplitCsv(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return Array.Empty<string>();
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
     }
 
     private sealed class HealthSnapshotHandler : ICommandHandler
@@ -88,10 +171,19 @@ internal static class ServiceMode
             {
                 installed,
                 connected,
-                error = err,
+                error = Sanitizer.Redact(err),
+                state = ExtractSnapshotValue(snapshot, "state"),
+                ips = ExtractSnapshotValue(snapshot, "ips") ?? Array.Empty<string>(),
                 status = snapshot,
             };
         }
+    }
+
+    private static object? ExtractSnapshotValue(object? snapshot, string key)
+    {
+        return snapshot is IReadOnlyDictionary<string, object?> map && map.TryGetValue(key, out var value)
+            ? value
+            : null;
     }
 
     private static object BuildAdStatus()
