@@ -53,6 +53,7 @@ internal static class ServiceMode
         var handlers = new List<ICommandHandler>
         {
             new HealthSnapshotHandler(),
+            new RdpQuickTestHandler(),
             new TailscaleEnsureConnectedHandler(),
         };
         handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers());
@@ -157,6 +158,37 @@ internal static class ServiceMode
                 os_version = Environment.OSVersion.VersionString,
             };
             return Task.FromResult(new CommandResult("DONE", 0, null, null, post));
+        }
+    }
+
+    private sealed class RdpQuickTestHandler : ICommandHandler
+    {
+        public string Type => "agent.rdp.quick_test";
+
+        public async Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
+        {
+            var collector = new Telemetry.Sections.RdpTelemetrySectionCollector();
+            var rdp = await collector.CollectAsync(
+                new WindowsTelemetryContext(
+                    new AgentBuildMetadata(
+                        AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
+                        BuildId: WindowsDeviceInfo.GetBuildId(),
+                        BuildChannel: WindowsDeviceInfo.GetBuildChannel(),
+                        BootId: Guid.NewGuid().ToString("N"),
+                        SupportedSchemaVersions: AgentSchemaVersions.All),
+                    LastHeartbeat: null),
+                ct).ConfigureAwait(false);
+
+            return new CommandResult(
+                "DONE",
+                0,
+                null,
+                null,
+                new
+                {
+                    source = "agent.rdp.quick_test",
+                    rdp,
+                });
         }
     }
 

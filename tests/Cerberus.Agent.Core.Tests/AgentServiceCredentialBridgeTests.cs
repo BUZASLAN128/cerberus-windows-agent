@@ -91,6 +91,69 @@ public sealed class AgentServiceCredentialBridgeTests
     }
 
     [Fact]
+    public async Task PreserveMachineRegistrationForUserAsync_SyncsMachineScopeBackBeforeServiceUninstall()
+    {
+        var userStore = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "stale-refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local");
+        var machineStore = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "rotated-refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local");
+
+        var preserved = await AgentServiceProvisioning.PreserveMachineRegistrationForUserAsync(
+            machineStore,
+            userStore,
+            machineRegistrationExpected: true,
+            CancellationToken.None);
+        var (_, refreshToken, _, _, _, _) = await userStore.LoadAsync(CancellationToken.None);
+
+        Assert.True(preserved);
+        Assert.Equal("rotated-refresh-token", refreshToken);
+        Assert.Equal(1, userStore.SaveCount);
+        Assert.Equal(0, machineStore.ClearCount);
+    }
+
+    [Fact]
+    public async Task PreserveMachineRegistrationForUserAsync_DoesNothingWhenMachineCredentialMissing()
+    {
+        var userStore = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "stale-refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local");
+        var machineStore = new ThrowingLoadSecretStore();
+
+        var preserved = await AgentServiceProvisioning.PreserveMachineRegistrationForUserAsync(
+            machineStore,
+            userStore,
+            machineRegistrationExpected: false,
+            CancellationToken.None);
+
+        Assert.False(preserved);
+        Assert.Equal(0, userStore.SaveCount);
+    }
+
+    [Fact]
+    public async Task PreserveMachineRegistrationForUserAsync_FailsClosedWhenExpectedMachineCredentialCannotSync()
+    {
+        var userStore = new InMemorySecretStore();
+        var machineStore = new ThrowingLoadSecretStore();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AgentServiceProvisioning.PreserveMachineRegistrationForUserAsync(
+                machineStore,
+                userStore,
+                machineRegistrationExpected: true,
+                CancellationToken.None));
+
+        Assert.Equal(0, userStore.SaveCount);
+    }
+
+    [Fact]
     public async Task MachineScopeSecret_DoesNotAddExplicitInteractiveUserAce()
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
@@ -207,5 +270,29 @@ public sealed class AgentServiceCredentialBridgeTests
             _privateKeyPem = "";
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class ThrowingLoadSecretStore : ISecretStore
+    {
+        public Task SaveAsync(
+            AgentIdentity identity,
+            string refreshToken,
+            string privateKeyPem,
+            string backendUrl,
+            string? tailscaleLoginServer,
+            string? tailscaleAuthkey,
+            CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task<(
+            AgentIdentity Identity,
+            string RefreshToken,
+            string PrivateKeyPem,
+            string BackendUrl,
+            string? TailscaleLoginServer,
+            string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
+            => throw new InvalidOperationException("secret store unavailable");
+
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }

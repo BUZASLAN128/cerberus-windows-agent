@@ -5,6 +5,7 @@ internal sealed record AgentArgs(
     bool Service,
     bool InstallService,
     bool UninstallService,
+    bool UnregisterDevice,
     bool StartService,
     bool StopService,
     bool Register,
@@ -45,6 +46,7 @@ internal static class Args
         var service = Has("--service");
         var install = Has("--install-service");
         var uninstall = Has("--uninstall-service");
+        var unregisterDevice = Has("--unregister-device") || Has("--factory-reset");
         var startService = Has("--start-service");
         var stopService = Has("--stop-service");
         var register = Has("--register");
@@ -58,7 +60,7 @@ internal static class Args
         var applyUpdateTarget = Value("--update-target");
 
         // Default behavior: tray if no mode provided.
-        if (!tray && !service && !install && !uninstall && !startService && !stopService && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
+        if (!tray && !service && !install && !uninstall && !unregisterDevice && !startService && !stopService && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
             tray = true;
 
         return new AgentArgs(
@@ -66,6 +68,7 @@ internal static class Args
             service,
             install,
             uninstall,
+            unregisterDevice,
             startService,
             stopService,
             register,

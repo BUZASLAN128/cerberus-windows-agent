@@ -13,7 +13,6 @@ namespace Cerberus.Agent.Integrations.Ad;
 
 public static partial class LocalUserCommandHandlers
 {
-    private const string Prefix = "cerbtest_";
     private const string MarkerPrefix = "cerberus-managed-local-user:";
     private const int MaxWindowsLocalUsernameLength = 20;
     private const int MaxWindowsLocalDescriptionLength = 256;
@@ -225,13 +224,30 @@ public static partial class LocalUserCommandHandlers
 
         if (!IsAllowedUsername(parsed.Username))
         {
-            failure = Fail("invalid_username", "Local usernames must match the Cerberus lab or managed-user format and fit Windows local account limits.");
+            failure = Fail("invalid_username", "Local usernames must match the Cerberus managed-user format and fit Windows local account limits.");
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(parsed.AuditCorrelationId))
         {
             failure = Fail("missing_audit_correlation", "Local test user commands require an audit correlation id.");
+            return false;
+        }
+
+        if (
+            ManagedUsernameRegex().IsMatch(parsed.Username) &&
+            (
+                string.IsNullOrWhiteSpace(parsed.MarkerId) ||
+                string.IsNullOrWhiteSpace(parsed.ManagedAccountId) ||
+                string.IsNullOrWhiteSpace(parsed.AssignmentId) ||
+                string.IsNullOrWhiteSpace(parsed.MembershipUserId)
+            )
+        )
+        {
+            failure = Fail(
+                "missing_managed_identity",
+                "Managed local user commands require assignment, account, membership, and marker identity.",
+                parsed);
             return false;
         }
 
@@ -253,7 +269,7 @@ public static partial class LocalUserCommandHandlers
 
     private static bool IsAllowedUsername(string? username)
         => IsWindowsSafeUsername(username) &&
-           (SafeLabUsernameRegex().IsMatch(username!) || ManagedUsernameRegex().IsMatch(username!));
+           (LegacyLabUsernameRegex().IsMatch(username!) || ManagedUsernameRegex().IsMatch(username!));
 
     private static bool IsWindowsSafeUsername(string? username)
     {
@@ -340,8 +356,10 @@ public static partial class LocalUserCommandHandlers
 
     private static bool IsManagedByCerberus(DirectoryEntry user, LocalUserPayload payload)
     {
-        if (!ManagedUsernameRegex().IsMatch(payload.Username))
+        if (LegacyLabUsernameRegex().IsMatch(payload.Username))
             return true;
+        if (!ManagedUsernameRegex().IsMatch(payload.Username))
+            return false;
         if (string.IsNullOrWhiteSpace(payload.MarkerId))
             return false;
         var description = Convert.ToString(user.Properties["Description"].Value) ?? string.Empty;
@@ -608,9 +626,9 @@ public static partial class LocalUserCommandHandlers
             });
 
     [GeneratedRegex("^cerbtest_[A-Za-z0-9_-]{1,11}$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafeLabUsernameRegex();
+    private static partial Regex LegacyLabUsernameRegex();
 
-    [GeneratedRegex("^[a-z][a-z0-9]{0,8}_[a-z2-7]{10}$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("^cerb_[a-z][a-z0-9]{4}_[a-z2-7]{8}$", RegexOptions.CultureInvariant)]
     private static partial Regex ManagedUsernameRegex();
 
     [GeneratedRegex("[\"/\\\\\\[\\]:;|=,+*?<>@]", RegexOptions.CultureInvariant)]
@@ -622,6 +640,7 @@ public static partial class LocalUserCommandHandlers
         [property: JsonPropertyName("display_name")] string? DisplayName,
         [property: JsonPropertyName("managed_account_id")] string? ManagedAccountId = null,
         [property: JsonPropertyName("assignment_id")] string? AssignmentId = null,
+        [property: JsonPropertyName("membership_user_id")] string? MembershipUserId = null,
         [property: JsonPropertyName("marker_id")] string? MarkerId = null,
         [property: JsonPropertyName("credential_request_id")] string? CredentialRequestId = null,
         [property: JsonPropertyName("credential_public_key_pem")] string? CredentialPublicKeyPem = null,

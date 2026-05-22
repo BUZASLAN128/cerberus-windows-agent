@@ -4,6 +4,7 @@ internal enum ServiceControlCommand
 {
     Install,
     Uninstall,
+    UnregisterDevice,
     Start,
     Stop,
 }
@@ -34,6 +35,7 @@ internal static class ServiceControlAction
         {
             ServiceControlCommand.Install => "--install-service",
             ServiceControlCommand.Uninstall => "--uninstall-service",
+            ServiceControlCommand.UnregisterDevice => "--unregister-device",
             ServiceControlCommand.Start => "--start-service",
             ServiceControlCommand.Stop => "--stop-service",
             _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),
@@ -54,6 +56,9 @@ internal static class ServiceControlAction
             case ServiceControlCommand.Uninstall:
                 AgentServiceProvisioning.UninstallOrThrow();
                 break;
+            case ServiceControlCommand.UnregisterDevice:
+                AgentServiceProvisioning.UnregisterDeviceOrThrow();
+                break;
             case ServiceControlCommand.Start:
                 ServiceInstaller.StartOrThrow();
                 break;
@@ -70,7 +75,8 @@ internal static class ServiceControlAction
     private static string SuccessMessage(ServiceControlCommand command) => command switch
     {
         ServiceControlCommand.Install => "Service installed and started.",
-        ServiceControlCommand.Uninstall => "Service uninstalled.",
+        ServiceControlCommand.Uninstall => "Service uninstalled. Device registration preserved.",
+        ServiceControlCommand.UnregisterDevice => "Device registration removed.",
         ServiceControlCommand.Start => "Service started.",
         ServiceControlCommand.Stop => "Service stopped.",
         _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),

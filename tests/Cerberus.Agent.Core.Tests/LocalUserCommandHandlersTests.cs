@@ -54,7 +54,7 @@ public sealed class LocalUserCommandHandlersTests
             "cmd-id",
             handler.Type,
             "idem",
-            new { username = "sennurcop_k7m2q6x4aa" });
+            new { username = "cerb_sennu_k7m2q6x4" });
 
         var result = await handler.HandleAsync(command, CancellationToken.None);
 
@@ -90,12 +90,34 @@ public sealed class LocalUserCommandHandlersTests
             "cmd-id",
             handler.Type,
             "idem",
-            new { username = "sennurcop_k7m2q9x409", audit_correlation_id = "audit-id" });
+            new { username = "cerb_sennu_k7m2q9x4", audit_correlation_id = "audit-id" });
 
         var result = await handler.HandleAsync(command, CancellationToken.None);
 
         Assert.Equal("FAILED", result.Status);
         Assert.Contains("local account limits", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateTestUser_RejectsCurrentManagedUsernameWithoutMarkerIdentity()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create_test");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "cerb_sennu_k7m2q6x4",
+                audit_correlation_id = "audit-id",
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("assignment, account, membership, and marker", result.Stderr);
     }
 
     [Fact]
@@ -110,8 +132,12 @@ public sealed class LocalUserCommandHandlersTests
             "idem",
             new
             {
-                username = "sennurcop_k7m2q6x4aa",
+                username = "cerb_sennu_k7m2q6x4",
                 audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
                 credential_public_key_pem = "not-a-pem",
             });
 
@@ -135,8 +161,12 @@ public sealed class LocalUserCommandHandlersTests
             "idem",
             new
             {
-                username = "sennurcop_k7m2q6x4aa",
+                username = "cerb_sennu_k7m2q6x4",
                 audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
                 credential_public_key_pem = publicPem,
             });
 
@@ -160,8 +190,12 @@ public sealed class LocalUserCommandHandlersTests
             "idem",
             new
             {
-                username = "sennurcop_k7m2q6x4aa",
+                username = "cerb_sennu_k7m2q6x4",
                 audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
                 credential_public_key_pem = publicPem,
                 credential_key_fingerprint = new string('0', 64),
             });
@@ -185,8 +219,12 @@ public sealed class LocalUserCommandHandlersTests
             "idem",
             new
             {
-                username = "sennurcop_k7m2q6x4aa",
+                username = "cerb_sennu_k7m2q6x4",
                 audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
                 rdp_credential_profile_id = Guid.NewGuid().ToString(),
                 rdp_tenant_key_id = "tenant-key",
                 rdp_key_version = 1,
@@ -216,8 +254,12 @@ public sealed class LocalUserCommandHandlersTests
             "idem",
             new
             {
-                username = "sennurcop_k7m2q6x4aa",
+                username = "cerb_sennu_k7m2q6x4",
                 audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
                 rdp_credential_profile_id = Guid.NewGuid().ToString(),
                 rdp_tenant_key_id = "tenant-key",
                 rdp_key_version = 1,
@@ -242,7 +284,7 @@ public sealed class LocalUserCommandHandlersTests
         var credentialId = Guid.NewGuid().ToString();
         var aad = $"tenant-id|{credentialId}|rdp|1";
         var payload = LocalUserPayload(
-            username: "sennurcop_k7m2q6x4aa",
+            username: "cerb_sennu_k7m2q6x4",
             credentialProfileId: credentialId,
             tenantKeyId: "tenant-key",
             publicPem: publicPem,
@@ -256,7 +298,7 @@ public sealed class LocalUserCommandHandlersTests
 
         Assert.Equal("password", envelope["auth_type"]);
         Assert.Equal(credentialId, envelope["credential_id"]);
-        Assert.Equal("sennurcop_k7m2q6x4aa", envelope["username_hint"]);
+        Assert.Equal("cerb_sennu_k7m2q6x4", envelope["username_hint"]);
         Assert.Equal("tenant-key", envelope["tenant_key_id"]);
         Assert.Equal("aes256gcm+rsa-oaep", envelope["cipher_alg"]);
         Assert.DoesNotContain("S3cure!Password42", Convert.ToString(envelope["ciphertext"]));
@@ -272,7 +314,7 @@ public sealed class LocalUserCommandHandlersTests
         aes.Decrypt(nonce, ciphertext, tag, plaintext, Encoding.UTF8.GetBytes(aad));
         var json = Encoding.UTF8.GetString(plaintext);
         Assert.Contains("S3cure!Password42", json);
-        Assert.Contains("sennurcop_k7m2q6x4aa", json);
+        Assert.Contains("cerb_sennu_k7m2q6x4", json);
     }
 
     [Fact]
@@ -304,6 +346,18 @@ public sealed class LocalUserCommandHandlersTests
 
         Assert.Equal("cerberus-managed-local-user:123;", marker);
         Assert.DoesNotContain(marker, longerMarkerDescription, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IsAllowedUsername_AcceptsCurrentManagedAndLegacyLabOnly()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("IsAllowedUsername", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, ["cerb_sennu_k7m2q6x4"])));
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, ["cerbtest_unit"])));
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, ["sennurcop_k7m2q6x4aa"])));
     }
 
     [Fact]
@@ -356,6 +410,7 @@ public sealed class LocalUserCommandHandlersTests
                 "Sennur Copcu",
                 "managed-account-id",
                 "assignment-id",
+                "membership-user-id",
                 "marker-id",
                 "credential-request-id",
                 null,

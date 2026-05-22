@@ -92,6 +92,19 @@ internal static class AgentServiceLocalState
 
 internal static class AgentServiceProvisioning
 {
+    internal static async Task<bool> PreserveMachineRegistrationForUserAsync(
+        ISecretStore machineStore,
+        ISecretStore userStore,
+        bool machineRegistrationExpected,
+        CancellationToken ct)
+    {
+        if (!machineRegistrationExpected)
+            return false;
+
+        await AgentServiceCredentialBridge.PromoteAsync(machineStore, userStore, ct).ConfigureAwait(false);
+        return true;
+    }
+
     public static void InstallOrThrow()
     {
         if (!Elevation.IsAdministrator())
@@ -116,9 +129,36 @@ internal static class AgentServiceProvisioning
 
     public static void UninstallOrThrow()
     {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        PreserveMachineRegistrationForUserAsync(
+            new DpapiSecretStore(SecretStoreScope.Machine),
+            new DpapiSecretStore(SecretStoreScope.User),
+            File.Exists(DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine)),
+            cts.Token).GetAwaiter().GetResult();
+
         ServiceInstaller.UninstallOrThrow();
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         AgentServiceLocalState.ClearMachineStateAsync(cts.Token).GetAwaiter().GetResult();
+    }
+
+    public static void UnregisterDeviceOrThrow()
+    {
+        if (Elevation.IsAdministrator())
+        {
+            var state = AgentStatus.GetService();
+            if (state.Installed)
+                ServiceInstaller.UninstallOrThrow();
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            AgentServiceLocalState.ClearMachineStateAsync(cts.Token).GetAwaiter().GetResult();
+            new DpapiSecretStore(SecretStoreScope.User).ClearAsync(cts.Token).GetAwaiter().GetResult();
+            return;
+        }
+
+        if (AgentStatus.GetService().Installed)
+            throw new InvalidOperationException("Service is installed. Run this command as administrator to remove service registration completely.");
+
+        using var userCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        new DpapiSecretStore(SecretStoreScope.User).ClearAsync(userCts.Token).GetAwaiter().GetResult();
     }
 }

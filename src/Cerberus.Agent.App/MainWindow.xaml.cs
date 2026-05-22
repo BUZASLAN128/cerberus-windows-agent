@@ -112,6 +112,7 @@ public partial class MainWindow : Window
 
         InstallSvcBtn.IsEnabled = !_busy && !svc.Installed;
         UninstallSvcBtn.IsEnabled = !_busy && svc.Installed;
+        UnregisterDeviceBtn.IsEnabled = !_busy && registered;
         StartSvcBtn.IsEnabled = !_busy && svc.CanStart;
         StopSvcBtn.IsEnabled = !_busy && svc.CanStop;
         ExportTsBtn.IsEnabled = !_busy;
@@ -195,6 +196,20 @@ public partial class MainWindow : Window
     private void UninstallSvc_Click(object sender, RoutedEventArgs e)
     {
         RunServiceCommand(ServiceControlCommand.Uninstall);
+    }
+
+    private void UnregisterDevice_Click(object sender, RoutedEventArgs e)
+    {
+        var answer = System.Windows.MessageBox.Show(
+            this,
+            "This removes local device registration. You will need to sign in and register again before using the agent.",
+            "Unregister device",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK)
+            return;
+
+        RunServiceCommand(ServiceControlCommand.UnregisterDevice);
     }
 
     private void StartSvc_Click(object sender, RoutedEventArgs e)

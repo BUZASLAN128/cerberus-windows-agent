@@ -95,8 +95,11 @@ internal sealed class TrayHost : IDisposable
         _installService = new ToolStripMenuItem("Install service");
         _installService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Install);
 
-        _uninstallService = new ToolStripMenuItem("Uninstall service");
+        _uninstallService = new ToolStripMenuItem("Remove service");
         _uninstallService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Uninstall);
+
+        var unregisterDevice = new ToolStripMenuItem("Unregister device");
+        unregisterDevice.Click += (_, _) => RunServiceCommand(ServiceControlCommand.UnregisterDevice);
 
         var exit = new ToolStripMenuItem("Exit");
         exit.Click += (_, _) =>
@@ -122,6 +125,7 @@ internal sealed class TrayHost : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_installService);
         menu.Items.Add(_uninstallService);
+        menu.Items.Add(unregisterDevice);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
 

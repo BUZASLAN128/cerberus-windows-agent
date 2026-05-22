@@ -69,7 +69,22 @@ internal static class Program
             try
             {
                 AgentServiceProvisioning.UninstallOrThrow();
-                Console.WriteLine("Service uninstalled.");
+                Console.WriteLine("Service uninstalled. Device registration preserved.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
+        }
+
+        if (parsed.UnregisterDevice)
+        {
+            try
+            {
+                AgentServiceProvisioning.UnregisterDeviceOrThrow();
+                Console.WriteLine("Device registration removed.");
                 return 0;
             }
             catch (Exception ex)

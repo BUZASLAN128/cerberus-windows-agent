@@ -79,7 +79,8 @@ Real-use acceptance must produce or reference:
 - agent self-test JSON,
 - portal API JSON,
 - DB query output for persisted telemetry,
-- Playwright screenshot/trace of the real portal,
+- Playwright screenshot/trace or Codex Chrome plugin screenshot/DOM/console
+  evidence of the real portal,
 - Windows verification output for service/user state.
 
 "Connected" is not proof by itself. Acceptance must separately verify
@@ -96,10 +97,19 @@ checks that match the claim:
 - install/start/stop/uninstall service state when service behavior is touched,
 - heartbeat time and persisted snapshot state from backend/database evidence,
 - portal page or API projection without mocked `route.fulfill()` data,
+- Chrome plugin live portal evidence when it improves local debugging speed,
+  tied to the same real backend/API/DB state being claimed,
 - command readiness and command-result persistence,
 - managed local user create/disable/delete state when user management is
   touched,
 - cleanup/uninstall state and any residual service/user/file artifacts.
+
+Use the Codex Chrome plugin for fast local live portal validation when the
+user's real Chrome profile, open tabs, existing login state, DOM, screenshot,
+or console output is useful. Playwright remains canonical for CI, repeatable
+scripted gates, and `5x`/`10x` close evidence. Do not inspect browser cookies,
+localStorage, passwords, profile secrets, or session stores, and close
+agent-created temporary Chrome tabs after the check.
 
 ## Acceptance Commands
 
