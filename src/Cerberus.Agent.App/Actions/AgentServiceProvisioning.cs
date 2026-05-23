@@ -203,11 +203,19 @@ internal static class AgentServiceProvisioning
         var machineStore = new DpapiSecretStore(SecretStoreScope.Machine);
 
         AgentLegalConsent.RequireCurrentInstallConsent();
+        var userRegistrationAvailable = HasCompleteRegistrationAsync(userStore, cts.Token)
+            .GetAwaiter()
+            .GetResult();
+        if (userRegistrationAvailable)
+            AgentClaimGate.RequireClaimedForServiceInstall(userStore, cts.Token);
+
         var registrationState = EnsureMachineRegistrationForInstallAsync(userStore, machineStore, cts.Token)
             .GetAwaiter()
             .GetResult();
         try
         {
+            if (!userRegistrationAvailable)
+                AgentClaimGate.RequireClaimedForServiceInstall(machineStore, cts.Token);
             AgentLegalConsent.EnsureMachineConsentForInstall();
             ServiceInstaller.InstallOrThrow();
             if (registrationState.PromotedFromUserScope)

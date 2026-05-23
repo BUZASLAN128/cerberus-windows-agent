@@ -258,6 +258,36 @@ public sealed class AgentServiceCredentialBridgeTests
                 CancellationToken.None));
     }
 
+    [Fact]
+    public void AgentClaimGate_IsClaimed_RequiresClaimedStateAndNoClaimRequired()
+    {
+        Assert.True(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: false, registrationState: "claimed")));
+        Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: true, registrationState: "claimed")));
+        Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: true, registrationState: "pending_claim")));
+        Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: false, registrationState: "deactivated")));
+    }
+
+    private static HeartbeatResponse Heartbeat(bool claimRequired, string registrationState) => new(
+        PendingCommands: Array.Empty<AgentCommand>(),
+        NextPollSeconds: 5,
+        ServerTime: DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        ServerTimeUtc: DateTimeOffset.UtcNow.ToString("O"),
+        CommandBatchSize: 0,
+        NextSnapshotSeconds: 60,
+        ConfigVersion: null,
+        LifecycleState: "connected",
+        RegistrationState: registrationState,
+        ClaimRequired: claimRequired,
+        ManifestVersion: null,
+        ManagedAccountManifestHash: null,
+        ManifestFreshUntil: null,
+        RequireManifestBeforeUnlock: true,
+        AgentStatus: registrationState,
+        VersionPolicy: null,
+        Update: null,
+        Revoke: null,
+        Quarantine: null);
+
     private sealed class InMemorySecretStore : ISecretStore
     {
         private AgentIdentity _identity;

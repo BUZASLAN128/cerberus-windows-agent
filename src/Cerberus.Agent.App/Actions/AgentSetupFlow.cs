@@ -1,6 +1,7 @@
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.App.Actions;
 
@@ -42,7 +43,15 @@ internal sealed class AgentSetupFlow
         }
         else
         {
-            progress?.Invoke("Device is already registered. Checking service...");
+            progress?.Invoke("Device is already registered. Checking portal claim...");
+        }
+
+        var currentService = AgentStatus.GetService();
+        if (!currentService.Installed)
+        {
+            await AgentClaimGate
+                .WaitForClaimedAsync(new DpapiSecretStore(SecretStoreScope.User), progress, ct)
+                .ConfigureAwait(false);
         }
 
         var serviceChanged = EnsureServiceInstallOrStart(progress);

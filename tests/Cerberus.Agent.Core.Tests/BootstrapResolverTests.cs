@@ -8,6 +8,24 @@ public sealed class BootstrapResolverTests
     public void ResolveConfiguredBackend_UsesConfiguredBackendWithoutDescriptor()
     {
         var cfg = new RuntimeUiConfig(
+            BackendUrl: "https://backend.example",
+            CasdoorEndpoint: "http://localhost:18000",
+            CasdoorClientId: "client",
+            CasdoorScope: "openid profile email groups",
+            OAuthRedirectPort: 19823,
+            CasdoorClientSecret: null);
+
+        var resolution = BootstrapResolver.ResolveConfiguredBackend(cfg);
+
+        Assert.NotNull(resolution);
+        Assert.Equal("https://backend.example", resolution!.BackendUrl);
+        Assert.Equal(new Uri("https://backend.example"), resolution.Backend);
+    }
+
+    [Fact]
+    public void ResolveConfiguredBackend_AllowsLoopbackHttpForDevBuild()
+    {
+        var cfg = new RuntimeUiConfig(
             BackendUrl: "http://127.0.0.1:8000",
             CasdoorEndpoint: "http://localhost:18000",
             CasdoorClientId: "client",
@@ -19,7 +37,21 @@ public sealed class BootstrapResolverTests
 
         Assert.NotNull(resolution);
         Assert.Equal("http://127.0.0.1:8000", resolution!.BackendUrl);
-        Assert.Equal(new Uri("http://127.0.0.1:8000"), resolution.Backend);
+    }
+
+    [Fact]
+    public void ResolveConfiguredBackend_RejectsPlainHttpNonLoopback()
+    {
+        var cfg = new RuntimeUiConfig(
+            BackendUrl: "http://backend.local",
+            CasdoorEndpoint: "http://localhost:18000",
+            CasdoorClientId: "client",
+            CasdoorScope: "openid profile email groups",
+            OAuthRedirectPort: 19823,
+            CasdoorClientSecret: null);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => BootstrapResolver.ResolveConfiguredBackend(cfg));
+        Assert.Contains("HTTPS", ex.Message);
     }
 
     [Fact]
