@@ -1,4 +1,5 @@
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.Net.Http;
@@ -13,6 +14,8 @@ internal static class RegisterMode
 
         try
         {
+            AgentLegalConsent.RequireCurrentUserConsent();
+
             var uiConfig = UiConfigStore.LoadMergedWithEnv();
             // Single onboarding flow: PKCE via loopback redirect.
             // We intentionally do not support token env/file in this mode to avoid dual paths.

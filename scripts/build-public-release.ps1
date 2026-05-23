@@ -15,6 +15,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($PSVersionTable.PSEdition -ne "Core") {
+  throw "PowerShell 7+ (pwsh) is required for public release signing and manifest generation."
+}
+
 function Write-Step([string]$Message) {
   Write-Host "==> $Message"
 }
@@ -53,7 +57,7 @@ function Invoke-SecretScan([string]$Path) {
   )
   $hits = New-Object System.Collections.Generic.List[string]
   $files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch "\\(bin|obj|out|\.git)\\" }
+    Where-Object { $_.FullName -notmatch "\\(bin|obj|out|\.git|tests)\\" }
   foreach ($file in $files) {
     $text = Get-Content -Raw -LiteralPath $file.FullName -ErrorAction SilentlyContinue
     if ($null -eq $text) { continue }
@@ -141,6 +145,12 @@ dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.App/Cerberus.Agent.App.c
   -o $publishDir
 
 $assetBase = "Cerberus.Agent.App-$Channel-$Version"
+$setupBase = "Cerberus.Agent.Setup-$Channel-$Version"
+$versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
+if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
+  throw "Release version '$Version' must start with a numeric major.minor.patch version for MSI ProductVersion."
+}
+$msiProductVersion = $Matches[1]
 $exe = Join-Path $publishDir "$assetBase.exe"
 Copy-Item (Join-Path $publishDir "Cerberus.Agent.App.exe") $exe -Force
 
@@ -165,15 +175,54 @@ if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
   throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."
 }
 
+Write-Step "Building MSI installer"
+$installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
+$installerProjectDir = Split-Path -Parent $installerProject
+Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $installerProjectDir "bin") -Recurse -Force -ErrorAction SilentlyContinue
+$installerBuildBase = "Cerberus.Agent.Setup"
+dotnet build (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj") `
+  -c $Configuration `
+  -p:Version=$Version `
+  -p:MsiProductVersion=$msiProductVersion `
+  -p:Channel=$Channel `
+  -p:AgentPublishDir=$publishDir `
+  -p:InstallerAssetBase=$installerBuildBase `
+  -p:OutputPath="$publishDir\"
+
+$msi = Join-Path $publishDir "$setupBase.msi"
+$builtMsi = Join-Path $publishDir "$installerBuildBase.msi"
+if ((Test-Path -LiteralPath $builtMsi) -and ($builtMsi -ne $msi)) {
+  Move-Item -LiteralPath $builtMsi -Destination $msi -Force
+}
+if (-not (Test-Path -LiteralPath $msi)) {
+  throw "MSI installer was not produced: $msi"
+}
+
+if ($signed) {
+  Write-Step "Signing MSI installer"
+  $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
+  if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
+  }
+  [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
+  $signtool = Find-SignTool
+  & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $msi
+  & $signtool verify /pa /v $msi
+  Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+}
+
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
 Compress-Archive -Path $exe -DestinationPath $zip -Force
 $exeHash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
 $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+$msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
 @(
   "$exeHash  $assetBase.exe",
-  "$zipHash  $assetBase.zip"
+  "$zipHash  $assetBase.zip",
+  "$msiHash  $setupBase.msi"
 ) | Set-Content -LiteralPath $checksums -Encoding utf8
 
 $sbom = Join-Path $publishDir "$assetBase.sbom.json"
@@ -221,6 +270,15 @@ $gate = [ordered]@{
   channel = $Channel
   authenticode_signature_present = $signed
   checksum_sha256 = $exeHash
+  installer = [ordered]@{
+    name = "$setupBase.msi"
+    checksum_sha256 = $msiHash
+    authenticode_signature_present = $signed
+    eula_consent_source = "msi_eula_dialog"
+    consent_storage = "hkcu_registry_imported_by_agent"
+    launches_agent_arguments = "--tray"
+    powershell_custom_action_present = $false
+  }
   sbom_present = (Test-Path -LiteralPath $sbom)
   provenance_present = (Test-Path -LiteralPath $provenance)
   secret_scan_hits = @()

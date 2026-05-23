@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Security.Principal;
 using System.ServiceProcess;
+using Microsoft.Win32;
 
 namespace Cerberus.Agent.App;
 
@@ -18,9 +20,18 @@ internal static class ServiceInstaller
         var exePath = Process.GetCurrentProcess().MainModule?.FileName
                       ?? throw new InvalidOperationException("Could not determine executable path.");
 
-        // If already exists, no-op.
         if (ServiceExists())
-            return;
+        {
+            var installedExePath = GetInstalledExecutablePath();
+            if (ServiceExecutableMatches(installedExePath, exePath))
+            {
+                StartOrThrow();
+                return;
+            }
+
+            UninstallOrThrow();
+            WaitForServiceDeleted();
+        }
 
         // sc.exe requires a space after '=' in key=value pairs.
         RunSc($"create \"{ServiceName}\" binPath= \"\\\"{exePath}\\\" --service\" start= auto DisplayName= \"{ServiceDisplayName}\"");
@@ -56,6 +67,7 @@ internal static class ServiceInstaller
         }
 
         RunSc($"delete \"{ServiceName}\"");
+        WaitForServiceDeleted();
     }
 
     public static void StartOrThrow()
@@ -95,6 +107,66 @@ internal static class ServiceInstaller
         {
             return false;
         }
+    }
+
+    internal static string? ExtractExecutablePathFromServiceImagePath(string? imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+            return null;
+
+        var value = imagePath.Trim();
+        if (value.StartsWith("\"", StringComparison.Ordinal))
+        {
+            var endQuote = value.IndexOf('"', startIndex: 1);
+            return endQuote > 1 ? value[1..endQuote] : null;
+        }
+
+        var serviceArg = value.IndexOf(" --service", StringComparison.OrdinalIgnoreCase);
+        if (serviceArg > 0)
+            return value[..serviceArg].Trim();
+
+        var firstSpace = value.IndexOf(' ');
+        return firstSpace > 0 ? value[..firstSpace].Trim() : value;
+    }
+
+    internal static bool ServiceExecutableMatches(string? installedExePath, string currentExePath)
+    {
+        if (string.IsNullOrWhiteSpace(installedExePath) || string.IsNullOrWhiteSpace(currentExePath))
+            return false;
+
+        try
+        {
+            installedExePath = Path.GetFullPath(installedExePath.Trim());
+            currentExePath = Path.GetFullPath(currentExePath.Trim());
+        }
+        catch
+        {
+            installedExePath = installedExePath.Trim();
+            currentExePath = currentExePath.Trim();
+        }
+
+        return string.Equals(installedExePath, currentExePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? GetInstalledExecutablePath()
+    {
+        using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{ServiceName}");
+        var imagePath = key?.GetValue("ImagePath") as string;
+        return ExtractExecutablePathFromServiceImagePath(imagePath);
+    }
+
+    private static void WaitForServiceDeleted()
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!ServiceExists())
+                return;
+
+            Thread.Sleep(250);
+        }
+
+        throw new InvalidOperationException("Service deletion did not complete in time.");
     }
 
     private static void RequireAdminOrThrow()

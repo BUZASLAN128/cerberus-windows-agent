@@ -59,6 +59,30 @@ public sealed class AgentApiClientTelemetryTests
         Assert.Equal("/api/v1/agents/a1/probe-results", handler.CapturedRequest!.RequestUri!.AbsolutePath);
     }
 
+    [Fact]
+    public async Task SelfDeactivateAsync_PostsSignedDeactivateEndpoint()
+    {
+        var handler = new CaptureHandler(
+            """{"status":"deactivated","agent_id":"a1","registration_state":"deactivated","revoked_tokens":1}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        var response = await client.SelfDeactivateAsync(
+            new AgentSelfDeactivateRequest(
+                SchemaVersion: "agent.self-deactivate.v1",
+                ReasonCode: "agent_unregister_device",
+                Reason: "unit"),
+            CancellationToken.None);
+
+        Assert.Equal("deactivated", response.Status);
+        Assert.Equal(1, response.RevokedTokens);
+        Assert.Equal("/api/v1/agents/a1/deactivate", handler.CapturedRequest!.RequestUri!.AbsolutePath);
+        Assert.Contains("X-Signature", handler.CapturedRequest.Headers.Select(h => h.Key));
+        using var doc = JsonDocument.Parse(handler.CapturedBody!);
+        Assert.Equal("agent.self-deactivate.v1", doc.RootElement.GetProperty("schema_version").GetString());
+        Assert.Equal("agent_unregister_device", doc.RootElement.GetProperty("reason_code").GetString());
+    }
+
     private static AgentBuildMetadata Metadata() => new(
         AgentVersion: "1.2.3",
         BuildId: "build-1",
@@ -68,6 +92,14 @@ public sealed class AgentApiClientTelemetryTests
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
+        private readonly string _responseBody;
+
+        public CaptureHandler(string? responseBody = null)
+        {
+            _responseBody = responseBody
+                ?? """{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":["identity"]}""";
+        }
+
         public HttpRequestMessage? CapturedRequest { get; private set; }
         public string? CapturedBody { get; private set; }
 
@@ -80,7 +112,7 @@ public sealed class AgentApiClientTelemetryTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
-                    """{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":["identity"]}""",
+                    _responseBody,
                     Encoding.UTF8,
                     "application/json"),
             };

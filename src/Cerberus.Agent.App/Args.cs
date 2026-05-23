@@ -8,6 +8,8 @@ internal sealed record AgentArgs(
     bool UnregisterDevice,
     bool StartService,
     bool StopService,
+    bool AcceptEula,
+    bool Setup,
     bool Register,
     bool HeartbeatOnce,
     bool ExportTailscaleUp,
@@ -49,6 +51,8 @@ internal static class Args
         var unregisterDevice = Has("--unregister-device") || Has("--factory-reset");
         var startService = Has("--start-service");
         var stopService = Has("--stop-service");
+        var acceptEula = Has("--accept-eula") || Has("--accept-license");
+        var setup = Has("--setup") || Has("--install-agent") || Has("--onboard");
         var register = Has("--register");
         var heartbeatOnce = Has("--heartbeat-once");
         var exportTailscaleUp = Has("--export-tailscale-up");
@@ -60,7 +64,7 @@ internal static class Args
         var applyUpdateTarget = Value("--update-target");
 
         // Default behavior: tray if no mode provided.
-        if (!tray && !service && !install && !uninstall && !unregisterDevice && !startService && !stopService && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
+        if (!tray && !service && !install && !uninstall && !unregisterDevice && !startService && !stopService && !acceptEula && !setup && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
             tray = true;
 
         return new AgentArgs(
@@ -71,6 +75,8 @@ internal static class Args
             unregisterDevice,
             startService,
             stopService,
+            acceptEula,
+            setup,
             register,
             heartbeatOnce,
             exportTailscaleUp,

@@ -20,6 +20,8 @@ param(
   [int]$AcceptanceRepeat = 1,
   [switch]$ReinstallBetweenRepeats,
   [switch]$RestartServiceForEachCommand,
+  [ValidateRange(0, 120)]
+  [int]$RestartServiceCooldownSeconds = 0,
   [ValidateRange(30, 900)]
   [int]$CommandTimeoutSeconds = 240,
   [ValidateRange(1, 60)]
@@ -471,8 +473,39 @@ function Wait-PortalServiceProjection {
 function Assert-LabUsername {
   param([string]$Value)
 
-  if ($Value -notmatch '^cerbtest_[a-z0-9_]{1,11}$') {
-    throw "Username must match cerbtest_[a-z0-9_]{1,11}; refusing to mutate arbitrary local users."
+  if ($Value -notmatch '^cerb_[a-z][a-z0-9]{4}_[a-z2-7]{8}$') {
+    throw "Username must match cerb_<base5>_<hash8>; refusing to mutate arbitrary local users."
+  }
+}
+
+function Get-RemoteDesktopUsersGroupName {
+  try {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-555")
+    $account = $sid.Translate([System.Security.Principal.NTAccount]).Value
+    return ($account -split "\\")[-1]
+  }
+  catch {
+    return "Remote Desktop Users"
+  }
+}
+
+function Test-RemoteDesktopUsersMember {
+  param([string]$Name)
+
+  try {
+    $groupName = Get-RemoteDesktopUsersGroupName
+    $members = Get-LocalGroupMember -Group $groupName -ErrorAction Stop
+    foreach ($member in $members) {
+      $memberName = [string]$member.Name
+      if ($memberName.Equals($Name, [System.StringComparison]::OrdinalIgnoreCase) -or
+          $memberName.EndsWith("\$Name", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+      }
+    }
+    return $false
+  }
+  catch {
+    return $null
   }
 }
 
@@ -491,6 +524,10 @@ function Get-LocalUserState {
     exists = $true
     enabled = [bool]$user.Enabled
     description = [string]$user.Description
+    password_cannot_change = -not [bool]$user.UserMayChangePassword
+    password_never_expires = $null -eq $user.PasswordExpires
+    password_required = [bool]$user.PasswordRequired
+    remote_desktop_users_member = Test-RemoteDesktopUsersMember -Name $Name
   }
 }
 
@@ -549,20 +586,7 @@ function Enqueue-LocalUserCommand {
     [string]$Name
   )
 
-  $requestId = "live-$Action-$([Guid]::NewGuid().ToString('N'))"
-  $body = @{
-    action = $Action
-    username = $Name
-    reason = "Phase 7 live service acceptance"
-    client_request_id = $requestId
-  }
-  $response = Invoke-PortalJson `
-    -Method POST `
-    -Path "/api/v1/portal/agents/$AgentId/commands/local-user-test" `
-    -Body $body
-  $path = Write-ArtifactJson -Name "portal-command-$Action.json" -Value $response
-  Write-Host "portal-command[$Action] -> $path"
-  return $response
+  throw "Direct local-user lab command lifecycle is retired. Use -RunManagedAssignmentLifecycle for production managed-user acceptance."
 }
 
 function New-ClientRequestId {
@@ -602,6 +626,9 @@ function Enqueue-ManagedUserCommand {
   $body = @{
     reason = "Phase 7 live managed assignment acceptance"
     client_request_id = New-ClientRequestId -Prefix $Action
+  }
+  if ($Action -eq "delete") {
+    $body["confirm_delete"] = $true
   }
   $response = Invoke-PortalJson `
     -Method POST `
@@ -657,10 +684,18 @@ function Restart-ServiceForCommandPickup {
   if (-not $RestartServiceForEachCommand) {
     return
   }
+  if ($RestartServiceCooldownSeconds -gt 0 -and $null -ne $script:LastCommandRestartAt) {
+    $elapsed = ((Get-Date) - $script:LastCommandRestartAt).TotalSeconds
+    $remaining = $RestartServiceCooldownSeconds - [int][Math]::Floor($elapsed)
+    if ($remaining -gt 0) {
+      Start-Sleep -Seconds $remaining
+    }
+  }
   Invoke-AgentExe -Arguments @("--stop-service") -FailureMessage "Service stop failed"
   Wait-ServiceStatus -Expected "Stopped" -TimeoutSeconds 60
   Invoke-AgentExe -Arguments @("--start-service") -FailureMessage "Service start failed"
   Wait-ServiceStatus -Expected "Running" -TimeoutSeconds 60
+  $script:LastCommandRestartAt = Get-Date
   Wait-PortalServiceProjection -Phase "after-command-restart" -ExpectedInstalled $true -ExpectedRunning $true
 }
 
@@ -743,6 +778,7 @@ function Run-ManagedUserAction {
 }
 
 function Run-LocalUserLifecycle {
+  throw "Direct local-user lab lifecycle is retired. Use managed assignment lifecycle."
   Assert-LabUsername -Value $Username
   if ([string]::IsNullOrWhiteSpace($AgentId)) {
     throw "AgentId is required for local-user lifecycle acceptance."
@@ -813,6 +849,15 @@ function Run-ManagedAssignmentLifecycle {
     if (-not $createdManaged.exists -or -not $createdManaged.enabled) {
       throw "Managed local user was not created/enabled as expected."
     }
+    if ($createdManaged.remote_desktop_users_member -ne $true) {
+      throw "Managed local user was not added to Remote Desktop Users."
+    }
+    if ($createdManaged.password_cannot_change -ne $true) {
+      throw "Managed local user may still change the managed password."
+    }
+    if ($createdManaged.password_never_expires -ne $true) {
+      throw "Managed local user password is not marked as never expiring."
+    }
 
     if ($RotateManagedPassword) {
       Run-ManagedUserAction -Action "rotate-password" -AssignmentId $assignmentId | Out-Null
@@ -820,12 +865,24 @@ function Run-ManagedAssignmentLifecycle {
       if (-not $rotatedManaged.exists -or -not $rotatedManaged.enabled) {
         throw "Managed local user was not present/enabled after password rotation."
       }
+      if ($rotatedManaged.remote_desktop_users_member -ne $true) {
+        throw "Managed local user lost Remote Desktop Users membership after password rotation."
+      }
+      if ($rotatedManaged.password_cannot_change -ne $true) {
+        throw "Managed local user may still change the managed password after rotation."
+      }
+      if ($rotatedManaged.password_never_expires -ne $true) {
+        throw "Managed local user password is not marked as never expiring after rotation."
+      }
     }
 
     Run-ManagedUserAction -Action "disable" -AssignmentId $assignmentId | Out-Null
     $disabledManaged = Write-LocalUserState -Phase "managed-after-disable" -Name $managedUsername
     if (-not $disabledManaged.exists -or $disabledManaged.enabled) {
       throw "Managed local user was not disabled as expected."
+    }
+    if ($disabledManaged.remote_desktop_users_member -eq $true) {
+      throw "Managed local user remained in Remote Desktop Users after disable."
     }
 
     Run-ManagedUserAction -Action "delete" -AssignmentId $assignmentId | Out-Null
@@ -868,7 +925,9 @@ try {
     throw "Agent exe not found: $ExePath"
   }
   if ([string]::IsNullOrWhiteSpace($Username)) {
-    $Username = "cerbtest_$((Get-Random -Minimum 100000 -Maximum 999999))"
+    $alphabet = "234567abcdefghijklmnopqrstuvwxyz".ToCharArray()
+    $suffix = -join (1..8 | ForEach-Object { $alphabet[(Get-Random -Minimum 0 -Maximum $alphabet.Length)] })
+    $Username = "cerb_livea_$suffix"
   }
   $Username = $Username.Trim().ToLowerInvariant()
 
@@ -891,6 +950,7 @@ try {
     acceptance_repeat = $AcceptanceRepeat
     reinstall_between_repeats = [bool]$ReinstallBetweenRepeats
     restart_service_for_each_command = [bool]$RestartServiceForEachCommand
+    restart_service_cooldown_seconds = $RestartServiceCooldownSeconds
     service_projection_check = -not [bool]$SkipServiceProjectionCheck
     service_projection_timeout_seconds = $ServiceProjectionTimeoutSeconds
     preflight_only = [bool]$PreflightOnly

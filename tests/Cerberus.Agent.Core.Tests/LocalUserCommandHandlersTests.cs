@@ -9,11 +9,11 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class LocalUserCommandHandlersTests
 {
     [Fact]
-    public async Task CreateTestUser_RejectsUsernameWithoutLabPrefix()
+    public async Task CreateManagedUser_RejectsUsernameWithoutManagedPrefix()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -27,29 +27,11 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task DeleteTestUser_RejectsMissingAuditCorrelation()
+    public async Task DeleteManagedUser_RejectsMissingAuditCorrelation()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.delete_test");
-        var command = new AgentCommand(
-            "cmd-id",
-            handler.Type,
-            "idem",
-            new { username = "cerbtest_unit" });
-
-        var result = await handler.HandleAsync(command, CancellationToken.None);
-
-        Assert.Equal("FAILED", result.Status);
-        Assert.Contains("audit correlation", result.Stderr);
-    }
-
-    [Fact]
-    public async Task CreateTestUser_AcceptsManagedUsernameShapeBeforeAuditGate()
-    {
-        var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.delete");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -63,16 +45,34 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsUsernameOverWindowsLocalLimit()
+    public async Task CreateManagedUser_AcceptsManagedUsernameShapeBeforeAuditGate()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
             "idem",
-            new { username = "cerbtest_abcdefghijkl", audit_correlation_id = "audit-id" });
+            new { username = "cerb_sennu_k7m2q6x4" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("audit correlation", result.Stderr);
+    }
+
+    [Fact]
+    public async Task CreateManagedUser_RejectsUsernameOverWindowsLocalLimit()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "cerb_sennu_k7m2q6x4x", audit_correlation_id = "audit-id" });
 
         var result = await handler.HandleAsync(command, CancellationToken.None);
 
@@ -81,11 +81,11 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsManagedUsernameWithInvalidBase32Suffix()
+    public async Task CreateManagedUser_RejectsManagedUsernameWithInvalidBase32Suffix()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -99,11 +99,11 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsCurrentManagedUsernameWithoutMarkerIdentity()
+    public async Task CreateManagedUser_RejectsCurrentManagedUsernameWithoutMarkerIdentity()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -121,11 +121,11 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsInvalidCredentialPublicKeyBeforeMutation()
+    public async Task CreateManagedUser_RejectsInvalidCredentialPublicKeyBeforeMutation()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -148,13 +148,13 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsWeakCredentialPublicKeyBeforeMutation()
+    public async Task CreateManagedUser_RejectsWeakCredentialPublicKeyBeforeMutation()
     {
         using var rsa = RSA.Create(1024);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -177,13 +177,13 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsCredentialPublicKeyFingerprintMismatchBeforeMutation()
+    public async Task CreateManagedUser_RejectsCredentialPublicKeyFingerprintMismatchBeforeMutation()
     {
         using var rsa = RSA.Create(2048);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -207,12 +207,12 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsInvalidRdpPublicKeyBeforeMutation()
+    public async Task CreateManagedUser_RejectsInvalidRdpPublicKeyBeforeMutation()
     {
         var aad = "tenant|credential|rdp|1";
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -241,13 +241,13 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
-    public async Task CreateTestUser_RejectsRdpAadHashMismatchBeforeMutation()
+    public async Task CreateManagedUser_RejectsRdpAadHashMismatchBeforeMutation()
     {
         using var rsa = RSA.Create(2048);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
-            .Single(item => item.Type == "windows.local_user.create_test");
+            .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
             handler.Type,
@@ -342,21 +342,57 @@ public sealed class LocalUserCommandHandlersTests
         Assert.NotNull(method);
 
         var marker = Assert.IsType<string>(method.Invoke(null, ["123"]));
+        var prefixedMarker = Assert.IsType<string>(method.Invoke(null, ["cerberus-managed-local-user:123"]));
         var longerMarkerDescription = "cerberus-managed-local-user:12345; assignment=a; account=b";
 
         Assert.Equal("cerberus-managed-local-user:123;", marker);
+        Assert.Equal(marker, prefixedMarker);
         Assert.DoesNotContain(marker, longerMarkerDescription, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void IsAllowedUsername_AcceptsCurrentManagedAndLegacyLabOnly()
+    public void ManagedDescription_DoesNotExposeInternalMarkerOrIds()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("ManagedDescription", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var payload = LocalUserPayload(
+            "cerb_sennu_k7m2q6x4",
+            "credential-profile-id",
+            "tenant-key-id",
+            "public-key",
+            "aad");
+        var description = Assert.IsType<string>(method.Invoke(null, [payload]));
+
+        Assert.Equal("Cerberus managed local account.", description);
+        Assert.DoesNotContain("cerberus-managed-local-user", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("assignment-id", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("account-id", description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApplyManagedPasswordPolicyFlags_PreventsUserChangeAndExpiry()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("ApplyManagedPasswordPolicyFlags", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var flags = Assert.IsType<int>(method.Invoke(null, [0]));
+
+        Assert.True((flags & 0x0040) != 0);
+        Assert.True((flags & 0x10000) != 0);
+    }
+
+    [Fact]
+    public void IsAllowedUsername_AcceptsOnlyCurrentManagedShape()
     {
         var method = typeof(LocalUserCommandHandlers)
             .GetMethod("IsAllowedUsername", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
 
         Assert.True(Assert.IsType<bool>(method.Invoke(null, ["cerb_sennu_k7m2q6x4"])));
-        Assert.True(Assert.IsType<bool>(method.Invoke(null, ["cerbtest_unit"])));
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, ["cerbtest_unit"])));
         Assert.False(Assert.IsType<bool>(method.Invoke(null, ["sennurcop_k7m2q6x4aa"])));
     }
 

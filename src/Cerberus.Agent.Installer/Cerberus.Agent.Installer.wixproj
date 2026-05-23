@@ -1,0 +1,26 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <AcceptEula>wix7</AcceptEula>
+    <Version Condition="'$(Version)' == ''">0.0.0</Version>
+    <MsiProductVersion Condition="'$(MsiProductVersion)' == ''">$(Version)</MsiProductVersion>
+    <Channel Condition="'$(Channel)' == ''">preview</Channel>
+    <AgentPublishDir Condition="'$(AgentPublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\out\public-release\publish</AgentPublishDir>
+    <InstallerAssetBase Condition="'$(InstallerAssetBase)' == ''">Cerberus.Agent.Setup-$(Channel)-$(Version)</InstallerAssetBase>
+    <OutputName>$(InstallerAssetBase)</OutputName>
+    <SuppressIces>ICE91</SuppressIces>
+    <DefineConstants>
+      AgentPublishDir=$(AgentPublishDir);
+      ReleaseVersion=$(Version);
+      MsiProductVersion=$(MsiProductVersion);
+      ReleaseChannel=$(Channel);
+      EulaVersion=agent-eula-2026-05-23.v1;
+      PrivacyNoticeVersion=agent-privacy-2026-05-23.v1;
+      SecurityDisclosureVersion=agent-security-2026-05-23.v1
+    </DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="7.0.0" />
+  </ItemGroup>
+</Project>

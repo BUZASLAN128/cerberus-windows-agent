@@ -59,6 +59,7 @@ jobs:
           $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
           $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
           $assetBase = "Cerberus.Agent.App-$channel-$cleanVersion"
+          $setupBase = "Cerberus.Agent.Setup-$channel-$cleanVersion"
           $notes = "${{ inputs.release_notes }}"
           if ([string]::IsNullOrWhiteSpace($notes)) {
             $notes = "Public Cerberus Windows Agent $channel release."
@@ -67,6 +68,7 @@ jobs:
           $notes | Set-Content -Path out/release-notes.md -Encoding utf8
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "setup_base=$setupBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "make_latest=$(if ($channel -eq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -89,9 +91,34 @@ jobs:
           artifacts: |
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.exe
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.zip
+            out/public-release/publish/${{ steps.meta.outputs.setup_base }}.msi
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sha256
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sbom.json
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.provenance.json
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.release-gate.json
             out/public-release/publish/${{ steps.meta.outputs.asset_base }}.update-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update preview latest release
+        if: ${{ inputs.channel == 'preview' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete preview-latest --yes --cleanup-tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "preview-latest was not present or could not be deleted; continuing with create."
+            $global:LASTEXITCODE = 0
+          }
+          gh release create preview-latest `
+            out/public-release/publish/${{ steps.meta.outputs.setup_base }}.msi `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.exe `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.zip `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sha256 `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sbom.json `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.provenance.json `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.release-gate.json `
+            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.update-manifest.json `
+            --title "Cerberus Windows Agent preview-latest" `
+            --notes-file out/release-notes.md `
+            --prerelease

@@ -1,4 +1,5 @@
 using Cerberus.Agent.App.Actions;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Observability;
 using System.Drawing;
 using System.Windows;
@@ -38,9 +39,9 @@ internal sealed class TrayHost : IDisposable
         _registeredStatus = new ToolStripMenuItem("Registered: ...") { Enabled = false };
 
         var open = new ToolStripMenuItem("Open") { };
-        open.Click += (_, _) => ShowWindow();
+        open.Click += (_, _) => ShowWindow(centerOnScreen: false);
 
-        _onboard = new ToolStripMenuItem("Sign in and register");
+        _onboard = new ToolStripMenuItem("Set up this device");
         _onboard.Click += async (_, _) => await OnboardAsync();
 
         var exportTs = new ToolStripMenuItem("Export tailscale up cmd");
@@ -140,7 +141,7 @@ internal sealed class TrayHost : IDisposable
         _icon.MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Left)
-                ShowWindow();
+                ShowWindow(centerOnScreen: false);
         };
 
         _timer = new DispatcherTimer(DispatcherPriority.Background)
@@ -161,6 +162,7 @@ internal sealed class TrayHost : IDisposable
         var svc = await svcTask;
         var registered = await registeredTask;
         var ts = await tsTask;
+        var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
         _serviceStatus.Text = $"Service: {svc.Text}";
         _tailscaleStatus.Text = $"Tailscale: {ts.Text}";
@@ -168,7 +170,7 @@ internal sealed class TrayHost : IDisposable
 
         var cfg = UiConfigStore.LoadMergedWithEnv();
         var cfgOk = AgentOnboardingFlow.IsConfigReady(cfg);
-        _onboard.Enabled = !_onboarding && !registered && cfgOk;
+        _onboard.Enabled = !_onboarding && !setupComplete && cfgOk;
         _startService.Enabled = svc.CanStart;
         _stopService.Enabled = svc.CanStop;
         _installService.Enabled = !svc.Installed;
@@ -177,7 +179,12 @@ internal sealed class TrayHost : IDisposable
         _icon.Text = TrimTooltip($"CERBERUS Agent | {svc.Short} | {ts.Short} | reg={(registered ? "yes" : "no")}");
     }
 
-    private void ShowWindow()
+    public void ShowSetupWindow()
+    {
+        ShowWindow(centerOnScreen: true);
+    }
+
+    private void ShowWindow(bool centerOnScreen)
     {
         // NotifyIcon events are WinForms-threaded; marshal all WPF window ops onto the WPF Dispatcher.
         System.Windows.Application.Current.Dispatcher.Invoke(() =>
@@ -195,21 +202,42 @@ internal sealed class TrayHost : IDisposable
 
             if (_window.IsVisible)
             {
-                _window.Hide();
-                return;
+                if (!centerOnScreen)
+                {
+                    _window.Hide();
+                    return;
+                }
             }
 
             // Prevent immediate auto-hide caused by transient focus changes during Show/Position/Activate.
             _window.SetIgnoreDeactivateFor(TimeSpan.FromMilliseconds(900));
+            _window.ShowInTaskbar = centerOnScreen;
 
             _window.Show();
-            PositionFlyout(_window);
+            if (centerOnScreen)
+                CenterWindow(_window);
+            else
+                PositionFlyout(_window);
 
             _window.WindowState = WindowState.Normal;
             _window.Activate();
             _window.Topmost = true; // bring to front reliably
             _window.Topmost = false;
             _window.Focus();
+        });
+    }
+
+    private static void CenterWindow(Window window)
+    {
+        window.Dispatcher.Invoke(() =>
+        {
+            window.UpdateLayout();
+            var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+            var wa = screen.WorkingArea;
+            var width = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
+            var height = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
+            window.Left = wa.Left + Math.Max(0, (wa.Width - width) / 2);
+            window.Top = wa.Top + Math.Max(0, (wa.Height - height) / 2);
         });
     }
 
@@ -249,9 +277,12 @@ internal sealed class TrayHost : IDisposable
     {
         if (_onboarding)
             return;
-        if (AgentStatus.IsRegistered())
+        var currentService = AgentStatus.GetService();
+        if (AgentStatus.IsRegistered() &&
+            currentService.Installed &&
+            string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
         {
-            ShowBalloon("Sign-in", "Already registered. Use Open for details.", ToolTipIcon.Info);
+            ShowBalloon("Setup", "Already ready. Device is registered and service is running.", ToolTipIcon.Info);
             return;
         }
 
@@ -265,25 +296,28 @@ internal sealed class TrayHost : IDisposable
             var cfg = UiConfigStore.LoadMergedWithEnv();
             if (!AgentOnboardingFlow.IsConfigReady(cfg))
             {
-                ShowBalloon("Sign-in", "Not configured. Contact your administrator.", ToolTipIcon.Error);
+                ShowBalloon("Setup", "Not configured. Contact your administrator.", ToolTipIcon.Error);
                 return;
             }
 
-            ShowBalloon("Sign-in", "Opening browser for SSO sign-in...", ToolTipIcon.Info);
-            var result = await new AgentOnboardingFlow().RunAsync(
+            if (!LegalConsentPrompt.EnsureUserConsent(null, "sign-in and device registration"))
+            {
+                ShowBalloon("Setup", "Legal terms were not accepted.", ToolTipIcon.Warning);
+                return;
+            }
+
+            ShowBalloon("Setup", "Starting setup. Browser and UAC may open.", ToolTipIcon.Info);
+            var result = await new AgentSetupFlow().RunAsync(
                 cfg,
                 log,
                 progress: message => log.Info(message),
                 ct: CancellationToken.None);
 
-            if (result.TailscaleCommandPath is not null)
-                ShowBalloon("Sign-in", $"Registered. Wrote tailscale cmd: {result.TailscaleCommandPath}", ToolTipIcon.Info);
-            else
-                ShowBalloon("Sign-in", $"Registered. (No tailscale cmd.)", ToolTipIcon.Info);
+            ShowBalloon("Setup", result.Message, ToolTipIcon.Info);
         }
         catch (Exception ex)
         {
-            ShowBalloon("Sign-in", Sanitizer.Redact(ex.Message), ToolTipIcon.Error);
+            ShowBalloon("Setup", Sanitizer.Redact(ex.Message), ToolTipIcon.Error);
         }
         finally
         {
@@ -294,6 +328,13 @@ internal sealed class TrayHost : IDisposable
 
     private void RunServiceCommand(ServiceControlCommand command)
     {
+        if (command == ServiceControlCommand.Install &&
+            !LegalConsentPrompt.EnsureUserConsent(null, "service installation"))
+        {
+            ShowBalloon("Service", "Legal terms were not accepted.", ToolTipIcon.Warning);
+            return;
+        }
+
         var result = ServiceControlAction.Run(command);
         ShowBalloon("Service", result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
     }

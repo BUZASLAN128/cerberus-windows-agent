@@ -1,9 +1,12 @@
 using Cerberus.Agent.App.Actions;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Threading;
+using MediaColor = System.Windows.Media.Color;
 
 namespace Cerberus.Agent.App;
 
@@ -90,16 +93,32 @@ public partial class MainWindow : Window
         var svc = await svcTask;
         var registered = await registeredTask;
         var ts = await tsTask;
+        var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
         ServiceValue.Text = svc.Text;
         TailscaleValue.Text = ts.Text;
         RegisteredValue.Text = registered ? "yes" : "no";
 
         var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
-        OnboardBtn.IsEnabled = !_busy && !registered && cfgOk;
-        if (registered)
+        ReadinessValue.Text = setupComplete ? "Ready to connect" : "Setup required";
+        ReadinessDetail.Text = setupComplete
+            ? "This device is registered and the Cerberus Windows service is running."
+            : "Run setup to sign in, register this device, and install the Windows service.";
+        SetReadinessTone(setupComplete);
+
+        OnboardBtn.Content = setupComplete ? "Ready" : "Start setup";
+        OnboardBtn.IsEnabled = !_busy && !setupComplete && cfgOk;
+        if (setupComplete)
         {
-            OnboardHint.Text = "Already registered.";
+            OnboardHint.Text = "Ready. Device is registered and service is running.";
+        }
+        else if (registered && !svc.Installed)
+        {
+            OnboardHint.Text = "Registered. Finish setup to install the service.";
+        }
+        else if (registered)
+        {
+            OnboardHint.Text = $"Registered. Service status: {svc.Text}.";
         }
         else if (!cfgOk)
         {
@@ -107,7 +126,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            OnboardHint.Text = "Not registered yet.";
+            OnboardHint.Text = "Not set up yet.";
         }
 
         InstallSvcBtn.IsEnabled = !_busy && !svc.Installed;
@@ -137,9 +156,12 @@ public partial class MainWindow : Window
     {
         if (_busy)
             return;
-        if (AgentStatus.IsRegistered())
+        var currentService = AgentStatus.GetService();
+        if (AgentStatus.IsRegistered() &&
+            currentService.Installed &&
+            string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
         {
-            Log("Already registered.");
+            Log("Already ready. Device is registered and service is running.");
             await RefreshAsync();
             return;
         }
@@ -148,7 +170,11 @@ public partial class MainWindow : Window
         try
         {
             await RefreshAsync();
-            Log("Starting SSO sign-in (browser will open)...");
+            if (!LegalConsentPrompt.EnsureUserConsent(this, "sign-in and device registration"))
+            {
+                Log("Onboarding blocked: legal terms were not accepted.");
+                return;
+            }
 
             _config = UiConfigStore.LoadMergedWithEnv();
             if (!AgentOnboardingFlow.IsConfigReady(_config))
@@ -164,18 +190,13 @@ public partial class MainWindow : Window
             }
 
             using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
-            var result = await new AgentOnboardingFlow().RunAsync(
+            var result = await new AgentSetupFlow().RunAsync(
                 _config,
                 log,
                 progress: Log,
                 ct: CancellationToken.None);
 
-            Log($"Registered. agent_id={result.Identity.AgentId} tenant_id={result.Identity.TenantId}");
-
-            if (result.TailscaleCommandPath is not null)
-                Log($"Wrote tailscale up cmd: {result.TailscaleCommandPath}");
-            else
-                Log("No tailscale cmd exported.");
+            Log(result.Message);
         }
         catch (Exception ex)
         {
@@ -188,8 +209,31 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetReadinessTone(bool ready)
+    {
+        if (ready)
+        {
+            ReadinessPanel.Background = new SolidColorBrush(MediaColor.FromRgb(240, 253, 244));
+            ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(187, 247, 208));
+            ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(20, 83, 45));
+            ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(22, 101, 52));
+            return;
+        }
+
+        ReadinessPanel.Background = new SolidColorBrush(MediaColor.FromRgb(255, 251, 235));
+        ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(253, 230, 138));
+        ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(120, 53, 15));
+        ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
+    }
+
     private void InstallSvc_Click(object sender, RoutedEventArgs e)
     {
+        if (!LegalConsentPrompt.EnsureUserConsent(this, "service installation"))
+        {
+            Log("Service install blocked: legal terms were not accepted.");
+            return;
+        }
+
         RunServiceCommand(ServiceControlCommand.Install);
     }
 

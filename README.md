@@ -184,9 +184,14 @@ Required release inputs:
 - `AGENT_RELEASE_ARTIFACT_BASE_URL`: Cerberus-owned release artifact URL prefix.
 - Optional: `TimestampUrl`, defaults to `http://timestamp.digicert.com`.
 
+Local release builds require PowerShell 7+ (`pwsh`) because update manifest signing uses modern .NET PEM APIs. GitHub Actions already runs the release workflow with `pwsh`.
+
+Installer builds use WiX Toolset v7 with explicit OSMF EULA acceptance (`AcceptEula=wix7`). This is the installer toolchain license decision, separate from the Cerberus Agent EULA shown to customers during MSI install.
+
 Release gate output includes:
 
 - signed `.exe`
+- signed `.msi` installer
 - `.zip`
 - `.sha256`
 - `.sbom.json`
@@ -195,6 +200,18 @@ Release gate output includes:
 - `.update-manifest.json`
 
 Unsigned public releases are denied. Tenant-controlled backend, update URL, signing key, channel, or artifact source is not supported.
+
+### Preview MSI Customer Flow
+
+Preview customer installs use the MSI asset from the mutable `preview-latest` GitHub release:
+
+1. Download `Cerberus.Agent.Setup-preview-<version>.msi`.
+2. Accept the MSI EULA dialog.
+3. Complete the per-user install.
+4. The installer opens `Cerberus.Agent.App.exe --tray`.
+5. The setup UI handles PKCE login, registration, UAC service install/start, heartbeat, and ready state.
+
+The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKCU\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
 
 ## 8) Local Smoke
 
@@ -296,20 +313,46 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 
 ### `auto-publish-exe.yml`
 
-- Runs automatically on every `push` to `dev` and `develop`.
-- For `main`, run manually with `workflow_dispatch`.
-- Calculates release metadata and semantic version:
-  - `dev/develop`: auto prerelease version `0.1.{run}-{branch}.{sha8}`
-  - `main` manual: uses provided `release_version` input (e.g. `1.2.0`)
+- Runs manually with `workflow_dispatch`.
+- Uses provided `release_version`, `channel`, and optional release notes.
 - Publishes self-contained EXE with computed `Version`.
+- Builds the WiX MSI installer:
+  - package name: `Cerberus.Agent.Setup-<channel>-<version>.msi`
+  - per-user install under local app data
+  - mandatory MSI EULA dialog
+  - registry-based EULA consent metadata, imported by the agent
+  - no PowerShell custom action
+  - post-install launch: `Cerberus.Agent.App.exe --tray`
 - Produces full release package:
   - `*.exe`
+  - `*.msi`
   - `*.zip`
   - `*.sha256`
+  - `*.sbom.json`
+  - `*.provenance.json`
+  - `*.release-gate.json`
+  - `*.update-manifest.json`
 - Uploads package files as workflow artifacts.
-- Creates/updates GitHub release with package assets and notes.
+- Creates a versioned GitHub release with package assets and notes.
+- For `preview` channel, also refreshes the mutable `preview-latest` release pointer.
 
-This means every update on `dev/develop` automatically gets a versioned prerelease package, while `main` is manual and version-controlled.
+Manual preview dispatch:
+
+```powershell
+gh workflow run auto-publish-exe.yml `
+  --ref dev `
+  -f release_version=0.2.0-preview.1 `
+  -f channel=preview `
+  -f release_notes="Preview MSI installer with one-click setup UI"
+```
+
+Follow-up:
+
+```powershell
+gh run list --workflow auto-publish-exe.yml --limit 5
+gh run watch <run-id>
+gh release view preview-latest --web
+```
 
 ## 10) Branch Policy
 

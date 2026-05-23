@@ -4,12 +4,19 @@ param(
   [string]$BackendUrl = "http://127.0.0.1:8000",
   [string]$AppRoot = "",
   [string]$ExePath = "",
-  [string]$Username = "cerbtest_codex1",
+  [string]$Username = "cerb_livea_k7m2q6x4",
+  [string]$ManagedUserId = "",
+  [string]$ManagedUserEmail = "",
+  [string]$ManagedDisplayName = "",
   [string]$PortalEmail = "",
   [string]$PortalPasswordEnvVar = "CERBERUS_ACCEPTANCE_LOGIN_PASSWORD",
   [string]$PortalBearerTokenFile = "",
   [switch]$PromptForPortalPassword,
   [switch]$PreflightOnly,
+  [switch]$SkipServiceLifecycle,
+  [switch]$RestartServiceForEachCommand,
+  [ValidateRange(0, 120)]
+  [int]$RestartServiceCooldownSeconds = 0,
   [switch]$SkipLocalUserLifecycle,
   [switch]$SkipManagedAssignmentLifecycle,
   [ValidateRange(1, 10)]
@@ -179,16 +186,36 @@ $liveArgs = @(
   $AgentId,
   "-Username",
   $Username,
-  "-InstallService",
-  "-StopService",
-  "-UninstallService",
   "-AcceptanceRepeat",
-  [string]$AcceptanceRepeat,
-  "-ReinstallBetweenRepeats"
+  [string]$AcceptanceRepeat
 )
 
+if (-not $SkipServiceLifecycle) {
+  $liveArgs += @(
+    "-InstallService",
+    "-StopService",
+    "-UninstallService",
+    "-ReinstallBetweenRepeats"
+  )
+}
+if ($RestartServiceForEachCommand) {
+  $liveArgs += "-RestartServiceForEachCommand"
+}
+if ($RestartServiceCooldownSeconds -gt 0) {
+  $liveArgs += @("-RestartServiceCooldownSeconds", [string]$RestartServiceCooldownSeconds)
+}
+if (-not [string]::IsNullOrWhiteSpace($ManagedUserId)) {
+  $liveArgs += @("-ManagedUserId", $ManagedUserId)
+}
+if (-not [string]::IsNullOrWhiteSpace($ManagedUserEmail)) {
+  $liveArgs += @("-ManagedUserEmail", $ManagedUserEmail)
+}
+if (-not [string]::IsNullOrWhiteSpace($ManagedDisplayName)) {
+  $liveArgs += @("-ManagedDisplayName", $ManagedDisplayName)
+}
+
 if (-not $SkipLocalUserLifecycle) {
-  $liveArgs += "-RunLocalUserLifecycle"
+  Write-Step "Direct local-user lab lifecycle is retired; production acceptance uses managed assignment lifecycle."
 }
 if (-not $SkipManagedAssignmentLifecycle) {
   $liveArgs += @(

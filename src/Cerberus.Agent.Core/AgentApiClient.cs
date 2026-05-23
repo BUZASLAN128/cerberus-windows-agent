@@ -144,6 +144,19 @@ public sealed class AgentApiClient
         return (payload.TailscaleLoginServer, payload.TailscaleAuthkey);
     }
 
+    public async Task<AgentSelfDeactivateResponse> SelfDeactivateAsync(AgentSelfDeactivateRequest body, CancellationToken ct)
+    {
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/deactivate";
+
+        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
+        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+
+        var payload = await resp.Content.ReadFromJsonAsync<AgentSelfDeactivateResponse>(JsonOpts, ct).ConfigureAwait(false);
+        return payload ?? throw new InvalidOperationException("Agent self-deactivate response missing.");
+    }
+
     private async Task<AgentIngestAckResponse> SubmitIngestAsync(string endpoint, object body, CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);

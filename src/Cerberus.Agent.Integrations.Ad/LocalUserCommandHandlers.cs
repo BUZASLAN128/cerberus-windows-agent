@@ -1,5 +1,7 @@
 using System.DirectoryServices;
+using System.Collections;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
@@ -15,7 +17,6 @@ public static partial class LocalUserCommandHandlers
 {
     private const string MarkerPrefix = "cerberus-managed-local-user:";
     private const int MaxWindowsLocalUsernameLength = 20;
-    private const int MaxWindowsLocalDescriptionLength = 256;
     private const int MinCredentialKeySizeBits = 2048;
     private const string PasswordLower = "abcdefghijkmnopqrstuvwxyz";
     private const string PasswordUpper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -31,18 +32,24 @@ public static partial class LocalUserCommandHandlers
     private const string CreateFailedMessage = "Local user create operation failed.";
     private const string DisableFailedMessage = "Local user disable operation failed.";
     private const string DeleteFailedMessage = "Local user delete operation failed.";
+    private const string RemoteDesktopUsersSid = "S-1-5-32-555";
+    private const string RemoteDesktopUsersFallbackName = "Remote Desktop Users";
+    private const string ManagedUsersRegistryPath = @"SOFTWARE\Cerberus\ManagedLocalUsers";
+    private const string ManagedUserDescription = "Cerberus managed local account.";
+    private const int PasswordCannotChangeFlag = 0x0040;
+    private const int PasswordNeverExpiresFlag = 0x10000;
 
     public static ICommandHandler[] CreateDefaultHandlers()
         =>
         [
-            new CreateTestUser(),
-            new DisableTestUser(),
-            new DeleteTestUser(),
+            new CreateManagedUser(),
+            new DisableManagedUser(),
+            new DeleteManagedUser(),
         ];
 
-    private sealed class CreateTestUser : ICommandHandler
+    private sealed class CreateManagedUser : ICommandHandler
     {
-        public string Type => "windows.local_user.create_test";
+        public string Type => "windows.local_user.create";
 
         public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
         {
@@ -58,9 +65,9 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private sealed class DisableTestUser : ICommandHandler
+    private sealed class DisableManagedUser : ICommandHandler
     {
-        public string Type => "windows.local_user.disable_test";
+        public string Type => "windows.local_user.disable";
 
         public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
         {
@@ -76,9 +83,9 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private sealed class DeleteTestUser : ICommandHandler
+    private sealed class DeleteManagedUser : ICommandHandler
     {
-        public string Type => "windows.local_user.delete_test";
+        public string Type => "windows.local_user.delete";
 
         public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
         {
@@ -133,9 +140,17 @@ public static partial class LocalUserCommandHandlers
                 if (!IsManagedByCerberus(existing, payload))
                     return ManagedUserCollision(payload);
 
+                if (!TryWriteManagedOwnership(payload))
+                    return Fail("managed_ownership_write_failed", "Managed user ownership marker could not be persisted.", payload);
+
+                var rdpLogonRight = EnsureRemoteDesktopUserMembership(payload.Username);
+                if (!rdpLogonRight.Granted)
+                    return Fail("rdp_logon_right_failed", "Remote Desktop Users membership could not be granted.", payload, rdpLogonRight.Status);
+
                 var password = GeneratePassword();
                 existing.Invoke("SetPassword", password);
                 existing.Properties["Description"].Value = ManagedDescription(payload);
+                ApplyManagedPasswordPolicy(existing);
                 existing.CommitChanges();
                 return Success(
                     payload.CredentialRequestId is null ? "already_exists" : "password_rotated",
@@ -143,16 +158,31 @@ public static partial class LocalUserCommandHandlers
                     enabled: IsUserEnabled(payload.Username),
                     localSid: GetLocalSid(existing),
                     encryptedPassword: EncryptPassword(password, payload),
-                    rdpCredential: BuildRdpCredentialEnvelope(password, payload));
+                    rdpCredential: BuildRdpCredentialEnvelope(password, payload),
+                    rdpLogonRight: rdpLogonRight.Status);
             }
         }
 
         using var user = computer.Children.Add(payload.Username, "user");
         var generatedPassword = GeneratePassword();
         user.Invoke("SetPassword", generatedPassword);
-        user.Properties["FullName"].Value = payload.DisplayName ?? "Cerberus lab test user";
+        user.Properties["FullName"].Value = payload.DisplayName ?? "Cerberus managed user";
         user.Properties["Description"].Value = ManagedDescription(payload);
+        ApplyManagedPasswordPolicy(user);
         user.CommitChanges();
+        if (!TryWriteManagedOwnership(payload))
+        {
+            TryRemoveUser(computer, payload.Username);
+            return Fail("managed_ownership_write_failed", "Managed user ownership marker could not be persisted.", payload);
+        }
+
+        var createdRdpLogonRight = EnsureRemoteDesktopUserMembership(payload.Username);
+        if (!createdRdpLogonRight.Granted)
+        {
+            RemoveManagedOwnership(payload.Username);
+            TryRemoveUser(computer, payload.Username);
+            return Fail("rdp_logon_right_failed", "Remote Desktop Users membership could not be granted.", payload, createdRdpLogonRight.Status);
+        }
 
         return Success(
             "created",
@@ -160,7 +190,8 @@ public static partial class LocalUserCommandHandlers
             enabled: true,
             localSid: GetLocalSid(user),
             encryptedPassword: EncryptPassword(generatedPassword, payload),
-            rdpCredential: BuildRdpCredentialEnvelope(generatedPassword, payload));
+            rdpCredential: BuildRdpCredentialEnvelope(generatedPassword, payload),
+            rdpLogonRight: createdRdpLogonRight.Status);
     }
 
     private static CommandResult DisableUser(LocalUserPayload payload)
@@ -174,13 +205,15 @@ public static partial class LocalUserCommandHandlers
             if (!IsManagedByCerberus(user, payload))
                 return ManagedUserCollision(payload);
 
+            var rdpLogonRight = RemoveRemoteDesktopUserMembership(payload.Username);
             user.InvokeSet("AccountDisabled", true);
             user.CommitChanges();
             return Success(
                 "disabled",
                 payload,
                 enabled: false,
-                localSid: GetLocalSid(user));
+                localSid: GetLocalSid(user),
+                rdpLogonRight: rdpLogonRight);
         }
     }
 
@@ -196,12 +229,15 @@ public static partial class LocalUserCommandHandlers
                 return ManagedUserCollision(payload);
 
             var sid = GetLocalSid(user);
+            var rdpLogonRight = RemoveRemoteDesktopUserMembership(payload.Username);
             computer.Children.Remove(user);
+            RemoveManagedOwnership(payload.Username);
             return Success(
                 "deleted",
                 payload,
                 enabled: false,
-                localSid: sid);
+                localSid: sid,
+                rdpLogonRight: rdpLogonRight);
         }
     }
 
@@ -230,7 +266,7 @@ public static partial class LocalUserCommandHandlers
 
         if (string.IsNullOrWhiteSpace(parsed.AuditCorrelationId))
         {
-            failure = Fail("missing_audit_correlation", "Local test user commands require an audit correlation id.");
+            failure = Fail("missing_audit_correlation", "Managed local user commands require an audit correlation id.");
             return false;
         }
 
@@ -269,7 +305,7 @@ public static partial class LocalUserCommandHandlers
 
     private static bool IsAllowedUsername(string? username)
         => IsWindowsSafeUsername(username) &&
-           (LegacyLabUsernameRegex().IsMatch(username!) || ManagedUsernameRegex().IsMatch(username!));
+           ManagedUsernameRegex().IsMatch(username!);
 
     private static bool IsWindowsSafeUsername(string? username)
     {
@@ -345,29 +381,193 @@ public static partial class LocalUserCommandHandlers
     }
 
     private static string ManagedDescription(LocalUserPayload payload)
+        => ManagedUserDescription;
+
+    private static void ApplyManagedPasswordPolicy(DirectoryEntry user)
     {
-        var value = string.IsNullOrWhiteSpace(payload.MarkerId)
-            ? "Cerberus lab test account. Safe to delete."
-            : $"{MarkerPrefix}{payload.MarkerId}; assignment={payload.AssignmentId}; account={payload.ManagedAccountId}";
-        return value.Length <= MaxWindowsLocalDescriptionLength
-            ? value
-            : value[..MaxWindowsLocalDescriptionLength];
+        var flags = Convert.ToInt32(user.Properties["UserFlags"].Value ?? 0);
+        user.Properties["UserFlags"].Value = ApplyManagedPasswordPolicyFlags(flags);
     }
+
+    private static int ApplyManagedPasswordPolicyFlags(int flags)
+        => flags | PasswordCannotChangeFlag | PasswordNeverExpiresFlag;
 
     private static bool IsManagedByCerberus(DirectoryEntry user, LocalUserPayload payload)
     {
-        if (LegacyLabUsernameRegex().IsMatch(payload.Username))
-            return true;
         if (!ManagedUsernameRegex().IsMatch(payload.Username))
             return false;
         if (string.IsNullOrWhiteSpace(payload.MarkerId))
             return false;
+        if (RegistryManagedMarkerMatches(payload))
+            return true;
+
         var description = Convert.ToString(user.Properties["Description"].Value) ?? string.Empty;
-        return description.Contains(ManagedMarkerToken(payload.MarkerId), StringComparison.Ordinal);
+        return DescriptionManagedMarkerMatches(description, payload.MarkerId);
     }
 
     private static string ManagedMarkerToken(string markerId)
-        => $"{MarkerPrefix}{markerId};";
+        => $"{MarkerPrefix}{NormalizeMarkerId(markerId)};";
+
+    private static string NormalizeMarkerId(string markerId)
+        => markerId.StartsWith(MarkerPrefix, StringComparison.Ordinal)
+            ? markerId[MarkerPrefix.Length..]
+            : markerId;
+
+    private static bool DescriptionManagedMarkerMatches(string description, string markerId)
+    {
+        if (description.Contains(ManagedMarkerToken(markerId), StringComparison.Ordinal))
+            return true;
+
+        var legacyToken = $"{MarkerPrefix}{markerId};";
+        return !string.Equals(legacyToken, ManagedMarkerToken(markerId), StringComparison.Ordinal) &&
+               description.Contains(legacyToken, StringComparison.Ordinal);
+    }
+
+    private static bool RegistryManagedMarkerMatches(LocalUserPayload payload)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(ManagedUserRegistryPath(payload.Username));
+            var marker = Convert.ToString(key?.GetValue("marker_id")) ?? string.Empty;
+            return string.Equals(marker, NormalizeMarkerId(payload.MarkerId ?? string.Empty), StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryWriteManagedOwnership(LocalUserPayload payload)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.CreateSubKey(ManagedUserRegistryPath(payload.Username));
+            if (key is null)
+                return false;
+
+            key.SetValue("marker_id", NormalizeMarkerId(payload.MarkerId ?? string.Empty), RegistryValueKind.String);
+            key.SetValue("assignment_id", payload.AssignmentId ?? string.Empty, RegistryValueKind.String);
+            key.SetValue("managed_account_id", payload.ManagedAccountId ?? string.Empty, RegistryValueKind.String);
+            key.SetValue("membership_user_id", payload.MembershipUserId ?? string.Empty, RegistryValueKind.String);
+            return true;
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static void RemoveManagedOwnership(string username)
+    {
+        try
+        {
+            Registry.LocalMachine.DeleteSubKeyTree(ManagedUserRegistryPath(username), throwOnMissingSubKey: false);
+        }
+        catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
+        {
+            _ = ex;
+        }
+    }
+
+    private static string ManagedUserRegistryPath(string username)
+        => $@"{ManagedUsersRegistryPath}\{username}";
+
+    private static RdpLogonRightResult EnsureRemoteDesktopUserMembership(string username)
+    {
+        try
+        {
+            using var computer = OpenComputer();
+            if (!TryFindUser(computer, username, out var user) || user is null)
+                return new("failed", false);
+            using (user)
+            using (var group = OpenRemoteDesktopUsersGroup())
+            {
+                if (IsGroupMember(group, username))
+                    return new("member", true);
+                group.Invoke("Add", user.Path);
+                return new("added", true);
+            }
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new("failed", false);
+        }
+    }
+
+    private static string RemoveRemoteDesktopUserMembership(string username)
+    {
+        try
+        {
+            using var computer = OpenComputer();
+            if (!TryFindUser(computer, username, out var user) || user is null)
+                return "not_member";
+            using (user)
+            using (var group = OpenRemoteDesktopUsersGroup())
+            {
+                if (!IsGroupMember(group, username))
+                    return "not_member";
+                group.Invoke("Remove", user.Path);
+                return "removed";
+            }
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return "failed";
+        }
+    }
+
+    private static DirectoryEntry OpenRemoteDesktopUsersGroup()
+        => new($"WinNT://{Environment.MachineName}/{RemoteDesktopUsersGroupName()},group");
+
+    private static string RemoteDesktopUsersGroupName()
+    {
+        try
+        {
+            var account = (NTAccount)new SecurityIdentifier(RemoteDesktopUsersSid).Translate(typeof(NTAccount));
+            var value = account.Value;
+            var slash = value.LastIndexOf('\\');
+            return slash >= 0 ? value[(slash + 1)..] : value;
+        }
+        catch (Exception ex) when (ex is IdentityNotMappedException or SystemException or ArgumentException)
+        {
+            return RemoteDesktopUsersFallbackName;
+        }
+    }
+
+    private static bool IsGroupMember(DirectoryEntry group, string username)
+    {
+        var members = group.Invoke("Members");
+        if (members is not IEnumerable enumerable)
+            return false;
+
+        foreach (var member in enumerable)
+        {
+            using var memberEntry = new DirectoryEntry(member);
+            var memberName = Convert.ToString(memberEntry.Properties["Name"].Value);
+            if (string.Equals(memberName, username, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void TryRemoveUser(DirectoryEntry computer, string username)
+    {
+        try
+        {
+            if (TryFindUser(computer, username, out var user) && user is not null)
+            {
+                using (user)
+                {
+                    computer.Children.Remove(user);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _ = ex;
+        }
+    }
 
     private static string? GetLocalSid(DirectoryEntry user)
     {
@@ -586,7 +786,8 @@ public static partial class LocalUserCommandHandlers
         bool enabled,
         string? localSid = null,
         string? encryptedPassword = null,
-        Dictionary<string, object?>? rdpCredential = null)
+        Dictionary<string, object?>? rdpCredential = null,
+        string? rdpLogonRight = null)
         => new(
             "DONE",
             0,
@@ -605,11 +806,12 @@ public static partial class LocalUserCommandHandlers
                 rdp_credential = rdpCredential,
                 local_sid = localSid,
                 local_sid_status = localSid is null ? "unavailable" : "ok",
+                rdp_logon_right = rdpLogonRight,
                 exists = code is not "deleted" and not "not_found",
                 enabled,
             });
 
-    private static CommandResult Fail(string code, string message, LocalUserPayload? payload = null)
+    private static CommandResult Fail(string code, string message, LocalUserPayload? payload = null, string? rdpLogonRight = null)
         => new(
             "FAILED",
             2,
@@ -623,10 +825,8 @@ public static partial class LocalUserCommandHandlers
                 assignment_id = payload?.AssignmentId,
                 marker_id = payload?.MarkerId,
                 credential_request_id = payload?.CredentialRequestId,
+                rdp_logon_right = rdpLogonRight,
             });
-
-    [GeneratedRegex("^cerbtest_[A-Za-z0-9_-]{1,11}$", RegexOptions.CultureInvariant)]
-    private static partial Regex LegacyLabUsernameRegex();
 
     [GeneratedRegex("^cerb_[a-z][a-z0-9]{4}_[a-z2-7]{8}$", RegexOptions.CultureInvariant)]
     private static partial Regex ManagedUsernameRegex();
@@ -654,4 +854,6 @@ public static partial class LocalUserCommandHandlers
         [property: JsonPropertyName("rdp_aad")] string? RdpAad = null,
         [property: JsonPropertyName("rdp_aad_hash")] string? RdpAadHash = null,
         [property: JsonPropertyName("rdp_domain")] string? RdpDomain = null);
+
+    private sealed record RdpLogonRightResult(string Status, bool Granted);
 }

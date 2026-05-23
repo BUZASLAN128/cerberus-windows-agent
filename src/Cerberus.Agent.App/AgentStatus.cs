@@ -36,30 +36,38 @@ internal static class AgentStatus
             var userPath = DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.User);
             var machinePath = DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine);
 
-            // If user-scope secrets exist, we consider the interactive tray/UI registered.
-            if (File.Exists(userPath))
-                return true;
-
-            // Machine-scope secrets can exist but be unreadable to the interactive user due to ACL (service-mode).
-            // In that case, treat as "not registered" for the tray/UI so the user can onboard again.
-            if (!File.Exists(machinePath))
-                return false;
-
-            try
-            {
-                using var _ = File.Open(machinePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
+            return IsRegisteredFromSecretPaths(userPath, machinePath);
         }
         catch
         {
             return false;
         }
     }
+
+    internal static bool IsRegisteredFromSecretPaths(string userPath, string machinePath)
+    {
+        // If user-scope secrets exist, the interactive tray/UI is registered.
+        if (File.Exists(userPath))
+            return true;
+
+        // Machine-scope secrets are intentionally unreadable to normal interactive users after
+        // service install. File existence is enough for UI readiness; do not open the secret.
+        return File.Exists(machinePath);
+    }
+
+    public static bool IsSetupComplete()
+    {
+        var service = GetService();
+        return IsSetupCompleteFromSignals(
+            registered: IsRegistered(),
+            serviceInstalled: service.Installed,
+            serviceText: service.Text);
+    }
+
+    internal static bool IsSetupCompleteFromSignals(bool registered, bool serviceInstalled, string serviceText)
+        => registered &&
+           serviceInstalled &&
+           string.Equals(serviceText, "running", StringComparison.OrdinalIgnoreCase);
 
     public static async Task<(string Text, string Short)> GetTailscaleAsync(CancellationToken ct)
     {

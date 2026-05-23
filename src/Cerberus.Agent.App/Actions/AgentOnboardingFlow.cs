@@ -1,4 +1,5 @@
 using System.Net.Http;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
 
@@ -23,6 +24,8 @@ internal sealed class AgentOnboardingFlow
         Action<string>? progress,
         CancellationToken ct)
     {
+        AgentLegalConsent.RequireCurrentUserConsent();
+
         if (!IsConfigReady(cfg))
             throw new InvalidOperationException("Device onboarding is not configured.");
 

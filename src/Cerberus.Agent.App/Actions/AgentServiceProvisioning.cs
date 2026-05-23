@@ -1,6 +1,8 @@
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Security;
 using System.IO;
+using System.Net.Http;
 
 namespace Cerberus.Agent.App.Actions;
 
@@ -90,8 +92,46 @@ internal static class AgentServiceLocalState
     }
 }
 
+internal static class AgentBackendLifecycle
+{
+    public static async Task<bool> TrySelfDeactivateAsync(
+        ISecretStore store,
+        string reasonCode,
+        string reason,
+        CancellationToken ct)
+    {
+        try
+        {
+            var (_, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+            using var http = new HttpClient
+            {
+                BaseAddress = new Uri(backendUrl.TrimEnd('/')),
+                Timeout = TimeSpan.FromSeconds(20),
+            };
+            var api = new AgentApiClient(
+                http,
+                store,
+                new AgentTokenManager(http, store),
+                new RequestSigner(privateKeyPem));
+            await api.SelfDeactivateAsync(
+                new AgentSelfDeactivateRequest(
+                    SchemaVersion: "agent.self-deactivate.v1",
+                    ReasonCode: reasonCode,
+                    Reason: reason),
+                ct).ConfigureAwait(false);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+
 internal static class AgentServiceProvisioning
 {
+    internal sealed record InstallRegistrationState(bool PromotedFromUserScope);
+
     internal static async Task<bool> PreserveMachineRegistrationForUserAsync(
         ISecretStore machineStore,
         ISecretStore userStore,
@@ -105,6 +145,54 @@ internal static class AgentServiceProvisioning
         return true;
     }
 
+    internal static async Task<InstallRegistrationState> EnsureMachineRegistrationForInstallAsync(
+        ISecretStore userStore,
+        ISecretStore machineStore,
+        CancellationToken ct)
+    {
+        if (await HasCompleteRegistrationAsync(userStore, ct).ConfigureAwait(false))
+        {
+            await AgentServiceCredentialBridge.PromoteAsync(userStore, machineStore, ct).ConfigureAwait(false);
+            return new InstallRegistrationState(PromotedFromUserScope: true);
+        }
+
+        if (await HasCompleteRegistrationAsync(machineStore, ct).ConfigureAwait(false))
+            return new InstallRegistrationState(PromotedFromUserScope: false);
+
+        throw new InvalidOperationException("No complete agent registration was found. Sign in and register the agent before installing the service.");
+    }
+
+    private static async Task<bool> HasCompleteRegistrationAsync(ISecretStore store, CancellationToken ct)
+    {
+        try
+        {
+            var (identity, refreshToken, privateKeyPem, backendUrl, _, _) =
+                await store.LoadAsync(ct).ConfigureAwait(false);
+
+            return !string.IsNullOrWhiteSpace(identity.AgentId) &&
+                   !string.IsNullOrWhiteSpace(identity.TenantId) &&
+                   !string.IsNullOrWhiteSpace(refreshToken) &&
+                   !string.IsNullOrWhiteSpace(privateKeyPem) &&
+                   !string.IsNullOrWhiteSpace(backendUrl);
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            return false;
+        }
+    }
+
     public static void InstallOrThrow()
     {
         if (!Elevation.IsAdministrator())
@@ -114,15 +202,21 @@ internal static class AgentServiceProvisioning
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
         var machineStore = new DpapiSecretStore(SecretStoreScope.Machine);
 
-        AgentServiceCredentialBridge.PromoteAsync(userStore, machineStore, cts.Token).GetAwaiter().GetResult();
+        AgentLegalConsent.RequireCurrentInstallConsent();
+        var registrationState = EnsureMachineRegistrationForInstallAsync(userStore, machineStore, cts.Token)
+            .GetAwaiter()
+            .GetResult();
         try
         {
+            AgentLegalConsent.EnsureMachineConsentForInstall();
             ServiceInstaller.InstallOrThrow();
-            userStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
+            if (registrationState.PromotedFromUserScope)
+                userStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
         }
         catch
         {
-            machineStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
+            if (registrationState.PromotedFromUserScope)
+                machineStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
             throw;
         }
     }
@@ -150,6 +244,15 @@ internal static class AgentServiceProvisioning
                 ServiceInstaller.UninstallOrThrow();
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            if (File.Exists(DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine)))
+            {
+                _ = AgentBackendLifecycle.TrySelfDeactivateAsync(
+                    new DpapiSecretStore(SecretStoreScope.Machine),
+                    reasonCode: "agent_unregister_device",
+                    reason: "Device unregistered from Windows agent",
+                    ct: cts.Token).GetAwaiter().GetResult();
+            }
+
             AgentServiceLocalState.ClearMachineStateAsync(cts.Token).GetAwaiter().GetResult();
             new DpapiSecretStore(SecretStoreScope.User).ClearAsync(cts.Token).GetAwaiter().GetResult();
             return;
@@ -159,6 +262,12 @@ internal static class AgentServiceProvisioning
             throw new InvalidOperationException("Service is installed. Run this command as administrator to remove service registration completely.");
 
         using var userCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        new DpapiSecretStore(SecretStoreScope.User).ClearAsync(userCts.Token).GetAwaiter().GetResult();
+        var userStore = new DpapiSecretStore(SecretStoreScope.User);
+        _ = AgentBackendLifecycle.TrySelfDeactivateAsync(
+            userStore,
+            reasonCode: "agent_unregister_device",
+            reason: "Device unregistered from Windows agent",
+            ct: userCts.Token).GetAwaiter().GetResult();
+        userStore.ClearAsync(userCts.Token).GetAwaiter().GetResult();
     }
 }

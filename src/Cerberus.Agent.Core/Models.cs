@@ -43,3 +43,14 @@ public sealed record HeartbeatResponse(
     [property: JsonPropertyName("update")] IReadOnlyDictionary<string, JsonElement>? Update,
     [property: JsonPropertyName("revoke")] IReadOnlyDictionary<string, JsonElement>? Revoke,
     [property: JsonPropertyName("quarantine")] IReadOnlyDictionary<string, JsonElement>? Quarantine);
+
+public sealed record AgentSelfDeactivateRequest(
+    [property: JsonPropertyName("schema_version")] string SchemaVersion,
+    [property: JsonPropertyName("reason_code")] string ReasonCode,
+    [property: JsonPropertyName("reason")] string? Reason);
+
+public sealed record AgentSelfDeactivateResponse(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("registration_state")] string RegistrationState,
+    [property: JsonPropertyName("revoked_tokens")] int RevokedTokens);
