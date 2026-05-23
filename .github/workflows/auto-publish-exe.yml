@@ -27,14 +27,14 @@ permissions:
 
 jobs:
   publish-exe:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
 
@@ -45,10 +45,20 @@ jobs:
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
           AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM }}
           AGENT_RELEASE_ARTIFACT_BASE_URL: ${{ vars.AGENT_RELEASE_ARTIFACT_BASE_URL }}
-        run: >
-          ./scripts/build-public-release.ps1
-          -Version "${{ inputs.release_version }}"
-          -Channel "${{ inputs.channel }}"
+          CERBERUS_BACKEND_URL: ${{ vars.CERBERUS_BACKEND_URL }}
+          CERBERUS_SSO_BASE_URL: ${{ vars.CERBERUS_SSO_BASE_URL }}
+          CERBERUS_SSO_CLIENT_ID: ${{ vars.CERBERUS_SSO_CLIENT_ID }}
+          CERBERUS_SSO_SCOPE: ${{ vars.CERBERUS_SSO_SCOPE }}
+          CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
+        run: |
+          $args = @(
+            "-Version", "${{ inputs.release_version }}",
+            "-Channel", "${{ inputs.channel }}"
+          )
+          if ("${{ inputs.channel }}" -eq "dev") {
+            $args += "-AllowUnsignedDevBuild"
+          }
+          ./scripts/build-public-release.ps1 @args
 
       - name: Compute release metadata
         id: meta
@@ -73,14 +83,14 @@ jobs:
           "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload gated release bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cerberus-windows-agent-${{ inputs.channel }}-${{ inputs.release_version }}
           path: out/public-release/publish/
           if-no-files-found: error
 
       - name: Create GitHub release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@v1.21.0
         with:
           tag: ${{ steps.meta.outputs.tag }}
           name: Cerberus Windows Agent ${{ inputs.release_version }} (${{ inputs.channel }})

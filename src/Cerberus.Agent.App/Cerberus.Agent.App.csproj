@@ -16,7 +16,30 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <StartupObject>Cerberus.Agent.App.Program</StartupObject>
+    <AgentDefaultBackendUrlBase64 Condition="'$(AgentDefaultBackendUrlBase64)' == ''"></AgentDefaultBackendUrlBase64>
+    <AgentDefaultSsoBaseUrlBase64 Condition="'$(AgentDefaultSsoBaseUrlBase64)' == ''"></AgentDefaultSsoBaseUrlBase64>
+    <AgentDefaultSsoClientIdBase64 Condition="'$(AgentDefaultSsoClientIdBase64)' == ''"></AgentDefaultSsoClientIdBase64>
+    <AgentDefaultSsoScopeBase64 Condition="'$(AgentDefaultSsoScopeBase64)' == ''"></AgentDefaultSsoScopeBase64>
+    <AgentDefaultOAuthRedirectPort Condition="'$(AgentDefaultOAuthRedirectPort)' == ''">0</AgentDefaultOAuthRedirectPort>
   </PropertyGroup>
+
+  <Target Name="GenerateAgentBuildConfig" BeforeTargets="BeforeCompile">
+    <ItemGroup>
+      <AgentBuildConfigLines Include="namespace Cerberus.Agent.App%3B" />
+      <AgentBuildConfigLines Include="internal static class AgentBuildConfig" />
+      <AgentBuildConfigLines Include="{" />
+      <AgentBuildConfigLines Include="    public const string BackendUrlBase64 = &quot;$(AgentDefaultBackendUrlBase64)&quot;%3B" />
+      <AgentBuildConfigLines Include="    public const string SsoBaseUrlBase64 = &quot;$(AgentDefaultSsoBaseUrlBase64)&quot;%3B" />
+      <AgentBuildConfigLines Include="    public const string SsoClientIdBase64 = &quot;$(AgentDefaultSsoClientIdBase64)&quot;%3B" />
+      <AgentBuildConfigLines Include="    public const string SsoScopeBase64 = &quot;$(AgentDefaultSsoScopeBase64)&quot;%3B" />
+      <AgentBuildConfigLines Include="    public const int OAuthRedirectPort = $(AgentDefaultOAuthRedirectPort)%3B" />
+      <AgentBuildConfigLines Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)AgentBuildConfig.g.cs" Lines="@(AgentBuildConfigLines)" Overwrite="true" Encoding="UTF-8" />
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)AgentBuildConfig.g.cs" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />

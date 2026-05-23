@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace Cerberus.Agent.App;
@@ -36,16 +37,16 @@ internal static class UiConfigStore
     private static string ConfigPath => Path.Combine(ConfigDir, "ui-config.json");
 
     private static PersistedUiConfig Default => new(
-        // Public builds must not bake a tenant/backend URL. Dev can opt in via
-        // CERBERUS_BACKEND_URL or CERBERUS_AGENT_DEV_BOOTSTRAP=true.
-        BackendUrl: "",
-        // Default to the dev/test SSO endpoint. Override via env or ui-config for other deployments.
-        CasdoorEndpoint: "http://100.101.130.51:31080",
+        // Public values only. Build-time defaults can be provided by CI for dev/local artifacts.
+        BackendUrl: BuildDefaultOrEmpty(AgentBuildConfig.BackendUrlBase64),
+        CasdoorEndpoint: BuildDefaultOr(AgentBuildConfig.SsoBaseUrlBase64, "http://100.101.130.51:31080"),
         // NOTE: client_id is public (not a secret). Keep override via env/config for other deployments.
-        CasdoorClientId: "610f03b77494869da4ef",
+        CasdoorClientId: BuildDefaultOr(AgentBuildConfig.SsoClientIdBase64, "610f03b77494869da4ef"),
         // Include "groups" because backend maps tenant from group membership.
-        CasdoorScope: "openid profile email groups",
-        OAuthRedirectPort: 19823);
+        CasdoorScope: BuildDefaultOr(AgentBuildConfig.SsoScopeBase64, "openid profile email groups"),
+        OAuthRedirectPort: IsValidPort(AgentBuildConfig.OAuthRedirectPort)
+            ? AgentBuildConfig.OAuthRedirectPort
+            : 19823);
 
     private static bool IsLegacyLocalBackend(string url)
     {
@@ -173,4 +174,25 @@ internal static class UiConfigStore
                || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
                || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static string BuildDefaultOrEmpty(string base64)
+        => BuildDefaultOr(base64, "");
+
+    private static string BuildDefaultOr(string base64, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(base64))
+            return fallback;
+
+        try
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(base64)).Trim();
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static bool IsValidPort(int port)
+        => port is > 0 and <= 65535;
 }
