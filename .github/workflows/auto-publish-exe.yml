@@ -27,14 +27,14 @@ permissions:
 
 jobs:
   publish-exe:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
 
@@ -73,14 +73,14 @@ jobs:
           "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload gated release bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cerberus-windows-agent-${{ inputs.channel }}-${{ inputs.release_version }}
           path: out/public-release/publish/
           if-no-files-found: error
 
       - name: Create GitHub release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@v1.21.0
         with:
           tag: ${{ steps.meta.outputs.tag }}
           name: Cerberus Windows Agent ${{ inputs.release_version }} (${{ inputs.channel }})
