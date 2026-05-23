@@ -9,6 +9,11 @@ param(
   [string]$Runtime = "win-x64",
   [string]$OutputRoot = "out/public-release",
   [string]$TimestampUrl = "http://timestamp.digicert.com",
+  [string]$DefaultBackendUrl = $env:CERBERUS_BACKEND_URL,
+  [string]$DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL,
+  [string]$DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID,
+  [string]$DefaultSsoScope = $env:CERBERUS_SSO_SCOPE,
+  [int]$DefaultOAuthRedirectPort = 0,
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild
 )
@@ -29,6 +34,13 @@ function Require-Env([string]$Name) {
     throw "Required environment variable '$Name' is missing."
   }
   return $value
+}
+
+function ConvertTo-Base64Utf8([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return ""
+  }
+  return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value.Trim()))
 }
 
 function Find-SignTool {
@@ -128,6 +140,25 @@ $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 
+if ($DefaultOAuthRedirectPort -le 0) {
+  $redirectPortFromEnv = $env:CERBERUS_OAUTH_REDIRECT_PORT
+  if ($null -eq $redirectPortFromEnv) {
+    $redirectPortFromEnv = ""
+  }
+  $redirectPortFromEnv = $redirectPortFromEnv.Trim()
+  if ([int]::TryParse($redirectPortFromEnv, [ref]$DefaultOAuthRedirectPort) -and
+      ($DefaultOAuthRedirectPort -le 0 -or $DefaultOAuthRedirectPort -gt 65535)) {
+    $DefaultOAuthRedirectPort = 0
+  }
+}
+if ($Channel -eq "dev") {
+  if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = "http://127.0.0.1:8000" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = "http://127.0.0.1:8000" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = "cerberus-windows-agent-dev" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
+  if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
+}
+
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
   dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
@@ -142,6 +173,11 @@ dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.App/Cerberus.Agent.App.c
   -p:IncludeNativeLibrariesForSelfExtract=true `
   -p:EnableCompressionInSingleFile=true `
   -p:Version=$Version `
+  -p:AgentDefaultBackendUrlBase64="$(ConvertTo-Base64Utf8 $DefaultBackendUrl)" `
+  -p:AgentDefaultSsoBaseUrlBase64="$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)" `
+  -p:AgentDefaultSsoClientIdBase64="$(ConvertTo-Base64Utf8 $DefaultSsoClientId)" `
+  -p:AgentDefaultSsoScopeBase64="$(ConvertTo-Base64Utf8 $DefaultSsoScope)" `
+  -p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort `
   -o $publishDir
 
 $assetBase = "Cerberus.Agent.App-$Channel-$Version"
@@ -236,8 +272,23 @@ if ($secretHits.Count -gt 0) {
   throw "Release secret scan failed:`n$preview"
 }
 
-$artifactUrlBase = Require-Env "AGENT_RELEASE_ARTIFACT_BASE_URL"
-$manifestPrivateKey = Require-Env "AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM"
+$artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+  $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+  $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
+}
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
+  throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
+}
+
+$manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
+if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -and $AllowUnsignedDevBuild) {
+  $ephemeralManifestKey = [System.Security.Cryptography.RSA]::Create(3072)
+  $manifestPrivateKey = $ephemeralManifestKey.ExportPkcs8PrivateKeyPem()
+}
+if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
+  throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
+}
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$assetBase.exe")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
 $canonical = @(
