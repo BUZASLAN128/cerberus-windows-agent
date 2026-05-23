@@ -326,6 +326,8 @@ $gate = [ordered]@{
     checksum_sha256 = $msiHash
     authenticode_signature_present = $signed
     eula_consent_source = "msi_eula_dialog"
+    eula_required_for_execute_sequence = $true
+    headless_eula_property = "CERBERUS_EULA_ACCEPTED=1"
     consent_storage = "hkcu_registry_imported_by_agent"
     launches_agent_arguments = "--tray"
     powershell_custom_action_present = $false

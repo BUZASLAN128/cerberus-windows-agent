@@ -83,6 +83,9 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Version=\"$(var.MsiProductVersion)\"", package);
         Assert.Contains("WixUILicenseRtf", package);
         Assert.Contains("Assets\\EULA.rtf", package);
+        Assert.Contains("CERBERUS_EULA_ACCEPTED", package);
+        Assert.Contains("BlockInstallWithoutEula", package);
+        Assert.Contains("LicenseAccepted = 1 OR CERBERUS_EULA_ACCEPTED = 1", package);
         Assert.Contains(@"Software\Cerberus\WindowsAgent\LegalConsent", package);
         Assert.Contains("msi_eula_dialog", package);
         Assert.Contains("Cerberus.Agent.App.exe\" --tray", package);

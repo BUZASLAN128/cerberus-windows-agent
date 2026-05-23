@@ -13,6 +13,7 @@
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="CERBERUS_EULA_ACCEPTED" Secure="yes" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)Assets\EULA.rtf" />
     <ui:WixUI Id="WixUI_InstallDir" />
 
@@ -28,8 +29,15 @@
         ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.App.exe" --tray'
         Execute="immediate"
         Return="asyncNoWait" />
+    <CustomAction
+        Id="BlockInstallWithoutEula"
+        Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
 
     <InstallExecuteSequence>
+      <Custom
+          Action="BlockInstallWithoutEula"
+          Before="InstallValidate"
+          Condition="NOT Installed AND NOT REMOVE AND NOT (LicenseAccepted = 1 OR CERBERUS_EULA_ACCEPTED = 1)" />
       <Custom Action="LaunchAgentTray" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
