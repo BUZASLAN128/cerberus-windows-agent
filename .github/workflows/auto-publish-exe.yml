@@ -51,14 +51,16 @@ jobs:
           CERBERUS_SSO_SCOPE: ${{ vars.CERBERUS_SSO_SCOPE }}
           CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
         run: |
-          $args = @(
-            "-Version", "${{ inputs.release_version }}",
-            "-Channel", "${{ inputs.channel }}"
-          )
           if ("${{ inputs.channel }}" -eq "dev") {
-            $args += "-AllowUnsignedDevBuild"
+            ./scripts/build-public-release.ps1 `
+              -Version "${{ inputs.release_version }}" `
+              -Channel "${{ inputs.channel }}" `
+              -AllowUnsignedDevBuild
+          } else {
+            ./scripts/build-public-release.ps1 `
+              -Version "${{ inputs.release_version }}" `
+              -Channel "${{ inputs.channel }}"
           }
-          ./scripts/build-public-release.ps1 @args
 
       - name: Compute release metadata
         id: meta
