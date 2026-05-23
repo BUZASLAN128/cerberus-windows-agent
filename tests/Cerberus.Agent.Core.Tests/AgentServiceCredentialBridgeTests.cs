@@ -267,6 +267,15 @@ public sealed class AgentServiceCredentialBridgeTests
         Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: false, registrationState: "deactivated")));
     }
 
+    [Fact]
+    public void AgentClaimGate_TreatsRateLimitAsTransientDuringClaimPolling()
+    {
+        Assert.True(AgentClaimGate.IsTransientClaimPollStatus(System.Net.HttpStatusCode.TooManyRequests));
+        Assert.True(AgentClaimGate.IsTransientClaimPollStatus(System.Net.HttpStatusCode.ServiceUnavailable));
+        Assert.False(AgentClaimGate.IsTransientClaimPollStatus(System.Net.HttpStatusCode.Conflict));
+        Assert.False(AgentClaimGate.IsTransientClaimPollStatus(System.Net.HttpStatusCode.Forbidden));
+    }
+
     private static HeartbeatResponse Heartbeat(bool claimRequired, string registrationState) => new(
         PendingCommands: Array.Empty<AgentCommand>(),
         NextPollSeconds: 5,

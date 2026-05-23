@@ -8,6 +8,7 @@ namespace Cerberus.Agent.App.Actions;
 internal static class AgentClaimGate
 {
     private static readonly TimeSpan ClaimPollInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ClaimRetryPollInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan ClaimWaitTimeout = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan ClaimCheckTimeout = TimeSpan.FromSeconds(30);
 
@@ -34,6 +35,12 @@ internal static class AgentClaimGate
             {
                 await store.ClearAsync(ct).ConfigureAwait(false);
                 throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
+            }
+            catch (HttpRequestException ex) when (IsTransientClaimPollStatus(ex.StatusCode))
+            {
+                progress?.Invoke($"Portal claim check is temporarily rate limited or unavailable; retrying (status={(int)ex.StatusCode!}).");
+                await Task.Delay(ClaimRetryPollInterval, ct).ConfigureAwait(false);
+                continue;
             }
             var state = NormalizeState(response.RegistrationState);
 
@@ -135,6 +142,13 @@ internal static class AgentClaimGate
             or HttpStatusCode.Forbidden
             or HttpStatusCode.NotFound
             or HttpStatusCode.Conflict;
+
+    internal static bool IsTransientClaimPollStatus(HttpStatusCode? statusCode)
+        => statusCode is HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
 }
 
 internal sealed class AgentRegistrationInactiveException : InvalidOperationException
