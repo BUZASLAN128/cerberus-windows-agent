@@ -76,6 +76,12 @@ public partial class MainWindow : Window
 
     private void Log(string msg)
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            _ = Dispatcher.BeginInvoke(() => Log(msg), DispatcherPriority.Background);
+            return;
+        }
+
         var ts = DateTimeOffset.Now.ToString("HH:mm:ss");
         StatusText.AppendText($"[{ts}] {msg}\r\n");
         StatusText.ScrollToEnd();

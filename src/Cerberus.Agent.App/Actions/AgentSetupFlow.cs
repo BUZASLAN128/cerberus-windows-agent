@@ -30,9 +30,9 @@ internal sealed class AgentSetupFlow
 
         var registeredBefore = AgentStatus.IsRegistered();
         var registeredNow = false;
+        var userStore = new DpapiSecretStore(SecretStoreScope.User);
         if (!registeredBefore)
         {
-            progress?.Invoke("Opening browser for SSO sign-in...");
             var onboarding = await new AgentOnboardingFlow()
                 .RunAsync(cfg, log, progress, ct)
                 .ConfigureAwait(false);
@@ -49,9 +49,27 @@ internal sealed class AgentSetupFlow
         var currentService = AgentStatus.GetService();
         if (!currentService.Installed)
         {
-            await AgentClaimGate
-                .WaitForClaimedAsync(new DpapiSecretStore(SecretStoreScope.User), progress, ct)
-                .ConfigureAwait(false);
+            try
+            {
+                await AgentClaimGate
+                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (AgentRegistrationInactiveException) when (registeredBefore)
+            {
+                progress?.Invoke("Stored device registration is inactive. Signing in again...");
+                var onboarding = await new AgentOnboardingFlow()
+                    .RunAsync(cfg, log, progress, ct)
+                    .ConfigureAwait(false);
+                registeredNow = true;
+                progress?.Invoke($"Registered agent {onboarding.Identity.AgentId}.");
+                if (onboarding.TailscaleCommandPath is not null)
+                    progress?.Invoke($"Wrote private mesh command: {onboarding.TailscaleCommandPath}");
+
+                await AgentClaimGate
+                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .ConfigureAwait(false);
+            }
         }
 
         var serviceChanged = EnsureServiceInstallOrStart(progress);

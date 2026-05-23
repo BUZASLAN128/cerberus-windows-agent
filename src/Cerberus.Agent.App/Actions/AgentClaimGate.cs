@@ -1,5 +1,6 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
+using System.Net;
 using System.Net.Http;
 
 namespace Cerberus.Agent.App.Actions;
@@ -24,7 +25,16 @@ internal static class AgentClaimGate
         while (DateTimeOffset.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
-            var response = await CheckAsync(store, ct).ConfigureAwait(false);
+            HeartbeatResponse response;
+            try
+            {
+                response = await CheckAsync(store, ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
+            {
+                await store.ClearAsync(ct).ConfigureAwait(false);
+                throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
+            }
             var state = NormalizeState(response.RegistrationState);
 
             if (IsClaimed(response))
@@ -34,7 +44,10 @@ internal static class AgentClaimGate
             }
 
             if (state is "rejected" or "deactivated" or "revoked")
-                throw new InvalidOperationException($"Device registration is no longer claimable (state={state}).");
+            {
+                await store.ClearAsync(ct).ConfigureAwait(false);
+                throw new AgentRegistrationInactiveException(state);
+            }
 
             var now = DateTimeOffset.UtcNow;
             if (!string.Equals(state, lastState, StringComparison.Ordinal) || now - lastStatusAt >= TimeSpan.FromSeconds(30))
@@ -55,10 +68,24 @@ internal static class AgentClaimGate
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ClaimCheckTimeout);
 
-        var response = CheckAsync(store, timeout.Token).GetAwaiter().GetResult();
+        HeartbeatResponse response;
+        try
+        {
+            response = CheckAsync(store, timeout.Token).GetAwaiter().GetResult();
+        }
+        catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
+        {
+            store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
+            throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
+        }
         if (!IsClaimed(response))
         {
             var state = NormalizeState(response.RegistrationState);
+            if (state is "rejected" or "deactivated" or "revoked")
+            {
+                store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
+                throw new AgentRegistrationInactiveException(state);
+            }
             throw new InvalidOperationException($"Claim this device in the portal before installing the service (state={state}).");
         }
     }
@@ -91,7 +118,7 @@ internal static class AgentClaimGate
                 agent_version = WindowsDeviceInfo.GetAgentVersion(),
                 build_id = WindowsDeviceInfo.GetBuildId(),
                 build_channel = WindowsDeviceInfo.GetBuildChannel(),
-                runtime_mode = "setup",
+                runtime_mode = "interactive",
                 supported_schema_versions = AgentSchemaVersions.All,
                 tailscale = (object?)null,
                 ad = (object?)null,
@@ -102,4 +129,21 @@ internal static class AgentClaimGate
 
     private static string NormalizeState(string? state)
         => string.IsNullOrWhiteSpace(state) ? "pending_claim" : state.Trim().ToLowerInvariant();
+
+    private static bool IsInactiveRegistrationStatus(HttpStatusCode? statusCode)
+        => statusCode is HttpStatusCode.Unauthorized
+            or HttpStatusCode.Forbidden
+            or HttpStatusCode.NotFound
+            or HttpStatusCode.Conflict;
+}
+
+internal sealed class AgentRegistrationInactiveException : InvalidOperationException
+{
+    public AgentRegistrationInactiveException(string state)
+        : base($"Device registration is no longer claimable (state={state}).")
+    {
+        State = state;
+    }
+
+    public string State { get; }
 }
