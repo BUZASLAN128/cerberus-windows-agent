@@ -72,18 +72,23 @@ public static class RetryHelper
 
     private static bool IsTransientError(Exception ex)
     {
-        // Retry on network/timeout/server errors
-        return ex is HttpRequestException
-            || ex is TaskCanceledException
-            || ex is TimeoutException
-            || (ex is HttpRequestException hre && IsRetryableStatusCode(hre));
+        // Retry transport failures, timeouts, and server-side outages. Rate limits are
+        // handled by the caller so Retry-After/backoff policy stays endpoint-specific.
+        return ex switch
+        {
+            HttpRequestException { StatusCode: null } => true,
+            HttpRequestException hre => IsRetryableStatusCode(hre),
+            TaskCanceledException => true,
+            TimeoutException => true,
+            _ => false,
+        };
     }
 
     private static bool IsRetryableStatusCode(HttpRequestException ex)
     {
-        // 429 (rate limit), 500, 502, 503, 504
-        var msg = ex.Message;
-        return msg.Contains("429") || msg.Contains("500") || msg.Contains("502")
-            || msg.Contains("503") || msg.Contains("504");
+        return ex.StatusCode is System.Net.HttpStatusCode.InternalServerError
+            or System.Net.HttpStatusCode.BadGateway
+            or System.Net.HttpStatusCode.ServiceUnavailable
+            or System.Net.HttpStatusCode.GatewayTimeout;
     }
 }
