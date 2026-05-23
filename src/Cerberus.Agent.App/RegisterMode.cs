@@ -79,7 +79,6 @@ internal static class RegisterMode
                 agentVersion: version,
                 buildId: buildId,
                 buildChannel: buildChannel,
-                bootstrapDescriptor: bootstrap.RawDescriptor,
                 ct);
 
             var cmdPath = await TailscaleUpExporter.ExportAsync(ct);

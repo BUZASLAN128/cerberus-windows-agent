@@ -20,8 +20,7 @@ internal sealed record RuntimeUiConfig(
     string CasdoorClientId,
     string CasdoorScope,
     int OAuthRedirectPort,
-    string? CasdoorClientSecret,
-    string? BootstrapDescriptorUrl);
+    string? CasdoorClientSecret);
 
 internal static class UiConfigStore
 {
@@ -156,15 +155,7 @@ internal static class UiConfigStore
             CasdoorClientId: clientId,
             CasdoorScope: string.IsNullOrWhiteSpace(scope) ? Default.CasdoorScope : scope,
             OAuthRedirectPort: redirectPort,
-            CasdoorClientSecret: string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret,
-            BootstrapDescriptorUrl: NormalizeOptional(
-                Environment.GetEnvironmentVariable("CERBERUS_AGENT_BOOTSTRAP_DESCRIPTOR_URL")));
-    }
-
-    private static string? NormalizeOptional(string? value)
-    {
-        var normalized = (value ?? "").Trim();
-        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+            CasdoorClientSecret: string.IsNullOrWhiteSpace(clientSecret) ? null : clientSecret);
     }
 
     private static bool IsExplicitDevBootstrap()

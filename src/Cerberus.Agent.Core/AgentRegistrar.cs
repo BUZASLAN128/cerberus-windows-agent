@@ -56,7 +56,6 @@ public sealed class AgentRegistrar
         string agentVersion,
         string? buildId,
         string? buildChannel,
-        string bootstrapDescriptor,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(oauthToken))
@@ -67,9 +66,6 @@ public sealed class AgentRegistrar
             throw new ArgumentException("deviceFingerprint is required.", nameof(deviceFingerprint));
         if (string.IsNullOrWhiteSpace(agentVersion))
             throw new ArgumentException("agentVersion is required.", nameof(agentVersion));
-        if (string.IsNullOrWhiteSpace(bootstrapDescriptor))
-            throw new ArgumentException("bootstrapDescriptor is required.", nameof(bootstrapDescriptor));
-
         var (privPem, pubPem) = _keyPairs.GenerateKeyPair(2048);
 
         var req = new AgentRegisterRequest(
@@ -80,13 +76,12 @@ public sealed class AgentRegistrar
             BuildId: string.IsNullOrWhiteSpace(buildId) ? agentVersion : buildId.Trim(),
             BuildChannel: string.IsNullOrWhiteSpace(buildChannel) ? "dev" : buildChannel.Trim(),
             SupportedSchemaVersions: new[] { "agent.enroll.v1", "agent.heartbeat.v1" },
-            BootstrapDescriptor: bootstrapDescriptor,
             DisplayName: Environment.MachineName,
             PurposeNote: "Self-enrolled Windows agent",
             LocationHint: null);
 
         _log.Info("Registering agent...");
-        using var resp = await _http.PostAsJsonAsync("/api/v1/agents/bootstrap/enroll", req, JsonOpts, ct).ConfigureAwait(false);
+        using var resp = await _http.PostAsJsonAsync("/api/v1/agents/register", req, JsonOpts, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
             throw new HttpRequestException($"Register failed ({(int)resp.StatusCode}). {body}");
@@ -158,7 +153,6 @@ public sealed class AgentRegistrar
         [property: JsonPropertyName("build_id")] string BuildId,
         [property: JsonPropertyName("build_channel")] string BuildChannel,
         [property: JsonPropertyName("supported_schema_versions")] IReadOnlyList<string> SupportedSchemaVersions,
-        [property: JsonPropertyName("bootstrap_descriptor")] string BootstrapDescriptor,
         [property: JsonPropertyName("display_name")] string DisplayName,
         [property: JsonPropertyName("purpose_note")] string? PurposeNote,
         [property: JsonPropertyName("location_hint")] string? LocationHint);

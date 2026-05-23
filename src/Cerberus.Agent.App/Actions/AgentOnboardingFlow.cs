@@ -14,7 +14,9 @@ internal sealed class AgentOnboardingFlow
     public static bool IsConfigReady(RuntimeUiConfig cfg)
     {
         var ssoBase = (cfg.CasdoorEndpoint ?? "").Trim().TrimEnd('/');
+        var backend = (cfg.BackendUrl ?? "").Trim().TrimEnd('/');
         return Uri.TryCreate(ssoBase, UriKind.Absolute, out _) &&
+               Uri.TryCreate(backend, UriKind.Absolute, out _) &&
                !string.IsNullOrWhiteSpace(cfg.CasdoorClientId);
     }
 
@@ -56,7 +58,6 @@ internal sealed class AgentOnboardingFlow
             agentVersion: WindowsDeviceInfo.GetAgentVersion(),
             buildId: WindowsDeviceInfo.GetBuildId(),
             buildChannel: WindowsDeviceInfo.GetBuildChannel(),
-            bootstrapDescriptor: bootstrap.RawDescriptor,
             ct: ct).ConfigureAwait(false);
 
         var export = await VpnCommandExportService
