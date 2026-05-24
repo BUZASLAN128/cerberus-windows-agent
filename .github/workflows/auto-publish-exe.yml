@@ -61,6 +61,8 @@ jobs:
           DISPATCH_RELEASE_VERSION: ${{ github.event.inputs.release_version }}
           DISPATCH_CHANNEL: ${{ github.event.inputs.channel }}
           DISPATCH_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
         run: |
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $version = $env:DISPATCH_RELEASE_VERSION
@@ -70,10 +72,17 @@ jobs:
               $notes = "Public Cerberus Windows Agent $channel release."
             }
           } else {
-            $version = "0.2.0-preview.${{ github.run_number }}"
-            $channel = "preview"
             $shortSha = "${{ github.sha }}".Substring(0, 12)
-            $notes = "Automated preview release from ${{ github.ref_name }}@$shortSha."
+            if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
+                -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
+              $channel = "preview"
+              $version = "0.2.0-preview.${{ github.run_number }}"
+              $notes = "Automated signed preview release from ${{ github.ref_name }}@$shortSha."
+            } else {
+              $channel = "dev"
+              $version = "0.2.0-dev.${{ github.run_number }}"
+              $notes = "Automated unsigned dev release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
+            }
           }
 
           if ([string]::IsNullOrWhiteSpace($version)) {
@@ -149,18 +158,19 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Update preview latest release
-        if: ${{ steps.release.outputs.channel == 'preview' }}
+      - name: Update channel latest release
+        if: ${{ steps.release.outputs.channel == 'preview' || steps.release.outputs.channel == 'dev' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete preview-latest --yes --cleanup-tag 2>$null
+          $latestTag = "${{ steps.release.outputs.channel }}-latest"
+          gh release delete $latestTag --yes --cleanup-tag 2>$null
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "preview-latest was not present or could not be deleted; continuing with create."
+            Write-Host "$latestTag was not present or could not be deleted; continuing with create."
             $global:LASTEXITCODE = 0
           }
-          gh release create preview-latest `
+          gh release create $latestTag `
             out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.exe `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip `
@@ -169,6 +179,6 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
-            --title "Cerberus Windows Agent preview-latest" `
+            --title "Cerberus Windows Agent $latestTag" `
             --notes-file out/release-notes.md `
             --prerelease
