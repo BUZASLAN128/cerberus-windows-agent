@@ -1,6 +1,18 @@
 name: public-agent-release
 
 on:
+  push:
+    branches:
+      - dev
+      - develop
+    paths:
+      - ".github/workflows/auto-publish-exe.yml"
+      - "Directory.Build.props"
+      - "Directory.Packages.props"
+      - "**/*.sln"
+      - "**/*.csproj"
+      - "src/**"
+      - "scripts/**"
   workflow_dispatch:
     inputs:
       release_version:
@@ -25,6 +37,10 @@ permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: public-agent-release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   publish-exe:
     runs-on: windows-2025-vs2026
@@ -37,6 +53,50 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
+
+      - name: Resolve release inputs
+        id: release
+        shell: pwsh
+        env:
+          DISPATCH_RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+          DISPATCH_CHANNEL: ${{ github.event.inputs.channel }}
+          DISPATCH_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = $env:DISPATCH_RELEASE_VERSION
+            $channel = $env:DISPATCH_CHANNEL
+            $notes = $env:DISPATCH_RELEASE_NOTES
+            if ([string]::IsNullOrWhiteSpace($notes)) {
+              $notes = "Public Cerberus Windows Agent $channel release."
+            }
+          } else {
+            $version = "0.2.0-preview.${{ github.run_number }}"
+            $channel = "preview"
+            $shortSha = "${{ github.sha }}".Substring(0, 12)
+            $notes = "Automated preview release from ${{ github.ref_name }}@$shortSha."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "release_version is required."
+          }
+          if ($channel -notin @("dev", "preview", "stable")) {
+            throw "Unsupported release channel: $channel"
+          }
+
+          $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
+          $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
+          $assetBase = "Cerberus.Agent.App-$channel-$cleanVersion"
+          $setupBase = "Cerberus.Agent.Setup-$channel-$cleanVersion"
+
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $notes | Set-Content -Path out/release-notes.md -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "setup_base=$setupBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "make_latest=$(if ($channel -eq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build gated release bundle
         shell: pwsh
@@ -51,68 +111,46 @@ jobs:
           CERBERUS_SSO_SCOPE: ${{ vars.CERBERUS_SSO_SCOPE }}
           CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
         run: |
-          if ("${{ inputs.channel }}" -eq "dev") {
+          if ("${{ steps.release.outputs.channel }}" -eq "dev") {
             ./scripts/build-public-release.ps1 `
-              -Version "${{ inputs.release_version }}" `
-              -Channel "${{ inputs.channel }}" `
+              -Version "${{ steps.release.outputs.version }}" `
+              -Channel "${{ steps.release.outputs.channel }}" `
               -AllowUnsignedDevBuild
           } else {
             ./scripts/build-public-release.ps1 `
-              -Version "${{ inputs.release_version }}" `
-              -Channel "${{ inputs.channel }}"
+              -Version "${{ steps.release.outputs.version }}" `
+              -Channel "${{ steps.release.outputs.channel }}"
           }
-
-      - name: Compute release metadata
-        id: meta
-        shell: pwsh
-        run: |
-          $version = "${{ inputs.release_version }}"
-          $channel = "${{ inputs.channel }}"
-          $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
-          $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
-          $assetBase = "Cerberus.Agent.App-$channel-$cleanVersion"
-          $setupBase = "Cerberus.Agent.Setup-$channel-$cleanVersion"
-          $notes = "${{ inputs.release_notes }}"
-          if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = "Public Cerberus Windows Agent $channel release."
-          }
-          New-Item -ItemType Directory -Force -Path out | Out-Null
-          $notes | Set-Content -Path out/release-notes.md -Encoding utf8
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "setup_base=$setupBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "make_latest=$(if ($channel -eq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload gated release bundle artifact
         uses: actions/upload-artifact@v7
         with:
-          name: cerberus-windows-agent-${{ inputs.channel }}-${{ inputs.release_version }}
+          name: cerberus-windows-agent-${{ steps.release.outputs.channel }}-${{ steps.release.outputs.version }}
           path: out/public-release/publish/
           if-no-files-found: error
 
       - name: Create GitHub release
         uses: ncipollo/release-action@v1.21.0
         with:
-          tag: ${{ steps.meta.outputs.tag }}
-          name: Cerberus Windows Agent ${{ inputs.release_version }} (${{ inputs.channel }})
-          prerelease: ${{ steps.meta.outputs.prerelease }}
-          makeLatest: ${{ steps.meta.outputs.make_latest }}
+          tag: ${{ steps.release.outputs.tag }}
+          name: Cerberus Windows Agent ${{ steps.release.outputs.version }} (${{ steps.release.outputs.channel }})
+          prerelease: ${{ steps.release.outputs.prerelease }}
+          makeLatest: ${{ steps.release.outputs.make_latest }}
           allowUpdates: false
           bodyFile: out/release-notes.md
           artifacts: |
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.exe
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.zip
-            out/public-release/publish/${{ steps.meta.outputs.setup_base }}.msi
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sha256
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sbom.json
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.provenance.json
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.release-gate.json
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.update-manifest.json
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.exe
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip
+            out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update preview latest release
-        if: ${{ inputs.channel == 'preview' }}
+        if: ${{ steps.release.outputs.channel == 'preview' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -123,14 +161,14 @@ jobs:
             $global:LASTEXITCODE = 0
           }
           gh release create preview-latest `
-            out/public-release/publish/${{ steps.meta.outputs.setup_base }}.msi `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.exe `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.zip `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sha256 `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.sbom.json `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.provenance.json `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.release-gate.json `
-            out/public-release/publish/${{ steps.meta.outputs.asset_base }}.update-manifest.json `
+            out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.exe `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256 `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
             --title "Cerberus Windows Agent preview-latest" `
             --notes-file out/release-notes.md `
             --prerelease
