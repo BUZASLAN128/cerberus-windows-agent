@@ -1,5 +1,6 @@
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Legal;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -86,15 +87,41 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("WIXUI_ACCEPT_LICENSE_AGREEMENT", package);
         Assert.Contains("CERBERUS_EULA_ACCEPTED", package);
         Assert.Contains("BlockInstallWithoutEula", package);
-        Assert.Contains("WIXUI_ACCEPT_LICENSE_AGREEMENT = 1", package);
-        Assert.Contains("LicenseAccepted = 1", package);
+        Assert.Contains("UILevel &lt; 5", package);
         Assert.Contains("CERBERUS_EULA_ACCEPTED = 1", package);
+        Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT = 1", package);
+        Assert.DoesNotContain("LicenseAccepted = 1", package);
         Assert.Contains(@"Software\Cerberus\WindowsAgent\LegalConsent", package);
         Assert.Contains("msi_eula_dialog", package);
         Assert.Contains("Cerberus.Agent.App.exe\" --tray", package);
         Assert.DoesNotContain("--accept-eula", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("powershell.exe", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InstallerPackage_EulaGateDoesNotBlockFullUiAfterLicenseDialog()
+    {
+        var repoRoot = FindRepoRoot();
+        var package = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Package.wxs"));
+
+        var match = Regex.Match(
+            package,
+            @"Action=""BlockInstallWithoutEula""\s+Before=""InstallValidate""\s+Condition=""(?<condition>[^""]+)""");
+
+        Assert.True(match.Success, "BlockInstallWithoutEula execute-sequence condition was not found.");
+
+        var condition = match.Groups["condition"].Value;
+        Assert.Equal(
+            "NOT Installed AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1",
+            condition);
+
+        Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT", condition);
+        Assert.DoesNotContain("LicenseAccepted", condition);
     }
 
     [Fact]
