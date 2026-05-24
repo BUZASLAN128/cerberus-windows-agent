@@ -18,6 +18,8 @@ public sealed class HeartbeatLoop
     private readonly IAgentTelemetryProvider? _telemetryProvider;
     private readonly OfflineTelemetryBuffer? _telemetryBuffer;
     private readonly TimeSpan _commandTimeout;
+    private readonly int _commandConcurrency;
+    private readonly TimeSpan _initialSnapshotDelay;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -33,6 +35,8 @@ public sealed class HeartbeatLoop
         OfflineTelemetryBuffer? telemetryBuffer = null,
         IAgentLogger? log = null,
         TimeSpan? commandTimeout = null,
+        int commandConcurrency = 2,
+        TimeSpan? initialSnapshotDelay = null,
         AgentBuildMetadata? metadata = null)
     {
         _api = api;
@@ -56,13 +60,17 @@ public sealed class HeartbeatLoop
         _commandTimeout = commandTimeout is null || commandTimeout.Value <= TimeSpan.Zero
             ? TimeSpan.FromSeconds(120)
             : commandTimeout.Value;
+        _commandConcurrency = Math.Clamp(commandConcurrency, 1, 8);
+        _initialSnapshotDelay = initialSnapshotDelay is null || initialSnapshotDelay.Value < TimeSpan.Zero
+            ? TimeSpan.FromSeconds(60)
+            : initialSnapshotDelay.Value;
     }
 
     public async Task RunAsync(CancellationToken ct)
     {
         var degraded = false;
         var startedEventSent = false;
-        var nextSnapshotAt = DateTimeOffset.MinValue;
+        var nextSnapshotAt = DateTimeOffset.UtcNow.Add(_initialSnapshotDelay);
         while (!ct.IsCancellationRequested)
         {
             try
@@ -146,19 +154,7 @@ public sealed class HeartbeatLoop
                     continue;
                 }
 
-                foreach (var cmd in hb.PendingCommands)
-                {
-                    var res = await _dispatcher.DispatchAsync(cmd, _commandTimeout, ct).ConfigureAwait(false);
-                    var resultBody = new
-                    {
-                        status = res.Status,
-                        exit_code = res.ExitCode,
-                        stdout = res.Stdout,
-                        stderr = res.Stderr,
-                        post_verify = res.PostVerify,
-                    };
-                    await _api.SubmitCommandResultAsync(cmd.Id, resultBody, ct).ConfigureAwait(false);
-                }
+                await DispatchPendingCommandsAsync(hb.PendingCommands, ct).ConfigureAwait(false);
 
                 var delay = ApplyJitter(hb.NextPollSeconds, 0.20);
                 await Task.Delay(TimeSpan.FromSeconds(delay), ct);
@@ -182,6 +178,38 @@ public sealed class HeartbeatLoop
         var delta = (int)Math.Ceiling(baseSec * pct);
         var off = RandomNumberGenerator.GetInt32(-delta, delta + 1);
         return Math.Max(1, baseSec + off);
+    }
+
+    private async Task DispatchPendingCommandsAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
+    {
+        if (commands.Count == 0)
+            return;
+
+        using var gate = new SemaphoreSlim(_commandConcurrency, _commandConcurrency);
+        var tasks = commands.Select(cmd => DispatchOneCommandAsync(cmd, gate, ct)).ToArray();
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private async Task DispatchOneCommandAsync(AgentCommand cmd, SemaphoreSlim gate, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var res = await _dispatcher.DispatchAsync(cmd, _commandTimeout, ct).ConfigureAwait(false);
+            var resultBody = new
+            {
+                status = res.Status,
+                exit_code = res.ExitCode,
+                stdout = res.Stdout,
+                stderr = res.Stderr,
+                post_verify = res.PostVerify,
+            };
+            await _api.SubmitCommandResultAsync(cmd.Id, resultBody, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
@@ -215,7 +243,7 @@ public sealed class HeartbeatLoop
                     OfflineTelemetryKinds.Snapshot,
                     snapshot,
                     idempotencyKey: "snapshot-latest",
-                    priority: 10,
+                    priority: 1,
                     ct: ct).ConfigureAwait(false);
             }
             catch (Exception bufferEx)
@@ -254,7 +282,7 @@ public sealed class HeartbeatLoop
                     OfflineTelemetryKinds.Events,
                     batch,
                     idempotencyKey: idempotencyKey,
-                    priority: 5,
+                    priority: 10,
                     ct: ct).ConfigureAwait(false);
             }
             catch (Exception bufferEx)

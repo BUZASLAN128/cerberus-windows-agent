@@ -36,19 +36,21 @@ public sealed class AgentUpdateStager
     private readonly HttpClient _http;
     private readonly AgentUpdateTrust _trust;
     private readonly string _stagingRoot;
+    private readonly IAgentLogger _log;
 
     public static string DefaultStagingRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
         "CerberusAgent",
         "updates");
 
-    public AgentUpdateStager(HttpClient http, AgentUpdateTrust trust, string stagingRoot)
+    public AgentUpdateStager(HttpClient http, AgentUpdateTrust trust, string stagingRoot, IAgentLogger? log = null)
     {
         _http = http;
         _trust = trust;
         _stagingRoot = string.IsNullOrWhiteSpace(stagingRoot)
             ? throw new ArgumentException("Update staging root is required.", nameof(stagingRoot))
             : stagingRoot;
+        _log = log ?? NullAgentLogger.Instance;
     }
 
     public static AgentUpdateSignal FromHeartbeat(HeartbeatResponse response)
@@ -107,6 +109,7 @@ public sealed class AgentUpdateStager
             Path.Combine(stageDir, "update-plan.json"),
             JsonSerializer.Serialize(plan, JsonOptions),
             ct).ConfigureAwait(false);
+        PruneOldStagedVersions(manifest.Version);
         return plan;
     }
 
@@ -164,9 +167,9 @@ public sealed class AgentUpdateStager
         try
         {
             if (backupPath is not null)
-                File.Copy(fullTargetPath, backupPath, overwrite: false);
+                File.Move(fullTargetPath, backupPath, overwrite: false);
 
-            File.Copy(fullArtifactPath, fullTargetPath, overwrite: true);
+            File.Copy(fullArtifactPath, fullTargetPath, overwrite: false);
             var appliedHash = await HashFileAsync(fullTargetPath, ct).ConfigureAwait(false);
             if (!string.Equals(appliedHash, plan.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Applied update checksum mismatch.");
@@ -177,7 +180,11 @@ public sealed class AgentUpdateStager
         catch
         {
             if (backupPath is not null && File.Exists(backupPath))
-                File.Copy(backupPath, fullTargetPath, overwrite: true);
+            {
+                if (File.Exists(fullTargetPath))
+                    File.Delete(fullTargetPath);
+                File.Move(backupPath, fullTargetPath, overwrite: false);
+            }
             throw;
         }
     }
@@ -202,6 +209,8 @@ public sealed class AgentUpdateStager
 
         var buffer = new byte[64 * 1024];
         long total = 0;
+        long nextProgressBytes = 8 * 1024 * 1024;
+        var contentLength = response.Content.Headers.ContentLength;
         while (true)
         {
             var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
@@ -212,11 +221,53 @@ public sealed class AgentUpdateStager
                 throw new InvalidOperationException("Update artifact exceeds size limit.");
             await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
             sha.TransformBlock(buffer, 0, read, null, 0);
+            if (total >= nextProgressBytes)
+            {
+                LogDownloadProgress(total, contentLength);
+                nextProgressBytes = total + (8 * 1024 * 1024);
+            }
         }
+        LogDownloadProgress(total, contentLength);
         sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
         var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
         if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update artifact checksum mismatch.");
+    }
+
+    private void LogDownloadProgress(long total, long? contentLength)
+    {
+        if (contentLength is > 0)
+        {
+            var pct = Math.Min(100, (double)total / contentLength.Value * 100);
+            _log.Info($"Agent update download progress: {total}/{contentLength.Value} bytes ({pct:F1}%).");
+            return;
+        }
+
+        _log.Info($"Agent update download progress: {total} bytes.");
+    }
+
+    private void PruneOldStagedVersions(string currentVersion)
+    {
+        try
+        {
+            var root = new DirectoryInfo(_stagingRoot);
+            if (!root.Exists)
+                return;
+
+            var oldDirs = root
+                .EnumerateDirectories()
+                .Where(dir => !string.Equals(dir.Name, currentVersion, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(dir => dir.CreationTimeUtc)
+                .Skip(2)
+                .ToArray();
+
+            foreach (var dir in oldDirs)
+                dir.Delete(recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"Agent update staging cleanup skipped: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static async Task<string> HashFileAsync(string path, CancellationToken ct)

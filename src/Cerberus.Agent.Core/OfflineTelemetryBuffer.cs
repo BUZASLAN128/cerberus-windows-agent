@@ -37,6 +37,9 @@ public sealed class OfflineTelemetryBuffer
     private readonly int _maxEntries;
     private readonly int _maxBytes;
     private readonly TimeSpan _ttl;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private bool _cacheLoaded;
+    private List<OfflineTelemetryRecord> _cachedRecords = new();
 
     public OfflineTelemetryBuffer(
         string path,
@@ -62,35 +65,56 @@ public sealed class OfflineTelemetryBuffer
         if (bytes > AgentTelemetryLimits.MaxJsonBytes)
             throw new InvalidOperationException($"Offline telemetry item too large: {bytes} bytes.");
 
-        var records = await LoadAsync(ct).ConfigureAwait(false);
-        records = PruneExpired(records, DateTimeOffset.UtcNow);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var records = await LoadNoLockAsync(ct).ConfigureAwait(false);
+            records = PruneExpired(records, DateTimeOffset.UtcNow);
 
-        if (!string.IsNullOrWhiteSpace(idempotencyKey))
-            records.RemoveAll(r => string.Equals(r.IdempotencyKey, idempotencyKey, StringComparison.Ordinal));
+            if (!string.IsNullOrWhiteSpace(idempotencyKey))
+                records.RemoveAll(r => string.Equals(r.IdempotencyKey, idempotencyKey, StringComparison.Ordinal));
 
-        if (string.Equals(kind, OfflineTelemetryKinds.Snapshot, StringComparison.Ordinal))
-            records.RemoveAll(r => string.Equals(r.Kind, OfflineTelemetryKinds.Snapshot, StringComparison.Ordinal));
+            if (string.Equals(kind, OfflineTelemetryKinds.Snapshot, StringComparison.Ordinal))
+                records.RemoveAll(r => string.Equals(r.Kind, OfflineTelemetryKinds.Snapshot, StringComparison.Ordinal));
 
-        records.Add(new OfflineTelemetryRecord(
-            Id: Guid.NewGuid().ToString("N"),
-            Kind: kind,
-            Json: json,
-            CreatedAtUtc: DateTimeOffset.UtcNow,
-            IdempotencyKey: string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey,
-            Priority: priority));
+            records.Add(new OfflineTelemetryRecord(
+                Id: Guid.NewGuid().ToString("N"),
+                Kind: kind,
+                Json: json,
+                CreatedAtUtc: DateTimeOffset.UtcNow,
+                IdempotencyKey: string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey,
+                Priority: priority));
 
-        records = PruneToLimits(records);
-        await SaveAsync(records, ct).ConfigureAwait(false);
+            records = PruneToLimits(records);
+            await SaveNoLockAsync(records, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<IReadOnlyList<OfflineTelemetryRecord>> ReadBatchAsync(int maxItems, CancellationToken ct)
     {
-        var records = PruneExpired(await LoadAsync(ct).ConfigureAwait(false), DateTimeOffset.UtcNow);
-        records = records
-            .OrderBy(r => r.CreatedAtUtc)
-            .Take(Math.Max(1, maxItems))
-            .ToList();
-        return records;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var records = await LoadNoLockAsync(ct).ConfigureAwait(false);
+            var beforePrune = records.Count;
+            records = PruneExpired(records, DateTimeOffset.UtcNow);
+            if (records.Count != beforePrune)
+                await SaveNoLockAsync(records, ct).ConfigureAwait(false);
+
+            return records
+                .OrderByDescending(r => r.Priority)
+                .ThenBy(r => r.CreatedAtUtc)
+                .Take(Math.Max(1, maxItems))
+                .ToList();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task RemoveAsync(IEnumerable<string> ids, CancellationToken ct)
@@ -99,15 +123,30 @@ public sealed class OfflineTelemetryBuffer
         if (remove.Count == 0)
             return;
 
-        var records = await LoadAsync(ct).ConfigureAwait(false);
-        records.RemoveAll(r => remove.Contains(r.Id));
-        await SaveAsync(records, ct).ConfigureAwait(false);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var records = await LoadNoLockAsync(ct).ConfigureAwait(false);
+            records.RemoveAll(r => remove.Contains(r.Id));
+            await SaveNoLockAsync(records, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
-    private async Task<List<OfflineTelemetryRecord>> LoadAsync(CancellationToken ct)
+    private async Task<List<OfflineTelemetryRecord>> LoadNoLockAsync(CancellationToken ct)
     {
+        if (_cacheLoaded)
+            return _cachedRecords.ToList();
+
         if (!File.Exists(_path))
+        {
+            _cacheLoaded = true;
+            _cachedRecords = new List<OfflineTelemetryRecord>();
             return new List<OfflineTelemetryRecord>();
+        }
 
         try
         {
@@ -118,8 +157,10 @@ public sealed class OfflineTelemetryBuffer
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind == JsonValueKind.Array)
             {
-                return JsonSerializer.Deserialize<List<OfflineTelemetryRecord>>(json, JsonOpts)
+                _cachedRecords = JsonSerializer.Deserialize<List<OfflineTelemetryRecord>>(json, JsonOpts)
                     ?? new List<OfflineTelemetryRecord>();
+                _cacheLoaded = true;
+                return _cachedRecords.ToList();
             }
 
             var envelope = JsonSerializer.Deserialize<OfflineTelemetryStoreEnvelope>(json, JsonOpts);
@@ -132,16 +173,20 @@ public sealed class OfflineTelemetryBuffer
             if (!string.Equals(checksum, envelope.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Offline telemetry buffer checksum mismatch.");
 
-            return records;
+            _cachedRecords = records;
+            _cacheLoaded = true;
+            return _cachedRecords.ToList();
         }
         catch (Exception ex) when (ex is JsonException or IOException or InvalidDataException or UnauthorizedAccessException)
         {
             QuarantineCorruptBuffer();
+            _cachedRecords = new List<OfflineTelemetryRecord>();
+            _cacheLoaded = true;
             return new List<OfflineTelemetryRecord>();
         }
     }
 
-    private async Task SaveAsync(IReadOnlyList<OfflineTelemetryRecord> records, CancellationToken ct)
+    private async Task SaveNoLockAsync(IReadOnlyList<OfflineTelemetryRecord> records, CancellationToken ct)
     {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrWhiteSpace(dir))
@@ -179,6 +224,9 @@ public sealed class OfflineTelemetryBuffer
             {
                 File.Move(tempPath, _path);
             }
+
+            _cachedRecords = normalized.ToList();
+            _cacheLoaded = true;
         }
         finally
         {

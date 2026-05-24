@@ -6,6 +6,9 @@ internal static class UpdateApplyMode
 {
     public static async Task<int> RunAsync(string planPath, string? targetPath, CancellationToken ct)
     {
+        if (!Elevation.IsAdministrator())
+            throw new InvalidOperationException("Administrator privileges are required to apply a staged agent update.");
+
         var target = string.IsNullOrWhiteSpace(targetPath)
             ? Environment.ProcessPath
             : targetPath;

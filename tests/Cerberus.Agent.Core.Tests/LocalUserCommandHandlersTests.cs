@@ -177,6 +177,36 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Fact]
+    public async Task CreateManagedUser_RejectsCredentialPublicKeyWithoutFingerprintBeforeMutation()
+    {
+        using var rsa = RSA.Create(2048);
+        var publicPem = PublicKeyPem(rsa);
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new
+            {
+                username = "cerb_sennu_k7m2q6x4",
+                audit_correlation_id = "audit-id",
+                managed_account_id = "managed-account-id",
+                assignment_id = "assignment-id",
+                membership_user_id = "membership-user-id",
+                marker_id = "marker-id",
+                credential_public_key_pem = publicPem,
+            });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("fingerprint", result.Stderr);
+    }
+
+
+    [Fact]
     public async Task CreateManagedUser_RejectsCredentialPublicKeyFingerprintMismatchBeforeMutation()
     {
         using var rsa = RSA.Create(2048);
@@ -394,6 +424,25 @@ public sealed class LocalUserCommandHandlersTests
         Assert.True(Assert.IsType<bool>(method.Invoke(null, ["cerb_sennu_k7m2q6x4"])));
         Assert.False(Assert.IsType<bool>(method.Invoke(null, ["cerbtest_unit"])));
         Assert.False(Assert.IsType<bool>(method.Invoke(null, ["sennurcop_k7m2q6x4aa"])));
+    }
+
+    [Fact]
+    public void TryAcquireMutationSlot_RateLimitsDuplicateMutationForSameUser()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("TryAcquireMutationSlot", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var now = DateTimeOffset.UtcNow;
+        var args = new object?[] { "create", "cerb_ratea_k7m2q6x4", now, null };
+
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, args)));
+
+        args = ["create", "cerb_ratea_k7m2q6x4", now.AddMilliseconds(100), null];
+        Assert.False(Assert.IsType<bool>(method.Invoke(null, args)));
+        Assert.True(Assert.IsType<TimeSpan>(args[3]) > TimeSpan.Zero);
+
+        args = ["disable", "cerb_ratea_k7m2q6x4", now.AddMilliseconds(100), null];
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, args)));
     }
 
     [Fact]

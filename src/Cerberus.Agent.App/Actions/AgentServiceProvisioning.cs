@@ -3,6 +3,8 @@ using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Security;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Cerberus.Agent.App.Actions;
 
@@ -43,17 +45,45 @@ internal static class AgentServiceCredentialBridge
             .SaveAsync(identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey, ct)
             .ConfigureAwait(false);
 
-        var (verifiedIdentity, _, _, verifiedBackendUrl, _, _) =
+        var (verifiedIdentity, verifiedRefreshToken, verifiedPrivateKeyPem, verifiedBackendUrl, verifiedTailscaleLoginServer, verifiedTailscaleAuthkey) =
             await machineStore.LoadAsync(ct).ConfigureAwait(false);
 
         if (!string.Equals(verifiedIdentity.AgentId, identity.AgentId, StringComparison.Ordinal) ||
             !string.Equals(verifiedIdentity.TenantId, identity.TenantId, StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(verifiedBackendUrl))
+            !string.Equals(verifiedBackendUrl, backendUrl, StringComparison.Ordinal) ||
+            !string.Equals(verifiedRefreshToken, refreshToken, StringComparison.Ordinal) ||
+            !string.Equals(verifiedPrivateKeyPem, privateKeyPem, StringComparison.Ordinal) ||
+            !string.Equals(verifiedTailscaleLoginServer, tailscaleLoginServer, StringComparison.Ordinal) ||
+            !string.Equals(verifiedTailscaleAuthkey, tailscaleAuthkey, StringComparison.Ordinal) ||
+            !string.Equals(
+                CredentialFingerprint(identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey),
+                CredentialFingerprint(verifiedIdentity, verifiedRefreshToken, verifiedPrivateKeyPem, verifiedBackendUrl, verifiedTailscaleLoginServer, verifiedTailscaleAuthkey),
+                StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Machine-scope agent registration verification failed.");
         }
 
         return new AgentServiceCredentialPromotionResult(identity.AgentId, identity.TenantId);
+    }
+
+    private static string CredentialFingerprint(
+        AgentIdentity identity,
+        string refreshToken,
+        string privateKeyPem,
+        string backendUrl,
+        string? tailscaleLoginServer,
+        string? tailscaleAuthkey)
+    {
+        var canonical = string.Join(
+            "\u001f",
+            identity.AgentId,
+            identity.TenantId,
+            refreshToken,
+            privateKeyPem,
+            backendUrl,
+            tailscaleLoginServer ?? "",
+            tailscaleAuthkey ?? "");
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
     internal static async Task<AgentServiceCredentialPromotionResult> PromoteAndClearSourceAsync(

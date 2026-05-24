@@ -21,7 +21,13 @@ internal static class ServiceMode
         var (_, _, privateKeyPem, storedBackendUrl, _, _) = await secrets.LoadAsync(ct);
         var backendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl;
 
-        using var http = new HttpClient { BaseAddress = new Uri(backendUrl.TrimEnd('/')), Timeout = TimeSpan.FromSeconds(30) };
+        var baseAddress = new Uri(backendUrl.TrimEnd('/'));
+        using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
+        using var updateHttp = new HttpClient
+        {
+            BaseAddress = baseAddress,
+            Timeout = ReadTimeSpanFromSeconds("CERBERUS_AGENT_UPDATE_TIMEOUT_SECONDS", TimeSpan.FromMinutes(10)),
+        };
 
         var signer = new RequestSigner(privateKeyPem);
         var tokens = new AgentTokenManager(http, secrets);
@@ -60,7 +66,7 @@ internal static class ServiceMode
 
         var dispatcher = new CommandDispatcher(handlers, idempotency);
         var statusProvider = new TailscaleStatusProvider();
-        var updateCoordinator = BuildUpdateCoordinator(http, log);
+        var updateCoordinator = BuildUpdateCoordinator(updateHttp, log);
         var loop = new HeartbeatLoop(
             api,
             dispatcher,
@@ -106,7 +112,16 @@ internal static class ServiceMode
             ExpectedChannel: channel,
             AllowedArtifactPrefixes: prefixes,
             CurrentVersion: WindowsDeviceInfo.GetAgentVersion());
-        return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, stagingRoot), log);
+        return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, stagingRoot, log), log);
+    }
+
+    private static TimeSpan ReadTimeSpanFromSeconds(string envName, TimeSpan defaultValue)
+    {
+        var raw = Environment.GetEnvironmentVariable(envName);
+        if (!int.TryParse(raw, out var seconds) || seconds < 30)
+            return defaultValue;
+
+        return TimeSpan.FromSeconds(seconds);
     }
 
     private static async Task ReportUpdateFailureAsync(

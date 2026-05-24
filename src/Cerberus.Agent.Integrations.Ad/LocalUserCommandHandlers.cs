@@ -1,5 +1,6 @@
 using System.DirectoryServices;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Cryptography;
@@ -38,6 +39,8 @@ public static partial class LocalUserCommandHandlers
     private const string ManagedUserDescription = "Cerberus managed local account.";
     private const int PasswordCannotChangeFlag = 0x0040;
     private const int PasswordNeverExpiresFlag = 0x10000;
+    private static readonly TimeSpan LocalMutationCooldown = TimeSpan.FromSeconds(2);
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> LastLocalMutationByKey = new(StringComparer.OrdinalIgnoreCase);
 
     public static ICommandHandler[] CreateDefaultHandlers()
         =>
@@ -59,6 +62,7 @@ public static partial class LocalUserCommandHandlers
             return RunLocalMutationAsync(
                 payload,
                 CreateOrRotateUser,
+                "create",
                 "local_user_create_failed",
                 CreateFailedMessage,
                 ct);
@@ -77,6 +81,7 @@ public static partial class LocalUserCommandHandlers
             return RunLocalMutationAsync(
                 payload,
                 DisableUser,
+                "disable",
                 "local_user_disable_failed",
                 DisableFailedMessage,
                 ct);
@@ -95,6 +100,7 @@ public static partial class LocalUserCommandHandlers
             return RunLocalMutationAsync(
                 payload,
                 DeleteUser,
+                "delete",
                 "local_user_delete_failed",
                 DeleteFailedMessage,
                 ct);
@@ -104,6 +110,7 @@ public static partial class LocalUserCommandHandlers
     private static Task<CommandResult> RunLocalMutationAsync(
         LocalUserPayload payload,
         Func<LocalUserPayload, CommandResult> action,
+        string mutationName,
         string failureCode,
         string failureMessage,
         CancellationToken ct)
@@ -111,6 +118,14 @@ public static partial class LocalUserCommandHandlers
             () =>
             {
                 ct.ThrowIfCancellationRequested();
+                if (!TryAcquireMutationSlot(mutationName, payload.Username, DateTimeOffset.UtcNow, out var retryAfter))
+                {
+                    return Fail(
+                        "local_user_rate_limited",
+                        $"Managed local user {mutationName} is rate limited. Retry after {retryAfter.TotalSeconds:F0} seconds.",
+                        payload);
+                }
+
                 var unsupported = EnsureLocalAccountsSupported(payload);
                 if (unsupported is not null)
                     return unsupported;
@@ -152,11 +167,13 @@ public static partial class LocalUserCommandHandlers
                 existing.Properties["Description"].Value = ManagedDescription(payload);
                 ApplyManagedPasswordPolicy(existing);
                 existing.CommitChanges();
+                var localSid = GetLocalSid(existing);
                 return Success(
                     payload.CredentialRequestId is null ? "already_exists" : "password_rotated",
                     payload,
                     enabled: IsUserEnabled(payload.Username),
-                    localSid: GetLocalSid(existing),
+                    localSid: localSid.Value,
+                    localSidStatus: localSid.Status,
                     encryptedPassword: EncryptPassword(password, payload),
                     rdpCredential: BuildRdpCredentialEnvelope(password, payload),
                     rdpLogonRight: rdpLogonRight.Status);
@@ -184,11 +201,13 @@ public static partial class LocalUserCommandHandlers
             return Fail("rdp_logon_right_failed", "Remote Desktop Users membership could not be granted.", payload, createdRdpLogonRight.Status);
         }
 
+        var createdSid = GetLocalSid(user);
         return Success(
             "created",
             payload,
             enabled: true,
-            localSid: GetLocalSid(user),
+            localSid: createdSid.Value,
+            localSidStatus: createdSid.Status,
             encryptedPassword: EncryptPassword(generatedPassword, payload),
             rdpCredential: BuildRdpCredentialEnvelope(generatedPassword, payload),
             rdpLogonRight: createdRdpLogonRight.Status);
@@ -208,11 +227,13 @@ public static partial class LocalUserCommandHandlers
             var rdpLogonRight = RemoveRemoteDesktopUserMembership(payload.Username);
             user.InvokeSet("AccountDisabled", true);
             user.CommitChanges();
+            var localSid = GetLocalSid(user);
             return Success(
                 "disabled",
                 payload,
                 enabled: false,
-                localSid: GetLocalSid(user),
+                localSid: localSid.Value,
+                localSidStatus: localSid.Status,
                 rdpLogonRight: rdpLogonRight);
         }
     }
@@ -236,7 +257,8 @@ public static partial class LocalUserCommandHandlers
                 "deleted",
                 payload,
                 enabled: false,
-                localSid: sid,
+                localSid: sid.Value,
+                localSidStatus: sid.Status,
                 rdpLogonRight: rdpLogonRight);
         }
     }
@@ -569,19 +591,19 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private static string? GetLocalSid(DirectoryEntry user)
+    private static SidLookupResult GetLocalSid(DirectoryEntry user)
     {
         try
         {
             if (user.Properties["objectSid"].Value is byte[] bytes && bytes.Length > 0)
-                return new SecurityIdentifier(bytes, 0).Value;
+                return new(new SecurityIdentifier(bytes, 0).Value, "ok");
         }
         catch (Exception ex) when (ex is InvalidOperationException or COMException or ArgumentException)
         {
-            return null;
+            return new(null, ex.GetType().Name);
         }
 
-        return null;
+        return new(null, "missing");
     }
 
     private static string? EncryptPassword(string password, LocalUserPayload payload)
@@ -682,6 +704,15 @@ public static partial class LocalUserCommandHandlers
                 failure = Fail(
                     "weak_credential_public_key",
                     "Credential public key must be RSA 2048 bits or stronger.",
+                    payload);
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(payload.CredentialKeyFingerprint))
+            {
+                failure = Fail(
+                    "missing_credential_public_key_fingerprint",
+                    "Credential public key fingerprint is required.",
                     payload);
                 return false;
             }
@@ -787,6 +818,7 @@ public static partial class LocalUserCommandHandlers
         string? localSid = null,
         string? encryptedPassword = null,
         Dictionary<string, object?>? rdpCredential = null,
+        string? localSidStatus = null,
         string? rdpLogonRight = null)
         => new(
             "DONE",
@@ -805,11 +837,39 @@ public static partial class LocalUserCommandHandlers
                 encryption_key_fingerprint = payload.CredentialKeyFingerprint,
                 rdp_credential = rdpCredential,
                 local_sid = localSid,
-                local_sid_status = localSid is null ? "unavailable" : "ok",
+                local_sid_status = localSidStatus ?? (localSid is null ? "unavailable" : "ok"),
                 rdp_logon_right = rdpLogonRight,
                 exists = code is not "deleted" and not "not_found",
                 enabled,
             });
+
+    private static bool TryAcquireMutationSlot(
+        string mutationName,
+        string username,
+        DateTimeOffset now,
+        out TimeSpan retryAfter)
+    {
+        retryAfter = TimeSpan.Zero;
+        PruneMutationSlots(now);
+        var key = $"{mutationName}:{username}";
+        if (LastLocalMutationByKey.TryGetValue(key, out var last) && now - last < LocalMutationCooldown)
+        {
+            retryAfter = LocalMutationCooldown - (now - last);
+            return false;
+        }
+
+        LastLocalMutationByKey[key] = now;
+        return true;
+    }
+
+    private static void PruneMutationSlots(DateTimeOffset now)
+    {
+        foreach (var (key, value) in LastLocalMutationByKey)
+        {
+            if (now - value > TimeSpan.FromMinutes(5))
+                LastLocalMutationByKey.TryRemove(key, out _);
+        }
+    }
 
     private static CommandResult Fail(string code, string message, LocalUserPayload? payload = null, string? rdpLogonRight = null)
         => new(
@@ -828,6 +888,8 @@ public static partial class LocalUserCommandHandlers
                 rdp_logon_right = rdpLogonRight,
             });
 
+    // Managed Windows usernames use one canonical, Windows-safe shape:
+    // cerb_<5 lower alnum chars starting with a letter>_<8 lower base32 chars>.
     [GeneratedRegex("^cerb_[a-z][a-z0-9]{4}_[a-z2-7]{8}$", RegexOptions.CultureInvariant)]
     private static partial Regex ManagedUsernameRegex();
 
@@ -856,4 +918,5 @@ public static partial class LocalUserCommandHandlers
         [property: JsonPropertyName("rdp_domain")] string? RdpDomain = null);
 
     private sealed record RdpLogonRightResult(string Status, bool Granted);
+    private sealed record SidLookupResult(string? Value, string Status);
 }

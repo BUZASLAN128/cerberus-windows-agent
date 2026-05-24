@@ -3,6 +3,7 @@ using Cerberus.Agent.App.Telemetry.Sections;
 using Cerberus.Agent.Core;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 
 namespace Cerberus.Agent.Core.Tests;
 
@@ -40,6 +41,39 @@ public sealed class WindowsTelemetryCollectorTests
         Assert.Equal(expected.OrderBy(x => x), snapshot.Sections.Keys.OrderBy(x => x));
         Assert.Equal(expected.Length, snapshot.SectionHashes.Count);
         Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= AgentTelemetryLimits.MaxJsonBytes);
+    }
+
+    [Fact]
+    public async Task BuildSnapshotAsync_HonorsTelemetrySectionAllowlist()
+    {
+        var collector = new WindowsTelemetryCollector(
+            WindowsTelemetrySectionCatalog.CreateDefault("identity,clock"));
+        var snapshot = await collector.BuildSnapshotAsync(
+            new AgentBuildMetadata(
+                AgentVersion: "1.2.3",
+                BuildId: "build-1",
+                BuildChannel: "dev",
+                BootId: "boot-1",
+                SupportedSchemaVersions: AgentSchemaVersions.All),
+            lastHeartbeat: null,
+            ct: CancellationToken.None);
+
+        Assert.Equal(new[] { "clock", "identity" }, snapshot.Sections.Keys.OrderBy(x => x));
+    }
+
+    [Theory]
+    [InlineData("10.12.13.14")]
+    [InlineData("172.16.1.2")]
+    [InlineData("192.168.1.10")]
+    [InlineData("127.0.0.1")]
+    [InlineData("fd00::1")]
+    public void NetworkTelemetry_RedactsPrivateAddressValues(string rawAddress)
+    {
+        var redacted = NetworkTelemetrySectionCollector.RedactAddress(IPAddress.Parse(rawAddress));
+        var json = JsonSerializer.Serialize(redacted);
+
+        Assert.DoesNotContain(rawAddress, json);
+        Assert.Contains("private", json);
     }
 
     [Fact]

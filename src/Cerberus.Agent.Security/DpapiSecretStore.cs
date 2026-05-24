@@ -76,8 +76,17 @@ public sealed class DpapiSecretStore : ISecretStore
             optionalEntropy: null,
             _scope == SecretStoreScope.User ? DataProtectionScope.CurrentUser : DataProtectionScope.LocalMachine);
 
-        await File.WriteAllBytesAsync(_path, enc, ct).ConfigureAwait(false);
+        await using var stream = new FileStream(
+            _path,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4096,
+            FileOptions.WriteThrough | FileOptions.Asynchronous);
+
         LockDownAcl(_path, _scope);
+        await stream.WriteAsync(enc.AsMemory(), ct).ConfigureAwait(false);
+        await stream.FlushAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>

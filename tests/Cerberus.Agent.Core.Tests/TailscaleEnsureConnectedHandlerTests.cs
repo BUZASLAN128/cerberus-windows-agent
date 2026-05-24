@@ -20,6 +20,7 @@ public sealed class TailscaleEnsureConnectedHandlerTests
                     secretsLoaded = true;
                     return new StubSecretStore("https://headscale.example", "tskey-auth-123");
                 },
+                autoConnectEnabled: () => false,
                 allowUpCommandExport: () => false,
                 baseDir: tmp,
                 applyAcl: false);
@@ -29,7 +30,7 @@ public sealed class TailscaleEnsureConnectedHandlerTests
             Assert.Equal("FAILED", result.Status);
             Assert.False(secretsLoaded);
             Assert.False(File.Exists(Path.Combine(tmp, "tailscale-up.cmd")));
-            Assert.Contains("read-only", result.Stderr);
+            Assert.Contains("disabled", result.Stderr);
         }
         finally
         {
@@ -47,6 +48,7 @@ public sealed class TailscaleEnsureConnectedHandlerTests
             var handler = new TailscaleEnsureConnectedHandler(
                 probe: _ => Task.FromResult((true, false, (object?)new { state = "NeedsLogin" }, (string?)null)),
                 secretStoreFactory: () => new StubSecretStore("https://headscale.example", "tskey-auth-123"),
+                autoConnectEnabled: () => false,
                 allowUpCommandExport: () => true,
                 baseDir: tmp,
                 applyAcl: false);
@@ -57,16 +59,53 @@ public sealed class TailscaleEnsureConnectedHandlerTests
             var cmdPath = Directory.GetFiles(tmp, "tailscale-up-*.cmd").Single();
             var content = await File.ReadAllTextAsync(cmdPath);
             Assert.Contains("tailscale up", content);
-            Assert.Contains("tskey-auth-123", content);
+            Assert.Contains("CERBERUS_TAILSCALE_AUTHKEY", content);
+            Assert.DoesNotContain("tskey-auth-123", content);
             var metadataPath = Directory.GetFiles(tmp, "tailscale-up-*.metadata.json").Single();
             var metadata = await File.ReadAllTextAsync(metadataPath);
             Assert.Contains("cerberus.tailscale-debug-export.v1", metadata);
             Assert.Contains("expires_at_utc", metadata);
+            Assert.Contains("contains_plaintext_authkey", metadata);
+            Assert.DoesNotContain("tskey-auth-123", metadata);
         }
         finally
         {
             try { Directory.Delete(tmp, recursive: true); } catch { }
         }
+    }
+
+    [Fact]
+    public async Task HandleAsync_RunsTailscaleUp_WhenAutoConnectEnabled()
+    {
+        var probeCount = 0;
+        string? capturedLoginServer = null;
+        string? capturedAuthKey = null;
+        var handler = new TailscaleEnsureConnectedHandler(
+            probe: _ =>
+            {
+                probeCount++;
+                return Task.FromResult((
+                    true,
+                    probeCount > 1,
+                    (object?)new { state = probeCount > 1 ? "Running" : "NeedsLogin" },
+                    (string?)null));
+            },
+            secretStoreFactory: () => new StubSecretStore("https://headscale.example", "tskey-auth-123"),
+            upRunner: (loginServer, authKey, _) =>
+            {
+                capturedLoginServer = loginServer;
+                capturedAuthKey = authKey;
+                return Task.FromResult(new TailscaleEnsureConnectedHandler.TailscaleUpRunResult(0, "ok", ""));
+            },
+            autoConnectEnabled: () => true,
+            allowUpCommandExport: () => false);
+
+        var result = await handler.HandleAsync(Command(), CancellationToken.None);
+
+        Assert.Equal("DONE", result.Status);
+        Assert.Equal("https://headscale.example", capturedLoginServer);
+        Assert.Equal("tskey-auth-123", capturedAuthKey);
+        Assert.True(probeCount >= 2);
     }
 
     private static AgentCommand Command()

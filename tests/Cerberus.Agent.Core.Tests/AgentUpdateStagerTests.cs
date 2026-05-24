@@ -25,6 +25,14 @@ public sealed class AgentUpdateStagerTests
             return new ByteArrayContent(artifact);
         }));
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(Path.Combine(root, "0.9.0"));
+        Directory.CreateDirectory(Path.Combine(root, "1.0.0"));
+        Directory.CreateDirectory(Path.Combine(root, "1.0.1"));
+        Directory.SetCreationTimeUtc(Path.Combine(root, "0.9.0"), DateTime.UtcNow.AddMinutes(-30));
+        Directory.SetCreationTimeUtc(Path.Combine(root, "1.0.0"), DateTime.UtcNow.AddMinutes(-20));
+        Directory.SetCreationTimeUtc(Path.Combine(root, "1.0.1"), DateTime.UtcNow.AddMinutes(-10));
+        var log = new CaptureLogger();
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
@@ -32,7 +40,8 @@ public sealed class AgentUpdateStagerTests
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.1.0"),
-            root);
+            root,
+            log);
 
         var plan = await stager.StageAsync(UpdateResponse(), CancellationToken.None);
 
@@ -40,6 +49,8 @@ public sealed class AgentUpdateStagerTests
         Assert.Equal("1.2.0", plan.Version);
         Assert.True(File.Exists(plan.ArtifactPath));
         Assert.True(File.Exists(Path.Combine(root, "1.2.0", "update-plan.json")));
+        Assert.Contains(log.InfoMessages, item => item.Contains("download progress", StringComparison.Ordinal));
+        Assert.False(Directory.Exists(Path.Combine(root, "0.9.0")));
     }
 
     [Fact]
@@ -217,5 +228,16 @@ public sealed class AgentUpdateStagerTests
                 RequestMessage = request,
             });
         }
+    }
+
+    private sealed class CaptureLogger : IAgentLogger
+    {
+        public List<string> InfoMessages { get; } = [];
+
+        public void Info(string message) => InfoMessages.Add(message);
+
+        public void Warn(string message) { }
+
+        public void Error(string message, Exception? ex = null) { }
     }
 }

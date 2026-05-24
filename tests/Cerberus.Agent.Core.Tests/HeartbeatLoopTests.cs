@@ -26,7 +26,8 @@ public sealed class HeartbeatLoopTests
             minDelayOnError: TimeSpan.FromMilliseconds(10),
             responseHandler: new HeartbeatResponseHandler(new StaticSecretStore(), NullAgentLogger.Instance),
             telemetryProvider: new StaticTelemetryProvider(),
-            log: NullAgentLogger.Instance);
+            log: NullAgentLogger.Instance,
+            initialSnapshotDelay: TimeSpan.Zero);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
         await loop.RunAsync(cts.Token);

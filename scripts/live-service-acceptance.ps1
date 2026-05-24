@@ -333,6 +333,11 @@ function Test-LiveAcceptancePreflight {
   if ($NeedsAdmin -and -not $isAdmin) {
     $failures += "admin_required"
   }
+  if ($RunManagedAssignmentLifecycle -and -not $InstallService -and -not $StartService) {
+    if (-not $serviceState.installed -or $serviceState.status -ne "Running") {
+      $failures += "service_running_required"
+    }
+  }
   if ($RequirePortal -and [string]::IsNullOrWhiteSpace($AgentId)) {
     $failures += "agent_id_required"
   }
@@ -379,18 +384,47 @@ function Invoke-PortalJson {
   )
 
   $uri = "$BackendUrl$Path"
-  if ($null -eq $Body) {
-    return Invoke-RestMethod -Method $Method -Uri $uri -Headers $portal.Headers -WebSession $portal.Session
-  }
+  try {
+    if ($null -eq $Body) {
+      return Invoke-RestMethod -Method $Method -Uri $uri -Headers $portal.Headers -WebSession $portal.Session
+    }
 
-  $json = $Body | ConvertTo-Json -Depth 8
-  return Invoke-RestMethod `
-    -Method $Method `
-    -Uri $uri `
-    -Headers $portal.Headers `
-    -WebSession $portal.Session `
-    -ContentType "application/json" `
-    -Body $json
+    $json = $Body | ConvertTo-Json -Depth 8
+    return Invoke-RestMethod `
+      -Method $Method `
+      -Uri $uri `
+      -Headers $portal.Headers `
+      -WebSession $portal.Session `
+      -ContentType "application/json" `
+      -Body $json
+  } catch {
+    $responseBody = $null
+    $statusCode = $null
+    if ($_.Exception.Response) {
+      $statusCode = [int]$_.Exception.Response.StatusCode
+      try {
+        $stream = $_.Exception.Response.GetResponseStream()
+        if ($stream) {
+          $reader = [System.IO.StreamReader]::new($stream)
+          $responseBody = $reader.ReadToEnd()
+          $reader.Dispose()
+        }
+      } catch {
+        $responseBody = "<failed to read response body>"
+      }
+    }
+    $safeFailure = [ordered]@{
+      method = $Method
+      path = $Path
+      status_code = $statusCode
+      request_body = $Body
+      response_body = $responseBody
+      error = $_.Exception.Message
+    }
+    $failurePath = Write-ArtifactJson -Name "portal-request-failed-$($Method.ToLowerInvariant())-$((New-ClientRequestId -Prefix 'http') -replace '[^a-zA-Z0-9-]', '-').json" -Value $safeFailure
+    Write-Host "portal-request-failed -> $failurePath"
+    throw
+  }
 }
 
 function Get-ObjectPropertyValue {
@@ -595,7 +629,118 @@ function New-ClientRequestId {
   return "live-$Prefix-$([Guid]::NewGuid().ToString('N'))"
 }
 
+function Resolve-ManagedAssignmentUser {
+  if (-not [string]::IsNullOrWhiteSpace($ManagedUserId) -and -not $ManagedUserId.StartsWith("LIVE/")) {
+    return
+  }
+
+  $usersResponse = Invoke-PortalJson -Method GET -Path "/api/v1/portal/users/?limit=100"
+  $users = @()
+  if ($usersResponse.PSObject.Properties["users"]) {
+    $users = @($usersResponse.users)
+  }
+
+  $activeUsers = @(
+    $users | Where-Object {
+      -not [string]::IsNullOrWhiteSpace([string]$_.user_id) -and
+      ([string]$_.state).Trim().ToLowerInvariant() -eq "active"
+    }
+  )
+  if ($activeUsers.Count -lt 1) {
+    throw "No active tenant users are available for managed assignment acceptance."
+  }
+
+  $assignmentRows = @()
+  if (-not [string]::IsNullOrWhiteSpace($AgentId)) {
+    try {
+      $assignmentsResponse = Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/assignments"
+      $assignmentRows = @($assignmentsResponse)
+    } catch {
+      Write-Host "managed assignment candidate scan skipped: $($_.Exception.Message)"
+    }
+  }
+  $occupiedUserIds = @()
+  $candidateEvidence = @()
+  foreach ($assignmentRow in $assignmentRows) {
+    $assignedUserId = [string]$assignmentRow.user_id
+    $assignedUsername = [string]$assignmentRow.managed_username
+    if ([string]::IsNullOrWhiteSpace($assignedUserId) -or [string]::IsNullOrWhiteSpace($assignedUsername)) {
+      continue
+    }
+    $localState = Get-LocalUserState -Name $assignedUsername
+    $candidateEvidence += [ordered]@{
+      user_id = $assignedUserId
+      managed_username = $assignedUsername
+      local_user_exists = [bool]$localState.exists
+      account_status = [string]$assignmentRow.managed_account_status
+      assignment_status = [string]$assignmentRow.status
+    }
+    if ($localState.exists) {
+      $occupiedUserIds += $assignedUserId
+    }
+  }
+  if ($candidateEvidence.Count -gt 0) {
+    $path = Write-ArtifactJson -Name "portal-managed-assignment-candidates.json" -Value $candidateEvidence
+    Write-Host "portal-managed-assignment-candidates -> $path"
+  }
+
+  $availableUsers = @(
+    $activeUsers | Where-Object {
+      $occupiedUserIds -notcontains [string]$_.user_id
+    }
+  )
+  if ($availableUsers.Count -lt 1) {
+    $availableUsers = $activeUsers
+  }
+
+  $selected = $null
+  if (-not [string]::IsNullOrWhiteSpace($ManagedUserEmail)) {
+    $wantedEmail = $ManagedUserEmail.Trim().ToLowerInvariant()
+    $selected = $availableUsers | Where-Object {
+      ([string]$_.email).Trim().ToLowerInvariant() -eq $wantedEmail -or
+      ([string]$_.user_email).Trim().ToLowerInvariant() -eq $wantedEmail
+    } | Select-Object -First 1
+  }
+  if ($null -eq $selected) {
+    $selected = $availableUsers | Where-Object {
+      ([string]$_.email).Trim().ToLowerInvariant().EndsWith("@acceptance.local") -or
+      ([string]$_.user_email).Trim().ToLowerInvariant().EndsWith("@acceptance.local")
+    } | Select-Object -First 1
+  }
+  if ($null -eq $selected) {
+    $selected = $availableUsers | Where-Object {
+      $role = ([string]$_.role).Trim().ToLowerInvariant()
+      $role -notin @("tenant_owner", "owner", "workspace_owner")
+    } | Select-Object -First 1
+  }
+  if ($null -eq $selected) {
+    $selected = $availableUsers | Select-Object -First 1
+  }
+
+  $script:ManagedUserId = [string]$selected.user_id
+  $email = [string]$selected.email
+  if ([string]::IsNullOrWhiteSpace($email)) {
+    $email = [string]$selected.user_email
+  }
+  if (-not [string]::IsNullOrWhiteSpace($email)) {
+    $script:ManagedUserEmail = $email
+  }
+  if ([string]::IsNullOrWhiteSpace($ManagedDisplayName)) {
+    $script:ManagedDisplayName = if (-not [string]::IsNullOrWhiteSpace($email)) { $email } else { $script:ManagedUserId }
+  }
+
+  $path = Write-ArtifactJson -Name "portal-managed-assignment-user.json" -Value ([ordered]@{
+    user_id = $script:ManagedUserId
+    email = $script:ManagedUserEmail
+    role = [string]$selected.role
+    state = [string]$selected.state
+  })
+  Write-Host "portal-managed-assignment-user -> $path"
+}
+
 function New-ManagedAssignment {
+  Resolve-ManagedAssignmentUser
+
   $body = @{
     user_id = $ManagedUserId
     access_profile = "managed_local_user"
@@ -816,12 +961,6 @@ function Run-ManagedAssignmentLifecycle {
   if ([string]::IsNullOrWhiteSpace($AgentId)) {
     throw "AgentId is required for managed assignment lifecycle acceptance."
   }
-  if ([string]::IsNullOrWhiteSpace($ManagedUserId)) {
-    $script:ManagedUserId = "LIVE/$Username"
-  }
-  if ([string]::IsNullOrWhiteSpace($ManagedUserEmail)) {
-    $script:ManagedUserEmail = "$($Username -replace '_', '.')@acceptance.local"
-  }
   if ([string]::IsNullOrWhiteSpace($ManagedDisplayName)) {
     $script:ManagedDisplayName = "Cerberus Live Acceptance"
   }
@@ -964,7 +1103,7 @@ try {
     throw "Repeated managed assignment acceptance requires -DeleteAssignmentAfterManagedLifecycle to avoid leftover assignments."
   }
 
-  $needsAdmin = $InstallService -or $StartService -or $StopService -or $UninstallService -or $RunLocalUserLifecycle -or $RunManagedAssignmentLifecycle
+  $needsAdmin = $InstallService -or $StartService -or $StopService -or $UninstallService -or $RunLocalUserLifecycle
   $serviceProjectionNeedsPortal = (-not $SkipServiceProjectionCheck) -and ($InstallService -or $StartService -or $StopService -or $UninstallService)
   $needsPortal = $RunLocalUserLifecycle -or $RunManagedAssignmentLifecycle -or $serviceProjectionNeedsPortal
   Test-LiveAcceptancePreflight -RequirePortal $needsPortal -NeedsAdmin $needsAdmin

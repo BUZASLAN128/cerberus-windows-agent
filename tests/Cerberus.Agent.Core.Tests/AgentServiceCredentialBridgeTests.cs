@@ -197,6 +197,22 @@ public sealed class AgentServiceCredentialBridgeTests
     }
 
     [Fact]
+    public async Task PromoteAsync_FailsWhenDestinationStoreMutatesCredentialPayload()
+    {
+        var userStore = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local",
+            tailscaleLoginServer: "http://tailscale.local",
+            tailscaleAuthkey: "tskey-auth-secret");
+        var machineStore = new MutatingSaveSecretStore();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AgentServiceCredentialBridge.PromoteAsync(userStore, machineStore, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task EnsureMachineRegistrationForInstallAsync_PromotesUserRegistrationWhenAvailable()
     {
         var userStore = new InMemorySecretStore(
@@ -393,6 +409,51 @@ public sealed class AgentServiceCredentialBridgeTests
             string? TailscaleLoginServer,
             string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
             => throw new InvalidOperationException("secret store unavailable");
+
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class MutatingSaveSecretStore : ISecretStore
+    {
+        private AgentIdentity _identity = new("agent-id", "tenant-id");
+        private string _refreshToken = "";
+        private string _privateKeyPem = "";
+        private string _backendUrl = "";
+        private string? _tailscaleLoginServer;
+        private string? _tailscaleAuthkey;
+
+        public Task SaveAsync(
+            AgentIdentity identity,
+            string refreshToken,
+            string privateKeyPem,
+            string backendUrl,
+            string? tailscaleLoginServer,
+            string? tailscaleAuthkey,
+            CancellationToken ct)
+        {
+            _identity = identity;
+            _refreshToken = refreshToken + "-tampered";
+            _privateKeyPem = privateKeyPem;
+            _backendUrl = backendUrl;
+            _tailscaleLoginServer = tailscaleLoginServer;
+            _tailscaleAuthkey = tailscaleAuthkey;
+            return Task.CompletedTask;
+        }
+
+        public Task<(
+            AgentIdentity Identity,
+            string RefreshToken,
+            string PrivateKeyPem,
+            string BackendUrl,
+            string? TailscaleLoginServer,
+            string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
+            => Task.FromResult((
+                _identity,
+                _refreshToken,
+                _privateKeyPem,
+                _backendUrl,
+                _tailscaleLoginServer,
+                _tailscaleAuthkey));
 
         public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
     }

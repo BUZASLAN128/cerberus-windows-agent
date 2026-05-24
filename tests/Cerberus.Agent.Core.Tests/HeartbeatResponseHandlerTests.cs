@@ -15,7 +15,7 @@ public sealed class HeartbeatResponseHandlerTests
             Response(revoke: """{"revoked":true,"clear_local_credentials":true}"""),
             CancellationToken.None);
 
-        Assert.Equal(HeartbeatControlAction.Stop, action);
+        Assert.Equal(HeartbeatControlAction.Continue, action);
         Assert.False(secrets.Cleared);
     }
 

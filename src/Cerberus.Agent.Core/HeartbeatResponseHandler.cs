@@ -43,6 +43,7 @@ public sealed class HeartbeatResponseHandler
             {
                 _log.Warn(
                     "remote_clear_ignored_requires_confirmation: revoke requested local credential clear without explicit confirmation.");
+                return HeartbeatControlAction.Continue;
             }
             return HeartbeatControlAction.Stop;
         }

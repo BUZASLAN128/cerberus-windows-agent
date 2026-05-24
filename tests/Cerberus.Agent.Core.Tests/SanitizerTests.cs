@@ -45,4 +45,40 @@ public sealed class SanitizerTests
         Assert.Contains("tskey-auth-[REDACTED]", redacted);
         Assert.Contains("[REDACTED_SECRET]", redacted);
     }
+
+    [Fact]
+    public void Redact_RedactsStructuredJsonSensitiveFields()
+    {
+        var input = """
+        {"access_token":"abc123","nested":{"password":"secret-value"},"safe":"visible"}
+        """;
+
+        var redacted = Sanitizer.Redact(input);
+
+        Assert.DoesNotContain("abc123", redacted);
+        Assert.DoesNotContain("secret-value", redacted);
+        Assert.Contains("\"access_token\":\"[REDACTED]\"", redacted);
+        Assert.Contains("\"password\":\"[REDACTED]\"", redacted);
+        Assert.Contains("visible", redacted);
+    }
+
+    [Fact]
+    public void Redact_RedactsGeneratedSensitiveJsonValues()
+    {
+        for (var i = 0; i < 25; i++)
+        {
+            var secret = Convert.ToBase64String(Guid.NewGuid().ToByteArray()) +
+                         Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+            var input = $$"""
+            {"refresh_token":"{{secret}}","items":[{"client_secret":"{{secret}}"}],"label":"safe-{{i}}"}
+            """;
+
+            var redacted = Sanitizer.Redact(input);
+
+            Assert.DoesNotContain(secret, redacted);
+            Assert.Contains("safe-" + i, redacted);
+            Assert.Contains("\"refresh_token\":\"[REDACTED]\"", redacted);
+            Assert.Contains("\"client_secret\":\"[REDACTED]\"", redacted);
+        }
+    }
 }
