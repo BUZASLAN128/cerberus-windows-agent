@@ -76,11 +76,11 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
                 -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
               $channel = "preview"
-              $version = "0.2.0-preview.${{ github.run_number }}"
+              $version = "0.2.${{ github.run_number }}-preview.${{ github.run_number }}"
               $notes = "Automated signed preview release from ${{ github.ref_name }}@$shortSha."
             } else {
               $channel = "dev"
-              $version = "0.2.0-dev.${{ github.run_number }}"
+              $version = "0.2.${{ github.run_number }}-dev.${{ github.run_number }}"
               $notes = "Automated unsigned dev release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
             }
           }
