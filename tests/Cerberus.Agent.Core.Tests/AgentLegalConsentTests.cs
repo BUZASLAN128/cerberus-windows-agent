@@ -98,10 +98,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("ProgramFilesFolder", package);
         Assert.DoesNotContain("RemoveLegacyAppDataInstallFolder", package);
         Assert.DoesNotContain("LegacyAppDataCleanupComponent", package);
+        Assert.Contains("<Files Include=\"$(var.AgentPublishDir)\\**\">", package);
+        Assert.Contains("<Exclude Files=\"$(var.AgentPublishDir)\\**\\*.pdb\" />", package);
         Assert.Contains("Cerberus.Agent.Setup.exe", package);
-        Assert.Contains("Cerberus.Agent.Service.exe", package);
         Assert.Contains("Cerberus.Agent.Tray.exe", package);
-        Assert.Contains("Cerberus.Agent.Updater.exe", package);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
         Assert.Contains("LaunchAgentSetup", package);
         Assert.DoesNotContain("Cerberus.Agent.App.exe\" --tray", package);
@@ -122,6 +122,17 @@ public sealed class AgentLegalConsentTests
         Assert.DoesNotContain("--accept-eula", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("powershell.exe", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);
+
+        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-public-release.ps1"));
+        Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
+        Assert.Contains("-p:PublishSingleFile=false", releaseScript);
+        Assert.Contains("-p:DebugSymbols=false", releaseScript);
+        Assert.Contains("Cerberus.Agent.Setup.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Tray.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
+        Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
     }
 
     [Fact]

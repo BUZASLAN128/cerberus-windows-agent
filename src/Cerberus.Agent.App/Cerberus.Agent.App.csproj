@@ -24,23 +24,29 @@
     <AgentDefaultOAuthRedirectPort Condition="'$(AgentDefaultOAuthRedirectPort)' == ''">0</AgentDefaultOAuthRedirectPort>
   </PropertyGroup>
 
-  <Target Name="GenerateAgentBuildConfig" BeforeTargets="BeforeCompile">
-    <ItemGroup>
-      <AgentBuildConfigLines Include="namespace Cerberus.Agent.App%3B" />
-      <AgentBuildConfigLines Include="internal static class AgentBuildConfig" />
-      <AgentBuildConfigLines Include="{" />
-      <AgentBuildConfigLines Include="    public const string BackendUrlBase64 = &quot;$(AgentDefaultBackendUrlBase64)&quot;%3B" />
-      <AgentBuildConfigLines Include="    public const string SsoBaseUrlBase64 = &quot;$(AgentDefaultSsoBaseUrlBase64)&quot;%3B" />
-      <AgentBuildConfigLines Include="    public const string SsoClientIdBase64 = &quot;$(AgentDefaultSsoClientIdBase64)&quot;%3B" />
-      <AgentBuildConfigLines Include="    public const string SsoScopeBase64 = &quot;$(AgentDefaultSsoScopeBase64)&quot;%3B" />
-      <AgentBuildConfigLines Include="    public const int OAuthRedirectPort = $(AgentDefaultOAuthRedirectPort)%3B" />
-      <AgentBuildConfigLines Include="}" />
-    </ItemGroup>
-    <WriteLinesToFile File="$(IntermediateOutputPath)AgentBuildConfig.g.cs" Lines="@(AgentBuildConfigLines)" Overwrite="true" Encoding="UTF-8" />
-    <ItemGroup>
-      <Compile Include="$(IntermediateOutputPath)AgentBuildConfig.g.cs" />
-    </ItemGroup>
-  </Target>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentDefaultBackendUrlBase64</_Parameter1>
+      <_Parameter2>$(AgentDefaultBackendUrlBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentDefaultSsoBaseUrlBase64</_Parameter1>
+      <_Parameter2>$(AgentDefaultSsoBaseUrlBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentDefaultSsoClientIdBase64</_Parameter1>
+      <_Parameter2>$(AgentDefaultSsoClientIdBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentDefaultSsoScopeBase64</_Parameter1>
+      <_Parameter2>$(AgentDefaultSsoScopeBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentDefaultOAuthRedirectPort</_Parameter1>
+      <_Parameter2>$(AgentDefaultOAuthRedirectPort)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />

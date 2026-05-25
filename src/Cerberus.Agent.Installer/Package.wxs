@@ -79,12 +79,11 @@
 
   <Fragment>
     <ComponentGroup Id="AgentComponents" Directory="INSTALLFOLDER">
-      <Component Id="AgentExecutableComponent" Guid="{7C6D5F34-379E-4B19-9BC3-4F840E07C765}">
-        <File Id="SetupExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Setup.exe" />
-        <File Id="ServiceExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Service.exe" />
-        <File Id="TrayExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Tray.exe" />
-        <File Id="UpdaterExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Updater.exe" />
-        <File Id="UninstallExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Uninstall.exe" />
+      <Files Include="$(var.AgentPublishDir)\**">
+        <Exclude Files="$(var.AgentPublishDir)\**\*.pdb" />
+        <Exclude Files="$(var.AgentPublishDir)\**\*.wixpdb" />
+      </Files>
+      <Component Id="AgentInstallRegistryComponent" Guid="{7C6D5F34-379E-4B19-9BC3-4F840E07C765}">
         <ServiceControl
             Id="ControlExistingCerberusAgentService"
             Name="CerberusAgent"

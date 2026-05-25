@@ -138,7 +138,10 @@ function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem)
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
+Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+$runtimePublishDir = Join-Path $publishDir "runtime"
+New-Item -ItemType Directory -Force -Path $runtimePublishDir | Out-Null
 
 if ($DefaultOAuthRedirectPort -le 0) {
   $redirectPortFromEnv = $env:CERBERUS_OAUTH_REDIRECT_PORT
@@ -171,11 +174,11 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
     "-c", $Configuration,
     "-r", $Runtime,
     "--self-contained", "true",
-    "-p:PublishSingleFile=true",
-    "-p:IncludeNativeLibrariesForSelfExtract=true",
-    "-p:EnableCompressionInSingleFile=true",
+    "-p:PublishSingleFile=false",
+    "-p:DebugType=None",
+    "-p:DebugSymbols=false",
     "-p:Version=$Version",
-    "-o", $publishDir
+    "-o", $runtimePublishDir
   )
   if ($WithSetupConfig) {
     $args += @(
@@ -204,11 +207,11 @@ if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
 }
 $msiProductVersion = $Matches[1]
 $runtimeExecutables = @(
-  (Join-Path $publishDir "Cerberus.Agent.Setup.exe"),
-  (Join-Path $publishDir "Cerberus.Agent.Service.exe"),
-  (Join-Path $publishDir "Cerberus.Agent.Tray.exe"),
-  (Join-Path $publishDir "Cerberus.Agent.Updater.exe"),
-  (Join-Path $publishDir "Cerberus.Agent.Uninstall.exe")
+  (Join-Path $runtimePublishDir "Cerberus.Agent.Setup.exe"),
+  (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe"),
+  (Join-Path $runtimePublishDir "Cerberus.Agent.Tray.exe"),
+  (Join-Path $runtimePublishDir "Cerberus.Agent.Updater.exe"),
+  (Join-Path $runtimePublishDir "Cerberus.Agent.Uninstall.exe")
 )
 foreach ($runtimeExe in $runtimeExecutables) {
   if (-not (Test-Path -LiteralPath $runtimeExe)) {
@@ -250,7 +253,7 @@ dotnet build (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.I
   -p:Version=$Version `
   -p:MsiProductVersion=$msiProductVersion `
   -p:Channel=$Channel `
-  -p:AgentPublishDir=$publishDir `
+  -p:AgentPublishDir=$runtimePublishDir `
   -p:InstallerAssetBase=$installerBuildBase `
   -p:OutputPath="$publishDir\"
 
@@ -278,7 +281,7 @@ if ($signed) {
 
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
-Compress-Archive -Path $runtimeExecutables -DestinationPath $zip -Force
+Compress-Archive -Path (Join-Path $runtimePublishDir "*") -DestinationPath $zip -Force
 $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
 $msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
