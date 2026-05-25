@@ -19,6 +19,7 @@ public sealed record AgentUpdateSignal(
     string? Channel);
 
 public sealed record AgentUpdatePlan(
+    string ArtifactKind,
     string Version,
     string Channel,
     string ArtifactPath,
@@ -93,12 +94,13 @@ public sealed class AgentUpdateStager
         Directory.CreateDirectory(stageDir);
         var artifactName = Path.GetFileName(new Uri(manifest.ArtifactUrl).LocalPath);
         if (string.IsNullOrWhiteSpace(artifactName))
-            artifactName = $"Cerberus.Agent.App-{manifest.Version}.exe";
+            artifactName = $"Cerberus.Agent.Setup-{manifest.Channel}-{manifest.Version}.msi";
         var artifactPath = Path.Combine(stageDir, artifactName);
 
         await DownloadWithHashCheckAsync(manifest, artifactPath, ct).ConfigureAwait(false);
 
         var plan = new AgentUpdatePlan(
+            ArtifactKind: manifest.ArtifactKind,
             Version: manifest.Version,
             Channel: manifest.Channel,
             ArtifactPath: artifactPath,

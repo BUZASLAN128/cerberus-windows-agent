@@ -164,45 +164,73 @@ if (-not $SkipTests) {
   dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
 }
 
-Write-Step "Publishing single-file agent"
-dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj") `
-  -c $Configuration `
-  -r $Runtime `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:EnableCompressionInSingleFile=true `
-  -p:Version=$Version `
-  -p:AgentDefaultBackendUrlBase64="$(ConvertTo-Base64Utf8 $DefaultBackendUrl)" `
-  -p:AgentDefaultSsoBaseUrlBase64="$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)" `
-  -p:AgentDefaultSsoClientIdBase64="$(ConvertTo-Base64Utf8 $DefaultSsoClientId)" `
-  -p:AgentDefaultSsoScopeBase64="$(ConvertTo-Base64Utf8 $DefaultSsoScope)" `
-  -p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort `
-  -o $publishDir
+function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
+  $args = @(
+    "publish",
+    (Join-Path $repoRoot $Project),
+    "-c", $Configuration,
+    "-r", $Runtime,
+    "--self-contained", "true",
+    "-p:PublishSingleFile=true",
+    "-p:IncludeNativeLibrariesForSelfExtract=true",
+    "-p:EnableCompressionInSingleFile=true",
+    "-p:Version=$Version",
+    "-o", $publishDir
+  )
+  if ($WithSetupConfig) {
+    $args += @(
+      "-p:AgentDefaultBackendUrlBase64=$(ConvertTo-Base64Utf8 $DefaultBackendUrl)",
+      "-p:AgentDefaultSsoBaseUrlBase64=$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)",
+      "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
+      "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
+      "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
+    )
+  }
+  dotnet @args
+}
 
-$assetBase = "Cerberus.Agent.App-$Channel-$Version"
+Write-Step "Publishing split agent runtime"
+Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" $true
+Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" $false
+Publish-AgentProject "src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj" $false
+Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" $false
+Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" $false
+
+$assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
 $setupBase = "Cerberus.Agent.Setup-$Channel-$Version"
 $versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
   throw "Release version '$Version' must start with a numeric major.minor.patch version for MSI ProductVersion."
 }
 $msiProductVersion = $Matches[1]
-$exe = Join-Path $publishDir "$assetBase.exe"
-Copy-Item (Join-Path $publishDir "Cerberus.Agent.App.exe") $exe -Force
+$runtimeExecutables = @(
+  (Join-Path $publishDir "Cerberus.Agent.Setup.exe"),
+  (Join-Path $publishDir "Cerberus.Agent.Service.exe"),
+  (Join-Path $publishDir "Cerberus.Agent.Tray.exe"),
+  (Join-Path $publishDir "Cerberus.Agent.Updater.exe"),
+  (Join-Path $publishDir "Cerberus.Agent.Uninstall.exe")
+)
+foreach ($runtimeExe in $runtimeExecutables) {
+  if (-not (Test-Path -LiteralPath $runtimeExe)) {
+    throw "Expected runtime executable was not produced: $runtimeExe"
+  }
+}
 
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
 if (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-  Write-Step "Signing executable"
+  Write-Step "Signing runtime executables"
   $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
   }
   [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
   $signtool = Find-SignTool
-  & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $exe
-  & $signtool verify /pa /v $exe
+  foreach ($runtimeExe in $runtimeExecutables) {
+    & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $runtimeExe
+    & $signtool verify /pa /v $runtimeExe
+  }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   $signed = $true
 }
@@ -250,13 +278,11 @@ if ($signed) {
 
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
-Compress-Archive -Path $exe -DestinationPath $zip -Force
-$exeHash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+Compress-Archive -Path $runtimeExecutables -DestinationPath $zip -Force
 $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
 $msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
 @(
-  "$exeHash  $assetBase.exe",
   "$zipHash  $assetBase.zip",
   "$msiHash  $setupBase.msi"
 ) | Set-Content -LiteralPath $checksums -Encoding utf8
@@ -264,7 +290,7 @@ $checksums = Join-Path $publishDir "$assetBase.sha256"
 $sbom = Join-Path $publishDir "$assetBase.sbom.json"
 $provenance = Join-Path $publishDir "$assetBase.provenance.json"
 New-MinimalSbom -RepoRoot $repoRoot -OutputFile $sbom
-New-Provenance -RepoRoot $repoRoot -OutputFile $provenance -ArtifactName "$assetBase.exe" -ArtifactSha $exeHash
+New-Provenance -RepoRoot $repoRoot -OutputFile $provenance -ArtifactName "$setupBase.msi" -ArtifactSha $msiHash
 
 $secretHits = Invoke-SecretScan -Path $repoRoot
 if ($secretHits.Count -gt 0) {
@@ -289,13 +315,14 @@ if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -a
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
   throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
 }
-$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$assetBase.exe")
+$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$setupBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
 $canonical = @(
+  "msi",
   $Version,
   $Channel,
   $artifactUrl,
-  $exeHash,
+  $msiHash,
   "Cerberus Agent Release",
   $releasedAt,
   "agent.heartbeat.v1",
@@ -303,10 +330,11 @@ $canonical = @(
 ) -join "`n"
 $manifestSignature = Sign-ManifestPayload -CanonicalPayload $canonical -PrivateKeyPem $manifestPrivateKey
 $manifest = [ordered]@{
+  artifact_kind = "msi"
   version = $Version
   channel = $Channel
   artifact_url = $artifactUrl
-  sha256 = $exeHash
+  sha256 = $msiHash
   signing_identity = "Cerberus Agent Release"
   released_at_utc = $releasedAt
   minimum_protocol_version = "agent.heartbeat.v1"
@@ -320,7 +348,7 @@ $gate = [ordered]@{
   schema = "cerberus.agent.release_gate.v1"
   channel = $Channel
   authenticode_signature_present = $signed
-  checksum_sha256 = $exeHash
+  checksum_sha256 = $msiHash
   installer = [ordered]@{
     name = "$setupBase.msi"
     checksum_sha256 = $msiHash
@@ -328,8 +356,12 @@ $gate = [ordered]@{
     eula_consent_source = "msi_eula_dialog"
     eula_required_for_execute_sequence = $true
     headless_eula_property = "CERBERUS_EULA_ACCEPTED=1"
-    consent_storage = "hkcu_registry_imported_by_agent"
-    launches_agent_arguments = "--tray"
+    consent_storage = "hklm_registry_imported_by_agent"
+    launches_agent_arguments = ""
+    service_binary = "Cerberus.Agent.Service.exe"
+    tray_binary = "Cerberus.Agent.Tray.exe"
+    updater_binary = "Cerberus.Agent.Updater.exe"
+    uninstall_binary = "Cerberus.Agent.Uninstall.exe"
     powershell_custom_action_present = $false
   }
   sbom_present = (Test-Path -LiteralPath $sbom)

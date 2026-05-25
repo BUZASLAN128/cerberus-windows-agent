@@ -6,6 +6,7 @@ public sealed class ServiceInstallerTests
 {
     [Theory]
     [InlineData("\"C:\\Program Files\\Cerberus\\Cerberus.Agent.App.exe\" --service", "C:\\Program Files\\Cerberus\\Cerberus.Agent.App.exe")]
+    [InlineData("\"C:\\Program Files\\Cerberus\\Windows Agent\\Cerberus.Agent.Service.exe\"", "C:\\Program Files\\Cerberus\\Windows Agent\\Cerberus.Agent.Service.exe")]
     [InlineData("C:\\Cerberus\\Cerberus.Agent.App.exe --service", "C:\\Cerberus\\Cerberus.Agent.App.exe")]
     [InlineData("C:\\Cerberus\\Cerberus.Agent.App.exe", "C:\\Cerberus\\Cerberus.Agent.App.exe")]
     public void ExtractExecutablePathFromServiceImagePath_ReturnsExecutablePath(string imagePath, string expected)
@@ -27,5 +28,18 @@ public sealed class ServiceInstallerTests
         Assert.False(ServiceInstaller.ServiceExecutableMatches(
             "C:\\Old\\Cerberus.Agent.App.exe",
             "C:\\New\\Cerberus.Agent.App.exe"));
+    }
+
+    [Fact]
+    public void ResolveServiceExecutablePath_PrefersSiblingServiceExe()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-service-path-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var setupPath = Path.Combine(root, "Cerberus.Agent.Setup.exe");
+        var servicePath = Path.Combine(root, "Cerberus.Agent.Service.exe");
+        File.WriteAllText(setupPath, "");
+        File.WriteAllText(servicePath, "");
+
+        Assert.Equal(servicePath, ServiceInstaller.ResolveServiceExecutablePath(setupPath));
     }
 }

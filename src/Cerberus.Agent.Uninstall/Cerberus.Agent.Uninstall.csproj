@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Cerberus.Agent.Uninstall</AssemblyName>
+    <RootNamespace>Cerberus.Agent.Uninstall</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj" />
+  </ItemGroup>
+</Project>

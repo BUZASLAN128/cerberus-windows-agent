@@ -3,6 +3,7 @@ using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.Drawing;
+using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -31,6 +32,7 @@ internal sealed class TrayHost : IDisposable
 
     private MainWindow? _window;
     private volatile bool _onboarding;
+    private int _refreshing;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
 
     public TrayHost()
@@ -156,36 +158,46 @@ internal sealed class TrayHost : IDisposable
 
     public async Task RefreshAsync()
     {
-        // IMPORTANT: Keep the tray/UI responsive. ServiceController calls can block; run off-thread.
-        var svcTask = Task.Run(AgentStatus.GetService);
-        var registeredTask = Task.Run(AgentStatus.IsRegistered);
-        var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
+        if (Interlocked.Exchange(ref _refreshing, 1) == 1)
+            return;
 
-        var svc = await svcTask;
-        var registered = await registeredTask;
-        var ts = await tsTask;
-        if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+        try
         {
-            _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
-            registered = !await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
-                new DpapiSecretStore(SecretStoreScope.User),
-                CancellationToken.None);
+            // IMPORTANT: Keep the tray/UI responsive. ServiceController calls can block; run off-thread.
+            var svcTask = Task.Run(AgentStatus.GetService);
+            var registeredTask = Task.Run(AgentStatus.IsRegistered);
+            var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
+
+            var svc = await svcTask;
+            var registered = await registeredTask;
+            var ts = await tsTask;
+            if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+            {
+                _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
+                registered = !await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
+                    new DpapiSecretStore(SecretStoreScope.User),
+                    CancellationToken.None);
+            }
+            var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
+
+            _serviceStatus.Text = $"Service: {svc.Text}";
+            _tailscaleStatus.Text = $"Tailscale: {ts.Text}";
+            _registeredStatus.Text = $"Registered: {(registered ? "yes" : "no")}";
+
+            var cfg = UiConfigStore.LoadMergedWithEnv();
+            var cfgOk = AgentOnboardingFlow.IsConfigReady(cfg);
+            _onboard.Enabled = !_onboarding && !setupComplete && cfgOk;
+            _startService.Enabled = svc.CanStart;
+            _stopService.Enabled = svc.CanStop;
+            _installService.Enabled = !svc.Installed;
+            _uninstallService.Enabled = svc.Installed;
+
+            _icon.Text = TrimTooltip($"CERBERUS Agent | {svc.Short} | {ts.Short} | reg={(registered ? "yes" : "no")}");
         }
-        var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
-
-        _serviceStatus.Text = $"Service: {svc.Text}";
-        _tailscaleStatus.Text = $"Tailscale: {ts.Text}";
-        _registeredStatus.Text = $"Registered: {(registered ? "yes" : "no")}";
-
-        var cfg = UiConfigStore.LoadMergedWithEnv();
-        var cfgOk = AgentOnboardingFlow.IsConfigReady(cfg);
-        _onboard.Enabled = !_onboarding && !setupComplete && cfgOk;
-        _startService.Enabled = svc.CanStart;
-        _stopService.Enabled = svc.CanStop;
-        _installService.Enabled = !svc.Installed;
-        _uninstallService.Enabled = svc.Installed;
-
-        _icon.Text = TrimTooltip($"CERBERUS Agent | {svc.Short} | {ts.Short} | reg={(registered ? "yes" : "no")}");
+        finally
+        {
+            Interlocked.Exchange(ref _refreshing, 0);
+        }
     }
 
     public void ShowSetupWindow()
@@ -203,9 +215,16 @@ internal sealed class TrayHost : IDisposable
                 _window = new MainWindow();
                 _window.Closing += (_, e) =>
                 {
-                    // Hide instead of closing to keep tray alive.
-                    e.Cancel = true;
-                    _window.Hide();
+                    if (_window.IsBusy)
+                    {
+                        // Keep active setup work alive; the hidden window stops its refresh timer.
+                        e.Cancel = true;
+                        _window.Hide();
+                    }
+                };
+                _window.Closed += (_, _) =>
+                {
+                    _window = null;
                 };
             }
 
@@ -213,7 +232,7 @@ internal sealed class TrayHost : IDisposable
             {
                 if (!centerOnScreen)
                 {
-                    _window.Hide();
+                    _window.Close();
                     return;
                 }
             }

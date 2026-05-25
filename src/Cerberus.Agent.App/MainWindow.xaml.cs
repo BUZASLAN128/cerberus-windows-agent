@@ -4,6 +4,7 @@ using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.IO;
+using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -15,9 +16,12 @@ public partial class MainWindow : Window
 {
     private readonly DispatcherTimer _timer;
     private volatile bool _busy;
+    private int _refreshing;
     private DateTimeOffset _ignoreDeactivateUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private RuntimeUiConfig _config;
+
+    internal bool IsBusy => _busy;
 
     public MainWindow()
     {
@@ -33,8 +37,24 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
-            await RefreshAsync();
-            _timer.Start();
+            await Dispatcher.InvokeAsync(async () =>
+            {
+                await RefreshAsync();
+                if (IsVisible)
+                    _timer.Start();
+            });
+        };
+
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible)
+            {
+                _timer.Start();
+                _ = Dispatcher.InvokeAsync(async () => await RefreshAsync());
+                return;
+            }
+
+            _timer.Stop();
         };
 
         Closed += (_, _) =>
@@ -50,7 +70,10 @@ public partial class MainWindow : Window
 
     private void Close_Click(object sender, RoutedEventArgs e)
     {
-        Hide();
+        if (_busy)
+            Hide();
+        else
+            Close();
     }
 
     // NOTE: We intentionally do NOT auto-hide on Deactivate/MouseLeave.
@@ -61,7 +84,10 @@ public partial class MainWindow : Window
     {
         if (e.Key == System.Windows.Input.Key.Escape)
         {
-            Hide();
+            if (_busy)
+                Hide();
+            else
+                Close();
             e.Handled = true;
         }
     }
@@ -91,85 +117,108 @@ public partial class MainWindow : Window
 
     private async Task RefreshAsync()
     {
-        _config = UiConfigStore.LoadMergedWithEnv();
-
-        // IMPORTANT: Keep the UI responsive. ServiceController calls can block; run off-thread.
-        var svcTask = Task.Run(AgentStatus.GetService);
-        var registeredTask = Task.Run(AgentStatus.IsRegistered);
-        var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
-
-        var svc = await svcTask;
-        var registered = await registeredTask;
-        var ts = await tsTask;
-        if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+        if (!Dispatcher.CheckAccess())
         {
-            _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
-            var cleared = await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
-                new DpapiSecretStore(SecretStoreScope.User),
-                CancellationToken.None);
-            if (cleared)
+            await Dispatcher.InvokeAsync(() => _ = RefreshAsync());
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _refreshing, 1) == 1)
+            return;
+
+        try
+        {
+            _config = UiConfigStore.LoadMergedWithEnv();
+
+            // IMPORTANT: Keep the UI responsive. ServiceController calls can block; run off-thread.
+            var svcTask = Task.Run(AgentStatus.GetService);
+            var registeredTask = Task.Run(AgentStatus.IsRegistered);
+            var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
+
+            var svc = await svcTask;
+            var registered = await registeredTask;
+            var ts = await tsTask;
+            if (!Dispatcher.CheckAccess())
             {
-                registered = false;
-                Log("Stored device registration is inactive in the portal; local registration was cleared.");
+                Interlocked.Exchange(ref _refreshing, 0);
+                await Dispatcher.InvokeAsync(() => _ = RefreshAsync());
+                return;
             }
-        }
-        var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
-        ServiceValue.Text = svc.Text;
-        TailscaleValue.Text = ts.Text;
-        RegisteredValue.Text = registered ? "yes" : "no";
+            if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+            {
+                _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
+                var cleared = await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
+                    new DpapiSecretStore(SecretStoreScope.User),
+                    CancellationToken.None);
+                if (cleared)
+                {
+                    registered = false;
+                    Log("Stored device registration is inactive in the portal; local registration was cleared.");
+                }
+            }
+            var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
-        var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
-        ReadinessValue.Text = setupComplete ? "Ready to connect" : "Setup required";
-        ReadinessDetail.Text = setupComplete
-            ? "This device is registered and the Cerberus Windows service is running."
-            : "Run setup to sign in, register this device, and install the Windows service.";
-        SetReadinessTone(setupComplete);
+            ServiceValue.Text = svc.Text;
+            TailscaleValue.Text = ts.Text;
+            RegisteredValue.Text = registered ? "yes" : "no";
 
-        OnboardBtn.Content = setupComplete ? "Ready" : "Start setup";
-        OnboardBtn.IsEnabled = !_busy && !setupComplete && cfgOk;
-        if (setupComplete)
-        {
-            OnboardHint.Text = "Ready. Device is registered and service is running.";
-        }
-        else if (registered && !svc.Installed)
-        {
-            OnboardHint.Text = "Registered. Finish setup to install the service.";
-        }
-        else if (registered)
-        {
-            OnboardHint.Text = $"Registered. Service status: {svc.Text}.";
-        }
-        else if (!cfgOk)
-        {
-            OnboardHint.Text = "Not configured. Contact your administrator.";
-        }
-        else
-        {
-            OnboardHint.Text = "Not set up yet.";
-        }
+            var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
+            ReadinessValue.Text = setupComplete ? "Ready to connect" : "Setup required";
+            ReadinessDetail.Text = setupComplete
+                ? "This device is registered and the Cerberus Windows service is running."
+                : "Run setup to sign in, register this device, and install the Windows service.";
+            SetReadinessTone(setupComplete);
 
-        InstallSvcBtn.IsEnabled = !_busy && !svc.Installed;
-        UninstallSvcBtn.IsEnabled = !_busy && svc.Installed;
-        UnregisterDeviceBtn.IsEnabled = !_busy && registered;
-        StartSvcBtn.IsEnabled = !_busy && svc.CanStart;
-        StopSvcBtn.IsEnabled = !_busy && svc.CanStop;
-        ExportTsBtn.IsEnabled = !_busy;
-        InstallTsBtn.IsEnabled = !_busy;
+            OnboardBtn.Content = setupComplete ? "Ready" : "Start setup";
+            OnboardBtn.IsEnabled = !_busy && !setupComplete && cfgOk;
+            if (setupComplete)
+            {
+                OnboardHint.Text = "Ready. Device is registered and service is running.";
+            }
+            else if (registered && !svc.Installed)
+            {
+                OnboardHint.Text = "Registered. Finish setup to install the service.";
+            }
+            else if (registered)
+            {
+                OnboardHint.Text = $"Registered. Service status: {svc.Text}.";
+            }
+            else if (!cfgOk)
+            {
+                OnboardHint.Text = "Not configured. Contact your administrator.";
+            }
+            else
+            {
+                OnboardHint.Text = "Not set up yet.";
+            }
 
-        var userCmdPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CerberusAgent",
-            "tailscale",
-            "tailscale-up.cmd");
-        var machineCmdPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
-            "tailscale",
-            "tailscale-up.cmd");
-        TsCmdPathLabel.Text = File.Exists(userCmdPath)
-            ? userCmdPath
-            : (File.Exists(machineCmdPath) ? machineCmdPath : "cmd not exported yet");
+            InstallSvcBtn.IsEnabled = !_busy && !svc.Installed;
+            UninstallSvcBtn.IsEnabled = !_busy && svc.Installed;
+            UnregisterDeviceBtn.IsEnabled = !_busy && registered;
+            StartSvcBtn.IsEnabled = !_busy && svc.CanStart;
+            StopSvcBtn.IsEnabled = !_busy && svc.CanStop;
+            ExportTsBtn.IsEnabled = !_busy;
+            InstallTsBtn.IsEnabled = !_busy;
+
+            var userCmdPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CerberusAgent",
+                "tailscale",
+                "tailscale-up.cmd");
+            var machineCmdPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "CerberusAgent",
+                "tailscale",
+                "tailscale-up.cmd");
+            TsCmdPathLabel.Text = File.Exists(userCmdPath)
+                ? userCmdPath
+                : (File.Exists(machineCmdPath) ? machineCmdPath : "cmd not exported yet");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshing, 0);
+        }
     }
 
     private async void Onboard_Click(object sender, RoutedEventArgs e)

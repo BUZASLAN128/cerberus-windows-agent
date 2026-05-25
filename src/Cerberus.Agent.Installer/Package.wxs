@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package
       Name="Cerberus Windows Agent"
       Manufacturer="Cerberus"
       Version="$(var.MsiProductVersion)"
       UpgradeCode="{8F7E4C22-4D3E-4D50-9B31-0D969B3D0D1E}"
-      Scope="perUser"
+      Scope="perMachine"
       Compressed="yes">
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
@@ -17,6 +18,27 @@
     <Property Id="CERBERUS_EULA_ACCEPTED" Secure="yes" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)Assets\EULA.rtf" />
     <ui:WixUI Id="WixUI_InstallDir" />
+    <util:CloseApplication
+        Id="CloseLegacyAgentApp"
+        Target="Cerberus.Agent.App.exe"
+        CloseMessage="yes"
+        ElevatedCloseMessage="yes"
+        RebootPrompt="no"
+        Timeout="30" />
+    <util:CloseApplication
+        Id="CloseRunningAgentTray"
+        Target="Cerberus.Agent.Tray.exe"
+        CloseMessage="yes"
+        ElevatedCloseMessage="yes"
+        RebootPrompt="no"
+        Timeout="30" />
+    <util:CloseApplication
+        Id="CloseRunningAgentSetup"
+        Target="Cerberus.Agent.Setup.exe"
+        CloseMessage="yes"
+        ElevatedCloseMessage="yes"
+        RebootPrompt="no"
+        Timeout="30" />
 
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
@@ -26,26 +48,25 @@
     </Feature>
 
     <CustomAction
-        Id="LaunchAgentTray"
+        Id="LaunchAgentSetup"
         Directory="INSTALLFOLDER"
-        ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.App.exe" --tray'
+        ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.Setup.exe"'
         Execute="immediate"
         Return="asyncNoWait" />
     <CustomAction
         Id="BlockInstallWithoutEula"
         Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
-
     <InstallExecuteSequence>
       <Custom
           Action="BlockInstallWithoutEula"
           Before="InstallValidate"
           Condition="NOT Installed AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
-      <Custom Action="LaunchAgentTray" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="LaunchAgentSetup" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
 
   <Fragment>
-    <StandardDirectory Id="LocalAppDataFolder">
+    <StandardDirectory Id="ProgramFilesFolder">
       <Directory Id="CompanyFolder" Name="Cerberus">
         <Directory Id="INSTALLFOLDER" Name="Windows Agent" />
       </Directory>
@@ -59,33 +80,57 @@
   <Fragment>
     <ComponentGroup Id="AgentComponents" Directory="INSTALLFOLDER">
       <Component Id="AgentExecutableComponent" Guid="{7C6D5F34-379E-4B19-9BC3-4F840E07C765}">
-        <File Id="AgentExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.App.exe" />
+        <File Id="SetupExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Setup.exe" />
+        <File Id="ServiceExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Service.exe" />
+        <File Id="TrayExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Tray.exe" />
+        <File Id="UpdaterExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Updater.exe" />
+        <File Id="UninstallExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Uninstall.exe" />
+        <ServiceControl
+            Id="ControlExistingCerberusAgentService"
+            Name="CerberusAgent"
+            Stop="both"
+            Wait="yes" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveCompanyFolder" Directory="CompanyFolder" On="uninstall" />
-        <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="agentExeInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="agentExeInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="installRoot" Type="string" Value="[INSTALLFOLDER]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ProductCode" Type="string" Value="[ProductCode]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="productVersion" Type="string" Value="$(var.ReleaseVersion)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateChannel" Type="string" Value="$(var.ReleaseChannel)" />
       </Component>
     </ComponentGroup>
   </Fragment>
 
   <Fragment>
     <Component Id="LegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{6FD72DD1-B76B-4E07-94A2-4355A5FB403D}">
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="accepted" Type="integer" Value="1" KeyPath="yes" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Windows Agent" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_eula_dialog" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="accepted" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Windows Agent" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_eula_dialog" />
     </Component>
   </Fragment>
 
   <Fragment>
     <Component Id="StartMenuShortcutComponent" Directory="ApplicationProgramsFolder" Guid="{E34F58AE-32F5-47E1-B41A-B8470C84587A}">
       <Shortcut
-          Id="StartMenuShortcut"
+          Id="StartMenuSetupShortcut"
           Name="Cerberus Agent Setup"
           Description="Open Cerberus Windows Agent setup"
-          Target="[INSTALLFOLDER]Cerberus.Agent.App.exe"
-          Arguments="--tray"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Setup.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      <Shortcut
+          Id="StartMenuTrayShortcut"
+          Name="Cerberus Agent Tray"
+          Description="Open Cerberus Windows Agent tray"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      <Shortcut
+          Id="StartMenuUninstallShortcut"
+          Name="Uninstall Cerberus Agent"
+          Description="Remove Cerberus Windows Agent"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Uninstall.exe"
           WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
@@ -102,8 +147,7 @@
           Id="StartupShortcut"
           Name="Cerberus Agent Tray"
           Description="Start Cerberus Windows Agent tray at sign-in"
-          Target="[INSTALLFOLDER]Cerberus.Agent.App.exe"
-          Arguments="--tray"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
     </Component>

@@ -5,7 +5,12 @@
     <Project Path="src/Cerberus.Agent.Integrations.Ad/Cerberus.Agent.Integrations.Ad.csproj" />
     <Project Path="src/Cerberus.Agent.Integrations.Tailscale/Cerberus.Agent.Integrations.Tailscale.csproj" />
     <Project Path="src/Cerberus.Agent.Observability/Cerberus.Agent.Observability.csproj" />
+    <Project Path="src/Cerberus.Agent.Runtime/Cerberus.Agent.Runtime.csproj" />
     <Project Path="src/Cerberus.Agent.Security/Cerberus.Agent.Security.csproj" />
+    <Project Path="src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" />
+    <Project Path="src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj" />
+    <Project Path="src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" />
+    <Project Path="src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj" />

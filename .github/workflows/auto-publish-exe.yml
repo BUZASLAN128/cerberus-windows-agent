@@ -94,7 +94,7 @@ jobs:
 
           $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
           $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
-          $assetBase = "Cerberus.Agent.App-$channel-$cleanVersion"
+          $assetBase = "Cerberus.Agent.Bundle-$channel-$cleanVersion"
           $setupBase = "Cerberus.Agent.Setup-$channel-$cleanVersion"
 
           New-Item -ItemType Directory -Force -Path out | Out-Null
@@ -148,7 +148,6 @@ jobs:
           allowUpdates: false
           bodyFile: out/release-notes.md
           artifacts: |
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.exe
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip
             out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256
@@ -172,7 +171,6 @@ jobs:
           }
           gh release create $latestTag `
             out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.exe `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256 `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json `

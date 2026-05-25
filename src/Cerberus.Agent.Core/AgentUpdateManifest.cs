@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 namespace Cerberus.Agent.Core;
 
 public sealed record AgentUpdateManifest(
+    [property: JsonPropertyName("artifact_kind")] string ArtifactKind,
     [property: JsonPropertyName("version")] string Version,
     [property: JsonPropertyName("channel")] string Channel,
     [property: JsonPropertyName("artifact_url")] string ArtifactUrl,
@@ -65,6 +66,7 @@ public static class AgentUpdateManifestValidator
         string? currentVersion = null,
         bool allowRollbackManifest = false)
     {
+        Require(manifest.ArtifactKind, "Update manifest artifact kind missing.");
         Require(manifest.Version, "Update manifest version missing.");
         Require(manifest.Channel, "Update manifest channel missing.");
         Require(manifest.ArtifactUrl, "Update manifest artifact URL missing.");
@@ -75,6 +77,8 @@ public static class AgentUpdateManifestValidator
         Require(manifest.Signature, "Update manifest signature missing.");
         Require(publicKeyPem, "Update manifest public key missing.");
 
+        if (!string.Equals(manifest.ArtifactKind, "msi", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update manifest artifact kind denied.");
         if (!string.Equals(manifest.Channel, expectedChannel, StringComparison.Ordinal))
             throw new InvalidOperationException("Update manifest channel mismatch.");
         if (!Sha256Regex.IsMatch(manifest.Sha256))
@@ -111,6 +115,7 @@ public static class AgentUpdateManifestValidator
     public static string CanonicalPayload(AgentUpdateManifest manifest)
         => string.Join(
             "\n",
+            manifest.ArtifactKind.ToLowerInvariant(),
             manifest.Version,
             manifest.Channel,
             manifest.ArtifactUrl,

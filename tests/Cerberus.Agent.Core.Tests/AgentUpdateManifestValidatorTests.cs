@@ -96,9 +96,10 @@ public sealed class AgentUpdateManifestValidatorTests
         bool rollbackAllowed = false)
     {
         var unsigned = new AgentUpdateManifest(
+            ArtifactKind: "msi",
             Version: version,
             Channel: channel,
-            ArtifactUrl: $"https://releases.cerberus.local/agent/{version}.exe",
+            ArtifactUrl: $"https://releases.cerberus.local/agent/{version}.msi",
             Sha256: new string('a', 64),
             SigningIdentity: "Cerberus Agent Release",
             ReleasedAtUtc: "2026-05-07T00:00:00Z",

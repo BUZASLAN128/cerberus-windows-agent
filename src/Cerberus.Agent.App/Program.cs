@@ -157,11 +157,27 @@ internal static class Program
             return 0;
         }
 
+        if (IsSetupHostProcess())
+        {
+            var setupApp = new App
+            {
+                ShutdownMode = ShutdownMode.OnMainWindowClose,
+            };
+            var window = new MainWindow();
+            setupApp.MainWindow = window;
+            window.Show();
+            return setupApp.Run();
+        }
+
         // Tray single-instance guard. If another tray session is running, ask to close it.
         if (!SingleInstanceGuard.EnsureOrExit())
             return 0;
 
-        var app = new App();
+        var app = new App
+        {
+            // The tray owns the process lifetime. Setup windows may be closed to release WPF UI memory.
+            ShutdownMode = ShutdownMode.OnExplicitShutdown,
+        };
 
         using var tray = new TrayHost();
         SingleInstanceGuard.StartExitListener(() =>
@@ -203,4 +219,10 @@ internal static class Program
            !args.Service &&
            !args.Tray &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
+
+    private static bool IsSetupHostProcess()
+    {
+        var name = System.IO.Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
+        return string.Equals(name, "Cerberus.Agent.Setup", StringComparison.OrdinalIgnoreCase);
+    }
 }

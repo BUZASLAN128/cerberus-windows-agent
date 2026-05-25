@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Actions\AgentClaimGate.cs" Link="Actions\AgentClaimGate.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Actions\AgentServiceProvisioning.cs" Link="Actions\AgentServiceProvisioning.cs" />
+    <Compile Include="..\Cerberus.Agent.App\AgentStatus.cs" Link="AgentStatus.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Elevation.cs" Link="Elevation.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Legal\AgentLegalConsent.cs" Link="Legal\AgentLegalConsent.cs" />
+    <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
+    <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateCoordinator.cs" Link="Updates\AgentUpdateCoordinator.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Updates\UpdateApplyMode.cs" Link="Updates\UpdateApplyMode.cs" />
+    <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />
+    <Compile Include="..\Cerberus.Agent.App\WindowsServiceHost.cs" Link="WindowsServiceHost.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Telemetry\**\*.cs" LinkBase="Telemetry" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Integrations.Ad\Cerberus.Agent.Integrations.Ad.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Integrations.Tailscale\Cerberus.Agent.Integrations.Tailscale.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+</Project>

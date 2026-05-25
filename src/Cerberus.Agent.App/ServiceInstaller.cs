@@ -17,8 +17,9 @@ internal static class ServiceInstaller
     {
         RequireAdminOrThrow();
 
-        var exePath = Process.GetCurrentProcess().MainModule?.FileName
-                      ?? throw new InvalidOperationException("Could not determine executable path.");
+        var currentExePath = Process.GetCurrentProcess().MainModule?.FileName
+                             ?? throw new InvalidOperationException("Could not determine executable path.");
+        var exePath = ResolveServiceExecutablePath(currentExePath);
 
         if (ServiceExists())
         {
@@ -146,6 +147,21 @@ internal static class ServiceInstaller
         }
 
         return string.Equals(installedExePath, currentExePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string ResolveServiceExecutablePath(string currentProcessPath)
+    {
+        var overridePath = Environment.GetEnvironmentVariable("CERBERUS_AGENT_SERVICE_EXE");
+        if (!string.IsNullOrWhiteSpace(overridePath))
+            return Path.GetFullPath(overridePath.Trim());
+
+        var current = Path.GetFullPath(currentProcessPath);
+        var dir = Path.GetDirectoryName(current);
+        if (string.IsNullOrWhiteSpace(dir))
+            return current;
+
+        var serviceExe = Path.Combine(dir, "Cerberus.Agent.Service.exe");
+        return File.Exists(serviceExe) ? serviceExe : current;
     }
 
     private static string? GetInstalledExecutablePath()

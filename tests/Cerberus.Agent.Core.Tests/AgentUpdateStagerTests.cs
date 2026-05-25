@@ -61,6 +61,7 @@ public sealed class AgentUpdateStagerTests
         var artifact = Path.Combine(root, "agent.exe");
         await File.WriteAllTextAsync(artifact, "tampered");
         var plan = new AgentUpdatePlan(
+            ArtifactKind: "msi",
             Version: "1.2.0",
             Channel: "stable",
             ArtifactPath: artifact,
@@ -168,9 +169,10 @@ public sealed class AgentUpdateStagerTests
     private static AgentUpdateManifest SignedManifest(RSA rsa, string sha256)
     {
         var unsigned = new AgentUpdateManifest(
+            ArtifactKind: "msi",
             Version: "1.2.0",
             Channel: "stable",
-            ArtifactUrl: "https://releases.cerberus.local/Cerberus.Agent.App-stable-1.2.0.exe",
+            ArtifactUrl: "https://releases.cerberus.local/Cerberus.Agent.Setup-stable-1.2.0.msi",
             Sha256: sha256,
             SigningIdentity: "Cerberus Agent Release",
             ReleasedAtUtc: "2026-05-07T00:00:00Z",
@@ -187,6 +189,7 @@ public sealed class AgentUpdateStagerTests
     private static async Task<string> WritePlanAsync(string root, string artifact, string sha256)
     {
         var plan = new AgentUpdatePlan(
+            ArtifactKind: "msi",
             Version: "1.2.0",
             Channel: "stable",
             ArtifactPath: artifact,
