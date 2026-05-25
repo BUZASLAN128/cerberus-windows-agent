@@ -21,6 +21,7 @@
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
       <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="StartupShortcutComponent" />
       <ComponentRef Id="LegalConsentRegistryComponent" />
     </Feature>
 
@@ -88,6 +89,23 @@
           WorkingDirectory="INSTALLFOLDER" />
       <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="StartupFolder" />
+  </Fragment>
+
+  <Fragment>
+    <Component Id="StartupShortcutComponent" Directory="StartupFolder" Guid="{C5883153-5082-4373-9825-A9FDE199B234}">
+      <Shortcut
+          Id="StartupShortcut"
+          Name="Cerberus Agent Tray"
+          Description="Start Cerberus Windows Agent tray at sign-in"
+          Target="[INSTALLFOLDER]Cerberus.Agent.App.exe"
+          Arguments="--tray"
+          WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

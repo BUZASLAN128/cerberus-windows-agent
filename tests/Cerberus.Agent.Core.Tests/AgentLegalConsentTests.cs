@@ -94,6 +94,9 @@ public sealed class AgentLegalConsentTests
         Assert.Contains(@"Software\Cerberus\WindowsAgent\LegalConsent", package);
         Assert.Contains("msi_eula_dialog", package);
         Assert.Contains("Cerberus.Agent.App.exe\" --tray", package);
+        Assert.Contains("StartupShortcutComponent", package);
+        Assert.Contains("StartupFolder", package);
+        Assert.Contains("trayAutostart", package);
         Assert.DoesNotContain("--accept-eula", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("powershell.exe", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);

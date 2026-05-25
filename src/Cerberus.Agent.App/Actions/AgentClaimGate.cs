@@ -97,6 +97,34 @@ internal static class AgentClaimGate
         }
     }
 
+    public static async Task<bool> ClearInactiveLocalRegistrationAsync(ISecretStore store, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(ClaimCheckTimeout);
+
+        HeartbeatResponse response;
+        try
+        {
+            response = await CheckAsync(store, timeout.Token).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
+        {
+            await store.ClearAsync(timeout.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+
+        var state = NormalizeState(response.RegistrationState);
+        if (state is not ("rejected" or "deactivated" or "revoked"))
+            return false;
+
+        await store.ClearAsync(timeout.Token).ConfigureAwait(false);
+        return true;
+    }
+
     internal static bool IsClaimed(HeartbeatResponse response)
         => string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
            && !response.ClaimRequired;

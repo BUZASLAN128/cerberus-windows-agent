@@ -2,6 +2,7 @@ using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
+using Cerberus.Agent.Security;
 using System.IO;
 using System.Windows;
 using System.Windows.Media;
@@ -15,6 +16,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _timer;
     private volatile bool _busy;
     private DateTimeOffset _ignoreDeactivateUntil = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private RuntimeUiConfig _config;
 
     public MainWindow()
@@ -99,6 +101,18 @@ public partial class MainWindow : Window
         var svc = await svcTask;
         var registered = await registeredTask;
         var ts = await tsTask;
+        if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+        {
+            _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
+            var cleared = await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
+                new DpapiSecretStore(SecretStoreScope.User),
+                CancellationToken.None);
+            if (cleared)
+            {
+                registered = false;
+                Log("Stored device registration is inactive in the portal; local registration was cleared.");
+            }
+        }
         var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
         ServiceValue.Text = svc.Text;

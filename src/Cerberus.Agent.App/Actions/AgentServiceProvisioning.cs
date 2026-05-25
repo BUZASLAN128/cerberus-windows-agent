@@ -124,6 +124,9 @@ internal static class AgentServiceLocalState
 
 internal static class AgentBackendLifecycle
 {
+    public const string UnregisterReasonCode = "agent_unregister_device";
+    public const string UnregisterReason = "Device unregistered from Windows agent";
+
     public static async Task<bool> TrySelfDeactivateAsync(
         ISecretStore store,
         string reasonCode,
@@ -223,6 +226,29 @@ internal static class AgentServiceProvisioning
         }
     }
 
+    internal static async Task<bool> DeactivateAndClearRegistrationAsync(
+        ISecretStore store,
+        Func<ISecretStore, string, string, CancellationToken, Task<bool>> selfDeactivate,
+        CancellationToken ct)
+    {
+        if (!await HasCompleteRegistrationAsync(store, ct).ConfigureAwait(false))
+            return false;
+
+        var deactivated = await selfDeactivate(
+            store,
+            AgentBackendLifecycle.UnregisterReasonCode,
+            AgentBackendLifecycle.UnregisterReason,
+            ct).ConfigureAwait(false);
+        if (!deactivated)
+        {
+            throw new InvalidOperationException(
+                "Could not unregister this device from the Cerberus portal. Local registration was kept so portal and device state do not drift.");
+        }
+
+        await store.ClearAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
     public static void InstallOrThrow()
     {
         if (!Elevation.IsAdministrator())
@@ -275,24 +301,32 @@ internal static class AgentServiceProvisioning
 
     public static void UnregisterDeviceOrThrow()
     {
+        static Task<bool> SelfDeactivate(ISecretStore store, string reasonCode, string reason, CancellationToken ct)
+            => AgentBackendLifecycle.TrySelfDeactivateAsync(store, reasonCode, reason, ct);
+
         if (Elevation.IsAdministrator())
         {
             var state = AgentStatus.GetService();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var adminMachineStore = new DpapiSecretStore(SecretStoreScope.Machine);
+            var adminUserStore = new DpapiSecretStore(SecretStoreScope.User);
+            var adminDeactivated = DeactivateAndClearRegistrationAsync(
+                adminMachineStore,
+                SelfDeactivate,
+                cts.Token).GetAwaiter().GetResult();
+            if (!adminDeactivated)
+            {
+                adminDeactivated = DeactivateAndClearRegistrationAsync(
+                    adminUserStore,
+                    SelfDeactivate,
+                    cts.Token).GetAwaiter().GetResult();
+            }
+
             if (state.Installed)
                 ServiceInstaller.UninstallOrThrow();
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            if (File.Exists(DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine)))
-            {
-                _ = AgentBackendLifecycle.TrySelfDeactivateAsync(
-                    new DpapiSecretStore(SecretStoreScope.Machine),
-                    reasonCode: "agent_unregister_device",
-                    reason: "Device unregistered from Windows agent",
-                    ct: cts.Token).GetAwaiter().GetResult();
-            }
-
             AgentServiceLocalState.ClearMachineStateAsync(cts.Token).GetAwaiter().GetResult();
-            new DpapiSecretStore(SecretStoreScope.User).ClearAsync(cts.Token).GetAwaiter().GetResult();
+            adminUserStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
             return;
         }
 
@@ -301,11 +335,11 @@ internal static class AgentServiceProvisioning
 
         using var userCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
-        _ = AgentBackendLifecycle.TrySelfDeactivateAsync(
+        var userDeactivated = DeactivateAndClearRegistrationAsync(
             userStore,
-            reasonCode: "agent_unregister_device",
-            reason: "Device unregistered from Windows agent",
-            ct: userCts.Token).GetAwaiter().GetResult();
-        userStore.ClearAsync(userCts.Token).GetAwaiter().GetResult();
+            SelfDeactivate,
+            userCts.Token).GetAwaiter().GetResult();
+        if (!userDeactivated)
+            userStore.ClearAsync(userCts.Token).GetAwaiter().GetResult();
     }
 }

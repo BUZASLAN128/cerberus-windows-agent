@@ -154,6 +154,47 @@ public sealed class AgentServiceCredentialBridgeTests
     }
 
     [Fact]
+    public async Task DeactivateAndClearRegistrationAsync_FailsClosedWhenPortalDeactivateFails()
+    {
+        var store = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => AgentServiceProvisioning.DeactivateAndClearRegistrationAsync(
+                store,
+                (_, _, _, _) => Task.FromResult(false),
+                CancellationToken.None));
+
+        Assert.Equal(0, store.ClearCount);
+    }
+
+    [Fact]
+    public async Task DeactivateAndClearRegistrationAsync_ClearsOnlyAfterPortalDeactivateSucceeds()
+    {
+        var store = new InMemorySecretStore(
+            new AgentIdentity("agent-id", "tenant-id"),
+            refreshToken: "refresh-token",
+            privateKeyPem: "private-key",
+            backendUrl: "http://backend.local");
+
+        var deactivated = await AgentServiceProvisioning.DeactivateAndClearRegistrationAsync(
+            store,
+            (_, reasonCode, reason, _) =>
+            {
+                Assert.Equal(AgentBackendLifecycle.UnregisterReasonCode, reasonCode);
+                Assert.Equal(AgentBackendLifecycle.UnregisterReason, reason);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        Assert.True(deactivated);
+        Assert.Equal(1, store.ClearCount);
+    }
+
+    [Fact]
     public async Task MachineScopeSecret_DoesNotAddExplicitInteractiveUserAce()
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));

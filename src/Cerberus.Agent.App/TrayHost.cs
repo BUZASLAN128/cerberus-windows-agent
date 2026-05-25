@@ -1,6 +1,7 @@
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Observability;
+using Cerberus.Agent.Security;
 using System.Drawing;
 using System.Windows;
 using System.Windows.Media;
@@ -30,6 +31,7 @@ internal sealed class TrayHost : IDisposable
 
     private MainWindow? _window;
     private volatile bool _onboarding;
+    private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
 
     public TrayHost()
     {
@@ -162,6 +164,13 @@ internal sealed class TrayHost : IDisposable
         var svc = await svcTask;
         var registered = await registeredTask;
         var ts = await tsTask;
+        if (registered && !svc.Installed && DateTimeOffset.UtcNow >= _nextRegistrationReconcileAt)
+        {
+            _nextRegistrationReconcileAt = DateTimeOffset.UtcNow.AddSeconds(60);
+            registered = !await AgentClaimGate.ClearInactiveLocalRegistrationAsync(
+                new DpapiSecretStore(SecretStoreScope.User),
+                CancellationToken.None);
+        }
         var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
 
         _serviceStatus.Text = $"Service: {svc.Text}";
