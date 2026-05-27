@@ -215,9 +215,10 @@ public sealed class AgentLegalConsentTests
 
         var condition = match.Groups["condition"].Value;
         Assert.Equal(
-            "NOT Installed AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1",
+            "NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1",
             condition);
 
+        Assert.Contains("WIX_UPGRADE_DETECTED", condition);
         Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT", condition);
         Assert.DoesNotContain("LicenseAccepted", condition);
     }
