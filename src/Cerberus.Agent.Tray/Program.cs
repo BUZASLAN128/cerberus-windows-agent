@@ -298,9 +298,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             using var updateHttp = await CreateUpdateHttpClientAsync(cts.Token).ConfigureAwait(true);
             var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance)
                               ?? throw new InvalidOperationException("Update trust is not configured.");
-            await coordinator
+            var launched = await coordinator
                 .StageAndLaunchUpdateAsync(_lastCheckedUpdateResponse, requireElevation: true, ct: cts.Token)
                 .ConfigureAwait(true);
+            if (!launched)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                return;
+            }
+
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
             _lastCheckedUpdateResponse = null;
             _lastUpdateCheck = null;

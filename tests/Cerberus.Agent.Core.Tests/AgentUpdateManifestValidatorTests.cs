@@ -89,6 +89,22 @@ public sealed class AgentUpdateManifestValidatorTests
         Assert.True(validated.RollbackAllowed);
     }
 
+    [Fact]
+    public void Validate_ComparesSemverReleaseCoreWithoutPrereleaseSuffix()
+    {
+        using var rsa = RSA.Create(2048);
+        var manifest = SignedManifest(rsa, version: "1.2.0-dev.42");
+
+        var validated = AgentUpdateManifestValidator.Validate(
+            manifest,
+            PublicKeyPem(rsa),
+            "stable",
+            new[] { "https://releases.cerberus.local/" },
+            currentVersion: "1.2.0.0");
+
+        Assert.Equal("1.2.0-dev.42", validated.Version);
+    }
+
     private static AgentUpdateManifest SignedManifest(
         RSA rsa,
         string version = "1.2.0",

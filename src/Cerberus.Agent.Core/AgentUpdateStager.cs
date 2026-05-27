@@ -96,6 +96,13 @@ public sealed class AgentUpdateStager
             return AgentUpdateCheckResult.None;
 
         var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        if (!IsActionableManifest(manifest))
+        {
+            _log.Info(
+                $"Agent update skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
+            return AgentUpdateCheckResult.None;
+        }
+
         return new AgentUpdateCheckResult(
             Available: true,
             Required: signal.Required,
@@ -113,6 +120,12 @@ public sealed class AgentUpdateStager
         if (!signal.Required && !signal.Recommended)
             return null;
         var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        if (!IsActionableManifest(manifest))
+        {
+            _log.Info(
+                $"Agent update staging skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
+            return null;
+        }
 
         var stageDir = Path.Combine(_stagingRoot, manifest.Version);
         Directory.CreateDirectory(stageDir);
@@ -157,6 +170,16 @@ public sealed class AgentUpdateStager
             _trust.AllowedArtifactPrefixes,
             currentVersion: _trust.CurrentVersion,
             allowRollbackManifest: _trust.AllowRollbackManifest);
+    }
+
+    private bool IsActionableManifest(AgentUpdateManifest manifest)
+    {
+        var compare = AgentVersionComparer.CompareReleaseCore(manifest.Version, _trust.CurrentVersion);
+        if (compare is null)
+            return true;
+        if (compare > 0)
+            return true;
+        return compare < 0 && _trust.AllowRollbackManifest && manifest.RollbackAllowed;
     }
 
     public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)

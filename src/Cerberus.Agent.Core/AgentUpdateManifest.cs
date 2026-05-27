@@ -21,7 +21,6 @@ public sealed record AgentUpdateManifest(
 public static class AgentUpdateManifestValidator
 {
     private static readonly Regex Sha256Regex = new("^[a-fA-F0-9]{64}$", RegexOptions.Compiled);
-    private static readonly Regex VersionPartRegex = new(@"\d+", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> DisallowedKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -91,9 +90,8 @@ public static class AgentUpdateManifestValidator
             !allowedArtifactPrefixes.Any(prefix => manifest.ArtifactUrl.StartsWith(prefix, StringComparison.Ordinal)))
             throw new InvalidOperationException("Update manifest artifact URL denied.");
 
-        var current = ParseVersion(currentVersion);
-        var target = ParseVersion(manifest.Version);
-        if (current is not null && target is not null && CompareVersions(target, current) < 0)
+        var versionCompare = AgentVersionComparer.CompareReleaseCore(manifest.Version, currentVersion);
+        if (versionCompare is < 0)
         {
             if (!(allowRollbackManifest && manifest.RollbackAllowed))
                 throw new InvalidOperationException("Update manifest downgrade denied.");
@@ -131,26 +129,4 @@ public static class AgentUpdateManifestValidator
             throw new InvalidOperationException(message);
     }
 
-    private static int[]? ParseVersion(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        var parts = VersionPartRegex.Matches(value).Select(match => int.Parse(match.Value)).Take(4).ToList();
-        if (parts.Count == 0)
-            return null;
-        while (parts.Count < 4)
-            parts.Add(0);
-        return parts.ToArray();
-    }
-
-    private static int CompareVersions(int[] left, int[] right)
-    {
-        for (var i = 0; i < 4; i++)
-        {
-            var compare = left[i].CompareTo(right[i]);
-            if (compare != 0)
-                return compare;
-        }
-        return 0;
-    }
 }

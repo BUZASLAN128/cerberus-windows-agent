@@ -91,6 +91,41 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
+    public async Task CheckAsync_ReturnsNoneForSameReleaseCorePrereleaseManifest()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash, version: "1.2.0-dev.42");
+        var requestedPaths = new List<string>();
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            requestedPaths.Add(request.RequestUri?.AbsolutePath ?? "");
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            throw new InvalidOperationException("Artifact must not be downloaded for same-version update signals.");
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-same-core-check-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.2.0.0"),
+            root);
+
+        var check = await stager.CheckAsync(UpdateResponse(), CancellationToken.None);
+
+        Assert.False(check.Available);
+        Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
+        Assert.False(Directory.Exists(Path.Combine(root, "1.2.0-dev.42")));
+    }
+
+    [Fact]
     public async Task StageAsync_ReusesAlreadyVerifiedArtifactWithoutDownloadingAgain()
     {
         using var rsa = RSA.Create(2048);
@@ -283,13 +318,13 @@ public sealed class AgentUpdateStagerTests
             Revoke: null,
             Quarantine: null);
 
-    private static AgentUpdateManifest SignedManifest(RSA rsa, string sha256)
+    private static AgentUpdateManifest SignedManifest(RSA rsa, string sha256, string version = "1.2.0")
     {
         var unsigned = new AgentUpdateManifest(
             ArtifactKind: "msi",
-            Version: "1.2.0",
+            Version: version,
             Channel: "stable",
-            ArtifactUrl: "https://releases.cerberus.local/Cerberus.Agent.Setup-stable-1.2.0.msi",
+            ArtifactUrl: $"https://releases.cerberus.local/Cerberus.Agent.Setup-stable-{version}.msi",
             Sha256: sha256,
             SigningIdentity: "Cerberus Agent Release",
             ReleasedAtUtc: "2026-05-07T00:00:00Z",

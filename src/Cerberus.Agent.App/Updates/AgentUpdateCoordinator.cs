@@ -60,14 +60,14 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public Task<AgentUpdateCheckResult> CheckUpdateAsync(HeartbeatResponse response, CancellationToken ct)
         => _stager.CheckAsync(response, ct);
 
-    public async Task StageAndLaunchUpdateAsync(
+    public async Task<bool> StageAndLaunchUpdateAsync(
         HeartbeatResponse response,
         bool requireElevation,
         CancellationToken ct)
     {
         var plan = await _stager.StageAsync(response, ct).ConfigureAwait(false);
         if (plan is null)
-            return;
+            return false;
 
         _log.Warn(
             $"Agent update staged: version={plan.Version}, channel={plan.Channel}, reason={plan.Reason}");
@@ -81,6 +81,7 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
 
         LaunchUpdater(updaterPath, plan.ArtifactPath, requireElevation);
         _log.Warn($"Agent MSI updater launched: artifact={System.IO.Path.GetFileName(plan.ArtifactPath)}");
+        return true;
     }
 
     private static void LaunchUpdater(string updaterPath, string artifactPath, bool requireElevation)
