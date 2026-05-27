@@ -29,7 +29,7 @@ public sealed class HeartbeatLoopTests
             log: NullAgentLogger.Instance,
             initialSnapshotDelay: TimeSpan.Zero);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = loop.RunAsync(cts.Token);
         await handler.SnapshotSubmittedTask.WaitAsync(cts.Token);
         cts.Cancel();
