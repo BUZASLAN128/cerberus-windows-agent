@@ -37,7 +37,7 @@ function Resolve-RepoPaths {
     $script:AppRoot = (Resolve-Path (Join-Path $windowsRepoRoot "..\cerberus-app")).Path
   }
   if ([string]::IsNullOrWhiteSpace($script:ExePath)) {
-    $script:ExePath = Join-Path $windowsRepoRoot "out\clean-install-smoke\publish\Cerberus.Agent.App.exe"
+    $script:ExePath = Join-Path $windowsRepoRoot "out\clean-install-smoke\publish\Cerberus.Agent.Setup.exe"
   }
   $script:LiveAcceptanceScript = Join-Path $windowsRepoRoot "scripts\live-service-acceptance.ps1"
 

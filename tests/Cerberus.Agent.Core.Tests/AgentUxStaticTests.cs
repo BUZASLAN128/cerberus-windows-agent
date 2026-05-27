@@ -91,6 +91,7 @@ public sealed class AgentUxStaticTests
         var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
 
         Assert.Contains("PositionNearNotificationArea", window);
+        Assert.Contains("Screen.PrimaryScreen", window);
         Assert.Contains("Screen.FromPoint", window);
         Assert.Contains("Cursor.Position", window);
         Assert.Contains("WorkingArea", window);
@@ -99,6 +100,35 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Left = originDip.X", window);
         Assert.Contains("Top = originDip.Y", window);
         Assert.Contains("window.PositionNearNotificationArea()", program);
+    }
+
+    [Fact]
+    public void AppProject_DoesNotKeepLegacyInProcessTrayRuntime()
+    {
+        var repoRoot = FindRepoRoot();
+        var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
+        var args = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Args.cs"));
+        var project = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
+
+        Assert.DoesNotContain("using var tray = new TrayHost()", program);
+        Assert.DoesNotContain("SingleInstanceGuard", program);
+        Assert.DoesNotContain("args.Tray", program);
+        Assert.DoesNotContain("bool Tray", args);
+        Assert.DoesNotContain("--tray", args);
+        Assert.Contains("<Compile Remove=\"TrayHost.cs\" />", project);
+        Assert.Contains("<Compile Remove=\"SingleInstanceGuard.cs\" />", project);
+    }
+
+    [Fact]
+    public void AcceptanceScriptsUseSetupExecutableInsteadOfLegacyAppExecutable()
+    {
+        var repoRoot = FindRepoRoot();
+        var scriptsRoot = Path.Combine(repoRoot, "scripts");
+        foreach (var script in Directory.EnumerateFiles(scriptsRoot, "*.ps1"))
+        {
+            var text = File.ReadAllText(script);
+            Assert.DoesNotContain("Cerberus.Agent.App.exe", text);
+        }
     }
 
     [Fact]

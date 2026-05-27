@@ -8,6 +8,7 @@
     <AssemblyName>Cerberus.Agent.Uninstall</AssemblyName>
     <RootNamespace>Cerberus.Agent.Uninstall</RootNamespace>
     <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
   </PropertyGroup>
 
   <ItemGroup>

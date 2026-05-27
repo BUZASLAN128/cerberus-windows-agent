@@ -84,7 +84,8 @@ public partial class MainWindow : Window
         const int marginPx = 12;
         UpdateLayout();
 
-        var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+        var screen = System.Windows.Forms.Screen.PrimaryScreen
+                     ?? System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
         var workingArea = screen.WorkingArea;
         var widthDip = ActualWidth > 0 ? ActualWidth : Width;
         var heightDip = ActualHeight > 0 ? ActualHeight : Height;

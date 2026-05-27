@@ -13,7 +13,7 @@ public sealed class AgentLegalConsentTests
         var args = Args.Parse(["--accept-eula"]);
 
         Assert.True(args.AcceptEula);
-        Assert.False(args.Tray);
+        Assert.False(args.Service);
     }
 
     [Fact]
@@ -22,7 +22,7 @@ public sealed class AgentLegalConsentTests
         var args = Args.Parse(["--setup"]);
 
         Assert.True(args.Setup);
-        Assert.False(args.Tray);
+        Assert.False(args.Service);
     }
 
     [Fact]

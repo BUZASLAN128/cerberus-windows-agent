@@ -1,7 +1,6 @@
 namespace Cerberus.Agent.App;
 
 internal sealed record AgentArgs(
-    bool Tray,
     bool Service,
     bool InstallService,
     bool UninstallService,
@@ -44,7 +43,6 @@ internal static class Args
             return null;
         }
 
-        var tray = Has("--tray");
         var service = Has("--service");
         var install = Has("--install-service");
         var uninstall = Has("--uninstall-service");
@@ -63,12 +61,7 @@ internal static class Args
         var applyUpdatePlan = Value("--apply-staged-update");
         var applyUpdateTarget = Value("--update-target");
 
-        // Default behavior: tray if no mode provided.
-        if (!tray && !service && !install && !uninstall && !unregisterDevice && !startService && !stopService && !acceptEula && !setup && !register && !heartbeatOnce && !exportTailscaleUp && !selfTest && string.IsNullOrWhiteSpace(applyUpdatePlan))
-            tray = true;
-
         return new AgentArgs(
-            tray,
             service,
             install,
             uninstall,

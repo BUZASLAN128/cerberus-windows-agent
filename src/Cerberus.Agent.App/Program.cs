@@ -196,39 +196,7 @@ internal static class Program
             return setupApp.Run();
         }
 
-        // Tray single-instance guard. If another tray session is running, ask to close it.
-        if (!SingleInstanceGuard.EnsureOrExit())
-            return 0;
-
-        var app = new App
-        {
-            // The tray owns the process lifetime. Setup windows may be closed to release WPF UI memory.
-            ShutdownMode = ShutdownMode.OnExplicitShutdown,
-        };
-
-        using var tray = new TrayHost();
-        SingleInstanceGuard.StartExitListener(() =>
-        {
-            try { tray.Dispose(); } catch { }
-            try { app.Shutdown(); } catch { }
-        });
-
-        // Avoid blocking the STA thread before the WPF dispatcher loop starts.
-        // Refresh status once the dispatcher is running.
-        app.Dispatcher.BeginInvoke(async () =>
-        {
-            try
-            {
-                await tray.RefreshAsync();
-                var ready = await Task.Run(AgentStatus.IsSetupComplete);
-                if (!ready)
-                    tray.ShowSetupWindow();
-            }
-            catch { }
-        });
-        var rc = app.Run();
-        SingleInstanceGuard.StopExitListener();
-        return rc;
+        return 2;
     }
 
     private static bool IsAcceptEulaOnly(AgentArgs args)
@@ -244,7 +212,6 @@ internal static class Program
            !args.StartService &&
            !args.StopService &&
            !args.Service &&
-           !args.Tray &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
 
     private static bool IsSetupHostProcess()
