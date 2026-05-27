@@ -129,6 +129,12 @@ function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem)
   return [Convert]::ToBase64String($sig)
 }
 
+function Get-ManifestPublicKeyPem([string]$PrivateKeyPem) {
+  $rsa = [System.Security.Cryptography.RSA]::Create()
+  $rsa.ImportFromPem($PrivateKeyPem)
+  return $rsa.ExportSubjectPublicKeyInfoPem()
+}
+
 function Copy-ChannelLatestAliases(
   [string]$PublishDir,
   [string]$Channel,
@@ -181,11 +187,30 @@ if ($Channel -eq "dev") {
   if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
   if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
 }
+
+$manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
+if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -and $AllowUnsignedDevBuild) {
+  $ephemeralManifestKey = [System.Security.Cryptography.RSA]::Create(3072)
+  $manifestPrivateKey = $ephemeralManifestKey.ExportPkcs8PrivateKeyPem()
+}
+if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
+  throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
+}
 if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
-  $UpdateManifestPublicKeyB64 = "IA=="
+  $UpdateManifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
+}
+
+$artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+  $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+  $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
 }
 if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
-  $UpdateAllowedArtifactPrefixes = "__cerberus_unset__"
+  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+    $UpdateAllowedArtifactPrefixes = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/"
+  } else {
+    $UpdateAllowedArtifactPrefixes = "__cerberus_unset__"
+  }
 }
 
 if (-not $SkipTests) {
@@ -338,22 +363,8 @@ if ($secretHits.Count -gt 0) {
   throw "Release secret scan failed:`n$preview"
 }
 
-$artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
-if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
-  $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
-  $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
-}
 if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
   throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
-}
-
-$manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
-if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -and $AllowUnsignedDevBuild) {
-  $ephemeralManifestKey = [System.Security.Cryptography.RSA]::Create(3072)
-  $manifestPrivateKey = $ephemeralManifestKey.ExportPkcs8PrivateKeyPem()
-}
-if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
-  throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
 }
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$setupBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
