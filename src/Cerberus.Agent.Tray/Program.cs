@@ -15,20 +15,39 @@ internal static class Program
 {
     private const string TrayMutexName = "Global\\CerberusAgent.Tray.SingleInstance";
     private const string TrayPipeName = "CerberusAgent.Tray.SingleInstancePipe";
+    private const string CheckUpdatesSignal = "check-updates";
+    private const string UpdateNowSignal = "update-now";
 
     [STAThread]
-    public static void Main()
+    public static void Main(string[] args)
     {
         AgentLocalizer.ApplyThreadCulture();
-        if (!ProcessInstanceGuard.TryAcquire(TrayMutexName, TrayPipeName, null, out var instanceGuard))
+        var startupSignal = ParseStartupSignal(args);
+        if (!ProcessInstanceGuard.TryAcquire(TrayMutexName, TrayPipeName, startupSignal, out var instanceGuard))
             return;
 
         ApplicationConfiguration.Initialize();
         using (instanceGuard)
         using (var tray = new TrayApplicationContext())
         {
+            instanceGuard!.StartSignalListener(tray.HandleSignal);
+            if (!string.IsNullOrWhiteSpace(startupSignal))
+                tray.HandleSignal(startupSignal);
             Application.Run(tray);
         }
+    }
+
+    private static string? ParseStartupSignal(string[]? args)
+    {
+        if (args is null || args.Length == 0)
+            return null;
+
+        bool Has(string value) => args.Any(arg => string.Equals(arg, value, StringComparison.OrdinalIgnoreCase));
+        if (Has("--check-updates") || Has("/check-updates"))
+            return CheckUpdatesSignal;
+        if (Has("--update-now") || Has("/update-now"))
+            return UpdateNowSignal;
+        return null;
     }
 }
 
@@ -45,6 +64,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _updateNow;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _startupUpdateTimer;
+    private readonly Control _dispatcher;
     private bool _refreshing;
     private bool _checkingUpdates;
     private bool _applyingUpdate;
@@ -53,6 +73,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext()
     {
+        _dispatcher = new Control();
+        _dispatcher.CreateControl();
+
         _workspaceStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Workspace")}: -") { Enabled = false };
         _accountStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Account")}: -") { Enabled = false };
         _serviceStatus = new ToolStripMenuItem(AgentLocalizer.Format("ServiceStatus", "...")) { Enabled = false };
@@ -140,9 +163,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _startupUpdateTimer.Dispose();
             _icon.Visible = false;
             _icon.Dispose();
+            _dispatcher.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    public void HandleSignal(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message) || _dispatcher.IsDisposed)
+            return;
+
+        void Post(Action action)
+        {
+            if (_dispatcher.InvokeRequired)
+                _dispatcher.BeginInvoke(action);
+            else
+                action();
+        }
+
+        switch (message.Trim().ToLowerInvariant())
+        {
+            case "check-updates":
+                Post(() => _ = CheckUpdatesAsync(userInitiated: true));
+                break;
+            case "update-now":
+                Post(() => _ = ApplyCheckedUpdateAsync());
+                break;
+        }
     }
 
     private async Task RefreshAsync()
@@ -305,7 +353,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             agent_version = metadata.AgentVersion,
             build_id = metadata.BuildId,
             build_channel = metadata.BuildChannel,
-            runtime_mode = "tray_update_check",
+            runtime_mode = "tray",
             supported_schema_versions = metadata.SupportedSchemaVersions,
             capabilities = Array.Empty<string>(),
         }, ct).ConfigureAwait(false);
