@@ -50,6 +50,32 @@ public sealed class AgentUpdateLaunchGateTests
         Assert.True(gate.TryBegin(check, now.AddMinutes(1)));
     }
 
+    [Fact]
+    public void PrepareUpdaterRunner_CopiesRunnerOutsideInstallDirectory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-updater-runner-test-" + Guid.NewGuid().ToString("N"));
+        var installDir = Path.Combine(root, "install");
+        var stageDir = Path.Combine(root, "stage", "1.2.3");
+        Directory.CreateDirectory(installDir);
+        Directory.CreateDirectory(stageDir);
+        var updaterPath = Path.Combine(installDir, "Cerberus.Agent.Updater.exe");
+        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent.Setup-dev-1.2.3.msi");
+        File.WriteAllText(updaterPath, "updater");
+        File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.dll"), "dll");
+        File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.deps.json"), "{}");
+        File.WriteAllText(Path.Combine(installDir, "ignore.txt"), "ignore");
+        File.WriteAllText(artifactPath, "msi");
+
+        var runnerPath = AgentUpdateCoordinator.PrepareUpdaterRunner(updaterPath, artifactPath);
+
+        Assert.True(File.Exists(runnerPath));
+        Assert.StartsWith(stageDir, runnerPath, StringComparison.OrdinalIgnoreCase);
+        Assert.False(string.Equals(installDir, Path.GetDirectoryName(runnerPath), StringComparison.OrdinalIgnoreCase));
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.dll")));
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.deps.json")));
+        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "ignore.txt")));
+    }
+
     private static AgentUpdateCheckResult Check(string version)
         => new(
             Available: true,

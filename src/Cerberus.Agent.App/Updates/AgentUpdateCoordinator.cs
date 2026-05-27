@@ -79,7 +79,8 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         if (!System.IO.File.Exists(updaterPath))
             throw new System.IO.FileNotFoundException("Agent updater executable not found.", updaterPath);
 
-        LaunchUpdater(updaterPath, plan.ArtifactPath, requireElevation);
+        var runnerPath = PrepareUpdaterRunner(updaterPath, plan.ArtifactPath);
+        LaunchUpdater(runnerPath, plan.ArtifactPath, requireElevation);
         _log.Warn($"Agent MSI updater launched: artifact={System.IO.Path.GetFileName(plan.ArtifactPath)}");
         return true;
     }
@@ -115,5 +116,59 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
             ? System.IO.Path.GetDirectoryName(current)
             : current;
         return System.IO.Path.Combine(dir ?? AppContext.BaseDirectory, "Cerberus.Agent.Updater.exe");
+    }
+
+    internal static string PrepareUpdaterRunner(string updaterPath, string artifactPath)
+    {
+        var sourceDir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(updaterPath))
+            ?? throw new InvalidOperationException("Agent updater directory could not be resolved.");
+        var artifactDir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(artifactPath))
+            ?? throw new InvalidOperationException("Agent update artifact directory could not be resolved.");
+        var runnerDir = System.IO.Path.Combine(
+            artifactDir,
+            $"updater-runner-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}");
+        System.IO.Directory.CreateDirectory(runnerDir);
+
+        foreach (var oldRunner in System.IO.Directory.EnumerateDirectories(artifactDir, "updater-runner-*"))
+        {
+            if (string.Equals(oldRunner, runnerDir, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            TryDeleteDirectory(oldRunner);
+        }
+
+        foreach (var file in System.IO.Directory.EnumerateFiles(sourceDir))
+        {
+            var extension = System.IO.Path.GetExtension(file);
+            if (!IsRunnerFileExtension(extension))
+                continue;
+
+            var target = System.IO.Path.Combine(runnerDir, System.IO.Path.GetFileName(file));
+            System.IO.File.Copy(file, target, overwrite: true);
+        }
+
+        var runnerPath = System.IO.Path.Combine(runnerDir, System.IO.Path.GetFileName(updaterPath));
+        if (!System.IO.File.Exists(runnerPath))
+            throw new System.IO.FileNotFoundException("Staged updater runner executable not found.", runnerPath);
+        return runnerPath;
+    }
+
+    private static bool IsRunnerFileExtension(string? extension)
+        => extension is not null &&
+           (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".dll", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".json", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".config", StringComparison.OrdinalIgnoreCase));
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (System.IO.Directory.Exists(path))
+                System.IO.Directory.Delete(path, recursive: true);
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+        }
     }
 }
