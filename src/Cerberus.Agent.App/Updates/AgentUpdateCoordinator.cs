@@ -6,13 +6,25 @@ namespace Cerberus.Agent.App.Updates;
 
 internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
 {
+    private static readonly TimeSpan AutomaticLaunchCooldown = TimeSpan.FromMinutes(15);
+
     private readonly AgentUpdateStager _stager;
     private readonly IAgentLogger _log;
+    private readonly AgentUpdateLaunchGate _automaticLaunchGate;
 
     public AgentUpdateCoordinator(AgentUpdateStager stager, IAgentLogger log)
+        : this(stager, log, new AgentUpdateLaunchGate(AutomaticLaunchCooldown))
+    {
+    }
+
+    internal AgentUpdateCoordinator(
+        AgentUpdateStager stager,
+        IAgentLogger log,
+        AgentUpdateLaunchGate automaticLaunchGate)
     {
         _stager = stager;
         _log = log;
+        _automaticLaunchGate = automaticLaunchGate;
     }
 
     public async Task HandleUpdateAsync(HeartbeatResponse response, CancellationToken ct)
@@ -21,7 +33,28 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         if (!signal.Required && !signal.Recommended)
             return;
 
-        await StageAndLaunchUpdateAsync(response, requireElevation: false, ct).ConfigureAwait(false);
+        var check = await _stager.CheckAsync(response, ct).ConfigureAwait(false);
+        if (!check.Available)
+            return;
+
+        if (!_automaticLaunchGate.TryBegin(check, DateTimeOffset.UtcNow))
+        {
+            _log.Warn(
+                $"Agent automatic update launch suppressed: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
+            return;
+        }
+
+        try
+        {
+            _log.Warn(
+                $"Agent automatic update accepted: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
+            await StageAndLaunchUpdateAsync(response, requireElevation: false, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            _automaticLaunchGate.Clear(check);
+            throw;
+        }
     }
 
     public Task<AgentUpdateCheckResult> CheckUpdateAsync(HeartbeatResponse response, CancellationToken ct)
