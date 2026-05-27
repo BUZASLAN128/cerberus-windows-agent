@@ -179,6 +179,11 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
         Assert.Contains("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
 
+        var updater = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Updater", "Program.cs"));
+        Assert.Contains("CERBERUS_EULA_ACCEPTED=1", updater);
+        Assert.Contains("/l*v", updater);
+        Assert.Contains("msiexec exit code", updater);
+
         Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.en-us.wxl")));
         Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.tr-tr.wxl")));
 
