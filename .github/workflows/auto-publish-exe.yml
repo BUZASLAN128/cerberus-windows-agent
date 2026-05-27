@@ -76,13 +76,20 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
                 -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
               $channel = "preview"
-              $version = "0.2.${{ github.run_number }}-preview.${{ github.run_number }}"
               $notes = "Automated signed preview release from ${{ github.ref_name }}@$shortSha."
             } else {
               $channel = "dev"
-              $version = "0.2.${{ github.run_number }}-dev.${{ github.run_number }}"
               $notes = "Automated unsigned dev release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
             }
+            $tagRefs = git ls-remote --tags origin "refs/tags/v0.2.*-$channel.*"
+            $maxPatch = 0
+            foreach ($line in $tagRefs) {
+              if ($line -match "refs/tags/v0\.2\.(\d+)-$channel\.(\d+)$") {
+                $maxPatch = [Math]::Max($maxPatch, [Math]::Max([int]$Matches[1], [int]$Matches[2]))
+              }
+            }
+            $nextPatch = [Math]::Max([int]"${{ github.run_number }}", $maxPatch + 1)
+            $version = "0.2.$nextPatch-$channel.$nextPatch"
           }
 
           if ([string]::IsNullOrWhiteSpace($version)) {
