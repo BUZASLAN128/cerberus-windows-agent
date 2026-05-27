@@ -48,6 +48,21 @@
   <data name="ServiceStatus" xml:space="preserve"><value>Servis: {0}</value></data>
   <data name="RegisteredStatus" xml:space="preserve"><value>Kayıt: {0}</value></data>
   <data name="ConnectorStatus" xml:space="preserve"><value>Bağlantı: {0}</value></data>
+  <data name="UpdateStatus" xml:space="preserve"><value>Güncellemeler: {0}</value></data>
+  <data name="CheckUpdates" xml:space="preserve"><value>Güncellemeleri denetle</value></data>
+  <data name="UpdateNow" xml:space="preserve"><value>Şimdi güncelle</value></data>
+  <data name="UpdateNotChecked" xml:space="preserve"><value>denetlenmedi</value></data>
+  <data name="UpdateChecking" xml:space="preserve"><value>denetleniyor</value></data>
+  <data name="UpdateCurrent" xml:space="preserve"><value>güncel</value></data>
+  <data name="UpdateUnavailable" xml:space="preserve"><value>yapılandırılmadı</value></data>
+  <data name="UpdateAvailable" xml:space="preserve"><value>{0} hazır</value></data>
+  <data name="UpdateCheckRequired" xml:space="preserve"><value>önce denetleyin</value></data>
+  <data name="UpdateInstalling" xml:space="preserve"><value>kurulum başlatılıyor</value></data>
+  <data name="UpdateInstallerStarted" xml:space="preserve"><value>kurulum başlatıldı</value></data>
+  <data name="UpdateCheckFailed" xml:space="preserve"><value>denetim başarısız</value></data>
+  <data name="UpdateInstallFailed" xml:space="preserve"><value>kurulum başarısız</value></data>
+  <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Güncelleme denetimi başarısız: {0}</value></data>
+  <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>evet</value></data>
   <data name="No" xml:space="preserve"><value>hayır</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Cerberus Agent Kaldırma</value></data>

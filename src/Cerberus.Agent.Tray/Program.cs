@@ -1,9 +1,13 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Security.Cryptography;
 using System.Windows.Forms;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Localization;
+using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.Core;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Tray;
 
@@ -36,8 +40,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _serviceStatus;
     private readonly ToolStripMenuItem _registeredStatus;
     private readonly ToolStripMenuItem _tailscaleStatus;
+    private readonly ToolStripMenuItem _updateStatus;
+    private readonly ToolStripMenuItem _checkUpdates;
+    private readonly ToolStripMenuItem _updateNow;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly System.Windows.Forms.Timer _startupUpdateTimer;
     private bool _refreshing;
+    private bool _checkingUpdates;
+    private bool _applyingUpdate;
+    private HeartbeatResponse? _lastCheckedUpdateResponse;
+    private AgentUpdateCheckResult? _lastUpdateCheck;
 
     public TrayApplicationContext()
     {
@@ -46,6 +58,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _serviceStatus = new ToolStripMenuItem(AgentLocalizer.Format("ServiceStatus", "...")) { Enabled = false };
         _registeredStatus = new ToolStripMenuItem(AgentLocalizer.Format("RegisteredStatus", "...")) { Enabled = false };
         _tailscaleStatus = new ToolStripMenuItem(AgentLocalizer.Format("ConnectorStatus", "...")) { Enabled = false };
+        _updateStatus = new ToolStripMenuItem(AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateNotChecked"))) { Enabled = false };
+
+        _checkUpdates = new ToolStripMenuItem(AgentLocalizer.Get("CheckUpdates"));
+        _checkUpdates.Click += async (_, _) => await CheckUpdatesAsync(userInitiated: true).ConfigureAwait(true);
+
+        _updateNow = new ToolStripMenuItem(AgentLocalizer.Get("UpdateNow")) { Enabled = false };
+        _updateNow.Click += async (_, _) => await ApplyCheckedUpdateAsync().ConfigureAwait(true);
 
         var setup = new ToolStripMenuItem(AgentLocalizer.Get("OpenSetup"));
         setup.Click += (_, _) => LaunchSibling("Cerberus.Agent.Setup.exe");
@@ -73,8 +92,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_serviceStatus);
         menu.Items.Add(_registeredStatus);
         menu.Items.Add(_tailscaleStatus);
+        menu.Items.Add(_updateStatus);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(setup);
+        menu.Items.Add(_checkUpdates);
+        menu.Items.Add(_updateNow);
         menu.Items.Add(diagnostics);
         menu.Items.Add(repair);
         menu.Items.Add(new ToolStripSeparator());
@@ -96,6 +118,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _timer = new System.Windows.Forms.Timer { Interval = 5000 };
         _timer.Tick += async (_, _) => await RefreshAsync().ConfigureAwait(true);
         _timer.Start();
+
+        _startupUpdateTimer = new System.Windows.Forms.Timer { Interval = 10000 };
+        _startupUpdateTimer.Tick += async (_, _) =>
+        {
+            _startupUpdateTimer.Stop();
+            await CheckUpdatesAsync(userInitiated: false).ConfigureAwait(true);
+        };
+        _startupUpdateTimer.Start();
+
         _ = RefreshAsync();
     }
 
@@ -105,6 +136,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _timer.Stop();
             _timer.Dispose();
+            _startupUpdateTimer.Stop();
+            _startupUpdateTimer.Dispose();
             _icon.Visible = false;
             _icon.Dispose();
         }
@@ -140,6 +173,185 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _refreshing = false;
         }
     }
+
+    private async Task CheckUpdatesAsync(bool userInitiated)
+    {
+        if (_checkingUpdates || _applyingUpdate)
+            return;
+
+        _checkingUpdates = true;
+        _checkUpdates.Enabled = false;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateChecking"));
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var heartbeat = await SendUpdateCheckHeartbeatAsync(cts.Token).ConfigureAwait(true);
+            using var updateHttp = await CreateUpdateHttpClientAsync(cts.Token).ConfigureAwait(true);
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance);
+            if (coordinator is null)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateUnavailable"));
+                return;
+            }
+
+            var check = await coordinator.CheckUpdateAsync(heartbeat, cts.Token).ConfigureAwait(true);
+            if (!check.Available)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                return;
+            }
+
+            _lastCheckedUpdateResponse = heartbeat;
+            _lastUpdateCheck = check;
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
+            _updateNow.Enabled = true;
+        }
+        catch (Exception ex)
+        {
+            ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
+            if (userInitiated)
+            {
+                MessageBox.Show(
+                    AgentLocalizer.Format("UpdateCheckFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)),
+                    "CERBERUS Agent",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+        finally
+        {
+            _checkingUpdates = false;
+            _checkUpdates.Enabled = true;
+        }
+    }
+
+    private async Task ApplyCheckedUpdateAsync()
+    {
+        if (_lastCheckedUpdateResponse is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
+        {
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateCheckRequired"));
+            _updateNow.Enabled = false;
+            return;
+        }
+
+        if (_applyingUpdate)
+            return;
+
+        _applyingUpdate = true;
+        _checkUpdates.Enabled = false;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstalling"));
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+            using var updateHttp = await CreateUpdateHttpClientAsync(cts.Token).ConfigureAwait(true);
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance)
+                              ?? throw new InvalidOperationException("Update trust is not configured.");
+            await coordinator
+                .StageAndLaunchUpdateAsync(_lastCheckedUpdateResponse, requireElevation: true, ct: cts.Token)
+                .ConfigureAwait(true);
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
+            _lastCheckedUpdateResponse = null;
+            _lastUpdateCheck = null;
+        }
+        catch (Exception ex)
+        {
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallFailed"));
+            MessageBox.Show(
+                AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)),
+                "CERBERUS Agent",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            _updateNow.Enabled = _lastUpdateCheck?.Available == true;
+        }
+        finally
+        {
+            _applyingUpdate = false;
+            _checkUpdates.Enabled = true;
+        }
+    }
+
+    private void ClearCheckedUpdate(string status)
+    {
+        _lastCheckedUpdateResponse = null;
+        _lastUpdateCheck = null;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", status);
+    }
+
+    private static async Task<HeartbeatResponse> SendUpdateCheckHeartbeatAsync(CancellationToken ct)
+    {
+        var (secrets, privateKeyPem, backend) = await LoadUpdateSecretsAsync(ct).ConfigureAwait(false);
+
+        using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
+        var api = new AgentApiClient(
+            http,
+            secrets,
+            new AgentTokenManager(http, secrets),
+            new RequestSigner(privateKeyPem));
+        var metadata = new AgentBuildMetadata(
+            AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
+            BuildId: WindowsDeviceInfo.GetBuildId(),
+            BuildChannel: WindowsDeviceInfo.GetBuildChannel(),
+            BootId: Guid.NewGuid().ToString("N"),
+            SupportedSchemaVersions: AgentSchemaVersions.All);
+
+        return await api.HeartbeatAsync(new
+        {
+            status = "connected",
+            agent_version = metadata.AgentVersion,
+            build_id = metadata.BuildId,
+            build_channel = metadata.BuildChannel,
+            runtime_mode = "tray_update_check",
+            supported_schema_versions = metadata.SupportedSchemaVersions,
+            capabilities = Array.Empty<string>(),
+        }, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<HttpClient> CreateUpdateHttpClientAsync(CancellationToken ct)
+    {
+        var (_, _, backend) = await LoadUpdateSecretsAsync(ct).ConfigureAwait(false);
+
+        return new HttpClient
+        {
+            BaseAddress = backend,
+            Timeout = TimeSpan.FromMinutes(10),
+        };
+    }
+
+    private static async Task<(DpapiSecretStore Store, string PrivateKeyPem, Uri Backend)> LoadUpdateSecretsAsync(CancellationToken ct)
+    {
+        foreach (var scope in new[] { SecretStoreScope.User, SecretStoreScope.Machine })
+        {
+            try
+            {
+                var secrets = new DpapiSecretStore(scope);
+                var (_, _, privateKeyPem, storedBackendUrl, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
+                var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl).Trim().TrimEnd('/');
+                if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
+                    throw new InvalidOperationException("Stored backend URL is invalid.");
+
+                return (secrets, privateKeyPem, backend);
+            }
+            catch (Exception ex) when (IsUpdateSecretFallbackError(ex))
+            {
+                // Try the next supported scope. User scope is preferred for tray UX; machine scope
+                // remains available for elevated repair/admin paths and older enrollments.
+            }
+        }
+
+        throw new InvalidOperationException("Agent registration is not available for update checks.");
+    }
+
+    private static bool IsUpdateSecretFallbackError(Exception ex)
+        => ex is FileNotFoundException
+            or DirectoryNotFoundException
+            or UnauthorizedAccessException
+            or CryptographicException
+            or InvalidOperationException;
 
     private static void LaunchSibling(string fileName, string? arguments = null)
     {

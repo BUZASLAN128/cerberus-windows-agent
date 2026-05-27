@@ -54,6 +54,43 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
+    public async Task CheckAsync_ValidatesManifestWithoutDownloadingArtifact()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var requestedPaths = new List<string>();
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            requestedPaths.Add(request.RequestUri?.AbsolutePath ?? "");
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            return new ByteArrayContent(artifact);
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-check-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+
+        var check = await stager.CheckAsync(UpdateResponse(), CancellationToken.None);
+
+        Assert.True(check.Available);
+        Assert.True(check.Required);
+        Assert.Equal("1.2.0", check.Version);
+        Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
+        Assert.False(Directory.Exists(Path.Combine(root, "1.2.0")));
+    }
+
+    [Fact]
     public async Task ApplyPlanAsync_RejectsChecksumMismatch()
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));

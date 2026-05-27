@@ -1,5 +1,6 @@
 using Cerberus.Agent.Core;
 using System.Diagnostics;
+using System.ComponentModel;
 
 namespace Cerberus.Agent.App.Updates;
 
@@ -20,6 +21,17 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         if (!signal.Required && !signal.Recommended)
             return;
 
+        await StageAndLaunchUpdateAsync(response, requireElevation: false, ct).ConfigureAwait(false);
+    }
+
+    public Task<AgentUpdateCheckResult> CheckUpdateAsync(HeartbeatResponse response, CancellationToken ct)
+        => _stager.CheckAsync(response, ct);
+
+    public async Task StageAndLaunchUpdateAsync(
+        HeartbeatResponse response,
+        bool requireElevation,
+        CancellationToken ct)
+    {
         var plan = await _stager.StageAsync(response, ct).ConfigureAwait(false);
         if (plan is null)
             return;
@@ -34,14 +46,32 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         if (!System.IO.File.Exists(updaterPath))
             throw new System.IO.FileNotFoundException("Agent updater executable not found.", updaterPath);
 
-        Process.Start(new ProcessStartInfo
+        LaunchUpdater(updaterPath, plan.ArtifactPath, requireElevation);
+        _log.Warn($"Agent MSI updater launched: artifact={System.IO.Path.GetFileName(plan.ArtifactPath)}");
+    }
+
+    private static void LaunchUpdater(string updaterPath, string artifactPath, bool requireElevation)
+    {
+        var arguments = $"\"{artifactPath}\"";
+        var startInfo = new ProcessStartInfo
         {
             FileName = updaterPath,
-            Arguments = $"\"{plan.ArtifactPath}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        });
-        _log.Warn($"Agent MSI updater launched: artifact={System.IO.Path.GetFileName(plan.ArtifactPath)}");
+            Arguments = arguments,
+            UseShellExecute = requireElevation,
+            CreateNoWindow = !requireElevation,
+        };
+
+        if (requireElevation && !Elevation.IsAdministrator())
+            startInfo.Verb = "runas";
+
+        try
+        {
+            Process.Start(startInfo);
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            throw new InvalidOperationException("Update installation was canceled.", ex);
+        }
     }
 
     internal static string ResolveUpdaterPath()

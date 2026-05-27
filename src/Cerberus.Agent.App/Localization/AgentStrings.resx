@@ -48,6 +48,21 @@
   <data name="ServiceStatus" xml:space="preserve"><value>Service: {0}</value></data>
   <data name="RegisteredStatus" xml:space="preserve"><value>Registered: {0}</value></data>
   <data name="ConnectorStatus" xml:space="preserve"><value>Connector: {0}</value></data>
+  <data name="UpdateStatus" xml:space="preserve"><value>Updates: {0}</value></data>
+  <data name="CheckUpdates" xml:space="preserve"><value>Check for updates</value></data>
+  <data name="UpdateNow" xml:space="preserve"><value>Update now</value></data>
+  <data name="UpdateNotChecked" xml:space="preserve"><value>not checked</value></data>
+  <data name="UpdateChecking" xml:space="preserve"><value>checking</value></data>
+  <data name="UpdateCurrent" xml:space="preserve"><value>up to date</value></data>
+  <data name="UpdateUnavailable" xml:space="preserve"><value>not configured</value></data>
+  <data name="UpdateAvailable" xml:space="preserve"><value>{0} available</value></data>
+  <data name="UpdateCheckRequired" xml:space="preserve"><value>check first</value></data>
+  <data name="UpdateInstalling" xml:space="preserve"><value>starting installer</value></data>
+  <data name="UpdateInstallerStarted" xml:space="preserve"><value>installer started</value></data>
+  <data name="UpdateCheckFailed" xml:space="preserve"><value>check failed</value></data>
+  <data name="UpdateInstallFailed" xml:space="preserve"><value>install failed</value></data>
+  <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Update check failed: {0}</value></data>
+  <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Update could not start: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>yes</value></data>
   <data name="No" xml:space="preserve"><value>no</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Uninstall Cerberus Agent</value></data>

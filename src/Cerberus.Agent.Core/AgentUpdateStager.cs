@@ -27,6 +27,27 @@ public sealed record AgentUpdatePlan(
     string StagedAtUtc,
     string Reason);
 
+public sealed record AgentUpdateCheckResult(
+    bool Available,
+    bool Required,
+    bool Recommended,
+    string? Version,
+    string? Channel,
+    string? Reason,
+    string? ManifestUrl,
+    string? ArtifactKind)
+{
+    public static AgentUpdateCheckResult None { get; } = new(
+        Available: false,
+        Required: false,
+        Recommended: false,
+        Version: null,
+        Channel: null,
+        Reason: null,
+        ManifestUrl: null,
+        ArtifactKind: null);
+}
+
 public sealed class AgentUpdateStager
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -68,27 +89,30 @@ public sealed class AgentUpdateStager
             Channel: ReadString(update, "channel"));
     }
 
+    public async Task<AgentUpdateCheckResult> CheckAsync(HeartbeatResponse response, CancellationToken ct)
+    {
+        var signal = FromHeartbeat(response);
+        if (!signal.Required && !signal.Recommended)
+            return AgentUpdateCheckResult.None;
+
+        var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        return new AgentUpdateCheckResult(
+            Available: true,
+            Required: signal.Required,
+            Recommended: signal.Recommended,
+            Version: manifest.Version,
+            Channel: manifest.Channel,
+            Reason: signal.Reason,
+            ManifestUrl: signal.ManifestUrl,
+            ArtifactKind: manifest.ArtifactKind);
+    }
+
     public async Task<AgentUpdatePlan?> StageAsync(HeartbeatResponse response, CancellationToken ct)
     {
         var signal = FromHeartbeat(response);
         if (!signal.Required && !signal.Recommended)
             return null;
-        if (string.IsNullOrWhiteSpace(signal.ManifestUrl))
-            throw new InvalidOperationException("Update requested but manifest URL is missing.");
-        if (!string.IsNullOrWhiteSpace(signal.Channel) &&
-            !string.Equals(signal.Channel, _trust.ExpectedChannel, StringComparison.Ordinal))
-            throw new InvalidOperationException("Update signal channel mismatch.");
-
-        using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
-        manifestResponse.EnsureSuccessStatusCode();
-        var manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        var manifest = AgentUpdateManifestValidator.ParseAndValidateJson(
-            manifestJson,
-            _trust.ManifestPublicKeyPem,
-            _trust.ExpectedChannel,
-            _trust.AllowedArtifactPrefixes,
-            currentVersion: _trust.CurrentVersion,
-            allowRollbackManifest: _trust.AllowRollbackManifest);
+        var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
 
         var stageDir = Path.Combine(_stagingRoot, manifest.Version);
         Directory.CreateDirectory(stageDir);
@@ -113,6 +137,26 @@ public sealed class AgentUpdateStager
             ct).ConfigureAwait(false);
         PruneOldStagedVersions(manifest.Version);
         return plan;
+    }
+
+    private async Task<AgentUpdateManifest> LoadAndValidateManifestAsync(AgentUpdateSignal signal, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(signal.ManifestUrl))
+            throw new InvalidOperationException("Update requested but manifest URL is missing.");
+        if (!string.IsNullOrWhiteSpace(signal.Channel) &&
+            !string.Equals(signal.Channel, _trust.ExpectedChannel, StringComparison.Ordinal))
+            throw new InvalidOperationException("Update signal channel mismatch.");
+
+        using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
+        manifestResponse.EnsureSuccessStatusCode();
+        var manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        return AgentUpdateManifestValidator.ParseAndValidateJson(
+            manifestJson,
+            _trust.ManifestPublicKeyPem,
+            _trust.ExpectedChannel,
+            _trust.AllowedArtifactPrefixes,
+            currentVersion: _trust.CurrentVersion,
+            allowRollbackManifest: _trust.AllowRollbackManifest);
     }
 
     public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)
