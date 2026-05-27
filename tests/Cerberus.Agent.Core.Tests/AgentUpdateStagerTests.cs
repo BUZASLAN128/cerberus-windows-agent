@@ -91,6 +91,86 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
+    public async Task StageAsync_ReusesAlreadyVerifiedArtifactWithoutDownloadingAgain()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var requestedPaths = new List<string>();
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            requestedPaths.Add(request.RequestUri?.AbsolutePath ?? "");
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            throw new InvalidOperationException("Artifact should not be downloaded when a verified staged MSI exists.");
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-reuse-test-" + Guid.NewGuid().ToString("N"));
+        var stageDir = Path.Combine(root, "1.2.0");
+        Directory.CreateDirectory(stageDir);
+        await File.WriteAllBytesAsync(
+            Path.Combine(stageDir, "Cerberus.Agent.Setup-stable-1.2.0.msi"),
+            artifact);
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+
+        var plan = await stager.StageAsync(UpdateResponse(), CancellationToken.None);
+
+        Assert.NotNull(plan);
+        Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
+        Assert.Equal(artifact, await File.ReadAllBytesAsync(plan.ArtifactPath));
+    }
+
+    [Fact]
+    public async Task StageAsync_PreservesExistingArtifactWhenReplacementDownloadFailsHash()
+    {
+        using var rsa = RSA.Create(2048);
+        var expectedArtifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var existingArtifact = Encoding.UTF8.GetBytes("existing-msi-must-not-be-truncated");
+        var corruptDownload = Encoding.UTF8.GetBytes("corrupt-msi");
+        var hash = Convert.ToHexString(SHA256.HashData(expectedArtifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            return new ByteArrayContent(corruptDownload);
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-preserve-test-" + Guid.NewGuid().ToString("N"));
+        var stageDir = Path.Combine(root, "1.2.0");
+        Directory.CreateDirectory(stageDir);
+        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent.Setup-stable-1.2.0.msi");
+        await File.WriteAllBytesAsync(artifactPath, existingArtifact);
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            stager.StageAsync(UpdateResponse(), CancellationToken.None));
+
+        Assert.Contains("checksum mismatch", ex.Message);
+        Assert.Equal(existingArtifact, await File.ReadAllBytesAsync(artifactPath));
+        Assert.Empty(Directory.GetFiles(stageDir, "*.part"));
+    }
+
+    [Fact]
     public async Task ApplyPlanAsync_RejectsChecksumMismatch()
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));

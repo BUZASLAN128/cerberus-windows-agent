@@ -240,6 +240,19 @@ public sealed class AgentUpdateStager
         string artifactPath,
         CancellationToken ct)
     {
+        if (await FileHashMatchesAsync(artifactPath, manifest.Sha256, ct).ConfigureAwait(false))
+        {
+            _log.Info($"Agent update artifact already staged: {Path.GetFileName(artifactPath)}.");
+            return;
+        }
+
+        var artifactDir = Path.GetDirectoryName(Path.GetFullPath(artifactPath))
+            ?? throw new InvalidOperationException("Update artifact directory could not be resolved.");
+        Directory.CreateDirectory(artifactDir);
+        var tempPath = Path.Combine(
+            artifactDir,
+            $".{Path.GetFileName(artifactPath)}.{Guid.NewGuid():N}.part");
+
         using var response = await _http.GetAsync(
             manifest.ArtifactUrl,
             HttpCompletionOption.ResponseHeadersRead,
@@ -249,35 +262,49 @@ public sealed class AgentUpdateStager
             response.Content.Headers.ContentLength > _trust.MaxArtifactBytes)
             throw new InvalidOperationException("Update artifact exceeds size limit.");
 
-        await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        await using var target = File.Create(artifactPath);
-        using var sha = SHA256.Create();
-
-        var buffer = new byte[64 * 1024];
-        long total = 0;
-        long nextProgressBytes = 8 * 1024 * 1024;
-        var contentLength = response.Content.Headers.ContentLength;
-        while (true)
+        try
         {
-            var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-            if (read <= 0)
-                break;
-            total += read;
-            if (total > _trust.MaxArtifactBytes)
-                throw new InvalidOperationException("Update artifact exceeds size limit.");
-            await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-            sha.TransformBlock(buffer, 0, read, null, 0);
-            if (total >= nextProgressBytes)
+            await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            await using var target = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None);
+            using var sha = SHA256.Create();
+
+            var buffer = new byte[64 * 1024];
+            long total = 0;
+            long nextProgressBytes = 8 * 1024 * 1024;
+            var contentLength = response.Content.Headers.ContentLength;
+            while (true)
             {
-                LogDownloadProgress(total, contentLength);
-                nextProgressBytes = total + (8 * 1024 * 1024);
+                var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                if (read <= 0)
+                    break;
+                total += read;
+                if (total > _trust.MaxArtifactBytes)
+                    throw new InvalidOperationException("Update artifact exceeds size limit.");
+                await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                sha.TransformBlock(buffer, 0, read, null, 0);
+                if (total >= nextProgressBytes)
+                {
+                    LogDownloadProgress(total, contentLength);
+                    nextProgressBytes = total + (8 * 1024 * 1024);
+                }
             }
+            LogDownloadProgress(total, contentLength);
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
+            if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Update artifact checksum mismatch.");
         }
-        LogDownloadProgress(total, contentLength);
-        sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-        var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
-        if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Update artifact checksum mismatch.");
+        catch
+        {
+            TryDeleteFile(tempPath);
+            throw;
+        }
+
+        File.Move(tempPath, artifactPath, overwrite: true);
     }
 
     private void LogDownloadProgress(long total, long? contentLength)
@@ -321,6 +348,41 @@ public sealed class AgentUpdateStager
         await using var stream = File.OpenRead(path);
         var hash = await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static async Task<bool> FileHashMatchesAsync(string path, string expectedSha256, CancellationToken ct)
+    {
+        if (!File.Exists(path))
+            return false;
+
+        try
+        {
+            var hash = await HashFileAsync(path, ct).ConfigureAwait(false);
+            return string.Equals(hash, expectedSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static bool IsUnderDirectory(string path, string directory)
