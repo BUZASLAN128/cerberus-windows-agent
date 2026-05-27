@@ -68,6 +68,46 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void Tray_UpdateCheckUsesPublicManifestWithoutAgentRegistration()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Tray", "Program.cs"));
+        var english = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.resx"));
+        var turkish = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.tr-TR.resx"));
+
+        Assert.Contains("GetUpdateCheckFailureDetail()", source);
+        Assert.Contains("BuildConfiguredManualSignal()", source);
+        Assert.Contains("CreateUpdateHttpClient()", source);
+        Assert.Contains("AgentUpdateSignal?", source);
+        Assert.Contains("UpdateNotConfiguredDetail", english);
+        Assert.Contains("UpdateNotConfiguredDetail", turkish);
+        Assert.DoesNotContain("SendUpdateCheckHeartbeatAsync", source);
+        Assert.DoesNotContain("LoadUpdateSecretsAsync", source);
+        Assert.DoesNotContain("Agent registration is not available for update checks", source);
+        Assert.DoesNotContain("UpdateCheckFailedDetail\", AgentDiagnosticsBundle.Redact(ex.Message)", source);
+    }
+
+    [Fact]
+    public void UpdateRuntime_EmbedsPublicManifestTrustDefaults()
+    {
+        var repoRoot = FindRepoRoot();
+        var appProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
+        var runtimeProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Runtime", "Cerberus.Agent.Runtime.csproj"));
+        var trustFactory = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Updates", "AgentUpdateTrustFactory.cs"));
+
+        Assert.Contains("AgentUpdateManifestPublicKeysB64", appProject);
+        Assert.Contains("AgentUpdateManifestUrl", appProject);
+        Assert.Contains("AgentUpdateAllowedArtifactPrefixes", appProject);
+        Assert.Contains("AgentUpdateManifestPublicKeysB64", runtimeProject);
+        Assert.Contains("AgentUpdateManifestUrl", runtimeProject);
+        Assert.Contains("AgentUpdateAllowedArtifactPrefixes", runtimeProject);
+        Assert.Contains(@"Updates\AgentUpdateDefaults.cs", runtimeProject);
+        Assert.Contains("AgentUpdateDefaults.ManifestPublicKeysB64", trustFactory);
+        Assert.Contains("AgentUpdateDefaults.ManifestUrl", trustFactory);
+        Assert.Contains("AgentUpdateDefaults.AllowedArtifactPrefixes", trustFactory);
+    }
+
+    [Fact]
     public void SetupHelper_UsesUnifiedAgentTitleAndFinishReadyState()
     {
         var repoRoot = FindRepoRoot();

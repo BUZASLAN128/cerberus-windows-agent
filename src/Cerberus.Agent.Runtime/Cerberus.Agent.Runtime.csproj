@@ -4,7 +4,25 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
+    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.json</AgentUpdateManifestUrl>
+    <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestPublicKeysB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestPublicKeysB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestUrl</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestUrl)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedArtifactPrefixes</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedArtifactPrefixes)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -19,6 +37,7 @@
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateCoordinator.cs" Link="Updates\AgentUpdateCoordinator.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateDefaults.cs" Link="Updates\AgentUpdateDefaults.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateLaunchGate.cs" Link="Updates\AgentUpdateLaunchGate.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateTrustFactory.cs" Link="Updates\AgentUpdateTrustFactory.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\UpdateApplyMode.cs" Link="Updates\UpdateApplyMode.cs" />

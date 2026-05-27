@@ -64,7 +64,8 @@
   <data name="UpdateInstallerStarted" xml:space="preserve"><value>installer started</value></data>
   <data name="UpdateCheckFailed" xml:space="preserve"><value>check failed</value></data>
   <data name="UpdateInstallFailed" xml:space="preserve"><value>install failed</value></data>
-  <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Update check failed: {0}</value></data>
+  <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Update check could not be completed. Please try again later.</value></data>
+  <data name="UpdateNotConfiguredDetail" xml:space="preserve"><value>Updates are not configured for this installation.</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Update could not start: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>yes</value></data>
   <data name="No" xml:space="preserve"><value>no</value></data>

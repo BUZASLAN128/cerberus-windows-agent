@@ -23,6 +23,9 @@
     <AgentDefaultSsoClientIdBase64 Condition="'$(AgentDefaultSsoClientIdBase64)' == ''"></AgentDefaultSsoClientIdBase64>
     <AgentDefaultSsoScopeBase64 Condition="'$(AgentDefaultSsoScopeBase64)' == ''"></AgentDefaultSsoScopeBase64>
     <AgentDefaultOAuthRedirectPort Condition="'$(AgentDefaultOAuthRedirectPort)' == ''">0</AgentDefaultOAuthRedirectPort>
+    <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
+    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.json</AgentUpdateManifestUrl>
+    <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
   </PropertyGroup>
 
   <ItemGroup>
@@ -45,6 +48,18 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentDefaultOAuthRedirectPort</_Parameter1>
       <_Parameter2>$(AgentDefaultOAuthRedirectPort)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestPublicKeysB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestPublicKeysB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestUrl</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestUrl)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedArtifactPrefixes</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedArtifactPrefixes)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 

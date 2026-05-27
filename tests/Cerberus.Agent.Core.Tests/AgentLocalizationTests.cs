@@ -23,4 +23,18 @@ public sealed class AgentLocalizationTests
         Assert.Equal("Ready to connect", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("en-US")));
         Assert.Equal("Bağlanmaya hazır", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("tr-TR")));
     }
+
+    [Fact]
+    public void UpdateCheckMessages_AreCustomerFacingAndLocalized()
+    {
+        var english = AgentLocalizer.Get("UpdateNotConfiguredDetail", CultureInfo.GetCultureInfo("en-US"));
+        var turkish = AgentLocalizer.Get("UpdateNotConfiguredDetail", CultureInfo.GetCultureInfo("tr-TR"));
+
+        Assert.Contains("Updates are not configured", english);
+        Assert.Contains("güncellemeler yapılandırılmamış", turkish);
+        Assert.DoesNotContain("Agent registration", english);
+        Assert.DoesNotContain("Agent registration", turkish);
+        Assert.DoesNotContain("{0}", AgentLocalizer.Get("UpdateCheckFailedDetail", CultureInfo.GetCultureInfo("en-US")));
+        Assert.DoesNotContain("{0}", AgentLocalizer.Get("UpdateCheckFailedDetail", CultureInfo.GetCultureInfo("tr-TR")));
+    }
 }

@@ -79,6 +79,8 @@ public sealed class AgentLegalConsentTests
         Assert.Contains($"PrivacyNoticeVersion={AgentLegalConsent.PrivacyNoticeVersion}", project);
         Assert.Contains($"SecurityDisclosureVersion={AgentLegalConsent.SecurityDisclosureVersion}", project);
         Assert.Contains("MsiProductVersion=$(MsiProductVersion)", project);
+        Assert.Contains("UpdateManifestUrl", project);
+        Assert.Contains("releases/download/$(Channel)-latest", project);
 
         var package = File.ReadAllText(Path.Combine(
             repoRoot,
@@ -119,8 +121,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_SSO_CLIENT_ID", package);
         Assert.Contains("CERBERUS_CHANNEL", package);
         Assert.Contains("CERBERUS_LANGUAGE", package);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_URL", package);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", package);
         Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", package);
+        Assert.Contains("Value=\"$(var.UpdateManifestUrl)\"", package);
         Assert.Contains("Value=\"$(var.UpdateManifestPublicKeyB64)\"", package);
         Assert.Contains("Value=\"$(var.UpdateAllowedArtifactPrefixes)\"", package);
         Assert.Contains("CREATE_DESKTOP_SHORTCUT", package);
@@ -129,6 +133,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Name=\"ssoBaseUrl\"", package);
         Assert.Contains("Name=\"ssoClientId\"", package);
         Assert.Contains("Name=\"language\"", package);
+        Assert.Contains("Name=\"updateManifestUrl\"", package);
         Assert.Contains("Name=\"updateManifestPublicKeyB64\"", package);
         Assert.Contains("Name=\"updateAllowedArtifactPrefixes\"", package);
         Assert.Contains("DesktopAgentShortcutComponent", package);
@@ -176,8 +181,13 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Copy-ChannelLatestAliases", releaseScript);
         Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", releaseScript);
         Assert.Contains("Cerberus.Agent.Setup-$Channel-latest", releaseScript);
+        Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);
+        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
         Assert.Contains("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", releaseScript);
+        Assert.Contains("GitHub dev releases require stable AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM", releaseScript);
+        Assert.Single(Regex.Matches(releaseScript, @"IsNullOrWhiteSpace\(\$UpdateAllowedArtifactPrefixes\)").Cast<Match>());
 
         var updater = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Updater", "Program.cs"));
         Assert.Contains("CERBERUS_EULA_ACCEPTED=1", updater);
@@ -189,6 +199,9 @@ public sealed class AgentLegalConsentTests
 
         var workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "auto-publish-exe.yml"));
         Assert.Contains("./scripts/build-agent-public-release.ps1", workflow);
+        Assert.Contains("GITHUB_REPOSITORY", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_URL", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", workflow);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", workflow);
         Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
         Assert.Contains("$latestAssetBase", workflow);

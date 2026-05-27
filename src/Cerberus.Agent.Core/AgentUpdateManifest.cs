@@ -38,6 +38,21 @@ public static class AgentUpdateManifestValidator
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
         bool allowRollbackManifest = false)
+        => ParseAndValidateJson(
+            json,
+            new[] { publicKeyPem },
+            expectedChannel,
+            allowedArtifactPrefixes,
+            currentVersion,
+            allowRollbackManifest);
+
+    public static AgentUpdateManifest ParseAndValidateJson(
+        string json,
+        IReadOnlyList<string> publicKeyPems,
+        string expectedChannel,
+        IReadOnlyList<string> allowedArtifactPrefixes,
+        string? currentVersion = null,
+        bool allowRollbackManifest = false)
     {
         using var doc = JsonDocument.Parse(json);
         foreach (var property in doc.RootElement.EnumerateObject())
@@ -50,7 +65,7 @@ public static class AgentUpdateManifestValidator
             ?? throw new InvalidOperationException("Update manifest is empty.");
         return Validate(
             manifest,
-            publicKeyPem,
+            publicKeyPems,
             expectedChannel,
             allowedArtifactPrefixes,
             currentVersion,
@@ -60,6 +75,21 @@ public static class AgentUpdateManifestValidator
     public static AgentUpdateManifest Validate(
         AgentUpdateManifest manifest,
         string publicKeyPem,
+        string expectedChannel,
+        IReadOnlyList<string> allowedArtifactPrefixes,
+        string? currentVersion = null,
+        bool allowRollbackManifest = false)
+        => Validate(
+            manifest,
+            new[] { publicKeyPem },
+            expectedChannel,
+            allowedArtifactPrefixes,
+            currentVersion,
+            allowRollbackManifest);
+
+    public static AgentUpdateManifest Validate(
+        AgentUpdateManifest manifest,
+        IReadOnlyList<string> publicKeyPems,
         string expectedChannel,
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
@@ -74,7 +104,8 @@ public static class AgentUpdateManifestValidator
         Require(manifest.ReleasedAtUtc, "Update manifest release time missing.");
         Require(manifest.MinimumProtocolVersion, "Update manifest protocol version missing.");
         Require(manifest.Signature, "Update manifest signature missing.");
-        Require(publicKeyPem, "Update manifest public key missing.");
+        if (publicKeyPems.Count == 0 || publicKeyPems.All(string.IsNullOrWhiteSpace))
+            throw new InvalidOperationException("Update manifest public key missing.");
 
         if (!string.Equals(manifest.ArtifactKind, "msi", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest artifact kind denied.");
@@ -97,15 +128,9 @@ public static class AgentUpdateManifestValidator
                 throw new InvalidOperationException("Update manifest downgrade denied.");
         }
 
-        using var rsa = RSA.Create();
-        rsa.ImportFromPem(publicKeyPem);
         var signature = Convert.FromBase64String(manifest.Signature);
-        var ok = rsa.VerifyData(
-            Encoding.UTF8.GetBytes(CanonicalPayload(manifest)),
-            signature,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-        if (!ok)
+        var payload = Encoding.UTF8.GetBytes(CanonicalPayload(manifest));
+        if (!VerifyWithAnyPublicKey(payload, signature, publicKeyPems))
             throw new InvalidOperationException("Update manifest signature invalid.");
         return manifest;
     }
@@ -127,6 +152,31 @@ public static class AgentUpdateManifestValidator
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new InvalidOperationException(message);
+    }
+
+    private static bool VerifyWithAnyPublicKey(
+        byte[] payload,
+        byte[] signature,
+        IReadOnlyList<string> publicKeyPems)
+    {
+        foreach (var publicKeyPem in publicKeyPems)
+        {
+            if (string.IsNullOrWhiteSpace(publicKeyPem))
+                continue;
+
+            try
+            {
+                using var rsa = RSA.Create();
+                rsa.ImportFromPem(publicKeyPem);
+                if (rsa.VerifyData(payload, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
+                    return true;
+            }
+            catch (Exception ex) when (ex is ArgumentException or FormatException or CryptographicException)
+            {
+            }
+        }
+
+        return false;
     }
 
 }

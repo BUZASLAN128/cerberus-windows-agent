@@ -1,13 +1,11 @@
 using System.Diagnostics;
 using System.Drawing;
-using System.Security.Cryptography;
 using System.Windows.Forms;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
-using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Tray;
 
@@ -76,7 +74,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _setupComplete;
     private bool _checkingUpdates;
     private bool _applyingUpdate;
-    private HeartbeatResponse? _lastCheckedUpdateResponse;
+    private AgentUpdateSignal? _lastCheckedUpdateSignal;
     private AgentUpdateCheckResult? _lastUpdateCheck;
 
     public TrayApplicationContext()
@@ -269,38 +267,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-            var heartbeat = await SendUpdateCheckHeartbeatAsync(cts.Token).ConfigureAwait(true);
-            using var updateHttp = await CreateUpdateHttpClientAsync(cts.Token).ConfigureAwait(true);
+            using var updateHttp = CreateUpdateHttpClient();
             var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance);
-            if (coordinator is null)
+            var signal = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
+            if (coordinator is null || signal is null)
             {
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateUnavailable"));
+                if (userInitiated)
+                    ShowUpdateMessage(AgentLocalizer.Get("UpdateNotConfiguredDetail"));
                 return;
             }
 
-            var check = await coordinator.CheckUpdateAsync(heartbeat, cts.Token).ConfigureAwait(true);
+            var check = await coordinator.CheckUpdateAsync(signal, cts.Token).ConfigureAwait(true);
             if (!check.Available)
             {
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
                 return;
             }
 
-            _lastCheckedUpdateResponse = heartbeat;
+            _lastCheckedUpdateSignal = signal;
             _lastUpdateCheck = check;
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
             _updateNow.Enabled = true;
         }
-        catch (Exception ex)
+        catch
         {
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
-            {
-                MessageBox.Show(
-                    AgentLocalizer.Format("UpdateCheckFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)),
-                    "Cerberus Agent",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
+                ShowUpdateMessage(GetUpdateCheckFailureDetail());
         }
         finally
         {
@@ -311,7 +305,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task ApplyCheckedUpdateAsync()
     {
-        if (_lastCheckedUpdateResponse is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
+        if (_lastCheckedUpdateSignal is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
         {
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateCheckRequired"));
             _updateNow.Enabled = false;
@@ -329,11 +323,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-            using var updateHttp = await CreateUpdateHttpClientAsync(cts.Token).ConfigureAwait(true);
+            using var updateHttp = CreateUpdateHttpClient();
             var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance)
-                              ?? throw new InvalidOperationException("Update trust is not configured.");
+                               ?? throw new InvalidOperationException("Update trust is not configured.");
             var launched = await coordinator
-                .StageAndLaunchUpdateAsync(_lastCheckedUpdateResponse, requireElevation: true, ct: cts.Token)
+                .StageAndLaunchUpdateAsync(_lastCheckedUpdateSignal, requireElevation: true, ct: cts.Token)
                 .ConfigureAwait(true);
             if (!launched)
             {
@@ -342,7 +336,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
-            _lastCheckedUpdateResponse = null;
+            _lastCheckedUpdateSignal = null;
             _lastUpdateCheck = null;
         }
         catch (Exception ex)
@@ -364,82 +358,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ClearCheckedUpdate(string status)
     {
-        _lastCheckedUpdateResponse = null;
+        _lastCheckedUpdateSignal = null;
         _lastUpdateCheck = null;
         _updateNow.Enabled = false;
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", status);
     }
 
-    private static async Task<HeartbeatResponse> SendUpdateCheckHeartbeatAsync(CancellationToken ct)
-    {
-        var (secrets, privateKeyPem, backend) = await LoadUpdateSecretsAsync(ct).ConfigureAwait(false);
-
-        using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-        var api = new AgentApiClient(
-            http,
-            secrets,
-            new AgentTokenManager(http, secrets),
-            new RequestSigner(privateKeyPem));
-        var metadata = new AgentBuildMetadata(
-            AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
-            BuildId: WindowsDeviceInfo.GetBuildId(),
-            BuildChannel: WindowsDeviceInfo.GetBuildChannel(),
-            BootId: Guid.NewGuid().ToString("N"),
-            SupportedSchemaVersions: AgentSchemaVersions.All);
-
-        return await api.HeartbeatAsync(new
+    private static HttpClient CreateUpdateHttpClient()
+        => new()
         {
-            status = "connected",
-            agent_version = metadata.AgentVersion,
-            build_id = metadata.BuildId,
-            build_channel = metadata.BuildChannel,
-            runtime_mode = "tray",
-            supported_schema_versions = metadata.SupportedSchemaVersions,
-            capabilities = Array.Empty<string>(),
-        }, ct).ConfigureAwait(false);
-    }
-
-    private static async Task<HttpClient> CreateUpdateHttpClientAsync(CancellationToken ct)
-    {
-        var (_, _, backend) = await LoadUpdateSecretsAsync(ct).ConfigureAwait(false);
-
-        return new HttpClient
-        {
-            BaseAddress = backend,
             Timeout = TimeSpan.FromMinutes(10),
         };
-    }
 
-    private static async Task<(DpapiSecretStore Store, string PrivateKeyPem, Uri Backend)> LoadUpdateSecretsAsync(CancellationToken ct)
+    private static string GetUpdateCheckFailureDetail()
+        => AgentLocalizer.Get("UpdateCheckFailedDetail");
+
+    private static void ShowUpdateMessage(string message)
     {
-        foreach (var scope in new[] { SecretStoreScope.User, SecretStoreScope.Machine })
-        {
-            try
-            {
-                var secrets = new DpapiSecretStore(scope);
-                var (_, _, privateKeyPem, storedBackendUrl, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
-                var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl).Trim().TrimEnd('/');
-                if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
-                    throw new InvalidOperationException("Stored backend URL is invalid.");
-
-                return (secrets, privateKeyPem, backend);
-            }
-            catch (Exception ex) when (IsUpdateSecretFallbackError(ex))
-            {
-                // Try the next supported scope. User scope is preferred for tray UX; machine scope
-                // remains available for elevated repair/admin paths and older enrollments.
-            }
-        }
-
-        throw new InvalidOperationException("Agent registration is not available for update checks.");
+        MessageBox.Show(
+            message,
+            "Cerberus Agent",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
     }
-
-    private static bool IsUpdateSecretFallbackError(Exception ex)
-        => ex is FileNotFoundException
-            or DirectoryNotFoundException
-            or UnauthorizedAccessException
-            or CryptographicException
-            or InvalidOperationException;
 
     private static void LaunchSibling(string fileName, string? arguments = null)
     {

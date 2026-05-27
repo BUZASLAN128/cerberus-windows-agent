@@ -108,6 +108,26 @@ internal static class ServiceMode
         string? registryBase64)
         => AgentUpdateTrustFactory.ResolveUpdateManifestPublicKey(envPem, envBase64, registryPem, registryBase64);
 
+    internal static IReadOnlyList<string> ResolveUpdateManifestPublicKeys(
+        string? embeddedBase64,
+        string? envPem,
+        string? envBase64,
+        string? registryPem,
+        string? registryBase64)
+        => AgentUpdateTrustFactory.ResolveUpdateManifestPublicKeys(
+            embeddedBase64,
+            envPem,
+            envBase64,
+            registryPem,
+            registryBase64);
+
+    internal static string ResolveConfiguredUpdateManifestUrl(
+        string? envUrl,
+        string? legacyEnvUrl,
+        string? registryUrl,
+        string? defaultUrl = null)
+        => AgentUpdateTrustFactory.ResolveConfiguredManifestUrl(envUrl, legacyEnvUrl, registryUrl, defaultUrl);
+
     private static TimeSpan ReadTimeSpanFromSeconds(string envName, TimeSpan defaultValue)
     {
         var raw = Environment.GetEnvironmentVariable(envName);

@@ -8,8 +8,9 @@
     <Channel Condition="'$(Channel)' == ''">preview</Channel>
     <AgentPublishDir Condition="'$(AgentPublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\out\public-release\publish</AgentPublishDir>
     <InstallerAssetBase Condition="'$(InstallerAssetBase)' == ''">Cerberus.Agent.Setup-$(Channel)-$(Version)</InstallerAssetBase>
+    <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/$(Channel)-latest/Cerberus.Agent.Bundle-$(Channel)-latest.update-manifest.json</UpdateManifestUrl>
     <UpdateManifestPublicKeyB64 Condition="'$(UpdateManifestPublicKeyB64)' == ''">IA==</UpdateManifestPublicKeyB64>
-    <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">__cerberus_unset__</UpdateAllowedArtifactPrefixes>
+    <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</UpdateAllowedArtifactPrefixes>
     <OutputName>$(InstallerAssetBase)</OutputName>
     <SuppressIces>ICE91</SuppressIces>
     <DefineConstants>
@@ -17,6 +18,7 @@
       ReleaseVersion=$(Version);
       MsiProductVersion=$(MsiProductVersion);
       ReleaseChannel=$(Channel);
+      UpdateManifestUrl=$(UpdateManifestUrl);
       UpdateManifestPublicKeyB64=$(UpdateManifestPublicKeyB64);
       UpdateAllowedArtifactPrefixes=$(UpdateAllowedArtifactPrefixes);
       EulaVersion=agent-eula-2026-05-23.v1;

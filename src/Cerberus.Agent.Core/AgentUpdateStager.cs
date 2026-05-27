@@ -4,7 +4,7 @@ using System.Text.Json;
 namespace Cerberus.Agent.Core;
 
 public sealed record AgentUpdateTrust(
-    string ManifestPublicKeyPem,
+    IReadOnlyList<string> ManifestPublicKeyPems,
     string ExpectedChannel,
     IReadOnlyList<string> AllowedArtifactPrefixes,
     string CurrentVersion,
@@ -92,6 +92,11 @@ public sealed class AgentUpdateStager
     public async Task<AgentUpdateCheckResult> CheckAsync(HeartbeatResponse response, CancellationToken ct)
     {
         var signal = FromHeartbeat(response);
+        return await CheckAsync(signal, ct).ConfigureAwait(false);
+    }
+
+    public async Task<AgentUpdateCheckResult> CheckAsync(AgentUpdateSignal signal, CancellationToken ct)
+    {
         if (!signal.Required && !signal.Recommended)
             return AgentUpdateCheckResult.None;
 
@@ -117,6 +122,11 @@ public sealed class AgentUpdateStager
     public async Task<AgentUpdatePlan?> StageAsync(HeartbeatResponse response, CancellationToken ct)
     {
         var signal = FromHeartbeat(response);
+        return await StageAsync(signal, ct).ConfigureAwait(false);
+    }
+
+    public async Task<AgentUpdatePlan?> StageAsync(AgentUpdateSignal signal, CancellationToken ct)
+    {
         if (!signal.Required && !signal.Recommended)
             return null;
         var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
@@ -165,7 +175,7 @@ public sealed class AgentUpdateStager
         var manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         return AgentUpdateManifestValidator.ParseAndValidateJson(
             manifestJson,
-            _trust.ManifestPublicKeyPem,
+            _trust.ManifestPublicKeyPems,
             _trust.ExpectedChannel,
             _trust.AllowedArtifactPrefixes,
             currentVersion: _trust.CurrentVersion,

@@ -36,7 +36,7 @@ public sealed class AgentUpdateStagerTests
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
-                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.1.0"),
@@ -75,7 +75,7 @@ public sealed class AgentUpdateStagerTests
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
-                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.1.0"),
@@ -86,6 +86,50 @@ public sealed class AgentUpdateStagerTests
         Assert.True(check.Available);
         Assert.True(check.Required);
         Assert.Equal("1.2.0", check.Version);
+        Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
+        Assert.False(Directory.Exists(Path.Combine(root, "1.2.0")));
+    }
+
+    [Fact]
+    public async Task CheckAsync_UsesDirectManifestSignalWithoutHeartbeatRegistration()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var requestedPaths = new List<string>();
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            requestedPaths.Add(request.RequestUri?.AbsolutePath ?? "");
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            throw new InvalidOperationException("Manual check must not download the artifact.");
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-direct-check-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+        var signal = new AgentUpdateSignal(
+            Required: false,
+            Recommended: true,
+            ManifestUrl: "https://releases.cerberus.local/manifest.json",
+            Reason: "manual_update_check",
+            Channel: "stable");
+
+        var check = await stager.CheckAsync(signal, CancellationToken.None);
+
+        Assert.True(check.Available);
+        Assert.False(check.Required);
+        Assert.True(check.Recommended);
+        Assert.Equal("manual_update_check", check.Reason);
         Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
         Assert.False(Directory.Exists(Path.Combine(root, "1.2.0")));
     }
@@ -112,7 +156,7 @@ public sealed class AgentUpdateStagerTests
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
-                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.2.0.0"),
@@ -152,7 +196,7 @@ public sealed class AgentUpdateStagerTests
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
-                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.1.0"),
@@ -191,7 +235,7 @@ public sealed class AgentUpdateStagerTests
         var stager = new AgentUpdateStager(
             http,
             new AgentUpdateTrust(
-                ManifestPublicKeyPem: PublicKeyPem(rsa),
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
                 CurrentVersion: "1.1.0"),

@@ -60,12 +60,29 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public Task<AgentUpdateCheckResult> CheckUpdateAsync(HeartbeatResponse response, CancellationToken ct)
         => _stager.CheckAsync(response, ct);
 
+    public Task<AgentUpdateCheckResult> CheckUpdateAsync(AgentUpdateSignal signal, CancellationToken ct)
+        => _stager.CheckAsync(signal, ct);
+
     public async Task<bool> StageAndLaunchUpdateAsync(
         HeartbeatResponse response,
         bool requireElevation,
         CancellationToken ct)
     {
         var plan = await _stager.StageAsync(response, ct).ConfigureAwait(false);
+        return StageAndLaunchUpdate(plan, requireElevation);
+    }
+
+    public async Task<bool> StageAndLaunchUpdateAsync(
+        AgentUpdateSignal signal,
+        bool requireElevation,
+        CancellationToken ct)
+    {
+        var plan = await _stager.StageAsync(signal, ct).ConfigureAwait(false);
+        return StageAndLaunchUpdate(plan, requireElevation);
+    }
+
+    private bool StageAndLaunchUpdate(AgentUpdatePlan? plan, bool requireElevation)
+    {
         if (plan is null)
             return false;
 

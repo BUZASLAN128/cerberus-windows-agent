@@ -24,6 +24,23 @@ public sealed class AgentUpdateManifestValidatorTests
     }
 
     [Fact]
+    public void Validate_AcceptsManifestSignedByAnyTrustedKey()
+    {
+        using var trusted = RSA.Create(2048);
+        using var otherTrusted = RSA.Create(2048);
+        var manifest = SignedManifest(otherTrusted);
+
+        var validated = AgentUpdateManifestValidator.Validate(
+            manifest,
+            new[] { PublicKeyPem(trusted), "not-a-public-key", PublicKeyPem(otherTrusted) },
+            "stable",
+            new[] { "https://releases.cerberus.local/" },
+            currentVersion: "1.1.0");
+
+        Assert.Equal("1.2.0", validated.Version);
+    }
+
+    [Fact]
     public void Validate_RejectsBadSignature()
     {
         using var rsa = RSA.Create(2048);
@@ -36,6 +53,30 @@ public sealed class AgentUpdateManifestValidatorTests
                 "stable",
                 new[] { "https://releases.cerberus.local/" }));
         Assert.Contains("signature invalid", ex.Message);
+    }
+
+    [Fact]
+    public void Validate_RejectsUnsignedManifestAndDeniedArtifactUrl()
+    {
+        using var rsa = RSA.Create(2048);
+        var unsigned = SignedManifest(rsa) with { Signature = "" };
+
+        var unsignedEx = Assert.Throws<InvalidOperationException>(() =>
+            AgentUpdateManifestValidator.Validate(
+                unsigned,
+                PublicKeyPem(rsa),
+                "stable",
+                new[] { "https://releases.cerberus.local/" }));
+        Assert.Contains("signature missing", unsignedEx.Message);
+
+        var denied = SignedManifest(rsa) with { ArtifactUrl = "https://evil.example/agent.msi" };
+        var deniedEx = Assert.Throws<InvalidOperationException>(() =>
+            AgentUpdateManifestValidator.Validate(
+                denied,
+                PublicKeyPem(rsa),
+                "stable",
+                new[] { "https://releases.cerberus.local/" }));
+        Assert.Contains("artifact URL denied", deniedEx.Message);
     }
 
     [Fact]

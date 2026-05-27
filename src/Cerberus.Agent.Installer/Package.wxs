@@ -24,6 +24,7 @@
     <Property Id="CERBERUS_SSO_SCOPE" Value="openid profile email groups" Secure="yes" />
     <Property Id="CERBERUS_CHANNEL" Value="$(var.ReleaseChannel)" Secure="yes" />
     <Property Id="CERBERUS_LANGUAGE" Value="auto" Secure="yes" />
+    <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_URL" Value="$(var.UpdateManifestUrl)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES" Value="$(var.UpdateAllowedArtifactPrefixes)" Secure="yes" />
     <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
@@ -144,6 +145,7 @@
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoClientId" Type="string" Value="[CERBERUS_SSO_CLIENT_ID]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoScope" Type="string" Value="[CERBERUS_SSO_SCOPE]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="language" Type="string" Value="[CERBERUS_LANGUAGE]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateManifestUrl" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_URL]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateManifestPublicKeyB64" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateAllowedArtifactPrefixes" Type="string" Value="[CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES]" />
       </Component>

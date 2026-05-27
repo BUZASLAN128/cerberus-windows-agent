@@ -13,6 +13,8 @@ param(
   [string]$DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL,
   [string]$DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID,
   [string]$DefaultSsoScope = $env:CERBERUS_SSO_SCOPE,
+  [string]$UpdateManifestUrl = $env:CERBERUS_AGENT_UPDATE_MANIFEST_URL,
+  [string]$AgentUpdateManifestPublicKeysB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64,
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
   [int]$DefaultOAuthRedirectPort = 0,
@@ -35,6 +37,17 @@ function ConvertTo-Base64Utf8([string]$Value) {
     return ""
   }
   return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value.Trim()))
+}
+
+function Get-FirstListValue([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    return ""
+  }
+  $first = @($Value -split "[,;`r`n]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+  if ($first.Count -eq 0) {
+    return ""
+  }
+  return $first[0].Trim()
 }
 
 function Find-SignTool {
@@ -190,27 +203,40 @@ if ($Channel -eq "dev") {
 
 $manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -and $AllowUnsignedDevBuild) {
+  if ([string]::Equals($env:GITHUB_ACTIONS, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "GitHub dev releases require stable AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM; ephemeral manifest keys are local/lab only."
+  }
   $ephemeralManifestKey = [System.Security.Cryptography.RSA]::Create(3072)
   $manifestPrivateKey = $ephemeralManifestKey.ExportPkcs8PrivateKeyPem()
 }
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
   throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
 }
+if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64) -or [string]::IsNullOrWhiteSpace($AgentUpdateManifestPublicKeysB64)) {
+  $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
+  if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
+    $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
+  }
+  if ([string]::IsNullOrWhiteSpace($AgentUpdateManifestPublicKeysB64)) {
+    $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
+  }
+}
 if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
-  $UpdateManifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
+  $UpdateManifestPublicKeyB64 = Get-FirstListValue $AgentUpdateManifestPublicKeysB64
+}
+if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
+  $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
+  $UpdateManifestUrl = "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
+}
+if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
+  $artifactRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
+  $UpdateAllowedArtifactPrefixes = "https://github.com/$artifactRepo/releases/download/"
 }
 
 $artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
 if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
   $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
   $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
-}
-if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
-  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
-    $UpdateAllowedArtifactPrefixes = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/"
-  } else {
-    $UpdateAllowedArtifactPrefixes = "__cerberus_unset__"
-  }
 }
 
 if (-not $SkipTests) {
@@ -229,6 +255,9 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
     "-p:DebugType=None",
     "-p:DebugSymbols=false",
     "-p:Version=$Version",
+    "-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64",
+    "-p:AgentUpdateManifestUrl=$UpdateManifestUrl",
+    "-p:AgentUpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes",
     "-o", $runtimePublishDir
   )
   if ($WithSetupConfig) {
@@ -306,6 +335,7 @@ dotnet build $installerProject `
   -p:Channel=$Channel `
   -p:AgentPublishDir=$runtimePublishDir `
   -p:InstallerAssetBase=$installerBuildBase `
+  -p:UpdateManifestUrl=$UpdateManifestUrl `
   -p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64 `
   -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
   -p:OutputPath="$publishDir\"
