@@ -29,8 +29,11 @@ public sealed class HeartbeatLoopTests
             log: NullAgentLogger.Instance,
             initialSnapshotDelay: TimeSpan.Zero);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
-        await loop.RunAsync(cts.Token);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.SnapshotSubmittedTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
 
         Assert.True(handler.SnapshotSubmitted);
         Assert.False(handler.CommandResultSubmitted);
@@ -70,6 +73,10 @@ public sealed class HeartbeatLoopTests
     {
         public bool SnapshotSubmitted { get; private set; }
         public bool CommandResultSubmitted { get; private set; }
+        public Task SnapshotSubmittedTask => _snapshotSubmitted.Task;
+
+        private readonly TaskCompletionSource _snapshotSubmitted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -112,6 +119,7 @@ public sealed class HeartbeatLoopTests
             {
                 _ = await request.Content!.ReadAsStringAsync(cancellationToken);
                 SnapshotSubmitted = true;
+                _snapshotSubmitted.TrySetResult();
                 return JsonResponse("""{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":["identity"]}""");
             }
 
