@@ -181,6 +181,12 @@ if ($Channel -eq "dev") {
   if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
   if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
 }
+if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
+  $UpdateManifestPublicKeyB64 = "IA=="
+}
+if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
+  $UpdateAllowedArtifactPrefixes = "__cerberus_unset__"
+}
 
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"

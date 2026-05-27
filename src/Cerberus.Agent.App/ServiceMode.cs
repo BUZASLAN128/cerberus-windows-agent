@@ -230,7 +230,7 @@ internal static class ServiceMode
             return Array.Empty<string>();
         return value
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Where(item => !string.IsNullOrWhiteSpace(item) && !string.Equals(item, "__cerberus_unset__", StringComparison.Ordinal))
             .ToArray();
     }
 
