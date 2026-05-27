@@ -4,7 +4,7 @@
   <resheader name="version"><value>2.0</value></resheader>
   <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
   <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
-  <data name="AppTitle" xml:space="preserve"><value>CERBERUS Agent Setup</value></data>
+  <data name="AppTitle" xml:space="preserve"><value>Cerberus Agent</value></data>
   <data name="AppSubtitle" xml:space="preserve"><value>Connect this device to your workspace</value></data>
   <data name="Service" xml:space="preserve"><value>Service</value></data>
   <data name="Connector" xml:space="preserve"><value>Connector</value></data>
@@ -18,9 +18,12 @@
   <data name="ReadyToConnectDetail" xml:space="preserve"><value>This device is registered and the Cerberus Windows service is running.</value></data>
   <data name="DeviceSetup" xml:space="preserve"><value>Device setup</value></data>
   <data name="DeviceSetupDetail" xml:space="preserve"><value>Accept the terms, sign in, and let Cerberus register this device and start the Windows service.</value></data>
-  <data name="StartSetup" xml:space="preserve"><value>Start setup</value></data>
+  <data name="StartSetup" xml:space="preserve"><value>Connect this device</value></data>
+  <data name="ConnectDevice" xml:space="preserve"><value>Connect this device</value></data>
   <data name="Ready" xml:space="preserve"><value>Ready</value></data>
+  <data name="Finish" xml:space="preserve"><value>Finish</value></data>
   <data name="ReadyHint" xml:space="preserve"><value>Ready. Device is registered and service is running.</value></data>
+  <data name="AgentReadyTrayDetail" xml:space="preserve"><value>This device is connected and the Cerberus service is running.</value></data>
   <data name="RegisteredInstallServiceHint" xml:space="preserve"><value>Registered. Finish setup to install the service.</value></data>
   <data name="RegisteredServiceStatusHint" xml:space="preserve"><value>Registered. Service status: {0}.</value></data>
   <data name="NotConfigured" xml:space="preserve"><value>Not configured</value></data>
@@ -38,7 +41,7 @@
   <data name="InstallTailscale" xml:space="preserve"><value>Install Tailscale</value></data>
   <data name="TailscaleUnavailableNote" xml:space="preserve"><value>If your workspace is not configured for Tailscale, export will be unavailable.</value></data>
   <data name="CmdNotExported" xml:space="preserve"><value>command not exported yet</value></data>
-  <data name="AfterSetupNote" xml:space="preserve"><value>After setup, Cerberus keeps running from the Windows tray.</value></data>
+  <data name="AfterSetupNote" xml:space="preserve"><value>Cerberus keeps running from the Windows tray.</value></data>
   <data name="OpenSetup" xml:space="preserve"><value>Open setup</value></data>
   <data name="RepairTools" xml:space="preserve"><value>Repair tools</value></data>
   <data name="ExportDiagnostics" xml:space="preserve"><value>Export diagnostics</value></data>

@@ -4,7 +4,6 @@
   <String Id="ProductLanguage" Value="1033" />
   <String Id="DowngradeError" Value="A newer version of Cerberus Windows Agent is already installed." />
   <String Id="LaunchConditionEula" Value="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
-  <String Id="StartMenuSetupShortcut" Value="Cerberus Agent Setup" />
-  <String Id="StartMenuTrayShortcut" Value="Cerberus Agent Tray" />
+  <String Id="StartMenuAgentShortcut" Value="Cerberus Agent" />
   <String Id="StartMenuUninstallShortcut" Value="Uninstall Cerberus Agent" />
 </WixLocalization>

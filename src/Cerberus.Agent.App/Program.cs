@@ -185,6 +185,7 @@ internal static class Program
                         window.Show();
                     if (window.WindowState == WindowState.Minimized)
                         window.WindowState = WindowState.Normal;
+                    window.PositionNearNotificationArea();
                     window.Activate();
                     window.Topmost = true;
                     window.Topmost = false;

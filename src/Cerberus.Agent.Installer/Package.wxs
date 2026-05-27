@@ -60,7 +60,7 @@
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
       <ComponentRef Id="StartMenuShortcutComponent" />
-      <ComponentRef Id="DesktopSetupShortcutComponent" />
+      <ComponentRef Id="DesktopAgentShortcutComponent" />
       <ComponentRef Id="StartupShortcutComponent" />
       <ComponentRef Id="LegalConsentRegistryComponent" />
     </Feature>
@@ -164,16 +164,11 @@
   <Fragment>
     <Component Id="StartMenuShortcutComponent" Directory="ApplicationProgramsFolder" Guid="{E34F58AE-32F5-47E1-B41A-B8470C84587A}">
       <Shortcut
-          Id="StartMenuSetupShortcut"
-          Name="Cerberus Agent Setup"
-          Description="Open Cerberus Windows Agent setup"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Setup.exe"
-          WorkingDirectory="INSTALLFOLDER" />
-      <Shortcut
-          Id="StartMenuTrayShortcut"
-          Name="Cerberus Agent Tray"
-          Description="Open Cerberus Windows Agent tray"
+          Id="StartMenuAgentShortcut"
+          Name="Cerberus Agent"
+          Description="Open Cerberus Agent"
           Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          Arguments="--open"
           WorkingDirectory="INSTALLFOLDER" />
       <Shortcut
           Id="StartMenuUninstallShortcut"
@@ -195,8 +190,8 @@
     <Component Id="StartupShortcutComponent" Directory="StartupFolder" Guid="{C5883153-5082-4373-9825-A9FDE199B234}" Condition="START_TRAY_ON_LOGIN = 1">
       <Shortcut
           Id="StartupShortcut"
-          Name="Cerberus Agent Tray"
-          Description="Start Cerberus Windows Agent tray at sign-in"
+          Name="Cerberus Agent"
+          Description="Start Cerberus Agent at sign-in"
           Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
@@ -204,14 +199,15 @@
   </Fragment>
 
   <Fragment>
-    <Component Id="DesktopSetupShortcutComponent" Directory="DesktopFolder" Guid="{B1D4CF86-4B6F-4C6E-B75C-7A5D2C924EA9}" Condition="CREATE_DESKTOP_SHORTCUT = 1">
+    <Component Id="DesktopAgentShortcutComponent" Directory="DesktopFolder" Guid="{B1D4CF86-4B6F-4C6E-B75C-7A5D2C924EA9}" Condition="CREATE_DESKTOP_SHORTCUT = 1">
       <Shortcut
-          Id="DesktopSetupShortcut"
-          Name="Cerberus Agent Setup"
-          Description="Open Cerberus Windows Agent setup"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Setup.exe"
+          Id="DesktopAgentShortcut"
+          Name="Cerberus Agent"
+          Description="Open Cerberus Agent"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          Arguments="--open"
           WorkingDirectory="INSTALLFOLDER" />
-      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopSetupShortcut" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopAgentShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

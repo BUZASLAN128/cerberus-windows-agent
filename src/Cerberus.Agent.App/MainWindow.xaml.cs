@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private DateTimeOffset _ignoreDeactivateUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private RuntimeUiConfig _config;
+    private bool _setupComplete;
 
     internal bool IsBusy => _busy;
 
@@ -41,6 +42,7 @@ public partial class MainWindow : Window
         {
             await Dispatcher.InvokeAsync(async () =>
             {
+                PositionNearNotificationArea();
                 await RefreshAsync();
                 if (IsVisible)
                     _timer.Start();
@@ -51,6 +53,7 @@ public partial class MainWindow : Window
         {
             if (IsVisible)
             {
+                PositionNearNotificationArea();
                 _timer.Start();
                 _ = Dispatcher.InvokeAsync(async () => await RefreshAsync());
                 return;
@@ -68,6 +71,34 @@ public partial class MainWindow : Window
     internal void SetIgnoreDeactivateFor(TimeSpan duration)
     {
         _ignoreDeactivateUntil = DateTimeOffset.UtcNow.Add(duration);
+    }
+
+    internal void PositionNearNotificationArea()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.Invoke(PositionNearNotificationArea);
+            return;
+        }
+
+        const int marginPx = 12;
+        UpdateLayout();
+
+        var screen = System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position);
+        var workingArea = screen.WorkingArea;
+        var widthDip = ActualWidth > 0 ? ActualWidth : Width;
+        var heightDip = ActualHeight > 0 ? ActualHeight : Height;
+        var source = PresentationSource.FromVisual(this);
+        var toDevice = source?.CompositionTarget?.TransformToDevice ?? Matrix.Identity;
+        var fromDevice = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+
+        var sizePx = toDevice.Transform(new Vector(widthDip, heightDip));
+        var leftPx = Math.Max(workingArea.Left, workingArea.Right - sizePx.X - marginPx);
+        var topPx = Math.Max(workingArea.Top, workingArea.Bottom - sizePx.Y - marginPx);
+        var originDip = fromDevice.Transform(new System.Windows.Point(leftPx, topPx));
+
+        Left = originDip.X;
+        Top = originDip.Y;
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)
@@ -185,6 +216,7 @@ public partial class MainWindow : Window
                 }
             }
             var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
+            _setupComplete = setupComplete;
 
             ServiceValue.Text = svc.Text;
             TailscaleValue.Text = ts.Text;
@@ -197,8 +229,8 @@ public partial class MainWindow : Window
                 : AgentLocalizer.Get("SetupRequiredDetail");
             SetReadinessTone(setupComplete);
 
-            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("Ready") : AgentLocalizer.Get("StartSetup");
-            OnboardBtn.IsEnabled = !_busy && !setupComplete && cfgOk;
+            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("Finish") : AgentLocalizer.Get("StartSetup");
+            OnboardBtn.IsEnabled = !_busy && (setupComplete || cfgOk);
             if (setupComplete)
             {
                 OnboardHint.Text = AgentLocalizer.Get("ReadyHint");
@@ -252,13 +284,18 @@ public partial class MainWindow : Window
     {
         if (_busy)
             return;
+        if (_setupComplete || AgentStatus.IsSetupComplete())
+        {
+            Close();
+            return;
+        }
+
         var currentService = AgentStatus.GetService();
         if (AgentStatus.IsRegistered() &&
             currentService.Installed &&
             string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
         {
-            Log(AgentLocalizer.Get("ReadyHint"));
-            await RefreshAsync();
+            Close();
             return;
         }
 

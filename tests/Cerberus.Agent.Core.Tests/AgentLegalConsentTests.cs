@@ -131,10 +131,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Name=\"language\"", package);
         Assert.Contains("Name=\"updateManifestPublicKeyB64\"", package);
         Assert.Contains("Name=\"updateAllowedArtifactPrefixes\"", package);
-        Assert.Contains("DesktopSetupShortcutComponent", package);
+        Assert.Contains("DesktopAgentShortcutComponent", package);
         Assert.Contains("DesktopFolder", package);
-        Assert.Contains("DesktopSetupShortcut", package);
-        Assert.Contains("desktopSetupShortcut", package);
+        Assert.Contains("DesktopAgentShortcut", package);
+        Assert.Contains("desktopAgentShortcut", package);
         Assert.Contains("Condition=\"CREATE_DESKTOP_SHORTCUT = 1\"", package);
         Assert.Contains("ControlExistingCerberusAgentService", package);
         Assert.Contains("Name=\"CerberusAgent\"", package);

@@ -15,6 +15,8 @@ internal static class Program
 {
     private const string TrayMutexName = "Global\\CerberusAgent.Tray.SingleInstance";
     private const string TrayPipeName = "CerberusAgent.Tray.SingleInstancePipe";
+    private const string OpenSignal = "open";
+    private const string ConnectSignal = "connect";
     private const string CheckUpdatesSignal = "check-updates";
     private const string UpdateNowSignal = "update-now";
 
@@ -43,6 +45,10 @@ internal static class Program
             return null;
 
         bool Has(string value) => args.Any(arg => string.Equals(arg, value, StringComparison.OrdinalIgnoreCase));
+        if (Has("--open") || Has("/open"))
+            return OpenSignal;
+        if (Has("--connect") || Has("/connect"))
+            return ConnectSignal;
         if (Has("--check-updates") || Has("/check-updates"))
             return CheckUpdatesSignal;
         if (Has("--update-now") || Has("/update-now"))
@@ -60,12 +66,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _registeredStatus;
     private readonly ToolStripMenuItem _tailscaleStatus;
     private readonly ToolStripMenuItem _updateStatus;
+    private readonly ToolStripMenuItem _connectDevice;
     private readonly ToolStripMenuItem _checkUpdates;
     private readonly ToolStripMenuItem _updateNow;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _startupUpdateTimer;
     private readonly Control _dispatcher;
     private bool _refreshing;
+    private bool _setupComplete;
     private bool _checkingUpdates;
     private bool _applyingUpdate;
     private HeartbeatResponse? _lastCheckedUpdateResponse;
@@ -89,8 +97,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _updateNow = new ToolStripMenuItem(AgentLocalizer.Get("UpdateNow")) { Enabled = false };
         _updateNow.Click += async (_, _) => await ApplyCheckedUpdateAsync().ConfigureAwait(true);
 
-        var setup = new ToolStripMenuItem(AgentLocalizer.Get("OpenSetup"));
-        setup.Click += (_, _) => LaunchSibling("Cerberus.Agent.Setup.exe");
+        _connectDevice = new ToolStripMenuItem(AgentLocalizer.Get("ConnectDevice"));
+        _connectDevice.Click += (_, _) => _ = OpenAgentAsync();
 
         var diagnostics = new ToolStripMenuItem(AgentLocalizer.Get("ExportDiagnostics"));
         diagnostics.Click += async (_, _) => await ExportDiagnosticsAsync();
@@ -108,8 +116,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         exit.Click += (_, _) => ExitThread();
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add(new ToolStripMenuItem("CERBERUS Agent") { Enabled = false });
+        menu.Items.Add(new ToolStripMenuItem("Cerberus Agent") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem(AgentLocalizer.Get("Status")) { Enabled = false });
         menu.Items.Add(_workspaceStatus);
         menu.Items.Add(_accountStatus);
         menu.Items.Add(_serviceStatus);
@@ -117,7 +126,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(_tailscaleStatus);
         menu.Items.Add(_updateStatus);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(setup);
+        menu.Items.Add(_connectDevice);
         menu.Items.Add(_checkUpdates);
         menu.Items.Add(_updateNow);
         menu.Items.Add(diagnostics);
@@ -128,14 +137,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _icon = new NotifyIcon
         {
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
-            Text = "CERBERUS Agent",
+            Text = "Cerberus Agent",
             ContextMenuStrip = menu,
             Visible = true,
         };
         _icon.MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Left)
-                LaunchSibling("Cerberus.Agent.Setup.exe");
+                _ = OpenAgentAsync();
         };
 
         _timer = new System.Windows.Forms.Timer { Interval = 5000 };
@@ -184,6 +193,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         switch (message.Trim().ToLowerInvariant())
         {
+            case "open":
+            case "connect":
+                Post(() => _ = OpenAgentAsync());
+                break;
             case "check-updates":
                 Post(() => _ = CheckUpdatesAsync(userInitiated: true));
                 break;
@@ -214,12 +227,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _serviceStatus.Text = AgentLocalizer.Format("ServiceStatus", service.Text);
             _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));
             _tailscaleStatus.Text = AgentLocalizer.Format("ConnectorStatus", tailscale.Text);
-            _icon.Text = TrimTooltip($"CERBERUS Agent | {service.Short} | {tailscale.Short} | reg={(registered ? "yes" : "no")}");
+            _setupComplete = registered &&
+                             service.Installed &&
+                             string.Equals(service.Text, "running", StringComparison.OrdinalIgnoreCase);
+            _connectDevice.Visible = !_setupComplete;
+            _icon.Text = TrimTooltip($"Cerberus Agent | {service.Short} | {tailscale.Short} | reg={(registered ? "yes" : "no")}");
         }
         finally
         {
             _refreshing = false;
         }
+    }
+
+    private async Task OpenAgentAsync()
+    {
+        var setupComplete = _setupComplete || await Task.Run(AgentStatus.IsSetupComplete).ConfigureAwait(true);
+        if (!setupComplete)
+        {
+            LaunchSibling("Cerberus.Agent.Setup.exe");
+            return;
+        }
+
+        await RefreshAsync().ConfigureAwait(true);
+        _icon.ShowBalloonTip(
+            3000,
+            "Cerberus Agent",
+            AgentLocalizer.Get("AgentReadyTrayDetail"),
+            ToolTipIcon.Info);
     }
 
     private async Task CheckUpdatesAsync(bool userInitiated)
@@ -263,7 +297,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 MessageBox.Show(
                     AgentLocalizer.Format("UpdateCheckFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)),
-                    "CERBERUS Agent",
+                    "Cerberus Agent",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
@@ -316,7 +350,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallFailed"));
             MessageBox.Show(
                 AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)),
-                "CERBERUS Agent",
+                "Cerberus Agent",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
             _updateNow.Enabled = _lastUpdateCheck?.Available == true;
@@ -442,7 +476,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var path = await AgentDiagnosticsBundle.ExportAsync();
             MessageBox.Show(
                 AgentLocalizer.Format("DiagnosticsWritten", path),
-                "CERBERUS Agent",
+                "Cerberus Agent",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
@@ -450,7 +484,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             MessageBox.Show(
                 AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)),
-                "CERBERUS Agent",
+                "Cerberus Agent",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
         }

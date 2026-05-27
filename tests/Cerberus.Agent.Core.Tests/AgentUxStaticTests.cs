@@ -17,6 +17,91 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void Installer_ExposesSingleCustomerFacingAgentShortcut()
+    {
+        var repoRoot = FindRepoRoot();
+        var wxs = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
+
+        Assert.Contains("Id=\"StartMenuAgentShortcut\"", wxs);
+        Assert.Contains("Name=\"Cerberus Agent\"", wxs);
+        Assert.Contains("Target=\"[INSTALLFOLDER]Cerberus.Agent.Tray.exe\"", wxs);
+        Assert.Contains("Arguments=\"--open\"", wxs);
+        Assert.Contains("Id=\"StartMenuUninstallShortcut\"", wxs);
+        Assert.DoesNotContain("StartMenuSetupShortcut", wxs);
+        Assert.DoesNotContain("StartMenuTrayShortcut", wxs);
+        Assert.DoesNotContain("Name=\"Cerberus Agent Setup\"", wxs);
+        Assert.DoesNotContain("Name=\"Cerberus Agent Tray\"", wxs);
+    }
+
+    [Fact]
+    public void Installer_DesktopAndStartupShortcutsUseTrayEntryPoint()
+    {
+        var repoRoot = FindRepoRoot();
+        var wxs = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
+
+        Assert.Contains("Id=\"DesktopAgentShortcut\"", wxs);
+        Assert.Contains("Name=\"desktopAgentShortcut\"", wxs);
+        Assert.Contains("Id=\"StartupShortcut\"", wxs);
+        Assert.Contains("Description=\"Start Cerberus Agent at sign-in\"", wxs);
+        Assert.DoesNotContain("DesktopSetupShortcut", wxs);
+        Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Setup.exe\"", wxs);
+    }
+
+    [Fact]
+    public void Tray_SupportsCustomerOpenSignalsWithoutOpeningSetupWhenReady()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Tray", "Program.cs"));
+        var normalized = source.Replace("\r\n", "\n");
+
+        Assert.Contains("private const string OpenSignal = \"open\"", source);
+        Assert.Contains("private const string ConnectSignal = \"connect\"", source);
+        Assert.Contains("Has(\"--open\")", source);
+        Assert.Contains("Has(\"--connect\")", source);
+        Assert.Contains("case \"open\":", source);
+        Assert.Contains("case \"connect\":", source);
+        Assert.Contains("OpenAgentAsync", source);
+        Assert.Contains("AgentStatus.IsSetupComplete", source);
+        Assert.Contains("ShowBalloonTip", source);
+        Assert.Contains("LaunchSibling(\"Cerberus.Agent.Setup.exe\")", source);
+        Assert.DoesNotContain("MouseButtons.Left)\n                LaunchSibling(\"Cerberus.Agent.Setup.exe\")", normalized);
+    }
+
+    [Fact]
+    public void SetupHelper_UsesUnifiedAgentTitleAndFinishReadyState()
+    {
+        var repoRoot = FindRepoRoot();
+        var xaml = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml"));
+        var code = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml.cs"));
+        var strings = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.resx"));
+
+        Assert.Contains("Title=\"Cerberus Agent\"", xaml);
+        Assert.Contains("<value>Cerberus Agent</value>", strings);
+        Assert.Contains("AgentLocalizer.Get(\"Finish\")", code);
+        Assert.Contains("Close();", code);
+        Assert.DoesNotContain("CERBERUS Agent Setup", xaml);
+        Assert.DoesNotContain("CERBERUS Agent Setup", strings);
+    }
+
+    [Fact]
+    public void SetupHelper_AnchorsWindowNearNotificationArea()
+    {
+        var repoRoot = FindRepoRoot();
+        var window = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml.cs"));
+        var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
+
+        Assert.Contains("PositionNearNotificationArea", window);
+        Assert.Contains("Screen.FromPoint", window);
+        Assert.Contains("Cursor.Position", window);
+        Assert.Contains("WorkingArea", window);
+        Assert.Contains("TransformToDevice", window);
+        Assert.Contains("TransformFromDevice", window);
+        Assert.Contains("Left = originDip.X", window);
+        Assert.Contains("Top = originDip.Y", window);
+        Assert.Contains("window.PositionNearNotificationArea()", program);
+    }
+
+    [Fact]
     public void Readme_DocumentsSplitRuntimeInsteadOfLegacySingleExeFlow()
     {
         var repoRoot = FindRepoRoot();

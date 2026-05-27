@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:Cerberus.Agent.App"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         mc:Ignorable="d"
-        Title="CERBERUS Agent Setup" Height="560" Width="440"
+        Title="Cerberus Agent" Height="560" Width="440"
         WindowStartupLocation="Manual"
         WindowStyle="None"
         ResizeMode="NoResize"
@@ -87,7 +87,7 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Name="TitleText" FontSize="20" FontWeight="SemiBold" Foreground="#FF111827" Text="CERBERUS Agent Setup" />
+                <TextBlock Name="TitleText" FontSize="20" FontWeight="SemiBold" Foreground="#FF111827" Text="Cerberus Agent" />
                 <TextBlock Name="SubtitleText" Margin="0,4,0,0" Foreground="#FF6B7280" Text="Connect this device to your workspace" />
             </StackPanel>
 
@@ -134,7 +134,7 @@
                                Text="Accept the terms, sign in, and let Cerberus register this device and start the Windows service." />
                     <Button Name="OnboardBtn" Margin="0,12,0,0" Height="42" Click="Onboard_Click"
                             Style="{StaticResource CerberusButtonPrimary}">
-                        Start setup
+                        Connect this device
                     </Button>
                     <TextBlock Name="OnboardHint" Margin="0,8,0,0" Foreground="#FF6B7280" FontSize="11" Text="-" />
                 </StackPanel>
@@ -188,6 +188,6 @@
         </ScrollViewer>
 
         <TextBlock Name="AfterSetupNote" Grid.Row="2" Margin="0,14,0,0" Foreground="#FF6B7280"
-                   Text="After setup, Cerberus keeps running from the Windows tray." />
+                   Text="Cerberus keeps running from the Windows tray." />
     </Grid>
 </Window>
