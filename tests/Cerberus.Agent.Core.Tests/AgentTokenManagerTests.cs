@@ -8,11 +8,32 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentTokenManagerTests
 {
     [Fact]
+    public async Task GetAccessTokenAsync_DoesNotKeepReusableAccessTokenInProcessMemory()
+    {
+        var store = new CountingSecretStore();
+        var handler = new JsonHandler("""{"access_token":"short-lived-access","expires_in":300}""");
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://backend.local"),
+        };
+        var manager = new AgentTokenManager(http, store);
+
+        var first = await manager.GetAccessTokenAsync(CancellationToken.None);
+        var second = await manager.GetAccessTokenAsync(CancellationToken.None);
+
+        Assert.Equal("short-lived-access", first);
+        Assert.Equal("short-lived-access", second);
+        Assert.Equal(2, handler.RequestCount);
+        Assert.Equal(2, store.LoadCount);
+        Assert.Empty(store.Saves);
+    }
+
+    [Fact]
     public async Task RefreshAsync_WithRotatedRefreshToken_LoadsSecretsOnce()
     {
         var store = new CountingSecretStore();
-        using var http = new HttpClient(new JsonHandler(
-            """{"access_token":"new-access","expires_in":300,"refresh_token":"rotated-refresh"}"""))
+        var handler = new JsonHandler("""{"access_token":"new-access","expires_in":300,"refresh_token":"rotated-refresh"}""");
+        using var http = new HttpClient(handler)
         {
             BaseAddress = new Uri("http://backend.local"),
         };
@@ -31,16 +52,21 @@ public sealed class AgentTokenManagerTests
     {
         private readonly string _json;
 
+        public int RequestCount { get; private set; }
+
         public JsonHandler(string json)
         {
             _json = json;
         }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(_json, Encoding.UTF8, "application/json"),
             });
+        }
     }
 
     private sealed class CountingSecretStore : ISecretStore

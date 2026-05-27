@@ -8,6 +8,81 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentRegistrarTests
 {
     [Fact]
+    public async Task RegisterAsync_WithExistingStoredRegistration_DoesNotCallBackendOrGenerateCredentials()
+    {
+        var handler = new CaptureHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("should not be used", Encoding.UTF8, "text/plain"),
+            });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var secrets = new CaptureSecretStore
+        {
+            Existing = (
+                new AgentIdentity("existing-agent", "existing-tenant"),
+                "existing-refresh",
+                "existing-private-key",
+                "http://existing-backend",
+                null,
+                null),
+        };
+        var keys = new StubKeyPairs("new-priv-pem", "new-pub-pem");
+
+        var registrar = new AgentRegistrar(http, secrets, keys, log: NullAgentLogger.Instance);
+        var identity = await registrar.RegisterAsync(
+            oauthToken: "Bearer tok",
+            backendUrlForStorage: "http://backend",
+            deviceFingerprint: "fp",
+            agentVersion: "1.2.3",
+            buildId: "build-abc",
+            buildChannel: "dev",
+            ct: CancellationToken.None);
+
+        Assert.Equal("existing-agent", identity.AgentId);
+        Assert.Equal("existing-tenant", identity.TenantId);
+        Assert.Null(handler.CapturedRequest);
+        Assert.Null(secrets.LastSaved);
+        Assert.Equal(0, keys.GenerateCount);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithIncompleteStoredRegistration_FailsClosedWithoutGeneratingCredentials()
+    {
+        var handler = new CaptureHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            {
+                Content = new StringContent("should not be used", Encoding.UTF8, "text/plain"),
+            });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var secrets = new CaptureSecretStore
+        {
+            Existing = (
+                new AgentIdentity("existing-agent", "existing-tenant"),
+                "",
+                "existing-private-key",
+                "http://existing-backend",
+                null,
+                null),
+        };
+        var keys = new StubKeyPairs("new-priv-pem", "new-pub-pem");
+
+        var registrar = new AgentRegistrar(http, secrets, keys, log: NullAgentLogger.Instance);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => registrar.RegisterAsync(
+            oauthToken: "Bearer tok",
+            backendUrlForStorage: "http://backend",
+            deviceFingerprint: "fp",
+            agentVersion: "1.2.3",
+            buildId: "build-abc",
+            buildChannel: "dev",
+            ct: CancellationToken.None));
+
+        Assert.Null(handler.CapturedRequest);
+        Assert.Null(secrets.LastSaved);
+        Assert.Equal(0, keys.GenerateCount);
+    }
+
+    [Fact]
     public async Task RegisterAsync_UsesDirectRegister_AndStoresSecrets()
     {
         var handler = new CaptureHandler(
@@ -102,6 +177,7 @@ public sealed class AgentRegistrarTests
 
     private sealed class CaptureSecretStore : ISecretStore
     {
+        public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? Existing { get; init; }
         public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? LastSaved { get; private set; }
 
         public Task SaveAsync(
@@ -119,7 +195,9 @@ public sealed class AgentRegistrarTests
 
         public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
         {
-            throw new NotSupportedException();
+            return Existing is { } existing
+                ? Task.FromResult(existing)
+                : throw new FileNotFoundException("No stored test registration.");
         }
 
         public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
@@ -130,12 +208,18 @@ public sealed class AgentRegistrarTests
         private readonly string _priv;
         private readonly string _pub;
 
+        public int GenerateCount { get; private set; }
+
         public StubKeyPairs(string priv, string pub)
         {
             _priv = priv;
             _pub = pub;
         }
 
-        public (string PrivateKeyPem, string PublicKeyPem) GenerateKeyPair(int keySize) => (_priv, _pub);
+        public (string PrivateKeyPem, string PublicKeyPem) GenerateKeyPair(int keySize)
+        {
+            GenerateCount++;
+            return (_priv, _pub);
+        }
     }
 }

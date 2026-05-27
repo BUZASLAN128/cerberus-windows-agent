@@ -34,6 +34,51 @@ public sealed class AgentUxStaticTests
         Assert.DoesNotContain("bootstrap/enroll", readme);
     }
 
+    [Fact]
+    public void UpdateRuntime_DoesNotRegisterOrGenerateAgentCredentials()
+    {
+        var repoRoot = FindRepoRoot();
+        var coordinator = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "Updates",
+            "AgentUpdateCoordinator.cs"));
+        var updater = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "Program.cs"));
+        var updateRuntime = coordinator + Environment.NewLine + updater;
+
+        Assert.DoesNotContain("AgentRegistrar", updateRuntime);
+        Assert.DoesNotContain("RegisterAsync", updateRuntime);
+        Assert.DoesNotContain("DpapiSecretStore", updateRuntime);
+        Assert.DoesNotContain("ISecretStore", updateRuntime);
+        Assert.DoesNotContain("GenerateKeyPair", updateRuntime);
+        Assert.DoesNotContain("oauth", updateRuntime, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("agent_refresh_token", updateRuntime, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Updater_RestartsTrayInOriginalUserSessionAfterMsiUpdate()
+    {
+        var repoRoot = FindRepoRoot();
+        var updater = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "Program.cs"));
+
+        Assert.Contains("closedApplications = CloseTrayAndSetup()", updater);
+        Assert.Contains("TryRestartTray(closedApplications, log)", updater);
+        Assert.Contains("WTSQueryUserToken", updater);
+        Assert.Contains("CreateProcessAsUser", updater);
+        Assert.Contains(@"winsta0\default", updater);
+        Assert.Contains("CloseHandle(processInfo.hProcess)", updater);
+        Assert.Contains("Cerberus.Agent.Tray.exe", updater);
+    }
+
     private static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

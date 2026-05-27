@@ -1,6 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
 using Cerberus.Agent.App;
+using Microsoft.Win32;
 
 namespace Cerberus.Agent.Updater;
 
@@ -18,12 +22,13 @@ internal static class Program
             return 2;
         }
 
+        ClosedApplications closedApplications = new(false, []);
         try
         {
             var fullMsiPath = Path.GetFullPath(msi);
             log.Write($"MSI artifact: {fullMsiPath}");
             TryStopService();
-            CloseTrayAndSetup();
+            closedApplications = CloseTrayAndSetup();
             var msiLogPath = log.CreateSiblingLogPath("msiexec");
             var exitCode = RunMsiexec(
                 $"/i \"{fullMsiPath}\" /qn /norestart CERBERUS_EULA_ACCEPTED=1 /l*v \"{msiLogPath}\"",
@@ -32,10 +37,12 @@ internal static class Program
             if (exitCode != 0)
             {
                 TryStartService();
+                TryRestartTray(closedApplications, log);
                 return exitCode;
             }
 
             TryStartService();
+            TryRestartTray(closedApplications, log);
             log.Write("Cerberus Agent updater completed.");
             return 0;
         }
@@ -44,6 +51,7 @@ internal static class Program
             Console.Error.WriteLine(ex.Message);
             log.Write($"Updater failed: {ex}");
             TryStartService();
+            TryRestartTray(closedApplications, log);
             return 1;
         }
     }
@@ -58,14 +66,29 @@ internal static class Program
         try { ServiceInstaller.StartOrThrow(); } catch { }
     }
 
-    private static void CloseTrayAndSetup()
+    private static ClosedApplications CloseTrayAndSetup()
     {
+        var traySessions = new HashSet<int>();
+        var trayWasRunning = false;
         foreach (var name in new[] { "Cerberus.Agent.Tray", "Cerberus.Agent.Setup", "Cerberus.Agent.App" })
         {
             foreach (var process in Process.GetProcessesByName(name))
             {
                 try
                 {
+                    if (string.Equals(name, "Cerberus.Agent.Tray", StringComparison.OrdinalIgnoreCase))
+                    {
+                        trayWasRunning = true;
+                        try
+                        {
+                            if (process.SessionId > 0)
+                                traySessions.Add(process.SessionId);
+                        }
+                        catch (InvalidOperationException)
+                        {
+                        }
+                    }
+
                     if (!process.CloseMainWindow())
                         process.Kill(entireProcessTree: true);
                 }
@@ -74,6 +97,103 @@ internal static class Program
                     // Best-effort shutdown; msiexec validates locked files.
                 }
             }
+        }
+
+        return new ClosedApplications(trayWasRunning, traySessions.ToArray());
+    }
+
+    private static void TryRestartTray(ClosedApplications closedApplications, UpdaterLog log)
+    {
+        if (!closedApplications.TrayWasRunning)
+        {
+            log.Write("Tray restart skipped: tray was not running before update.");
+            return;
+        }
+
+        var trayPath = ResolveInstalledTrayPath();
+        if (string.IsNullOrWhiteSpace(trayPath) || !File.Exists(trayPath))
+        {
+            log.Write("Tray restart skipped: installed tray executable was not found.");
+            return;
+        }
+
+        var sessionIds = closedApplications.TraySessionIds.Count > 0
+            ? closedApplications.TraySessionIds
+            : ActiveSessionProcessLauncher.GetActiveConsoleSessionIds();
+
+        if (!IsRunningAsLocalSystem())
+        {
+            StartTrayInCurrentSession(trayPath, log);
+            return;
+        }
+
+        var started = 0;
+        foreach (var sessionId in sessionIds.Distinct().Where(id => id > 0))
+        {
+            if (ActiveSessionProcessLauncher.TryLaunch(trayPath, sessionId, log))
+                started++;
+        }
+
+        log.Write(started > 0
+            ? $"Tray restart requested for {started} user session(s)."
+            : "Tray restart was not requested for any user session.");
+    }
+
+    private static void StartTrayInCurrentSession(string trayPath, UpdaterLog log)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = trayPath,
+                WorkingDirectory = Path.GetDirectoryName(trayPath) ?? AppContext.BaseDirectory,
+                UseShellExecute = true,
+            });
+            log.Write("Tray restart requested in the current user session.");
+        }
+        catch (Exception ex)
+        {
+            log.Write($"Tray restart failed in current user session: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static bool IsRunningAsLocalSystem()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return identity.IsSystem;
+    }
+
+    private static string? ResolveInstalledTrayPath()
+    {
+        var installRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "installRoot");
+        if (!string.IsNullOrWhiteSpace(installRoot))
+            return Path.Combine(installRoot.Trim(), "Cerberus.Agent.Tray.exe");
+
+        var serviceImagePath = ReadRegistryString(
+            $@"SYSTEM\CurrentControlSet\Services\{ServiceInstaller.ServiceName}",
+            "ImagePath");
+        var servicePath = ServiceInstaller.ExtractExecutablePathFromServiceImagePath(serviceImagePath);
+        var serviceDir = string.IsNullOrWhiteSpace(servicePath) ? null : Path.GetDirectoryName(servicePath);
+        if (!string.IsNullOrWhiteSpace(serviceDir))
+            return Path.Combine(serviceDir, "Cerberus.Agent.Tray.exe");
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Cerberus",
+            "Windows Agent",
+            "Cerberus.Agent.Tray.exe");
+    }
+
+    private static string? ReadRegistryString(string subKey, string valueName)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(subKey);
+            return key?.GetValue(valueName) as string;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -142,6 +262,152 @@ internal static class Program
             {
                 // Updater logging must never prevent service recovery.
             }
+        }
+    }
+
+    private sealed record ClosedApplications(bool TrayWasRunning, IReadOnlyCollection<int> TraySessionIds);
+
+    private static class ActiveSessionProcessLauncher
+    {
+        private const uint CreateUnicodeEnvironment = 0x00000400;
+        private const uint InvalidSessionId = 0xFFFFFFFF;
+
+        public static IReadOnlyCollection<int> GetActiveConsoleSessionIds()
+        {
+            var sessionId = WTSGetActiveConsoleSessionId();
+            return sessionId == InvalidSessionId || sessionId == 0
+                ? Array.Empty<int>()
+                : new[] { checked((int)sessionId) };
+        }
+
+        public static bool TryLaunch(string trayPath, int sessionId, UpdaterLog log)
+        {
+            if (sessionId <= 0)
+                return false;
+
+            IntPtr token = IntPtr.Zero;
+            IntPtr environment = IntPtr.Zero;
+            PROCESS_INFORMATION processInfo = default;
+            try
+            {
+                if (!WTSQueryUserToken((uint)sessionId, out token))
+                {
+                    log.Write($"Tray restart skipped for session {sessionId}: WTSQueryUserToken failed with {Marshal.GetLastWin32Error()}.");
+                    return false;
+                }
+
+                if (!CreateEnvironmentBlock(out environment, token, false))
+                {
+                    log.Write($"Tray restart skipped for session {sessionId}: CreateEnvironmentBlock failed with {Marshal.GetLastWin32Error()}.");
+                    return false;
+                }
+
+                var startupInfo = new STARTUPINFO
+                {
+                    cb = Marshal.SizeOf<STARTUPINFO>(),
+                    lpDesktop = @"winsta0\default",
+                    dwFlags = 1,
+                    wShowWindow = 1,
+                };
+                var commandLine = new StringBuilder($"\"{trayPath}\"");
+                var started = CreateProcessAsUser(
+                    token,
+                    null,
+                    commandLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false,
+                    CreateUnicodeEnvironment,
+                    environment,
+                    Path.GetDirectoryName(trayPath),
+                    ref startupInfo,
+                    out processInfo);
+                if (!started)
+                {
+                    log.Write($"Tray restart skipped for session {sessionId}: CreateProcessAsUser failed with {Marshal.GetLastWin32Error()}.");
+                    return false;
+                }
+
+                log.Write($"Tray restart requested for session {sessionId}.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                log.Write($"Tray restart failed for session {sessionId}: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+            finally
+            {
+                if (processInfo.hThread != IntPtr.Zero)
+                    CloseHandle(processInfo.hThread);
+                if (processInfo.hProcess != IntPtr.Zero)
+                    CloseHandle(processInfo.hProcess);
+                if (environment != IntPtr.Zero)
+                    DestroyEnvironmentBlock(environment);
+                if (token != IntPtr.Zero)
+                    CloseHandle(token);
+            }
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern uint WTSGetActiveConsoleSessionId();
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        private static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        private static extern bool DestroyEnvironmentBlock(IntPtr environment);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool CreateProcessAsUser(
+            IntPtr token,
+            string? applicationName,
+            StringBuilder commandLine,
+            IntPtr processAttributes,
+            IntPtr threadAttributes,
+            bool inheritHandles,
+            uint creationFlags,
+            IntPtr environment,
+            string? currentDirectory,
+            ref STARTUPINFO startupInfo,
+            out PROCESS_INFORMATION processInformation);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct STARTUPINFO
+        {
+            public int cb;
+            public string? lpReserved;
+            public string? lpDesktop;
+            public string? lpTitle;
+            public int dwX;
+            public int dwY;
+            public int dwXSize;
+            public int dwYSize;
+            public int dwXCountChars;
+            public int dwYCountChars;
+            public int dwFillAttribute;
+            public int dwFlags;
+            public short wShowWindow;
+            public short cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess;
+            public IntPtr hThread;
+            public int dwProcessId;
+            public int dwThreadId;
         }
     }
 }

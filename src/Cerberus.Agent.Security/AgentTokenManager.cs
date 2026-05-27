@@ -10,9 +10,6 @@ public sealed class AgentTokenManager : ITokenManager
     private readonly ISecretStore _secrets;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
-    private string? _accessToken;
-    private DateTimeOffset _expiresAt = DateTimeOffset.MinValue;
-
     public AgentTokenManager(HttpClient http, ISecretStore secrets)
     {
         _http = http;
@@ -24,11 +21,7 @@ public sealed class AgentTokenManager : ITokenManager
         await _lock.WaitAsync(ct);
         try
         {
-            if (_accessToken is not null && DateTimeOffset.UtcNow < _expiresAt.AddSeconds(-30))
-                return _accessToken;
-
-            await RefreshAsync(ct);
-            return _accessToken ?? throw new InvalidOperationException("Access token missing after refresh.");
+            return await RefreshAndReturnAccessTokenAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -36,7 +29,10 @@ public sealed class AgentTokenManager : ITokenManager
         }
     }
 
-    public async Task RefreshAsync(CancellationToken ct)
+    public async Task RefreshAsync(CancellationToken ct) =>
+        _ = await RefreshAndReturnAccessTokenAsync(ct).ConfigureAwait(false);
+
+    private async Task<string> RefreshAndReturnAccessTokenAsync(CancellationToken ct)
     {
         var (id, refreshToken, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
 
@@ -47,14 +43,13 @@ public sealed class AgentTokenManager : ITokenManager
         var payload = await resp.Content.ReadFromJsonAsync<TokenRefreshPayload>(cancellationToken: ct)
                       ?? throw new InvalidOperationException("Token refresh payload missing.");
 
-        _accessToken = payload.AccessToken;
-        _expiresAt = DateTimeOffset.UtcNow.AddSeconds(payload.ExpiresIn);
-
         // Rotation support: backend may return a new refresh token.
         if (!string.IsNullOrWhiteSpace(payload.RefreshToken))
         {
             await _secrets.SaveAsync(id, payload.RefreshToken!, privateKeyPem, backendUrl, tsLogin, tsAuthkey, ct);
         }
+
+        return payload.AccessToken;
     }
 
     private sealed record TokenRefreshPayload(

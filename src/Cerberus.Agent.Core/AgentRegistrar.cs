@@ -7,7 +7,7 @@ namespace Cerberus.Agent.Core;
 
 /// <summary>
 /// Handles agent registration with the CERBERUS backend.
-/// Generates RSA key pairs, exchanges OAuth tokens, and persists agent credentials.
+/// For first-time enrollment, generates RSA key pairs, exchanges OAuth tokens, and persists agent credentials.
 /// </summary>
 public sealed class AgentRegistrar
 {
@@ -66,6 +66,14 @@ public sealed class AgentRegistrar
             throw new ArgumentException("deviceFingerprint is required.", nameof(deviceFingerprint));
         if (string.IsNullOrWhiteSpace(agentVersion))
             throw new ArgumentException("agentVersion is required.", nameof(agentVersion));
+
+        var existingIdentity = await TryLoadExistingRegistrationAsync(ct).ConfigureAwait(false);
+        if (existingIdentity is not null)
+        {
+            _log.Info("Existing agent registration found; register skipped.");
+            return existingIdentity;
+        }
+
         var (privPem, pubPem) = _keyPairs.GenerateKeyPair(2048);
 
         var req = new AgentRegisterRequest(
@@ -104,6 +112,35 @@ public sealed class AgentRegistrar
 
         _log.Info($"Registered agent_id={identity.AgentId} tenant_id={identity.TenantId}");
         return identity;
+    }
+
+    private async Task<AgentIdentity?> TryLoadExistingRegistrationAsync(CancellationToken ct)
+    {
+        try
+        {
+            var (identity, refreshToken, privateKeyPem, backendUrl, _, _) =
+                await _secrets.LoadAsync(ct).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(identity.AgentId) &&
+                !string.IsNullOrWhiteSpace(identity.TenantId) &&
+                !string.IsNullOrWhiteSpace(refreshToken) &&
+                !string.IsNullOrWhiteSpace(privateKeyPem) &&
+                !string.IsNullOrWhiteSpace(backendUrl))
+            {
+                return identity;
+            }
+
+            throw new InvalidOperationException(
+                "Existing agent registration is incomplete. Unregister or repair before registering again.");
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
     }
 
     private static async Task WriteTailscaleProofFileAsync(
