@@ -16,6 +16,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Cerberus.Agent.Setup</AssemblyName>
+    <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
     <StartupObject>Cerberus.Agent.App.Program</StartupObject>
     <AgentDefaultBackendUrlBase64 Condition="'$(AgentDefaultBackendUrlBase64)' == ''"></AgentDefaultBackendUrlBase64>
     <AgentDefaultSsoBaseUrlBase64 Condition="'$(AgentDefaultSsoBaseUrlBase64)' == ''"></AgentDefaultSsoBaseUrlBase64>

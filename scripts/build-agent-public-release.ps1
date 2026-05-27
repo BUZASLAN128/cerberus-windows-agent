@@ -13,6 +13,8 @@ param(
   [string]$DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL,
   [string]$DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID,
   [string]$DefaultSsoScope = $env:CERBERUS_SSO_SCOPE,
+  [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
+  [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
   [int]$DefaultOAuthRedirectPort = 0,
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild
@@ -26,14 +28,6 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 
 function Write-Step([string]$Message) {
   Write-Host "==> $Message"
-}
-
-function Require-Env([string]$Name) {
-  $value = [Environment]::GetEnvironmentVariable($Name)
-  if ([string]::IsNullOrWhiteSpace($value)) {
-    throw "Required environment variable '$Name' is missing."
-  }
-  return $value
 }
 
 function ConvertTo-Base64Utf8([string]$Value) {
@@ -133,6 +127,32 @@ function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem)
     [System.Security.Cryptography.HashAlgorithmName]::SHA256,
     [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
   return [Convert]::ToBase64String($sig)
+}
+
+function Copy-ChannelLatestAliases(
+  [string]$PublishDir,
+  [string]$Channel,
+  [string]$Msi,
+  [string]$Zip,
+  [string]$Sbom,
+  [string]$Provenance,
+  [string]$Manifest,
+  [string]$Gate,
+  [string]$MsiHash,
+  [string]$ZipHash
+) {
+  $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest"
+  $aliasSetupBase = "Cerberus.Agent.Setup-$Channel-latest"
+  Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasSetupBase.msi") -Force
+  Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
+  Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
+  Copy-Item -LiteralPath $Provenance -Destination (Join-Path $PublishDir "$aliasAssetBase.provenance.json") -Force
+  Copy-Item -LiteralPath $Manifest -Destination (Join-Path $PublishDir "$aliasAssetBase.update-manifest.json") -Force
+  Copy-Item -LiteralPath $Gate -Destination (Join-Path $PublishDir "$aliasAssetBase.release-gate.json") -Force
+  @(
+    "$ZipHash  $aliasAssetBase.zip",
+    "$MsiHash  $aliasSetupBase.msi"
+  ) | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -248,19 +268,30 @@ $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "bin") -Recurse -Force -ErrorAction SilentlyContinue
 $installerBuildBase = "Cerberus.Agent.Setup"
-dotnet build (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj") `
+dotnet build $installerProject `
   -c $Configuration `
   -p:Version=$Version `
   -p:MsiProductVersion=$msiProductVersion `
   -p:Channel=$Channel `
   -p:AgentPublishDir=$runtimePublishDir `
   -p:InstallerAssetBase=$installerBuildBase `
+  -p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64 `
+  -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
   -p:OutputPath="$publishDir\"
 
 $msi = Join-Path $publishDir "$setupBase.msi"
 $builtMsi = Join-Path $publishDir "$installerBuildBase.msi"
 if ((Test-Path -LiteralPath $builtMsi) -and ($builtMsi -ne $msi)) {
   Move-Item -LiteralPath $builtMsi -Destination $msi -Force
+}
+if (-not (Test-Path -LiteralPath $msi)) {
+  $localizedMsi = Get-ChildItem -LiteralPath $publishDir -Recurse -Filter "$installerBuildBase.msi" |
+    Where-Object { $_.FullName -notmatch "\\(bin|obj|runtime)\\" } |
+    Sort-Object FullName |
+    Select-Object -First 1
+  if ($localizedMsi) {
+    Copy-Item -LiteralPath $localizedMsi.FullName -Destination $msi -Force
+  }
 }
 if (-not (Test-Path -LiteralPath $msi)) {
   throw "MSI installer was not produced: $msi"
@@ -373,6 +404,19 @@ $gate = [ordered]@{
   tenant_update_url_present = $false
   tenant_signing_key_present = $false
 }
-$gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $publishDir "$assetBase.release-gate.json") -Encoding utf8
+$gatePath = Join-Path $publishDir "$assetBase.release-gate.json"
+$gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $gatePath -Encoding utf8
+
+Copy-ChannelLatestAliases `
+  -PublishDir $publishDir `
+  -Channel $Channel `
+  -Msi $msi `
+  -Zip $zip `
+  -Sbom $sbom `
+  -Provenance $provenance `
+  -Manifest $manifestPath `
+  -Gate $gatePath `
+  -MsiHash $msiHash `
+  -ZipHash $zipHash
 
 Write-Step "Release bundle ready: $publishDir"

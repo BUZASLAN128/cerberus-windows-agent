@@ -87,8 +87,8 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#FF111827" Text="CERBERUS Agent Setup" />
-                <TextBlock Margin="0,4,0,0" Foreground="#FF6B7280" Text="Connect this device to your workspace" />
+                <TextBlock Name="TitleText" FontSize="20" FontWeight="SemiBold" Foreground="#FF111827" Text="CERBERUS Agent Setup" />
+                <TextBlock Name="SubtitleText" Margin="0,4,0,0" Foreground="#FF6B7280" Text="Connect this device to your workspace" />
             </StackPanel>
 
             <Button Grid.Column="1" Width="28" Height="28" Click="Close_Click"
@@ -101,19 +101,19 @@
             <UniformGrid Columns="3" Margin="0,0,0,10">
                 <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10" Margin="0,0,8,0">
                     <StackPanel>
-                        <TextBlock Foreground="#FF6B7280" FontSize="11" Text="Service" />
+                        <TextBlock Name="ServiceLabel" Foreground="#FF6B7280" FontSize="11" Text="Service" />
                         <TextBlock Name="ServiceValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
                     </StackPanel>
                 </Border>
                 <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10" Margin="0,0,8,0">
                     <StackPanel>
-                        <TextBlock Foreground="#FF6B7280" FontSize="11" Text="Tailscale" />
+                        <TextBlock Name="TailscaleLabel" Foreground="#FF6B7280" FontSize="11" Text="Tailscale" />
                         <TextBlock Name="TailscaleValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
                     </StackPanel>
                 </Border>
                 <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10">
                     <StackPanel>
-                        <TextBlock Foreground="#FF6B7280" FontSize="11" Text="Registered" />
+                        <TextBlock Name="RegisteredLabel" Foreground="#FF6B7280" FontSize="11" Text="Registered" />
                         <TextBlock Name="RegisteredValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
                     </StackPanel>
                 </Border>
@@ -129,8 +129,8 @@
 
             <Border CornerRadius="14" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14">
                 <StackPanel>
-                    <TextBlock Foreground="#FF111827" FontWeight="SemiBold" Text="Device setup" />
-                    <TextBlock Margin="0,6,0,0" Foreground="#FF6B7280"
+                    <TextBlock Name="DeviceSetupLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Device setup" />
+                    <TextBlock Name="DeviceSetupDetail" Margin="0,6,0,0" Foreground="#FF6B7280"
                                Text="Accept the terms, sign in, and let Cerberus register this device and start the Windows service." />
                     <Button Name="OnboardBtn" Margin="0,12,0,0" Height="42" Click="Onboard_Click"
                             Style="{StaticResource CerberusButtonPrimary}">
@@ -140,7 +140,7 @@
                 </StackPanel>
             </Border>
 
-            <Expander Margin="0,14,0,0" Header="Advanced repair tools" Foreground="#FF374151">
+            <Expander Name="AdvancedRepairExpander" Margin="0,14,0,0" Header="Advanced repair tools" Foreground="#FF374151">
             <Grid Margin="0,10,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -148,7 +148,7 @@
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" CornerRadius="14" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14" Margin="0,0,8,0">
                     <StackPanel>
-                        <TextBlock Foreground="#FF111827" FontWeight="SemiBold" Text="Service" />
+                        <TextBlock Name="ServiceRepairLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Service" />
                         <UniformGrid Columns="2" Margin="0,10,0,0">
                             <Button Name="InstallSvcBtn" Height="34" Click="InstallSvc_Click"
                                     Style="{StaticResource CerberusButtonBase}" Margin="0,0,8,8">Install</Button>
@@ -159,7 +159,7 @@
                             <Button Name="StopSvcBtn" Height="34" Click="StopSvc_Click"
                                     Style="{StaticResource CerberusButtonBase}">Stop</Button>
                         </UniformGrid>
-                        <TextBlock Margin="0,10,0,0" Foreground="#FF6B7280" FontSize="11"
+                        <TextBlock Name="ServiceRemovalNote" Margin="0,10,0,0" Foreground="#FF6B7280" FontSize="11"
                                    Text="Removing the service keeps this device registered. Device reset is separate." />
                         <Button Name="UnregisterDeviceBtn" Margin="0,10,0,0" Height="34" Click="UnregisterDevice_Click"
                                 Style="{StaticResource CerberusButtonBase}">Unregister device</Button>
@@ -167,13 +167,13 @@
                 </Border>
                 <Border Grid.Column="1" CornerRadius="14" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14">
                     <StackPanel>
-                        <TextBlock Foreground="#FF111827" FontWeight="SemiBold" Text="Tailscale" />
+                        <TextBlock Name="TailscaleRepairLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Tailscale" />
                         <Button Name="ExportTsBtn" Margin="0,10,0,0" Height="34" Click="ExportTs_Click"
                                 Style="{StaticResource CerberusButtonBase}">Export tailscale up cmd</Button>
                         <Button Name="InstallTsBtn" Margin="0,8,0,0" Height="34" Click="InstallTs_Click"
                                 Style="{StaticResource CerberusButtonBase}">Install Tailscale</Button>
                         <TextBlock Name="TsCmdPathLabel" Margin="0,10,0,0" Foreground="#FF6B7280" FontSize="11" Text="-" />
-                        <TextBlock Margin="0,10,0,0" Foreground="#FF6B7280" FontSize="11"
+                        <TextBlock Name="TailscaleUnavailableNote" Margin="0,10,0,0" Foreground="#FF6B7280" FontSize="11"
                                    Text="If your tenant is not configured for Tailscale, export will be unavailable." />
                     </StackPanel>
                 </Border>
@@ -187,7 +187,7 @@
             </StackPanel>
         </ScrollViewer>
 
-        <TextBlock Grid.Row="2" Margin="0,14,0,0" Foreground="#FF6B7280"
+        <TextBlock Name="AfterSetupNote" Grid.Row="2" Margin="0,14,0,0" Foreground="#FF6B7280"
                    Text="After setup, Cerberus keeps running from the Windows tray." />
     </Grid>
 </Window>

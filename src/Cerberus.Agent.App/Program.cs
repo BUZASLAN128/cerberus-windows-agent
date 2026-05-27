@@ -1,15 +1,20 @@
 using System.Windows;
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
+using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.App.Updates;
 
 namespace Cerberus.Agent.App;
 
 internal static class Program
 {
+    private const string SetupMutexName = "Global\\CerberusAgent.Setup.SingleInstance";
+    private const string SetupPipeName = "CerberusAgent.Setup.SingleInstancePipe";
+
     [STAThread]
     public static int Main(string[] args)
     {
+        AgentLocalizer.ApplyThreadCulture();
         var parsed = Args.Parse(args ?? Array.Empty<string>());
 
         if (parsed.AcceptEula)
@@ -159,12 +164,33 @@ internal static class Program
 
         if (IsSetupHostProcess())
         {
+            if (!ProcessInstanceGuard.TryAcquire(SetupMutexName, SetupPipeName, "show", out var setupGuard))
+                return 0;
+
+            using var guard = setupGuard!;
             var setupApp = new App
             {
                 ShutdownMode = ShutdownMode.OnMainWindowClose,
             };
             var window = new MainWindow();
             setupApp.MainWindow = window;
+            guard.StartSignalListener(message =>
+            {
+                if (!string.Equals(message, "show", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                window.Dispatcher.BeginInvoke(() =>
+                {
+                    if (!window.IsVisible)
+                        window.Show();
+                    if (window.WindowState == WindowState.Minimized)
+                        window.WindowState = WindowState.Normal;
+                    window.Activate();
+                    window.Topmost = true;
+                    window.Topmost = false;
+                    window.Focus();
+                });
+            });
             window.Show();
             return setupApp.Run();
         }

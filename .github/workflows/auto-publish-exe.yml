@@ -114,6 +114,8 @@ jobs:
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
           AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM: ${{ secrets.AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM }}
           AGENT_RELEASE_ARTIFACT_BASE_URL: ${{ vars.AGENT_RELEASE_ARTIFACT_BASE_URL }}
+          CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ vars.AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
+          CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES: ${{ vars.AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES }}
           CERBERUS_BACKEND_URL: ${{ vars.CERBERUS_BACKEND_URL }}
           CERBERUS_SSO_BASE_URL: ${{ vars.CERBERUS_SSO_BASE_URL }}
           CERBERUS_SSO_CLIENT_ID: ${{ vars.CERBERUS_SSO_CLIENT_ID }}
@@ -121,12 +123,12 @@ jobs:
           CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
         run: |
           if ("${{ steps.release.outputs.channel }}" -eq "dev") {
-            ./scripts/build-public-release.ps1 `
+            ./scripts/build-agent-public-release.ps1 `
               -Version "${{ steps.release.outputs.version }}" `
               -Channel "${{ steps.release.outputs.channel }}" `
               -AllowUnsignedDevBuild
           } else {
-            ./scripts/build-public-release.ps1 `
+            ./scripts/build-agent-public-release.ps1 `
               -Version "${{ steps.release.outputs.version }}" `
               -Channel "${{ steps.release.outputs.channel }}"
           }
@@ -164,6 +166,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $latestTag = "${{ steps.release.outputs.channel }}-latest"
+          $latestAssetBase = "Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest"
+          $latestSetupBase = "Cerberus.Agent.Setup-${{ steps.release.outputs.channel }}-latest"
           gh release delete $latestTag --yes --cleanup-tag 2>$null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "$latestTag was not present or could not be deleted; continuing with create."
@@ -177,6 +181,13 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
+            "out/public-release/publish/$latestSetupBase.msi" `
+            "out/public-release/publish/$latestAssetBase.zip" `
+            "out/public-release/publish/$latestAssetBase.sha256" `
+            "out/public-release/publish/$latestAssetBase.sbom.json" `
+            "out/public-release/publish/$latestAssetBase.provenance.json" `
+            "out/public-release/publish/$latestAssetBase.release-gate.json" `
+            "out/public-release/publish/$latestAssetBase.update-manifest.json" `
             --title "Cerberus Windows Agent $latestTag" `
             --notes-file out/release-notes.md `
             --prerelease

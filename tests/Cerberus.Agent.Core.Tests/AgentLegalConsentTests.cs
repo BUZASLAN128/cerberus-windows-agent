@@ -72,6 +72,8 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("WixToolset.Sdk/7.0.0", project);
         Assert.Contains("WixToolset.Util.wixext", project);
         Assert.Contains("<AcceptEula>wix7</AcceptEula>", project);
+        Assert.Contains("UpdateManifestPublicKeyB64", project);
+        Assert.Contains("UpdateAllowedArtifactPrefixes", project);
         Assert.Contains($"EulaVersion={AgentLegalConsent.EulaVersion}", project);
         Assert.Contains($"PrivacyNoticeVersion={AgentLegalConsent.PrivacyNoticeVersion}", project);
         Assert.Contains($"SecurityDisclosureVersion={AgentLegalConsent.SecurityDisclosureVersion}", project);
@@ -110,6 +112,28 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Target=\"Cerberus.Agent.Tray.exe\"", package);
         Assert.Contains("Target=\"Cerberus.Agent.Setup.exe\"", package);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
+        Assert.Contains("CERBERUS_BACKEND_URL", package);
+        Assert.Contains("CERBERUS_SSO_BASE_URL", package);
+        Assert.Contains("CERBERUS_SSO_CLIENT_ID", package);
+        Assert.Contains("CERBERUS_CHANNEL", package);
+        Assert.Contains("CERBERUS_LANGUAGE", package);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", package);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", package);
+        Assert.Contains("Value=\"$(var.UpdateManifestPublicKeyB64)\"", package);
+        Assert.Contains("Value=\"$(var.UpdateAllowedArtifactPrefixes)\"", package);
+        Assert.Contains("CREATE_DESKTOP_SHORTCUT", package);
+        Assert.Contains("START_TRAY_ON_LOGIN", package);
+        Assert.Contains("Name=\"backendUrl\"", package);
+        Assert.Contains("Name=\"ssoBaseUrl\"", package);
+        Assert.Contains("Name=\"ssoClientId\"", package);
+        Assert.Contains("Name=\"language\"", package);
+        Assert.Contains("Name=\"updateManifestPublicKeyB64\"", package);
+        Assert.Contains("Name=\"updateAllowedArtifactPrefixes\"", package);
+        Assert.Contains("DesktopSetupShortcutComponent", package);
+        Assert.Contains("DesktopFolder", package);
+        Assert.Contains("DesktopSetupShortcut", package);
+        Assert.Contains("desktopSetupShortcut", package);
+        Assert.Contains("Condition=\"CREATE_DESKTOP_SHORTCUT = 1\"", package);
         Assert.Contains("ControlExistingCerberusAgentService", package);
         Assert.Contains("Name=\"CerberusAgent\"", package);
         Assert.Contains("Stop=\"both\"", package);
@@ -118,12 +142,13 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("StartupShortcutComponent", package);
         Assert.Contains("StartupFolder", package);
         Assert.Contains("trayAutostart", package);
+        Assert.Contains("Condition=\"START_TRAY_ON_LOGIN = 1\"", package);
         Assert.Contains("ProductCode", package);
         Assert.DoesNotContain("--accept-eula", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("powershell.exe", package, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);
 
-        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-public-release.ps1"));
+        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
         Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
         Assert.Contains("-p:PublishSingleFile=false", releaseScript);
         Assert.Contains("-p:DebugSymbols=false", releaseScript);
@@ -133,6 +158,23 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
         Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
+        Assert.Contains("Copy-ChannelLatestAliases", releaseScript);
+        Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", releaseScript);
+        Assert.Contains("Cerberus.Agent.Setup-$Channel-latest", releaseScript);
+        Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
+        Assert.Contains("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
+
+        Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.en-us.wxl")));
+        Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.tr-tr.wxl")));
+
+        var workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "auto-publish-exe.yml"));
+        Assert.Contains("./scripts/build-agent-public-release.ps1", workflow);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", workflow);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
+        Assert.Contains("$latestAssetBase", workflow);
+        Assert.Contains("$latestSetupBase", workflow);
+        Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
+        Assert.Contains("$latestSetupBase.msi", workflow);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace Cerberus.Agent.App;
 
@@ -118,8 +119,11 @@ internal static class UiConfigStore
     public static RuntimeUiConfig LoadMergedWithEnv()
     {
         var cfg = Load();
+        var installerConfig = LoadInstallerConfig();
 
-        var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? cfg.BackendUrl).Trim();
+        var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL")
+                          ?? installerConfig.GetValueOrDefault("backendUrl")
+                          ?? cfg.BackendUrl).Trim();
         if (string.IsNullOrWhiteSpace(backendUrl) && IsExplicitDevBootstrap())
             backendUrl = "http://127.0.0.1:8000";
 
@@ -127,10 +131,12 @@ internal static class UiConfigStore
         // Do NOT read plain CASDOOR_* env vars to avoid accidental localhost misconfig on dev machines.
         var casdoorEndpoint = (Environment.GetEnvironmentVariable("CERBERUS_SSO_BASE_URL")
                                ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_ENDPOINT")
+                               ?? installerConfig.GetValueOrDefault("ssoBaseUrl")
                                ?? cfg.CasdoorEndpoint).Trim();
 
         var clientId = (Environment.GetEnvironmentVariable("CERBERUS_SSO_CLIENT_ID")
                         ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_CLIENT_ID")
+                        ?? installerConfig.GetValueOrDefault("ssoClientId")
                         ?? cfg.CasdoorClientId).Trim();
 
         // Secret is env-only and never persisted in ui-config.json
@@ -140,6 +146,7 @@ internal static class UiConfigStore
 
         var scope = (Environment.GetEnvironmentVariable("CERBERUS_SSO_SCOPE")
                      ?? Environment.GetEnvironmentVariable("CERBERUS_CASDOOR_SCOPE")
+                     ?? installerConfig.GetValueOrDefault("ssoScope")
                      ?? cfg.CasdoorScope).Trim();
         if (string.Equals(scope, "openid profile email", StringComparison.OrdinalIgnoreCase))
             scope = Default.CasdoorScope;
@@ -164,6 +171,34 @@ internal static class UiConfigStore
         return string.Equals(raw, "1", StringComparison.OrdinalIgnoreCase)
                || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)
                || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyDictionary<string, string?> LoadInstallerConfig()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Cerberus\WindowsAgent");
+            if (key is null)
+                return new Dictionary<string, string?>();
+
+            return new Dictionary<string, string?>
+            {
+                ["backendUrl"] = NonEmpty(key.GetValue("backendUrl")?.ToString()),
+                ["ssoBaseUrl"] = NonEmpty(key.GetValue("ssoBaseUrl")?.ToString()),
+                ["ssoClientId"] = NonEmpty(key.GetValue("ssoClientId")?.ToString()),
+                ["ssoScope"] = NonEmpty(key.GetValue("ssoScope")?.ToString()),
+            };
+        }
+        catch
+        {
+            return new Dictionary<string, string?>();
+        }
+    }
+
+    private static string? NonEmpty(string? value)
+    {
+        var trimmed = (value ?? "").Trim();
+        return string.IsNullOrWhiteSpace(trimmed) ? null : trimmed;
     }
 
     private static string BuildDefaultOrEmpty(string base64)

@@ -11,8 +11,11 @@
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentClaimGate.cs" Link="Actions\AgentClaimGate.cs" />
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentServiceProvisioning.cs" Link="Actions\AgentServiceProvisioning.cs" />
     <Compile Include="..\Cerberus.Agent.App\AgentStatus.cs" Link="AgentStatus.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Diagnostics\AgentDiagnosticsBundle.cs" Link="Diagnostics\AgentDiagnosticsBundle.cs" />
     <Compile Include="..\Cerberus.Agent.App\Elevation.cs" Link="Elevation.cs" />
     <Compile Include="..\Cerberus.Agent.App\Legal\AgentLegalConsent.cs" Link="Legal\AgentLegalConsent.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Localization\AgentLocalizer.cs" Link="Localization\AgentLocalizer.cs" />
+    <Compile Include="..\Cerberus.Agent.App\ProcessInstanceGuard.cs" Link="ProcessInstanceGuard.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateCoordinator.cs" Link="Updates\AgentUpdateCoordinator.cs" />
@@ -20,6 +23,11 @@
     <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />
     <Compile Include="..\Cerberus.Agent.App\WindowsServiceHost.cs" Link="WindowsServiceHost.cs" />
     <Compile Include="..\Cerberus.Agent.App\Telemetry\**\*.cs" LinkBase="Telemetry" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.resx" Link="Localization\AgentStrings.resx" />
+    <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.tr-TR.resx" Link="Localization\AgentStrings.tr-TR.resx" />
   </ItemGroup>
 
   <ItemGroup>

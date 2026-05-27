@@ -2,23 +2,37 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 using Cerberus.Agent.App;
+using Cerberus.Agent.App.Diagnostics;
+using Cerberus.Agent.App.Localization;
 
 namespace Cerberus.Agent.Tray;
 
 internal static class Program
 {
+    private const string TrayMutexName = "Global\\CerberusAgent.Tray.SingleInstance";
+    private const string TrayPipeName = "CerberusAgent.Tray.SingleInstancePipe";
+
     [STAThread]
     public static void Main()
     {
+        AgentLocalizer.ApplyThreadCulture();
+        if (!ProcessInstanceGuard.TryAcquire(TrayMutexName, TrayPipeName, null, out var instanceGuard))
+            return;
+
         ApplicationConfiguration.Initialize();
-        using var tray = new TrayApplicationContext();
-        Application.Run(tray);
+        using (instanceGuard)
+        using (var tray = new TrayApplicationContext())
+        {
+            Application.Run(tray);
+        }
     }
 }
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly NotifyIcon _icon;
+    private readonly ToolStripMenuItem _workspaceStatus;
+    private readonly ToolStripMenuItem _accountStatus;
     private readonly ToolStripMenuItem _serviceStatus;
     private readonly ToolStripMenuItem _registeredStatus;
     private readonly ToolStripMenuItem _tailscaleStatus;
@@ -27,38 +41,48 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext()
     {
-        _serviceStatus = new ToolStripMenuItem("Service: ...") { Enabled = false };
-        _registeredStatus = new ToolStripMenuItem("Registered: ...") { Enabled = false };
-        _tailscaleStatus = new ToolStripMenuItem("Tailscale: ...") { Enabled = false };
+        _workspaceStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Workspace")}: -") { Enabled = false };
+        _accountStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Account")}: -") { Enabled = false };
+        _serviceStatus = new ToolStripMenuItem(AgentLocalizer.Format("ServiceStatus", "...")) { Enabled = false };
+        _registeredStatus = new ToolStripMenuItem(AgentLocalizer.Format("RegisteredStatus", "...")) { Enabled = false };
+        _tailscaleStatus = new ToolStripMenuItem(AgentLocalizer.Format("ConnectorStatus", "...")) { Enabled = false };
 
-        var setup = new ToolStripMenuItem("Open setup");
+        var setup = new ToolStripMenuItem(AgentLocalizer.Get("OpenSetup"));
         setup.Click += (_, _) => LaunchSibling("Cerberus.Agent.Setup.exe");
 
-        var startService = new ToolStripMenuItem("Start service");
+        var diagnostics = new ToolStripMenuItem(AgentLocalizer.Get("ExportDiagnostics"));
+        diagnostics.Click += async (_, _) => await ExportDiagnosticsAsync();
+
+        var repair = new ToolStripMenuItem(AgentLocalizer.Get("RepairTools"));
+        var startService = new ToolStripMenuItem(AgentLocalizer.Get("Start"));
         startService.Click += (_, _) => RunServiceAction(ServiceInstaller.StartOrThrow);
 
-        var stopService = new ToolStripMenuItem("Stop service");
+        var stopService = new ToolStripMenuItem(AgentLocalizer.Get("Stop"));
         stopService.Click += (_, _) => RunServiceAction(ServiceInstaller.StopOrThrow);
+        repair.DropDownItems.Add(startService);
+        repair.DropDownItems.Add(stopService);
 
-        var exit = new ToolStripMenuItem("Exit");
+        var exit = new ToolStripMenuItem(AgentLocalizer.Get("Quit"));
         exit.Click += (_, _) => ExitThread();
 
         var menu = new ContextMenuStrip();
         menu.Items.Add(new ToolStripMenuItem("CERBERUS Agent") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(_workspaceStatus);
+        menu.Items.Add(_accountStatus);
         menu.Items.Add(_serviceStatus);
         menu.Items.Add(_registeredStatus);
         menu.Items.Add(_tailscaleStatus);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(setup);
-        menu.Items.Add(startService);
-        menu.Items.Add(stopService);
+        menu.Items.Add(diagnostics);
+        menu.Items.Add(repair);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application,
             Text = "CERBERUS Agent",
             ContextMenuStrip = menu,
             Visible = true,
@@ -104,9 +128,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var registered = await registeredTask.ConfigureAwait(true);
             var tailscale = await tailscaleTask.ConfigureAwait(true);
 
-            _serviceStatus.Text = $"Service: {service.Text}";
-            _registeredStatus.Text = $"Registered: {(registered ? "yes" : "no")}";
-            _tailscaleStatus.Text = $"Tailscale: {tailscale.Text}";
+            _workspaceStatus.Text = $"{AgentLocalizer.Get("Workspace")}: -";
+            _accountStatus.Text = $"{AgentLocalizer.Get("Account")}: -";
+            _serviceStatus.Text = AgentLocalizer.Format("ServiceStatus", service.Text);
+            _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));
+            _tailscaleStatus.Text = AgentLocalizer.Format("ConnectorStatus", tailscale.Text);
             _icon.Text = TrimTooltip($"CERBERUS Agent | {service.Short} | {tailscale.Short} | reg={(registered ? "yes" : "no")}");
         }
         finally
@@ -140,6 +166,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch
         {
             LaunchSibling("Cerberus.Agent.Setup.exe");
+        }
+    }
+
+    private static async Task ExportDiagnosticsAsync()
+    {
+        try
+        {
+            var path = await AgentDiagnosticsBundle.ExportAsync();
+            MessageBox.Show(
+                AgentLocalizer.Format("DiagnosticsWritten", path),
+                "CERBERUS Agent",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)),
+                "CERBERUS Agent",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
     }
 

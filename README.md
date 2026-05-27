@@ -1,6 +1,6 @@
 # CERBERUS Windows Agent
 
-Single Windows executable for endpoint onboarding, secure agent identity, service-mode polling, telemetry, and governed operations.
+Per-machine Windows agent package for endpoint onboarding, secure agent identity, service-mode polling, telemetry, diagnostics, and governed desktop operations.
 
 ## Quick Links
 
@@ -33,31 +33,36 @@ Primary use cases:
 
 ## 2) Runtime Modes
 
-CLI flags are handled in `Program.cs` and `Args.cs`.
+The customer-facing runtime is split into purpose-specific executables:
 
-- `--tray` (default if no mode is given): WPF tray app for onboarding + status.
-- `--register`: non-GUI registration flow (still opens browser for PKCE).
-- `--heartbeat-once`: foreground validation path for registered user-scope credentials; sends one heartbeat, one `agent.started` event, and one snapshot, then exits.
-- `--service`: polling worker loop (service/runtime mode).
-- `--install-service`: installs Windows service (`CerberusAgent`) and starts it.
-- `--uninstall-service`: removes installed service.
-- `--start-service`: starts service.
-- `--stop-service`: stops service.
-- `--export-tailscale-up`: exports `tailscale up` command file from stored preauth data.
-- `--self-test`: runs offline and online smoke checks.
-- `--self-test-json` / `--json`: JSON output for self-test.
-- `--self-test-out <path>`: write self-test JSON report to file.
-- `--apply-staged-update <plan>`: apply a previously verified staged update plan.
-- `--update-target <path>`: explicit target executable for staged update apply.
+- `Cerberus.Agent.Setup.exe`: EULA-backed setup UI, PKCE sign-in, device registration, portal claim wait, and service provisioning.
+- `Cerberus.Agent.Tray.exe`: lightweight user-session tray status and repair entry point.
+- `Cerberus.Agent.Service.exe`: Windows service runtime for heartbeat, telemetry, command polling, and update coordination.
+- `Cerberus.Agent.Updater.exe`: signed/checksum-verified MSI update applier.
+- `Cerberus.Agent.Uninstall.exe`: customer-facing uninstall wrapper with best-effort portal deactivation.
+
+Support/admin CLI flags remain available through the setup binary for diagnostics and controlled automation:
+`--register`, `--heartbeat-once`, `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`, `--export-tailscale-up`, `--self-test`, `--apply-staged-update`, and `--accept-eula`.
 
 Notes:
 - Token/file based register flow is intentionally disabled in `--register`; PKCE browser flow is the single onboarding path.
-- `--service` runs as LocalSystem when launched via Windows Service.
+- `--service` runs as LocalSystem only when launched by the installed Windows Service.
+- `--accept-eula` is a support/headless path only; the customer MSI path uses the EULA dialog.
 
 ## 3) High-Level Architecture
 
 - `src/Cerberus.Agent.App`
-  - mode selection, tray UX, service install/start/stop, onboarding orchestration.
+  - setup UI, support CLI, service provisioning, onboarding orchestration, local UI config.
+- `src/Cerberus.Agent.Runtime`
+  - shared runtime files linked into service, tray, updater, and uninstall binaries.
+- `src/Cerberus.Agent.Tray`
+  - lightweight WinForms tray process.
+- `src/Cerberus.Agent.Service`
+  - Windows service entry point.
+- `src/Cerberus.Agent.Updater`
+  - MSI update applier.
+- `src/Cerberus.Agent.Uninstall`
+  - uninstall wrapper.
 - `src/Cerberus.Agent.Core`
   - API client, heartbeat loop, command dispatcher, telemetry/update contracts, idempotency cache.
 - `src/Cerberus.Agent.Security`
@@ -73,11 +78,8 @@ Notes:
 
 Core endpoints currently used by the agent:
 
-- `GET /api/v1/agents/bootstrap/descriptor`
-  - returns the signed bootstrap descriptor that resolves backend ownership.
-
-- `POST /api/v1/agents/bootstrap/enroll`
-  - called by `AgentRegistrar` with OAuth token, bootstrap descriptor, generated RSA public key, fingerprint, and build metadata.
+- `POST /api/v1/agents/register`
+  - called by `AgentRegistrar` with OAuth token, generated RSA public key, fingerprint, and build metadata.
   - persists returned `agent_id`, `tenant_id`, `agent_refresh_token`, and server-owned telemetry config.
 
 - `POST /api/v1/agents/token`
@@ -174,7 +176,7 @@ ACL hardening is applied best-effort:
 
 ## 7) Public Release Requirements
 
-Public agent releases must be produced through `.github/workflows/auto-publish-exe.yml` or `scripts/build-public-release.ps1`.
+Public agent releases must be produced through `.github/workflows/auto-publish-exe.yml` or `scripts/build-agent-public-release.ps1`.
 
 Required release inputs:
 
@@ -207,11 +209,27 @@ Preview customer installs use the MSI asset from the mutable `preview-latest` Gi
 
 1. Download `Cerberus.Agent.Setup-preview-<version>.msi`.
 2. Accept the MSI EULA dialog.
-3. Complete the per-user install.
-4. The installer opens `Cerberus.Agent.App.exe --tray`.
-5. The setup UI handles PKCE login, registration, UAC service install/start, heartbeat, and ready state.
+3. Complete the per-machine install under `Program Files\Cerberus\Windows Agent`.
+4. The installer opens `Cerberus.Agent.Setup.exe`.
+5. The setup UI handles PKCE login, registration, portal claim/lock, UAC service install/start, heartbeat, and ready state.
 
-The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKCU\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
+The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKLM\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
+
+### MSI Public Properties
+
+Enterprise deployment may pass non-secret public MSI properties:
+
+- `CERBERUS_BACKEND_URL`
+- `CERBERUS_SSO_BASE_URL`
+- `CERBERUS_SSO_CLIENT_ID`
+- `CERBERUS_SSO_SCOPE` (default: `openid profile email groups`)
+- `CERBERUS_CHANNEL` (default: release channel)
+- `CERBERUS_LANGUAGE` (`auto`, `en-US`, or `tr-TR`)
+- `CREATE_DESKTOP_SHORTCUT` (default: `0`)
+- `START_TRAY_ON_LOGIN` (default: `1`)
+- `CERBERUS_EULA_ACCEPTED=1` only for approved managed/headless deployments.
+
+These values are stored under `HKLM\Software\Cerberus\WindowsAgent`. Do not put secrets in MSI properties.
 
 ## 8) Local Smoke
 
@@ -284,13 +302,12 @@ dotnet build src/Cerberus.Agent.App/Cerberus.Agent.App.csproj -c Release
 dotnet test tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj -c Release
 ```
 
-### Publish Single EXE
+### Publish Runtime Bundle
 
 ```powershell
 dotnet publish src/Cerberus.Agent.App/Cerberus.Agent.App.csproj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=true `
-  -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:EnableCompressionInSingleFile=true `
+  -p:PublishSingleFile=false `
+  -p:DebugSymbols=false `
   -o out/release
 ```
 
@@ -315,14 +332,16 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 
 - Runs manually with `workflow_dispatch`.
 - Uses provided `release_version`, `channel`, and optional release notes.
-- Publishes self-contained EXE with computed `Version`.
+- Publishes split self-contained runtime files with computed `Version`.
 - Builds the WiX MSI installer:
   - package name: `Cerberus.Agent.Setup-<channel>-<version>.msi`
-  - per-user install under local app data
+  - per-machine install under `Program Files\Cerberus\Windows Agent`
   - mandatory MSI EULA dialog
   - registry-based EULA consent metadata, imported by the agent
   - no PowerShell custom action
-  - post-install launch: `Cerberus.Agent.App.exe --tray`
+  - desktop shortcut disabled by default
+  - tray startup enabled by default
+  - post-install launch: `Cerberus.Agent.Setup.exe`
 - Produces full release package:
   - `*.exe`
   - `*.msi`

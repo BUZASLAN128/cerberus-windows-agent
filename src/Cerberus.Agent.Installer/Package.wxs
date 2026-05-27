@@ -16,8 +16,20 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="WIXUI_ACCEPT_LICENSE_AGREEMENT" Secure="yes" />
     <Property Id="CERBERUS_EULA_ACCEPTED" Secure="yes" />
+    <Property Id="CERBERUS_BACKEND_URL" Secure="yes" />
+    <Property Id="CERBERUS_SSO_BASE_URL" Secure="yes" />
+    <Property Id="CERBERUS_SSO_CLIENT_ID" Secure="yes" />
+    <Property Id="CERBERUS_SSO_SCOPE" Value="openid profile email groups" Secure="yes" />
+    <Property Id="CERBERUS_CHANNEL" Value="$(var.ReleaseChannel)" Secure="yes" />
+    <Property Id="CERBERUS_LANGUAGE" Value="auto" Secure="yes" />
+    <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
+    <Property Id="CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES" Value="$(var.UpdateAllowedArtifactPrefixes)" Secure="yes" />
+    <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
+    <Property Id="START_TRAY_ON_LOGIN" Value="1" Secure="yes" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)Assets\EULA.rtf" />
     <ui:WixUI Id="WixUI_InstallDir" />
+    <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
     <util:CloseApplication
         Id="CloseLegacyAgentApp"
         Target="Cerberus.Agent.App.exe"
@@ -43,6 +55,7 @@
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
       <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopSetupShortcutComponent" />
       <ComponentRef Id="StartupShortcutComponent" />
       <ComponentRef Id="LegalConsentRegistryComponent" />
     </Feature>
@@ -95,7 +108,14 @@
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="installRoot" Type="string" Value="[INSTALLFOLDER]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ProductCode" Type="string" Value="[ProductCode]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="productVersion" Type="string" Value="$(var.ReleaseVersion)" />
-        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateChannel" Type="string" Value="$(var.ReleaseChannel)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateChannel" Type="string" Value="[CERBERUS_CHANNEL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="backendUrl" Type="string" Value="[CERBERUS_BACKEND_URL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoBaseUrl" Type="string" Value="[CERBERUS_SSO_BASE_URL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoClientId" Type="string" Value="[CERBERUS_SSO_CLIENT_ID]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoScope" Type="string" Value="[CERBERUS_SSO_SCOPE]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="language" Type="string" Value="[CERBERUS_LANGUAGE]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateManifestPublicKeyB64" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateAllowedArtifactPrefixes" Type="string" Value="[CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES]" />
       </Component>
     </ComponentGroup>
   </Fragment>
@@ -138,10 +158,11 @@
 
   <Fragment>
     <StandardDirectory Id="StartupFolder" />
+    <StandardDirectory Id="DesktopFolder" />
   </Fragment>
 
   <Fragment>
-    <Component Id="StartupShortcutComponent" Directory="StartupFolder" Guid="{C5883153-5082-4373-9825-A9FDE199B234}">
+    <Component Id="StartupShortcutComponent" Directory="StartupFolder" Guid="{C5883153-5082-4373-9825-A9FDE199B234}" Condition="START_TRAY_ON_LOGIN = 1">
       <Shortcut
           Id="StartupShortcut"
           Name="Cerberus Agent Tray"
@@ -149,6 +170,18 @@
           Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="DesktopSetupShortcutComponent" Directory="DesktopFolder" Guid="{B1D4CF86-4B6F-4C6E-B75C-7A5D2C924EA9}" Condition="CREATE_DESKTOP_SHORTCUT = 1">
+      <Shortcut
+          Id="DesktopSetupShortcut"
+          Name="Cerberus Agent Setup"
+          Description="Open Cerberus Windows Agent setup"
+          Target="[INSTALLFOLDER]Cerberus.Agent.Setup.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopSetupShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

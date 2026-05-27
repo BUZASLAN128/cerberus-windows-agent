@@ -5,8 +5,10 @@ using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
+using Microsoft.Win32;
 using System.Net.Http;
 using System.IO;
+using System.Text;
 
 namespace Cerberus.Agent.App;
 
@@ -100,12 +102,30 @@ internal static class ServiceMode
 
     private static IAgentUpdateCoordinator? BuildUpdateCoordinator(HttpClient http, IAgentLogger log)
     {
-        var publicKey = (Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_PEM") ?? "").Trim();
+        var registryConfig = ReadUpdateTrustConfigFromRegistry();
+        string publicKey;
+        try
+        {
+            publicKey = ResolveUpdateManifestPublicKey(
+                Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_PEM"),
+                Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64"),
+                registryConfig.GetValueOrDefault("updateManifestPublicKeyPem"),
+                registryConfig.GetValueOrDefault("updateManifestPublicKeyB64"));
+        }
+        catch (FormatException)
+        {
+            log.Warn("Agent update trust disabled because the configured manifest public key is not valid base64.");
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(publicKey))
             return null;
 
         var channel = WindowsDeviceInfo.GetBuildChannel();
-        var prefixes = SplitCsv(Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES"));
+        var prefixSource = Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES");
+        if (string.IsNullOrWhiteSpace(prefixSource))
+            registryConfig.TryGetValue("updateAllowedArtifactPrefixes", out prefixSource);
+        var prefixes = SplitCsv(prefixSource);
         var stagingRoot = AgentUpdateStager.DefaultStagingRoot;
         var trust = new AgentUpdateTrust(
             ManifestPublicKeyPem: publicKey,
@@ -113,6 +133,61 @@ internal static class ServiceMode
             AllowedArtifactPrefixes: prefixes,
             CurrentVersion: WindowsDeviceInfo.GetAgentVersion());
         return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, stagingRoot, log), log);
+    }
+
+    internal static string ResolveUpdateManifestPublicKey(
+        string? envPem,
+        string? envBase64,
+        string? registryPem,
+        string? registryBase64)
+    {
+        if (!string.IsNullOrWhiteSpace(envPem))
+            return envPem.Trim();
+
+        var decodedEnv = DecodeUpdateManifestPublicKey(envBase64);
+        if (!string.IsNullOrWhiteSpace(decodedEnv))
+            return decodedEnv;
+
+        if (!string.IsNullOrWhiteSpace(registryPem))
+            return registryPem.Trim();
+
+        return DecodeUpdateManifestPublicKey(registryBase64);
+    }
+
+    private static string DecodeUpdateManifestPublicKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "";
+        var bytes = Convert.FromBase64String(value.Trim());
+        return Encoding.UTF8.GetString(bytes).Trim();
+    }
+
+    private static IReadOnlyDictionary<string, string?> ReadUpdateTrustConfigFromRegistry()
+    {
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        if (!OperatingSystem.IsWindows())
+            return values;
+
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"Software\Cerberus\WindowsAgent", writable: false);
+            if (key is null)
+                return values;
+
+            values["updateManifestPublicKeyPem"] = key.GetValue("updateManifestPublicKeyPem")?.ToString();
+            values["updateManifestPublicKeyB64"] = key.GetValue("updateManifestPublicKeyB64")?.ToString();
+            values["updateAllowedArtifactPrefixes"] = key.GetValue("updateAllowedArtifactPrefixes")?.ToString();
+        }
+        catch (System.Security.SecurityException)
+        {
+            return values;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return values;
+        }
+
+        return values;
     }
 
     private static TimeSpan ReadTimeSpanFromSeconds(string envName, TimeSpan defaultValue)

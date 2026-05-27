@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Windows.Forms;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Actions;
+using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.Security;
 using Microsoft.Win32;
 
@@ -13,10 +14,11 @@ internal static class Program
     [STAThread]
     public static int Main()
     {
+        AgentLocalizer.ApplyThreadCulture();
         ApplicationConfiguration.Initialize();
         var answer = MessageBox.Show(
-            "Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.",
-            "Uninstall Cerberus Agent",
+            AgentLocalizer.Get("UninstallPrompt"),
+            AgentLocalizer.Get("UninstallTitle"),
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Warning);
         if (answer != DialogResult.OK)
@@ -28,7 +30,7 @@ internal static class Program
         var productCode = ReadProductCode();
         if (string.IsNullOrWhiteSpace(productCode))
         {
-            MessageBox.Show("Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.", "Cerberus Agent", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(AgentLocalizer.Get("InstallerRegistrationMissing"), "Cerberus Agent", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 2;
         }
 

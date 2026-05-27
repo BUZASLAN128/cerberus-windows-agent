@@ -1,5 +1,6 @@
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
+using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
@@ -26,6 +27,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        ApplyLocalizedText();
 
         _config = UiConfigStore.LoadMergedWithEnv();
 
@@ -115,6 +117,31 @@ public partial class MainWindow : Window
         StatusText.ScrollToEnd();
     }
 
+    private void ApplyLocalizedText()
+    {
+        Title = AgentLocalizer.Get("AppTitle");
+        TitleText.Text = AgentLocalizer.Get("AppTitle");
+        SubtitleText.Text = AgentLocalizer.Get("AppSubtitle");
+        ServiceLabel.Text = AgentLocalizer.Get("Service");
+        TailscaleLabel.Text = AgentLocalizer.Get("Connector");
+        RegisteredLabel.Text = AgentLocalizer.Get("Registered");
+        DeviceSetupLabel.Text = AgentLocalizer.Get("DeviceSetup");
+        DeviceSetupDetail.Text = AgentLocalizer.Get("DeviceSetupDetail");
+        AdvancedRepairExpander.Header = AgentLocalizer.Get("AdvancedRepairTools");
+        ServiceRepairLabel.Text = AgentLocalizer.Get("Service");
+        TailscaleRepairLabel.Text = AgentLocalizer.Get("Tailscale");
+        InstallSvcBtn.Content = AgentLocalizer.Get("Install");
+        UninstallSvcBtn.Content = AgentLocalizer.Get("RemoveService");
+        StartSvcBtn.Content = AgentLocalizer.Get("Start");
+        StopSvcBtn.Content = AgentLocalizer.Get("Stop");
+        UnregisterDeviceBtn.Content = AgentLocalizer.Get("UnregisterDevice");
+        ServiceRemovalNote.Text = AgentLocalizer.Get("ServiceRemovalNote");
+        ExportTsBtn.Content = AgentLocalizer.Get("ExportTailscale");
+        InstallTsBtn.Content = AgentLocalizer.Get("InstallTailscale");
+        TailscaleUnavailableNote.Text = AgentLocalizer.Get("TailscaleUnavailableNote");
+        AfterSetupNote.Text = AgentLocalizer.Get("AfterSetupNote");
+    }
+
     private async Task RefreshAsync()
     {
         if (!Dispatcher.CheckAccess())
@@ -161,36 +188,36 @@ public partial class MainWindow : Window
 
             ServiceValue.Text = svc.Text;
             TailscaleValue.Text = ts.Text;
-            RegisteredValue.Text = registered ? "yes" : "no";
+            RegisteredValue.Text = registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No");
 
             var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
-            ReadinessValue.Text = setupComplete ? "Ready to connect" : "Setup required";
+            ReadinessValue.Text = setupComplete ? AgentLocalizer.Get("ReadyToConnect") : AgentLocalizer.Get("SetupRequired");
             ReadinessDetail.Text = setupComplete
-                ? "This device is registered and the Cerberus Windows service is running."
-                : "Run setup to sign in, register this device, and install the Windows service.";
+                ? AgentLocalizer.Get("ReadyToConnectDetail")
+                : AgentLocalizer.Get("SetupRequiredDetail");
             SetReadinessTone(setupComplete);
 
-            OnboardBtn.Content = setupComplete ? "Ready" : "Start setup";
+            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("Ready") : AgentLocalizer.Get("StartSetup");
             OnboardBtn.IsEnabled = !_busy && !setupComplete && cfgOk;
             if (setupComplete)
             {
-                OnboardHint.Text = "Ready. Device is registered and service is running.";
+                OnboardHint.Text = AgentLocalizer.Get("ReadyHint");
             }
             else if (registered && !svc.Installed)
             {
-                OnboardHint.Text = "Registered. Finish setup to install the service.";
+                OnboardHint.Text = AgentLocalizer.Get("RegisteredInstallServiceHint");
             }
             else if (registered)
             {
-                OnboardHint.Text = $"Registered. Service status: {svc.Text}.";
+                OnboardHint.Text = AgentLocalizer.Format("RegisteredServiceStatusHint", svc.Text);
             }
             else if (!cfgOk)
             {
-                OnboardHint.Text = "Not configured. Contact your administrator.";
+                OnboardHint.Text = AgentLocalizer.Get("NotConfiguredDetail");
             }
             else
             {
-                OnboardHint.Text = "Not set up yet.";
+                OnboardHint.Text = AgentLocalizer.Get("NotSetUpYet");
             }
 
             InstallSvcBtn.IsEnabled = !_busy && !svc.Installed;
@@ -213,7 +240,7 @@ public partial class MainWindow : Window
                 "tailscale-up.cmd");
             TsCmdPathLabel.Text = File.Exists(userCmdPath)
                 ? userCmdPath
-                : (File.Exists(machineCmdPath) ? machineCmdPath : "cmd not exported yet");
+                : (File.Exists(machineCmdPath) ? machineCmdPath : AgentLocalizer.Get("CmdNotExported"));
         }
         finally
         {
@@ -230,7 +257,7 @@ public partial class MainWindow : Window
             currentService.Installed &&
             string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
         {
-            Log("Already ready. Device is registered and service is running.");
+            Log(AgentLocalizer.Get("ReadyHint"));
             await RefreshAsync();
             return;
         }
@@ -250,11 +277,11 @@ public partial class MainWindow : Window
             {
                 System.Windows.MessageBox.Show(
                     this,
-                    "This device is not configured for onboarding.\n\nPlease contact your administrator.",
-                    "Not Configured",
+                    AgentLocalizer.Get("NotConfiguredDetail"),
+                    AgentLocalizer.Get("NotConfigured"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
-                Log("Onboarding blocked: missing configuration.");
+                Log(AgentLocalizer.Get("NotConfiguredDetail"));
                 return;
             }
 
@@ -316,7 +343,7 @@ public partial class MainWindow : Window
         var answer = System.Windows.MessageBox.Show(
             this,
             "This removes local device registration. You will need to sign in and register again before using the agent.",
-            "Unregister device",
+            AgentLocalizer.Get("UnregisterDevice"),
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
         if (answer != MessageBoxResult.OK)

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="AppTitle" xml:space="preserve"><value>CERBERUS Agent Setup</value></data>
+  <data name="AppSubtitle" xml:space="preserve"><value>Connect this device to your workspace</value></data>
+  <data name="Service" xml:space="preserve"><value>Service</value></data>
+  <data name="Connector" xml:space="preserve"><value>Connector</value></data>
+  <data name="Registered" xml:space="preserve"><value>Registered</value></data>
+  <data name="Status" xml:space="preserve"><value>Status</value></data>
+  <data name="Workspace" xml:space="preserve"><value>Workspace</value></data>
+  <data name="Account" xml:space="preserve"><value>Account</value></data>
+  <data name="SetupRequired" xml:space="preserve"><value>Setup required</value></data>
+  <data name="SetupRequiredDetail" xml:space="preserve"><value>Run setup to sign in, register this device, and install the Windows service.</value></data>
+  <data name="ReadyToConnect" xml:space="preserve"><value>Ready to connect</value></data>
+  <data name="ReadyToConnectDetail" xml:space="preserve"><value>This device is registered and the Cerberus Windows service is running.</value></data>
+  <data name="DeviceSetup" xml:space="preserve"><value>Device setup</value></data>
+  <data name="DeviceSetupDetail" xml:space="preserve"><value>Accept the terms, sign in, and let Cerberus register this device and start the Windows service.</value></data>
+  <data name="StartSetup" xml:space="preserve"><value>Start setup</value></data>
+  <data name="Ready" xml:space="preserve"><value>Ready</value></data>
+  <data name="ReadyHint" xml:space="preserve"><value>Ready. Device is registered and service is running.</value></data>
+  <data name="RegisteredInstallServiceHint" xml:space="preserve"><value>Registered. Finish setup to install the service.</value></data>
+  <data name="RegisteredServiceStatusHint" xml:space="preserve"><value>Registered. Service status: {0}.</value></data>
+  <data name="NotConfigured" xml:space="preserve"><value>Not configured</value></data>
+  <data name="NotConfiguredDetail" xml:space="preserve"><value>This device is not configured for onboarding. Contact your administrator.</value></data>
+  <data name="NotSetUpYet" xml:space="preserve"><value>Not set up yet.</value></data>
+  <data name="AdvancedRepairTools" xml:space="preserve"><value>Advanced repair tools</value></data>
+  <data name="Install" xml:space="preserve"><value>Install</value></data>
+  <data name="RemoveService" xml:space="preserve"><value>Remove service</value></data>
+  <data name="Start" xml:space="preserve"><value>Start</value></data>
+  <data name="Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="UnregisterDevice" xml:space="preserve"><value>Unregister device</value></data>
+  <data name="ServiceRemovalNote" xml:space="preserve"><value>Removing the service keeps this device registered. Device reset is separate.</value></data>
+  <data name="Tailscale" xml:space="preserve"><value>Tailscale</value></data>
+  <data name="ExportTailscale" xml:space="preserve"><value>Export Tailscale command</value></data>
+  <data name="InstallTailscale" xml:space="preserve"><value>Install Tailscale</value></data>
+  <data name="TailscaleUnavailableNote" xml:space="preserve"><value>If your workspace is not configured for Tailscale, export will be unavailable.</value></data>
+  <data name="CmdNotExported" xml:space="preserve"><value>command not exported yet</value></data>
+  <data name="AfterSetupNote" xml:space="preserve"><value>After setup, Cerberus keeps running from the Windows tray.</value></data>
+  <data name="OpenSetup" xml:space="preserve"><value>Open setup</value></data>
+  <data name="RepairTools" xml:space="preserve"><value>Repair tools</value></data>
+  <data name="ExportDiagnostics" xml:space="preserve"><value>Export diagnostics</value></data>
+  <data name="Quit" xml:space="preserve"><value>Quit</value></data>
+  <data name="DiagnosticsWritten" xml:space="preserve"><value>Diagnostics exported: {0}</value></data>
+  <data name="DiagnosticsFailed" xml:space="preserve"><value>Diagnostics export failed: {0}</value></data>
+  <data name="ServiceStatus" xml:space="preserve"><value>Service: {0}</value></data>
+  <data name="RegisteredStatus" xml:space="preserve"><value>Registered: {0}</value></data>
+  <data name="ConnectorStatus" xml:space="preserve"><value>Connector: {0}</value></data>
+  <data name="Yes" xml:space="preserve"><value>yes</value></data>
+  <data name="No" xml:space="preserve"><value>no</value></data>
+  <data name="UninstallTitle" xml:space="preserve"><value>Uninstall Cerberus Agent</value></data>
+  <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.</value></data>
+  <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.</value></data>
+  <data name="LegalTerms" xml:space="preserve"><value>legal terms</value></data>
+</root>
