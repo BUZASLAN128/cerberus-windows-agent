@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Package</OutputType>
     <AcceptEula>wix7</AcceptEula>
+    <InstallerPlatform>x64</InstallerPlatform>
     <Version Condition="'$(Version)' == ''">0.0.0</Version>
     <MsiProductVersion Condition="'$(MsiProductVersion)' == ''">$(Version)</MsiProductVersion>
     <Channel Condition="'$(Channel)' == ''">preview</Channel>

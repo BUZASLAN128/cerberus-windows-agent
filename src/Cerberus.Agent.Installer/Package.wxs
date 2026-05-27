@@ -10,7 +10,9 @@
       Scope="perMachine"
       Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
+    <MajorUpgrade
+        Schedule="afterInstallExecute"
+        DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -35,6 +37,7 @@
         Target="Cerberus.Agent.App.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
+        TerminateProcess="0"
         RebootPrompt="no"
         Timeout="30" />
     <util:CloseApplication
@@ -42,6 +45,7 @@
         Target="Cerberus.Agent.Tray.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
+        TerminateProcess="0"
         RebootPrompt="no"
         Timeout="30" />
     <util:CloseApplication
@@ -49,6 +53,7 @@
         Target="Cerberus.Agent.Setup.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
+        TerminateProcess="0"
         RebootPrompt="no"
         Timeout="30" />
 
@@ -69,17 +74,42 @@
     <CustomAction
         Id="BlockInstallWithoutEula"
         Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
+    <CustomAction
+        Id="RepairExistingCerberusServicePath"
+        Directory="INSTALLFOLDER"
+        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;\&quot;[INSTALLFOLDER]Cerberus.Agent.Service.exe\&quot;&quot; start= auto'
+        Execute="deferred"
+        Impersonate="no"
+        Return="ignore" />
+    <CustomAction
+        Id="StartExistingCerberusServiceAfterRepair"
+        Directory="INSTALLFOLDER"
+        ExeCommand='&quot;[SystemFolder]sc.exe&quot; start CerberusAgent'
+        Execute="deferred"
+        Impersonate="no"
+        Return="ignore" />
+    <CustomAction
+        Id="RemoveLegacyUserStartupShortcut"
+        Directory="INSTALLFOLDER"
+        ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /c del /f /q &quot;%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Cerberus Agent Tray.lnk&quot;'
+        Execute="deferred"
+        Impersonate="yes"
+        Return="ignore" />
     <InstallExecuteSequence>
+      <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" Condition="NOT REMOVE" />
       <Custom
           Action="BlockInstallWithoutEula"
           Before="InstallValidate"
           Condition="NOT Installed AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
-      <Custom Action="LaunchAgentSetup" After="InstallFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="StartExistingCerberusServiceAfterRepair" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="RemoveLegacyUserStartupShortcut" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="LaunchAgentSetup" After="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
 
   <Fragment>
-    <StandardDirectory Id="ProgramFilesFolder">
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CompanyFolder" Name="Cerberus">
         <Directory Id="INSTALLFOLDER" Name="Windows Agent" />
       </Directory>
