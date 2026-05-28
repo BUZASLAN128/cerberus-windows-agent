@@ -6,7 +6,7 @@
 2. Run self-test:
 
 ```powershell
-Cerberus.Agent.Setup.exe --self-test --self-test-json
+Cerberus.Agent.exe --self-test --self-test-json
 ```
 
 3. Confirm you are testing the expected branch/release (`dev` prerelease vs `main` promoted release).

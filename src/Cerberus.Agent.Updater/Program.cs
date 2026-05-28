@@ -28,7 +28,7 @@ internal static class Program
             var fullMsiPath = Path.GetFullPath(msi);
             log.Write($"MSI artifact: {fullMsiPath}");
             TryStopService();
-            closedApplications = CloseTrayAndSetup();
+            closedApplications = CloseAgentUiApplications();
             var msiLogPath = log.CreateSiblingLogPath("msiexec");
             var exitCode = RunMsiexec(
                 $"/i \"{fullMsiPath}\" /qn /norestart CERBERUS_EULA_ACCEPTED=1 /l*v \"{msiLogPath}\"",
@@ -37,12 +37,12 @@ internal static class Program
             if (exitCode != 0)
             {
                 TryStartService();
-                TryRestartTray(closedApplications, log);
+                TryRestartAgentUi(closedApplications, log);
                 return exitCode;
             }
 
             TryStartService();
-            TryRestartTray(closedApplications, log);
+            TryRestartAgentUi(closedApplications, log);
             log.Write("Cerberus Agent updater completed.");
             return 0;
         }
@@ -51,7 +51,7 @@ internal static class Program
             Console.Error.WriteLine(ex.Message);
             log.Write($"Updater failed: {ex}");
             TryStartService();
-            TryRestartTray(closedApplications, log);
+            TryRestartAgentUi(closedApplications, log);
             return 1;
         }
     }
@@ -66,23 +66,25 @@ internal static class Program
         try { ServiceInstaller.StartOrThrow(); } catch { }
     }
 
-    private static ClosedApplications CloseTrayAndSetup()
+    private static ClosedApplications CloseAgentUiApplications()
     {
-        var traySessions = new HashSet<int>();
-        var trayWasRunning = false;
-        foreach (var name in new[] { "Cerberus.Agent.Tray", "Cerberus.Agent.Setup", "Cerberus.Agent.App" })
+        var uiSessions = new HashSet<int>();
+        var uiWasRunning = false;
+        foreach (var name in new[] { "Cerberus.Agent", "Cerberus.Agent.Tray", "Cerberus.Agent.Setup", "Cerberus.Agent.App" })
         {
             foreach (var process in Process.GetProcessesByName(name))
             {
                 try
                 {
-                    if (string.Equals(name, "Cerberus.Agent.Tray", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(name, "Cerberus.Agent", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "Cerberus.Agent.Tray", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "Cerberus.Agent.Setup", StringComparison.OrdinalIgnoreCase))
                     {
-                        trayWasRunning = true;
+                        uiWasRunning = true;
                         try
                         {
                             if (process.SessionId > 0)
-                                traySessions.Add(process.SessionId);
+                                uiSessions.Add(process.SessionId);
                         }
                         catch (InvalidOperationException)
                         {
@@ -99,61 +101,61 @@ internal static class Program
             }
         }
 
-        return new ClosedApplications(trayWasRunning, traySessions.ToArray());
+        return new ClosedApplications(uiWasRunning, uiSessions.ToArray());
     }
 
-    private static void TryRestartTray(ClosedApplications closedApplications, UpdaterLog log)
+    private static void TryRestartAgentUi(ClosedApplications closedApplications, UpdaterLog log)
     {
-        if (!closedApplications.TrayWasRunning)
+        if (!closedApplications.UiWasRunning)
         {
-            log.Write("Tray restart skipped: tray was not running before update.");
+            log.Write("Agent UI restart skipped: UI was not running before update.");
             return;
         }
 
-        var trayPath = ResolveInstalledTrayPath();
-        if (string.IsNullOrWhiteSpace(trayPath) || !File.Exists(trayPath))
+        var agentUiPath = ResolveInstalledAgentUiPath();
+        if (string.IsNullOrWhiteSpace(agentUiPath) || !File.Exists(agentUiPath))
         {
-            log.Write("Tray restart skipped: installed tray executable was not found.");
+            log.Write("Agent UI restart skipped: installed executable was not found.");
             return;
         }
 
-        var sessionIds = closedApplications.TraySessionIds.Count > 0
-            ? closedApplications.TraySessionIds
+        var sessionIds = closedApplications.UiSessionIds.Count > 0
+            ? closedApplications.UiSessionIds
             : ActiveSessionProcessLauncher.GetActiveConsoleSessionIds();
 
         if (!IsRunningAsLocalSystem())
         {
-            StartTrayInCurrentSession(trayPath, log);
+            StartAgentUiInCurrentSession(agentUiPath, log);
             return;
         }
 
         var started = 0;
         foreach (var sessionId in sessionIds.Distinct().Where(id => id > 0))
         {
-            if (ActiveSessionProcessLauncher.TryLaunch(trayPath, sessionId, log))
+            if (ActiveSessionProcessLauncher.TryLaunch(agentUiPath, sessionId, log))
                 started++;
         }
 
         log.Write(started > 0
-            ? $"Tray restart requested for {started} user session(s)."
-            : "Tray restart was not requested for any user session.");
+            ? $"Agent UI restart requested for {started} user session(s)."
+            : "Agent UI restart was not requested for any user session.");
     }
 
-    private static void StartTrayInCurrentSession(string trayPath, UpdaterLog log)
+    private static void StartAgentUiInCurrentSession(string agentUiPath, UpdaterLog log)
     {
         try
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = trayPath,
-                WorkingDirectory = Path.GetDirectoryName(trayPath) ?? AppContext.BaseDirectory,
+                FileName = agentUiPath,
+                WorkingDirectory = Path.GetDirectoryName(agentUiPath) ?? AppContext.BaseDirectory,
                 UseShellExecute = true,
             });
-            log.Write("Tray restart requested in the current user session.");
+            log.Write("Agent UI restart requested in the current user session.");
         }
         catch (Exception ex)
         {
-            log.Write($"Tray restart failed in current user session: {ex.GetType().Name}: {ex.Message}");
+            log.Write($"Agent UI restart failed in current user session: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -163,11 +165,11 @@ internal static class Program
         return identity.IsSystem;
     }
 
-    private static string? ResolveInstalledTrayPath()
+    private static string? ResolveInstalledAgentUiPath()
     {
         var installRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "installRoot");
         if (!string.IsNullOrWhiteSpace(installRoot))
-            return Path.Combine(installRoot.Trim(), "Cerberus.Agent.Tray.exe");
+            return Path.Combine(installRoot.Trim(), "Cerberus.Agent.exe");
 
         var serviceImagePath = ReadRegistryString(
             $@"SYSTEM\CurrentControlSet\Services\{ServiceInstaller.ServiceName}",
@@ -175,13 +177,13 @@ internal static class Program
         var servicePath = ServiceInstaller.ExtractExecutablePathFromServiceImagePath(serviceImagePath);
         var serviceDir = string.IsNullOrWhiteSpace(servicePath) ? null : Path.GetDirectoryName(servicePath);
         if (!string.IsNullOrWhiteSpace(serviceDir))
-            return Path.Combine(serviceDir, "Cerberus.Agent.Tray.exe");
+            return Path.Combine(serviceDir, "Cerberus.Agent.exe");
 
         return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "Cerberus",
             "Windows Agent",
-            "Cerberus.Agent.Tray.exe");
+            "Cerberus.Agent.exe");
     }
 
     private static string? ReadRegistryString(string subKey, string valueName)
@@ -265,7 +267,7 @@ internal static class Program
         }
     }
 
-    private sealed record ClosedApplications(bool TrayWasRunning, IReadOnlyCollection<int> TraySessionIds);
+    private sealed record ClosedApplications(bool UiWasRunning, IReadOnlyCollection<int> UiSessionIds);
 
     private static class ActiveSessionProcessLauncher
     {
@@ -280,7 +282,7 @@ internal static class Program
                 : new[] { checked((int)sessionId) };
         }
 
-        public static bool TryLaunch(string trayPath, int sessionId, UpdaterLog log)
+        public static bool TryLaunch(string agentUiPath, int sessionId, UpdaterLog log)
         {
             if (sessionId <= 0)
                 return false;
@@ -292,13 +294,13 @@ internal static class Program
             {
                 if (!WTSQueryUserToken((uint)sessionId, out token))
                 {
-                    log.Write($"Tray restart skipped for session {sessionId}: WTSQueryUserToken failed with {Marshal.GetLastWin32Error()}.");
+                    log.Write($"Agent UI restart skipped for session {sessionId}: WTSQueryUserToken failed with {Marshal.GetLastWin32Error()}.");
                     return false;
                 }
 
                 if (!CreateEnvironmentBlock(out environment, token, false))
                 {
-                    log.Write($"Tray restart skipped for session {sessionId}: CreateEnvironmentBlock failed with {Marshal.GetLastWin32Error()}.");
+                    log.Write($"Agent UI restart skipped for session {sessionId}: CreateEnvironmentBlock failed with {Marshal.GetLastWin32Error()}.");
                     return false;
                 }
 
@@ -309,7 +311,7 @@ internal static class Program
                     dwFlags = 1,
                     wShowWindow = 1,
                 };
-                var commandLine = new StringBuilder($"\"{trayPath}\"");
+                var commandLine = new StringBuilder($"\"{agentUiPath}\"");
                 var started = CreateProcessAsUser(
                     token,
                     null,
@@ -319,21 +321,21 @@ internal static class Program
                     false,
                     CreateUnicodeEnvironment,
                     environment,
-                    Path.GetDirectoryName(trayPath),
+                    Path.GetDirectoryName(agentUiPath),
                     ref startupInfo,
                     out processInfo);
                 if (!started)
                 {
-                    log.Write($"Tray restart skipped for session {sessionId}: CreateProcessAsUser failed with {Marshal.GetLastWin32Error()}.");
+                    log.Write($"Agent UI restart skipped for session {sessionId}: CreateProcessAsUser failed with {Marshal.GetLastWin32Error()}.");
                     return false;
                 }
 
-                log.Write($"Tray restart requested for session {sessionId}.");
+                log.Write($"Agent UI restart requested for session {sessionId}.");
                 return true;
             }
             catch (Exception ex)
             {
-                log.Write($"Tray restart failed for session {sessionId}: {ex.GetType().Name}: {ex.Message}");
+                log.Write($"Agent UI restart failed for session {sessionId}: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
             finally

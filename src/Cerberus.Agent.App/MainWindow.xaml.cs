@@ -104,10 +104,7 @@ public partial class MainWindow : Window
 
     private void Close_Click(object sender, RoutedEventArgs e)
     {
-        if (_busy)
-            Hide();
-        else
-            Close();
+        Hide();
     }
 
     // NOTE: We intentionally do NOT auto-hide on Deactivate/MouseLeave.
@@ -118,10 +115,7 @@ public partial class MainWindow : Window
     {
         if (e.Key == System.Windows.Input.Key.Escape)
         {
-            if (_busy)
-                Hide();
-            else
-                Close();
+            Hide();
             e.Handled = true;
         }
     }
@@ -287,7 +281,7 @@ public partial class MainWindow : Window
             return;
         if (_setupComplete || AgentStatus.IsSetupComplete())
         {
-            Close();
+            Hide();
             return;
         }
 
@@ -296,7 +290,7 @@ public partial class MainWindow : Window
             currentService.Installed &&
             string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
         {
-            Close();
+            Hide();
             return;
         }
 

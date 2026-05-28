@@ -33,16 +33,15 @@ Primary use cases:
 
 ## 2) Runtime Modes
 
-The customer-facing runtime is split into purpose-specific executables:
+The customer-facing runtime follows a service + single tray client model:
 
-- `Cerberus.Agent.Setup.exe`: EULA-backed setup UI, PKCE sign-in, device registration, portal claim wait, and service provisioning.
-- `Cerberus.Agent.Tray.exe`: lightweight user-session tray status and repair entry point.
+- `Cerberus.Agent.exe`: single user-session tray client and control center. It opens the same panel for status, onboarding, diagnostics, and updates.
 - `Cerberus.Agent.Service.exe`: Windows service runtime for heartbeat, telemetry, command polling, and update coordination.
 - `Cerberus.Agent.Updater.exe`: signed/checksum-verified MSI update applier.
 - `Cerberus.Agent.Uninstall.exe`: customer-facing uninstall wrapper with best-effort portal deactivation.
 
-Support/admin CLI flags remain available through the setup binary for diagnostics and controlled automation:
-`--register`, `--heartbeat-once`, `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`, `--export-tailscale-up`, `--self-test`, `--apply-staged-update`, and `--accept-eula`.
+Support/admin CLI flags remain available through the agent binary for diagnostics and controlled automation:
+`--open`, `--connect`, `--check-updates`, `--update-now`, `--register`, `--heartbeat-once`, `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`, `--export-tailscale-up`, `--self-test`, `--apply-staged-update`, and `--accept-eula`.
 
 Notes:
 - Token/file based register flow is intentionally disabled in `--register`; PKCE browser flow is the single onboarding path.
@@ -52,11 +51,9 @@ Notes:
 ## 3) High-Level Architecture
 
 - `src/Cerberus.Agent.App`
-  - setup UI, support CLI, service provisioning, onboarding orchestration, local UI config.
+  - single tray/control-center UI, support CLI, service provisioning, onboarding orchestration, local UI config.
 - `src/Cerberus.Agent.Runtime`
-  - shared runtime files linked into service, tray, updater, and uninstall binaries.
-- `src/Cerberus.Agent.Tray`
-  - lightweight WinForms tray process.
+  - shared runtime files linked into service, updater, and uninstall binaries.
 - `src/Cerberus.Agent.Service`
   - Windows service entry point.
 - `src/Cerberus.Agent.Updater`
@@ -207,11 +204,11 @@ Unsigned public releases are denied. Tenant-controlled backend, update URL, sign
 
 Preview customer installs use the MSI asset from the mutable `preview-latest` GitHub release:
 
-1. Download `Cerberus.Agent.Setup-preview-<version>.msi`.
+1. Download `Cerberus.Agent-preview-<version>.msi`.
 2. Accept the MSI EULA dialog.
 3. Complete the per-machine install under `Program Files\Cerberus\Windows Agent`.
-4. The installer opens `Cerberus.Agent.Setup.exe`.
-5. The setup UI handles PKCE login, registration, portal claim/lock, UAC service install/start, heartbeat, and ready state.
+4. The installer opens `Cerberus.Agent.exe --open`.
+5. The Cerberus Agent panel handles PKCE login, registration, portal claim/lock, UAC service install/start, heartbeat, and ready state.
 
 The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKLM\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
 
@@ -334,14 +331,14 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 - Uses provided `release_version`, `channel`, and optional release notes.
 - Publishes split self-contained runtime files with computed `Version`.
 - Builds the WiX MSI installer:
-  - package name: `Cerberus.Agent.Setup-<channel>-<version>.msi`
+  - package name: `Cerberus.Agent-<channel>-<version>.msi`
   - per-machine install under `Program Files\Cerberus\Windows Agent`
   - mandatory MSI EULA dialog
   - registry-based EULA consent metadata, imported by the agent
   - no PowerShell custom action
   - desktop shortcut disabled by default
-  - tray startup enabled by default
-  - post-install launch: `Cerberus.Agent.Setup.exe`
+  - agent tray startup enabled by default
+  - post-install launch: `Cerberus.Agent.exe --open`
 - Produces full release package:
   - `*.exe`
   - `*.msi`

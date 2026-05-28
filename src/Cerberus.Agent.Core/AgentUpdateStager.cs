@@ -141,7 +141,7 @@ public sealed class AgentUpdateStager
         Directory.CreateDirectory(stageDir);
         var artifactName = Path.GetFileName(new Uri(manifest.ArtifactUrl).LocalPath);
         if (string.IsNullOrWhiteSpace(artifactName))
-            artifactName = $"Cerberus.Agent.Setup-{manifest.Channel}-{manifest.Version}.msi";
+            artifactName = $"Cerberus.Agent-{manifest.Channel}-{manifest.Version}.msi";
         var artifactPath = Path.Combine(stageDir, artifactName);
 
         await DownloadWithHashCheckAsync(manifest, artifactPath, ct).ConfigureAwait(false);

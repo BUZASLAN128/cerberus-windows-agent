@@ -1058,7 +1058,7 @@ $artifactRoot = New-ArtifactRoot
 
 try {
   if ([string]::IsNullOrWhiteSpace($ExePath)) {
-    $ExePath = Join-Path $repoRoot "out/clean-install-smoke/publish/Cerberus.Agent.Setup.exe"
+    $ExePath = Join-Path $repoRoot "out/clean-install-smoke/publish/Cerberus.Agent.exe"
   }
   if (-not (Test-Path -LiteralPath $ExePath)) {
     throw "Agent exe not found: $ExePath"

@@ -115,7 +115,7 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
     -o $publishDir
-  $ExePath = Join-Path $publishDir "Cerberus.Agent.Setup.exe"
+  $ExePath = Join-Path $publishDir "Cerberus.Agent.exe"
 }
 
 if (-not (Test-Path -LiteralPath $ExePath)) {

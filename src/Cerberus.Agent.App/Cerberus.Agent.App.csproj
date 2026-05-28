@@ -15,7 +15,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
-    <AssemblyName>Cerberus.Agent.Setup</AssemblyName>
+    <AssemblyName>Cerberus.Agent</AssemblyName>
     <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
     <StartupObject>Cerberus.Agent.App.Program</StartupObject>
     <AgentDefaultBackendUrlBase64 Condition="'$(AgentDefaultBackendUrlBase64)' == ''"></AgentDefaultBackendUrlBase64>
@@ -66,7 +66,6 @@
 
   <ItemGroup>
     <Compile Remove="SingleInstanceGuard.cs" />
-    <Compile Remove="TrayHost.cs" />
   </ItemGroup>
 
   <ItemGroup>

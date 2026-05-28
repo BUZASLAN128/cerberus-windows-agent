@@ -102,7 +102,7 @@ jobs:
           $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
           $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
           $assetBase = "Cerberus.Agent.Bundle-$channel-$cleanVersion"
-          $setupBase = "Cerberus.Agent.Setup-$channel-$cleanVersion"
+          $installerBase = "Cerberus.Agent-$channel-$cleanVersion"
 
           New-Item -ItemType Directory -Force -Path out | Out-Null
           $notes | Set-Content -Path out/release-notes.md -Encoding utf8
@@ -110,7 +110,7 @@ jobs:
           "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "setup_base=$setupBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "setup_base=$installerBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "make_latest=$(if ($channel -eq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -175,7 +175,7 @@ jobs:
         run: |
           $latestTag = "${{ steps.release.outputs.channel }}-latest"
           $latestAssetBase = "Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest"
-          $latestSetupBase = "Cerberus.Agent.Setup-${{ steps.release.outputs.channel }}-latest"
+          $latestInstallerBase = "Cerberus.Agent-${{ steps.release.outputs.channel }}-latest"
           gh release delete $latestTag --yes --cleanup-tag 2>$null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "$latestTag was not present or could not be deleted; continuing with create."
@@ -189,7 +189,7 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
-            "out/public-release/publish/$latestSetupBase.msi" `
+            "out/public-release/publish/$latestInstallerBase.msi" `
             "out/public-release/publish/$latestAssetBase.zip" `
             "out/public-release/publish/$latestAssetBase.sha256" `
             "out/public-release/publish/$latestAssetBase.sbom.json" `

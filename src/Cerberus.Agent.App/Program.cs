@@ -8,8 +8,12 @@ namespace Cerberus.Agent.App;
 
 internal static class Program
 {
-    private const string SetupMutexName = "Global\\CerberusAgent.Setup.SingleInstance";
-    private const string SetupPipeName = "CerberusAgent.Setup.SingleInstancePipe";
+    private const string UiMutexName = "Global\\CerberusAgent.Ui.SingleInstance";
+    private const string UiPipeName = "CerberusAgent.Ui.SingleInstancePipe";
+    private const string OpenSignal = "open";
+    private const string ConnectSignal = "connect";
+    private const string CheckUpdatesSignal = "check-updates";
+    private const string UpdateNowSignal = "update-now";
 
     [STAThread]
     public static int Main(string[] args)
@@ -162,41 +166,7 @@ internal static class Program
             return 0;
         }
 
-        if (IsSetupHostProcess())
-        {
-            if (!ProcessInstanceGuard.TryAcquire(SetupMutexName, SetupPipeName, "show", out var setupGuard))
-                return 0;
-
-            using var guard = setupGuard!;
-            var setupApp = new App
-            {
-                ShutdownMode = ShutdownMode.OnMainWindowClose,
-            };
-            var window = new MainWindow();
-            setupApp.MainWindow = window;
-            guard.StartSignalListener(message =>
-            {
-                if (!string.Equals(message, "show", StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                window.Dispatcher.BeginInvoke(() =>
-                {
-                    if (!window.IsVisible)
-                        window.Show();
-                    if (window.WindowState == WindowState.Minimized)
-                        window.WindowState = WindowState.Normal;
-                    window.PositionNearNotificationArea();
-                    window.Activate();
-                    window.Topmost = true;
-                    window.Topmost = false;
-                    window.Focus();
-                });
-            });
-            window.Show();
-            return setupApp.Run();
-        }
-
-        return 2;
+        return RunUi(ParseStartupSignal(parsed));
     }
 
     private static bool IsAcceptEulaOnly(AgentArgs args)
@@ -206,6 +176,11 @@ internal static class Program
            !args.HeartbeatOnce &&
            !args.ExportTailscaleUp &&
            !args.SelfTest &&
+           !args.Background &&
+           !args.Open &&
+           !args.Connect &&
+           !args.CheckUpdates &&
+           !args.UpdateNow &&
            !args.InstallService &&
            !args.UninstallService &&
            !args.UnregisterDevice &&
@@ -214,9 +189,35 @@ internal static class Program
            !args.Service &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
 
-    private static bool IsSetupHostProcess()
+    private static string? ParseStartupSignal(AgentArgs args)
     {
-        var name = System.IO.Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
-        return string.Equals(name, "Cerberus.Agent.Setup", StringComparison.OrdinalIgnoreCase);
+        if (args.UpdateNow)
+            return UpdateNowSignal;
+        if (args.CheckUpdates)
+            return CheckUpdatesSignal;
+        if (args.Connect)
+            return ConnectSignal;
+        if (args.Open)
+            return OpenSignal;
+        return null;
+    }
+
+    private static int RunUi(string? startupSignal)
+    {
+        if (!ProcessInstanceGuard.TryAcquire(UiMutexName, UiPipeName, startupSignal, out var instanceGuard))
+            return 0;
+
+        using var guard = instanceGuard!;
+        var app = new App
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown,
+        };
+
+        using var tray = new TrayHost();
+        guard.StartSignalListener(tray.HandleSignal);
+        if (!string.IsNullOrWhiteSpace(startupSignal))
+            tray.HandleSignal(startupSignal);
+
+        return app.Run();
     }
 }

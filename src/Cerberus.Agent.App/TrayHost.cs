@@ -1,8 +1,12 @@
 using Cerberus.Agent.App.Actions;
+using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Legal;
-using Cerberus.Agent.Observability;
+using Cerberus.Agent.App.Localization;
+using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
 using System.Drawing;
+using System.Net.Http;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media;
@@ -19,94 +23,71 @@ namespace Cerberus.Agent.App;
 internal sealed class TrayHost : IDisposable
 {
     private readonly NotifyIcon _icon;
-    private readonly ToolStripMenuItem _statusHeader;
+    private readonly ToolStripMenuItem _workspaceStatus;
+    private readonly ToolStripMenuItem _accountStatus;
     private readonly ToolStripMenuItem _serviceStatus;
     private readonly ToolStripMenuItem _tailscaleStatus;
     private readonly ToolStripMenuItem _registeredStatus;
-    private readonly ToolStripMenuItem _onboard;
-    private readonly ToolStripMenuItem _installService;
-    private readonly ToolStripMenuItem _uninstallService;
-    private readonly ToolStripMenuItem _startService;
-    private readonly ToolStripMenuItem _stopService;
+    private readonly ToolStripMenuItem _updateStatus;
+    private readonly ToolStripMenuItem _connectDevice;
+    private readonly ToolStripMenuItem _checkUpdates;
+    private readonly ToolStripMenuItem _updateNow;
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _startupUpdateTimer;
 
     private MainWindow? _window;
-    private volatile bool _onboarding;
+    private bool _allowWindowClose;
+    private bool _setupComplete;
+    private bool _checkingUpdates;
+    private bool _applyingUpdate;
     private int _refreshing;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
+    private AgentUpdateSignal? _lastCheckedUpdateSignal;
+    private AgentUpdateCheckResult? _lastUpdateCheck;
 
     public TrayHost()
     {
-        _statusHeader = new ToolStripMenuItem("CERBERUS Agent") { Enabled = false };
-        _serviceStatus = new ToolStripMenuItem("Service: ...") { Enabled = false };
-        _tailscaleStatus = new ToolStripMenuItem("Tailscale: ...") { Enabled = false };
-        _registeredStatus = new ToolStripMenuItem("Registered: ...") { Enabled = false };
+        _workspaceStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Workspace")}: -") { Enabled = false };
+        _accountStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Account")}: -") { Enabled = false };
+        _serviceStatus = new ToolStripMenuItem(AgentLocalizer.Format("ServiceStatus", "...")) { Enabled = false };
+        _tailscaleStatus = new ToolStripMenuItem(AgentLocalizer.Format("ConnectorStatus", "...")) { Enabled = false };
+        _registeredStatus = new ToolStripMenuItem(AgentLocalizer.Format("RegisteredStatus", "...")) { Enabled = false };
+        _updateStatus = new ToolStripMenuItem(AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateNotChecked"))) { Enabled = false };
 
-        var open = new ToolStripMenuItem("Open") { };
+        var open = new ToolStripMenuItem(AgentLocalizer.Get("OpenSetup"));
         open.Click += (_, _) => ShowWindow(centerOnScreen: false);
 
-        _onboard = new ToolStripMenuItem("Set up this device");
-        _onboard.Click += async (_, _) => await OnboardAsync();
+        _connectDevice = new ToolStripMenuItem(AgentLocalizer.Get("ConnectDevice"));
+        _connectDevice.Click += (_, _) => ShowWindow(centerOnScreen: true);
 
-        var exportTs = new ToolStripMenuItem("Export tailscale up cmd");
-        exportTs.Click += async (_, _) =>
-        {
-            using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
-            try
-            {
-                var cfg = UiConfigStore.LoadMergedWithEnv();
-                var export = await VpnCommandExportService.ExportAsync(
-                    VpnCommandExportService.TryGetConfiguredBackend(cfg),
-                    message => log.Info(message),
-                    CancellationToken.None);
-                if (export.CommandPath is null)
-                {
-                    ShowBalloon("VPN", "VPN provisioning is not available. Contact your administrator.", ToolTipIcon.Warning);
-                    return;
-                }
-                ShowBalloon("VPN", $"Wrote: {export.CommandPath}", ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                log.Error("Export tailscale up failed.", ex);
-                ShowBalloon("VPN", Sanitizer.Redact(ex.Message), ToolTipIcon.Error);
-            }
-        };
+        _checkUpdates = new ToolStripMenuItem(AgentLocalizer.Get("CheckUpdates"));
+        _checkUpdates.Click += async (_, _) => await CheckUpdatesAsync(userInitiated: true).ConfigureAwait(true);
 
-        var installTs = new ToolStripMenuItem("Install Tailscale");
-        installTs.Click += async (_, _) =>
-        {
-            using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
-            try
-            {
-                await TailscaleInstaller.EnsureInstalledAsync(
-                    log: _ => { },
-                    ct: CancellationToken.None);
-                ShowBalloon("Tailscale", "Install started (UAC may prompt).", ToolTipIcon.Info);
-            }
-            catch (Exception ex)
-            {
-                log.Error("Install Tailscale failed.", ex);
-                ShowBalloon("Tailscale", Sanitizer.Redact(ex.Message), ToolTipIcon.Error);
-            }
-        };
+        _updateNow = new ToolStripMenuItem(AgentLocalizer.Get("UpdateNow")) { Enabled = false };
+        _updateNow.Click += async (_, _) => await ApplyCheckedUpdateAsync().ConfigureAwait(true);
 
-        _startService = new ToolStripMenuItem("Start service");
-        _startService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Start);
+        var diagnostics = new ToolStripMenuItem(AgentLocalizer.Get("ExportDiagnostics"));
+        diagnostics.Click += async (_, _) => await ExportDiagnosticsAsync();
 
-        _stopService = new ToolStripMenuItem("Stop service");
-        _stopService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Stop);
-
-        _installService = new ToolStripMenuItem("Install service");
-        _installService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Install);
-
-        _uninstallService = new ToolStripMenuItem("Remove service");
-        _uninstallService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Uninstall);
-
-        var unregisterDevice = new ToolStripMenuItem("Unregister device");
+        var repair = new ToolStripMenuItem(AgentLocalizer.Get("RepairTools"));
+        var installService = new ToolStripMenuItem(AgentLocalizer.Get("Install"));
+        installService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Install);
+        var removeService = new ToolStripMenuItem(AgentLocalizer.Get("RemoveService"));
+        removeService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Uninstall);
+        var startService = new ToolStripMenuItem(AgentLocalizer.Get("Start"));
+        startService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Start);
+        var stopService = new ToolStripMenuItem(AgentLocalizer.Get("Stop"));
+        stopService.Click += (_, _) => RunServiceCommand(ServiceControlCommand.Stop);
+        var unregisterDevice = new ToolStripMenuItem(AgentLocalizer.Get("UnregisterDevice"));
         unregisterDevice.Click += (_, _) => RunServiceCommand(ServiceControlCommand.UnregisterDevice);
+        repair.DropDownItems.Add(installService);
+        repair.DropDownItems.Add(removeService);
+        repair.DropDownItems.Add(startService);
+        repair.DropDownItems.Add(stopService);
+        repair.DropDownItems.Add(new ToolStripSeparator());
+        repair.DropDownItems.Add(unregisterDevice);
 
-        var exit = new ToolStripMenuItem("Exit");
+        var exit = new ToolStripMenuItem(AgentLocalizer.Get("Quit"));
         exit.Click += (_, _) =>
         {
             Dispose();
@@ -114,30 +95,29 @@ internal sealed class TrayHost : IDisposable
         };
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add(_statusHeader);
+        menu.Items.Add(new ToolStripMenuItem("Cerberus Agent") { Enabled = false });
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem(AgentLocalizer.Get("Status")) { Enabled = false });
+        menu.Items.Add(_workspaceStatus);
+        menu.Items.Add(_accountStatus);
         menu.Items.Add(_serviceStatus);
         menu.Items.Add(_tailscaleStatus);
         menu.Items.Add(_registeredStatus);
+        menu.Items.Add(_updateStatus);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(open);
-        menu.Items.Add(_onboard);
-        menu.Items.Add(exportTs);
-        menu.Items.Add(installTs);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(_startService);
-        menu.Items.Add(_stopService);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(_installService);
-        menu.Items.Add(_uninstallService);
-        menu.Items.Add(unregisterDevice);
+        menu.Items.Add(_connectDevice);
+        menu.Items.Add(_checkUpdates);
+        menu.Items.Add(_updateNow);
+        menu.Items.Add(diagnostics);
+        menu.Items.Add(repair);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
-            Text = "CERBERUS Agent",
+            Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? "") ?? SystemIcons.Application,
+            Text = "Cerberus Agent",
             Visible = true,
             ContextMenuStrip = menu,
         };
@@ -154,6 +134,44 @@ internal sealed class TrayHost : IDisposable
         };
         _timer.Tick += async (_, _) => await RefreshAsync();
         _timer.Start();
+
+        _startupUpdateTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(10),
+        };
+        _startupUpdateTimer.Tick += async (_, _) =>
+        {
+            _startupUpdateTimer.Stop();
+            await CheckUpdatesAsync(userInitiated: false).ConfigureAwait(true);
+        };
+        _startupUpdateTimer.Start();
+
+        _ = RefreshAsync();
+    }
+
+    public void HandleSignal(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            switch (message.Trim().ToLowerInvariant())
+            {
+                case "open":
+                    ShowWindow(centerOnScreen: false);
+                    break;
+                case "connect":
+                    ShowWindow(centerOnScreen: true);
+                    break;
+                case "check-updates":
+                    _ = CheckUpdatesAsync(userInitiated: true);
+                    break;
+                case "update-now":
+                    _ = ApplyCheckedUpdateAsync();
+                    break;
+            }
+        });
     }
 
     public async Task RefreshAsync()
@@ -179,18 +197,15 @@ internal sealed class TrayHost : IDisposable
                     CancellationToken.None);
             }
             var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
+            _setupComplete = setupComplete;
 
-            _serviceStatus.Text = $"Service: {svc.Text}";
-            _tailscaleStatus.Text = $"Tailscale: {ts.Text}";
-            _registeredStatus.Text = $"Registered: {(registered ? "yes" : "no")}";
+            _workspaceStatus.Text = $"{AgentLocalizer.Get("Workspace")}: -";
+            _accountStatus.Text = $"{AgentLocalizer.Get("Account")}: -";
+            _serviceStatus.Text = AgentLocalizer.Format("ServiceStatus", svc.Text);
+            _tailscaleStatus.Text = AgentLocalizer.Format("ConnectorStatus", ts.Text);
+            _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));
 
-            var cfg = UiConfigStore.LoadMergedWithEnv();
-            var cfgOk = AgentOnboardingFlow.IsConfigReady(cfg);
-            _onboard.Enabled = !_onboarding && !setupComplete && cfgOk;
-            _startService.Enabled = svc.CanStart;
-            _stopService.Enabled = svc.CanStop;
-            _installService.Enabled = !svc.Installed;
-            _uninstallService.Enabled = svc.Installed;
+            _connectDevice.Visible = !setupComplete;
 
             _icon.Text = TrimTooltip($"CERBERUS Agent | {svc.Short} | {ts.Short} | reg={(registered ? "yes" : "no")}");
         }
@@ -213,14 +228,14 @@ internal sealed class TrayHost : IDisposable
             if (_window is null)
             {
                 _window = new MainWindow();
+                System.Windows.Application.Current.MainWindow = _window;
                 _window.Closing += (_, e) =>
                 {
-                    if (_window.IsBusy)
-                    {
-                        // Keep active setup work alive; the hidden window stops its refresh timer.
-                        e.Cancel = true;
-                        _window.Hide();
-                    }
+                    if (_allowWindowClose)
+                        return;
+
+                    e.Cancel = true;
+                    _window.Hide();
                 };
                 _window.Closed += (_, _) =>
                 {
@@ -230,11 +245,7 @@ internal sealed class TrayHost : IDisposable
 
             if (_window.IsVisible)
             {
-                if (!centerOnScreen)
-                {
-                    _window.Close();
-                    return;
-                }
+                _window.Activate();
             }
 
             // Prevent immediate auto-hide caused by transient focus changes during Show/Position/Activate.
@@ -301,59 +312,6 @@ internal sealed class TrayHost : IDisposable
         });
     }
 
-    private async Task OnboardAsync()
-    {
-        if (_onboarding)
-            return;
-        var currentService = AgentStatus.GetService();
-        if (AgentStatus.IsRegistered() &&
-            currentService.Installed &&
-            string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
-        {
-            ShowBalloon("Setup", "Already ready. Device is registered and service is running.", ToolTipIcon.Info);
-            return;
-        }
-
-        _onboarding = true;
-        try
-        {
-            await RefreshAsync();
-
-            using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
-
-            var cfg = UiConfigStore.LoadMergedWithEnv();
-            if (!AgentOnboardingFlow.IsConfigReady(cfg))
-            {
-                ShowBalloon("Setup", "Not configured. Contact your administrator.", ToolTipIcon.Error);
-                return;
-            }
-
-            if (!LegalConsentPrompt.EnsureUserConsent(null, "sign-in and device registration"))
-            {
-                ShowBalloon("Setup", "Legal terms were not accepted.", ToolTipIcon.Warning);
-                return;
-            }
-
-            ShowBalloon("Setup", "Starting setup. Browser and UAC may open.", ToolTipIcon.Info);
-            var result = await new AgentSetupFlow().RunAsync(
-                cfg,
-                log,
-                progress: message => log.Info(message),
-                ct: CancellationToken.None);
-
-            ShowBalloon("Setup", result.Message, ToolTipIcon.Info);
-        }
-        catch (Exception ex)
-        {
-            ShowBalloon("Setup", Sanitizer.Redact(ex.Message), ToolTipIcon.Error);
-        }
-        finally
-        {
-            _onboarding = false;
-            await RefreshAsync();
-        }
-    }
-
     private void RunServiceCommand(ServiceControlCommand command)
     {
         if (command == ServiceControlCommand.Install &&
@@ -365,6 +323,126 @@ internal sealed class TrayHost : IDisposable
 
         var result = ServiceControlAction.Run(command);
         ShowBalloon("Service", result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
+        _ = RefreshAsync();
+    }
+
+    private async Task CheckUpdatesAsync(bool userInitiated)
+    {
+        if (_checkingUpdates || _applyingUpdate)
+            return;
+
+        _checkingUpdates = true;
+        _checkUpdates.Enabled = false;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateChecking"));
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            using var updateHttp = CreateUpdateHttpClient();
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance);
+            var signal = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
+            if (coordinator is null || signal is null)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateUnavailable"));
+                if (userInitiated)
+                    ShowUpdateMessage(AgentLocalizer.Get("UpdateNotConfiguredDetail"));
+                return;
+            }
+
+            var check = await coordinator.CheckUpdateAsync(signal, cts.Token).ConfigureAwait(true);
+            if (!check.Available)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                return;
+            }
+
+            _lastCheckedUpdateSignal = signal;
+            _lastUpdateCheck = check;
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
+            _updateNow.Enabled = true;
+        }
+        catch
+        {
+            ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
+            if (userInitiated)
+                ShowUpdateMessage(AgentLocalizer.Get("UpdateCheckFailedDetail"));
+        }
+        finally
+        {
+            _checkingUpdates = false;
+            _checkUpdates.Enabled = true;
+        }
+    }
+
+    private async Task ApplyCheckedUpdateAsync()
+    {
+        if (_lastCheckedUpdateSignal is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
+        {
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateCheckRequired"));
+            _updateNow.Enabled = false;
+            return;
+        }
+
+        if (_applyingUpdate)
+            return;
+
+        _applyingUpdate = true;
+        _checkUpdates.Enabled = false;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstalling"));
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+            using var updateHttp = CreateUpdateHttpClient();
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance)
+                               ?? throw new InvalidOperationException("Update trust is not configured.");
+            var launched = await coordinator
+                .StageAndLaunchUpdateAsync(_lastCheckedUpdateSignal, requireElevation: true, ct: cts.Token)
+                .ConfigureAwait(true);
+            if (!launched)
+            {
+                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                return;
+            }
+
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
+            _lastCheckedUpdateSignal = null;
+            _lastUpdateCheck = null;
+        }
+        catch (Exception ex)
+        {
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallFailed"));
+            ShowUpdateMessage(AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)));
+            _updateNow.Enabled = _lastUpdateCheck?.Available == true;
+        }
+        finally
+        {
+            _applyingUpdate = false;
+            _checkUpdates.Enabled = true;
+        }
+    }
+
+    private void ClearCheckedUpdate(string status)
+    {
+        _lastCheckedUpdateSignal = null;
+        _lastUpdateCheck = null;
+        _updateNow.Enabled = false;
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", status);
+    }
+
+    private static async Task ExportDiagnosticsAsync()
+    {
+        try
+        {
+            var path = await AgentDiagnosticsBundle.ExportAsync().ConfigureAwait(true);
+            ShowUpdateMessage(AgentLocalizer.Format("DiagnosticsWritten", path));
+        }
+        catch (Exception ex)
+        {
+            ShowUpdateMessage(AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)));
+        }
     }
 
     private void ShowBalloon(string title, string msg, ToolTipIcon icon)
@@ -384,9 +462,34 @@ internal sealed class TrayHost : IDisposable
         return s.Length <= max ? s : s[..max];
     }
 
+    private static HttpClient CreateUpdateHttpClient()
+        => new()
+        {
+            Timeout = TimeSpan.FromMinutes(10),
+        };
+
+    private static void ShowUpdateMessage(string message)
+    {
+        System.Windows.Forms.MessageBox.Show(
+            message,
+            "Cerberus Agent",
+            System.Windows.Forms.MessageBoxButtons.OK,
+            System.Windows.Forms.MessageBoxIcon.Warning);
+    }
+
     public void Dispose()
     {
         try { _timer.Stop(); } catch { }
+        try { _startupUpdateTimer.Stop(); } catch { }
+        try
+        {
+            if (_window is not null)
+            {
+                _allowWindowClose = true;
+                _window.Close();
+            }
+        }
+        catch { }
         try { _icon.Visible = false; } catch { }
         try { _icon.Dispose(); } catch { }
     }

@@ -42,7 +42,7 @@
   <data name="TailscaleUnavailableNote" xml:space="preserve"><value>If your workspace is not configured for Tailscale, export will be unavailable.</value></data>
   <data name="CmdNotExported" xml:space="preserve"><value>command not exported yet</value></data>
   <data name="AfterSetupNote" xml:space="preserve"><value>Cerberus keeps running from the Windows tray.</value></data>
-  <data name="OpenSetup" xml:space="preserve"><value>Open setup</value></data>
+  <data name="OpenSetup" xml:space="preserve"><value>Open Cerberus Agent</value></data>
   <data name="RepairTools" xml:space="preserve"><value>Repair tools</value></data>
   <data name="ExportDiagnostics" xml:space="preserve"><value>Export diagnostics</value></data>
   <data name="Quit" xml:space="preserve"><value>Quit</value></data>

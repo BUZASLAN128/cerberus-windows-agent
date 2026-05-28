@@ -106,13 +106,14 @@ public sealed class AgentLegalConsentTests
         Assert.DoesNotContain("LegacyAppDataCleanupComponent", package);
         Assert.Contains("<Files Include=\"$(var.AgentPublishDir)\\**\">", package);
         Assert.Contains("<Exclude Files=\"$(var.AgentPublishDir)\\**\\*.pdb\" />", package);
-        Assert.Contains("Cerberus.Agent.Setup.exe", package);
-        Assert.Contains("Cerberus.Agent.Tray.exe", package);
+        Assert.Contains("Cerberus.Agent.exe", package);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
-        Assert.Contains("LaunchAgentSetup", package);
+        Assert.Contains("LaunchAgentUi", package);
         Assert.DoesNotContain("Cerberus.Agent.App.exe\" --tray", package);
         Assert.Contains("CloseRunningAgentTray", package);
         Assert.Contains("CloseRunningAgentSetup", package);
+        Assert.Contains("CloseRunningAgentUi", package);
+        Assert.Contains("Target=\"Cerberus.Agent.exe\"", package);
         Assert.Contains("Target=\"Cerberus.Agent.Tray.exe\"", package);
         Assert.Contains("Target=\"Cerberus.Agent.Setup.exe\"", package);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
@@ -145,7 +146,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Name=\"CerberusAgent\"", package);
         Assert.Contains("Stop=\"both\"", package);
         Assert.Contains("Wait=\"yes\"", package);
-        Assert.Contains("TerminateProcess=\"0\"", package);
+        Assert.Contains("TerminateProcess=\"1\"", package);
         Assert.Contains("Schedule=\"afterInstallExecute\"", package);
         Assert.Contains("override Wix4CloseApplications_X64", package);
         Assert.Contains("After=\"InstallInitialize\"", package);
@@ -172,15 +173,16 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
         Assert.Contains("-p:PublishSingleFile=false", releaseScript);
         Assert.Contains("-p:DebugSymbols=false", releaseScript);
-        Assert.Contains("Cerberus.Agent.Setup.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
-        Assert.Contains("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
         Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
         Assert.Contains("Copy-ChannelLatestAliases", releaseScript);
         Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", releaseScript);
-        Assert.Contains("Cerberus.Agent.Setup-$Channel-latest", releaseScript);
+        Assert.Contains("Cerberus.Agent-$Channel-latest", releaseScript);
+        Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
+        Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);
         Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
@@ -205,9 +207,9 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", workflow);
         Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
         Assert.Contains("$latestAssetBase", workflow);
-        Assert.Contains("$latestSetupBase", workflow);
+        Assert.Contains("$latestInstallerBase", workflow);
         Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
-        Assert.Contains("$latestSetupBase.msi", workflow);
+        Assert.Contains("$latestInstallerBase.msi", workflow);
     }
 
     [Fact]

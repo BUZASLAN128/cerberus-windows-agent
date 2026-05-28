@@ -14,6 +14,11 @@ internal sealed record AgentArgs(
     bool ExportTailscaleUp,
     bool SelfTest,
     bool SelfTestJson,
+    bool Background,
+    bool Open,
+    bool Connect,
+    bool CheckUpdates,
+    bool UpdateNow,
     string? SelfTestOutFile,
     string? CasdoorTokenFile,
     string? ApplyUpdatePlan,
@@ -56,6 +61,11 @@ internal static class Args
         var exportTailscaleUp = Has("--export-tailscale-up");
         var selfTest = Has("--self-test");
         var selfTestJson = Has("--self-test-json") || Has("--json");
+        var background = Has("--background");
+        var open = Has("--open") || Has("/open");
+        var connect = Has("--connect") || Has("/connect");
+        var checkUpdates = Has("--check-updates") || Has("/check-updates");
+        var updateNow = Has("--update-now") || Has("/update-now");
         var selfTestOutFile = Value("--self-test-out");
         var casdoorTokenFile = Value("--casdoor-token-file") ?? Value("--token-file");
         var applyUpdatePlan = Value("--apply-staged-update");
@@ -75,6 +85,11 @@ internal static class Args
             exportTailscaleUp,
             selfTest,
             selfTestJson,
+            background,
+            open,
+            connect,
+            checkUpdates,
+            updateNow,
             selfTestOutFile,
             casdoorTokenFile,
             applyUpdatePlan,

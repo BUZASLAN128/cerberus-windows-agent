@@ -34,29 +34,37 @@
     <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-app.ico" />
     <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
     <util:CloseApplication
+        Id="CloseRunningAgentUi"
+        Target="Cerberus.Agent.exe"
+        CloseMessage="yes"
+        ElevatedCloseMessage="yes"
+        TerminateProcess="1"
+        RebootPrompt="no"
+        Timeout="15" />
+    <util:CloseApplication
         Id="CloseLegacyAgentApp"
         Target="Cerberus.Agent.App.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
-        TerminateProcess="0"
+        TerminateProcess="1"
         RebootPrompt="no"
-        Timeout="30" />
+        Timeout="15" />
     <util:CloseApplication
         Id="CloseRunningAgentTray"
         Target="Cerberus.Agent.Tray.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
-        TerminateProcess="0"
+        TerminateProcess="1"
         RebootPrompt="no"
-        Timeout="30" />
+        Timeout="15" />
     <util:CloseApplication
         Id="CloseRunningAgentSetup"
         Target="Cerberus.Agent.Setup.exe"
         CloseMessage="yes"
         ElevatedCloseMessage="yes"
-        TerminateProcess="0"
+        TerminateProcess="1"
         RebootPrompt="no"
-        Timeout="30" />
+        Timeout="15" />
 
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
@@ -67,9 +75,9 @@
     </Feature>
 
     <CustomAction
-        Id="LaunchAgentSetup"
+        Id="LaunchAgentUi"
         Directory="INSTALLFOLDER"
-        ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.Setup.exe"'
+        ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.exe" --open'
         Execute="immediate"
         Return="asyncNoWait" />
     <CustomAction
@@ -105,7 +113,7 @@
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="StartExistingCerberusServiceAfterRepair" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RemoveLegacyUserStartupShortcut" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="LaunchAgentSetup" After="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
+      <Custom Action="LaunchAgentUi" After="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
 
@@ -169,7 +177,7 @@
           Id="StartMenuAgentShortcut"
           Name="Cerberus Agent"
           Description="Open Cerberus Agent"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
           Arguments="--open"
           WorkingDirectory="INSTALLFOLDER" />
       <Shortcut
@@ -194,7 +202,8 @@
           Id="StartupShortcut"
           Name="Cerberus Agent"
           Description="Start Cerberus Agent at sign-in"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
+          Arguments="--background"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
     </Component>
@@ -206,7 +215,7 @@
           Id="DesktopAgentShortcut"
           Name="Cerberus Agent"
           Description="Open Cerberus Agent"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Tray.exe"
+          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
           Arguments="--open"
           WorkingDirectory="INSTALLFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopAgentShortcut" Type="integer" Value="1" KeyPath="yes" />

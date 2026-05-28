@@ -28,8 +28,8 @@ function Get-AssetBase([string]$Version) {
   return "Cerberus.Agent.Bundle-$Channel-$Version"
 }
 
-function Get-SetupBase([string]$Version) {
-  return "Cerberus.Agent.Setup-$Channel-$Version"
+function Get-InstallerBase([string]$Version) {
+  return "Cerberus.Agent-$Channel-$Version"
 }
 
 function ConvertTo-Base64Utf8([string]$Value) {
@@ -40,9 +40,9 @@ function Copy-ReleaseAssets([string]$Version, [string]$BuildPublishDir, [string]
   New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
   Copy-Item -Path (Join-Path $BuildPublishDir "*") -Destination $ReleaseDir -Force
   $assetBase = Get-AssetBase $Version
-  $setupBase = Get-SetupBase $Version
+  $installerBase = Get-InstallerBase $Version
   foreach ($required in @(
-      "$setupBase.msi",
+      "$installerBase.msi",
       "$assetBase.update-manifest.json",
       "$assetBase.sha256"
     )) {
@@ -228,8 +228,8 @@ $summary = [ordered]@{
   base_download_url = $baseDownloadUrl
   old_version = $OldVersion
   target_version = $TargetVersion
-  old_msi_url = "$baseDownloadUrl/$oldTag/$(Get-SetupBase $OldVersion).msi"
-  target_msi_url = "$baseDownloadUrl/$targetTag/$(Get-SetupBase $TargetVersion).msi"
+  old_msi_url = "$baseDownloadUrl/$oldTag/$(Get-InstallerBase $OldVersion).msi"
+  target_msi_url = "$baseDownloadUrl/$targetTag/$(Get-InstallerBase $TargetVersion).msi"
   manifest_url = "$baseDownloadUrl/$latestTag/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
   backend_env = $backendEnvPath
   server_pid_file = if ($NoServe) { $null } else { $serverPidPath }

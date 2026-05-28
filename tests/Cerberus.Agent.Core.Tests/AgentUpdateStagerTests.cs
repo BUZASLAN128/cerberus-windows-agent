@@ -191,7 +191,7 @@ public sealed class AgentUpdateStagerTests
         var stageDir = Path.Combine(root, "1.2.0");
         Directory.CreateDirectory(stageDir);
         await File.WriteAllBytesAsync(
-            Path.Combine(stageDir, "Cerberus.Agent.Setup-stable-1.2.0.msi"),
+            Path.Combine(stageDir, "Cerberus.Agent-stable-1.2.0.msi"),
             artifact);
         var stager = new AgentUpdateStager(
             http,
@@ -230,7 +230,7 @@ public sealed class AgentUpdateStagerTests
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-preserve-test-" + Guid.NewGuid().ToString("N"));
         var stageDir = Path.Combine(root, "1.2.0");
         Directory.CreateDirectory(stageDir);
-        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent.Setup-stable-1.2.0.msi");
+        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-stable-1.2.0.msi");
         await File.WriteAllBytesAsync(artifactPath, existingArtifact);
         var stager = new AgentUpdateStager(
             http,
@@ -368,7 +368,7 @@ public sealed class AgentUpdateStagerTests
             ArtifactKind: "msi",
             Version: version,
             Channel: "stable",
-            ArtifactUrl: $"https://releases.cerberus.local/Cerberus.Agent.Setup-stable-{version}.msi",
+            ArtifactUrl: $"https://releases.cerberus.local/Cerberus.Agent-stable-{version}.msi",
             Sha256: sha256,
             SigningIdentity: "Cerberus Agent Release",
             ReleasedAtUtc: "2026-05-07T00:00:00Z",

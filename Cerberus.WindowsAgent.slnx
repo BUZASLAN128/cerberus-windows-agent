@@ -8,7 +8,6 @@
     <Project Path="src/Cerberus.Agent.Runtime/Cerberus.Agent.Runtime.csproj" />
     <Project Path="src/Cerberus.Agent.Security/Cerberus.Agent.Security.csproj" />
     <Project Path="src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" />
-    <Project Path="src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj" />
     <Project Path="src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" />
     <Project Path="src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" />
   </Folder>

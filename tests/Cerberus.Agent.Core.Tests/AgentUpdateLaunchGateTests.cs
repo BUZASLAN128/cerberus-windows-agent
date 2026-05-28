@@ -59,7 +59,7 @@ public sealed class AgentUpdateLaunchGateTests
         Directory.CreateDirectory(installDir);
         Directory.CreateDirectory(stageDir);
         var updaterPath = Path.Combine(installDir, "Cerberus.Agent.Updater.exe");
-        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent.Setup-dev-1.2.3.msi");
+        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-dev-1.2.3.msi");
         File.WriteAllText(updaterPath, "updater");
         File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.dll"), "dll");
         File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.deps.json"), "{}");

@@ -161,8 +161,8 @@ function Copy-ChannelLatestAliases(
   [string]$ZipHash
 ) {
   $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest"
-  $aliasSetupBase = "Cerberus.Agent.Setup-$Channel-latest"
-  Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasSetupBase.msi") -Force
+  $aliasInstallerBase = "Cerberus.Agent-$Channel-latest"
+  Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasInstallerBase.msi") -Force
   Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
   Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
   Copy-Item -LiteralPath $Provenance -Destination (Join-Path $PublishDir "$aliasAssetBase.provenance.json") -Force
@@ -170,7 +170,7 @@ function Copy-ChannelLatestAliases(
   Copy-Item -LiteralPath $Gate -Destination (Join-Path $PublishDir "$aliasAssetBase.release-gate.json") -Force
   @(
     "$ZipHash  $aliasAssetBase.zip",
-    "$MsiHash  $aliasSetupBase.msi"
+    "$MsiHash  $aliasInstallerBase.msi"
   ) | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
 }
 
@@ -275,28 +275,39 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
 Write-Step "Publishing split agent runtime"
 Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" $true
 Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" $false
-Publish-AgentProject "src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj" $false
 Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" $false
 Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" $false
 
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
-$setupBase = "Cerberus.Agent.Setup-$Channel-$Version"
+$installerBase = "Cerberus.Agent-$Channel-$Version"
 $versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
   throw "Release version '$Version' must start with a numeric major.minor.patch version for MSI ProductVersion."
 }
 $msiProductVersion = $Matches[1]
 $runtimeExecutables = @(
-  (Join-Path $runtimePublishDir "Cerberus.Agent.Setup.exe"),
+  (Join-Path $runtimePublishDir "Cerberus.Agent.exe"),
   (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe"),
-  (Join-Path $runtimePublishDir "Cerberus.Agent.Tray.exe"),
   (Join-Path $runtimePublishDir "Cerberus.Agent.Updater.exe"),
   (Join-Path $runtimePublishDir "Cerberus.Agent.Uninstall.exe")
 )
+$allowedRuntimeExeNames = @(
+  "Cerberus.Agent.exe",
+  "Cerberus.Agent.Service.exe",
+  "Cerberus.Agent.Updater.exe",
+  "Cerberus.Agent.Uninstall.exe"
+)
+Remove-Item -LiteralPath (Join-Path $runtimePublishDir "createdump.exe") -Force -ErrorAction SilentlyContinue
 foreach ($runtimeExe in $runtimeExecutables) {
   if (-not (Test-Path -LiteralPath $runtimeExe)) {
     throw "Expected runtime executable was not produced: $runtimeExe"
   }
+}
+$unexpectedRuntimeExecutables = Get-ChildItem -LiteralPath $runtimePublishDir -Filter "*.exe" |
+  Where-Object { $allowedRuntimeExeNames -notcontains $_.Name } |
+  Select-Object -ExpandProperty Name
+if ($unexpectedRuntimeExecutables.Count -gt 0) {
+  throw "Unexpected runtime executable(s) produced: $($unexpectedRuntimeExecutables -join ', ')"
 }
 
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
@@ -327,7 +338,7 @@ $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.A
 $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "bin") -Recurse -Force -ErrorAction SilentlyContinue
-$installerBuildBase = "Cerberus.Agent.Setup"
+$installerBuildBase = "Cerberus.Agent"
 dotnet build $installerProject `
   -c $Configuration `
   -p:Version=$Version `
@@ -340,7 +351,7 @@ dotnet build $installerProject `
   -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
   -p:OutputPath="$publishDir\"
 
-$msi = Join-Path $publishDir "$setupBase.msi"
+$msi = Join-Path $publishDir "$installerBase.msi"
 $builtMsi = Join-Path $publishDir "$installerBuildBase.msi"
 if ((Test-Path -LiteralPath $builtMsi) -and ($builtMsi -ne $msi)) {
   Move-Item -LiteralPath $builtMsi -Destination $msi -Force
@@ -379,13 +390,13 @@ $msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
 @(
   "$zipHash  $assetBase.zip",
-  "$msiHash  $setupBase.msi"
+  "$msiHash  $installerBase.msi"
 ) | Set-Content -LiteralPath $checksums -Encoding utf8
 
 $sbom = Join-Path $publishDir "$assetBase.sbom.json"
 $provenance = Join-Path $publishDir "$assetBase.provenance.json"
 New-MinimalSbom -RepoRoot $repoRoot -OutputFile $sbom
-New-Provenance -RepoRoot $repoRoot -OutputFile $provenance -ArtifactName "$setupBase.msi" -ArtifactSha $msiHash
+New-Provenance -RepoRoot $repoRoot -OutputFile $provenance -ArtifactName "$installerBase.msi" -ArtifactSha $msiHash
 
 $secretHits = Invoke-SecretScan -Path $repoRoot
 if ($secretHits.Count -gt 0) {
@@ -396,7 +407,7 @@ if ($secretHits.Count -gt 0) {
 if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
   throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
 }
-$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$setupBase.msi")
+$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
 $canonical = @(
   "msi",
@@ -431,7 +442,7 @@ $gate = [ordered]@{
   authenticode_signature_present = $signed
   checksum_sha256 = $msiHash
   installer = [ordered]@{
-    name = "$setupBase.msi"
+    name = "$installerBase.msi"
     checksum_sha256 = $msiHash
     authenticode_signature_present = $signed
     eula_consent_source = "msi_eula_dialog"
@@ -439,8 +450,8 @@ $gate = [ordered]@{
     headless_eula_property = "CERBERUS_EULA_ACCEPTED=1"
     consent_storage = "hklm_registry_imported_by_agent"
     launches_agent_arguments = ""
+    ui_binary = "Cerberus.Agent.exe"
     service_binary = "Cerberus.Agent.Service.exe"
-    tray_binary = "Cerberus.Agent.Tray.exe"
     updater_binary = "Cerberus.Agent.Updater.exe"
     uninstall_binary = "Cerberus.Agent.Uninstall.exe"
     powershell_custom_action_present = $false

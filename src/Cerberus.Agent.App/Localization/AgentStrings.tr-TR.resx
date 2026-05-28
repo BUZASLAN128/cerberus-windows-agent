@@ -42,7 +42,7 @@
   <data name="TailscaleUnavailableNote" xml:space="preserve"><value>Çalışma alanınız için Tailscale yapılandırılmadıysa dışa aktarma kullanılamaz.</value></data>
   <data name="CmdNotExported" xml:space="preserve"><value>komut henüz dışa aktarılmadı</value></data>
   <data name="AfterSetupNote" xml:space="preserve"><value>Cerberus Windows bildirim alanından çalışmaya devam eder.</value></data>
-  <data name="OpenSetup" xml:space="preserve"><value>Kurulumu aç</value></data>
+  <data name="OpenSetup" xml:space="preserve"><value>Cerberus Agent'ı aç</value></data>
   <data name="RepairTools" xml:space="preserve"><value>Onarım araçları</value></data>
   <data name="ExportDiagnostics" xml:space="preserve"><value>Tanı paketini dışa aktar</value></data>
   <data name="Quit" xml:space="preserve"><value>Çıkış</value></data>

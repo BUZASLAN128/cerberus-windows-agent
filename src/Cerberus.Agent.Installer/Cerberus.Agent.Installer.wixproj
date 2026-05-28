@@ -7,7 +7,7 @@
     <MsiProductVersion Condition="'$(MsiProductVersion)' == ''">$(Version)</MsiProductVersion>
     <Channel Condition="'$(Channel)' == ''">preview</Channel>
     <AgentPublishDir Condition="'$(AgentPublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\out\public-release\publish</AgentPublishDir>
-    <InstallerAssetBase Condition="'$(InstallerAssetBase)' == ''">Cerberus.Agent.Setup-$(Channel)-$(Version)</InstallerAssetBase>
+    <InstallerAssetBase Condition="'$(InstallerAssetBase)' == ''">Cerberus.Agent-$(Channel)-$(Version)</InstallerAssetBase>
     <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/$(Channel)-latest/Cerberus.Agent.Bundle-$(Channel)-latest.update-manifest.json</UpdateManifestUrl>
     <UpdateManifestPublicKeyB64 Condition="'$(UpdateManifestPublicKeyB64)' == ''">IA==</UpdateManifestPublicKeyB64>
     <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</UpdateAllowedArtifactPrefixes>

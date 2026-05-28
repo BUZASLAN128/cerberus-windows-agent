@@ -12,10 +12,10 @@ Agent mimarisi dogru yone donmus durumda: per-machine MSI, Program Files kurulum
 
 | # | Bulgu | Durum | Owner file | Support test | Live evidence | Acceptance criteria |
 |---|---|---|---|---|---|---|
-| 1 | Duplicate setup/tray instance | Support kapandi, live gerekli | `src/Cerberus.Agent.App/ProcessInstanceGuard.cs`, `src/Cerberus.Agent.App/Program.cs`, `src/Cerberus.Agent.Tray/Program.cs` | `ProcessInstanceGuardTests` | MSI kurulu makinede setup'a 5 kez tiklama + reboot sonrasi tray kontrolu | Tek setup penceresi, tek tray icon/process |
+| 1 | Duplicate setup/tray instance | Support kapandi, live gerekli | `src/Cerberus.Agent.App/ProcessInstanceGuard.cs`, `src/Cerberus.Agent.App/Program.cs`, `src/Cerberus.Agent.App/TrayHost.cs` | `ProcessInstanceGuardTests` | MSI kurulu makinede agent shortcut'a 5 kez tiklama + tray kontrolu | Tek Cerberus.Agent.exe UI process ve tek tray icon |
 | 2 | Desktop shortcut default'u eski yazilim hissi veriyor | Support kapandi, live gerekli | `src/Cerberus.Agent.Installer/Package.wxs` | `AgentLegalConsentTests` MSI static assertions | MSI default kurulum sonrasi desktop kontrolu | Default desktop shortcut yok; `CREATE_DESKTOP_SHORTCUT=1` ile var |
-| 3 | Customer tray menusu fazla teknik | Support kapandi, live gerekli | `src/Cerberus.Agent.Tray/Program.cs` | Static/unit + manual smoke | Tray context menu screenshot | Normal menu: status/setup/diagnostics/repair/quit; service start/stop sadece repair altinda |
-| 4 | Workspace/tenant dili agent UI'da eksik | Foundation kapandi, live/UI polish gerekli | `src/Cerberus.Agent.Tray/Program.cs`, `src/Cerberus.Agent.App/MainWindow.xaml.cs` | Localization/status render unitleri | Setup/tray screenshot | Raw `agent_id` musteri UI'da yok; workspace/account/status alanlari var |
+| 3 | Customer tray menusu fazla teknik | Support kapandi, live gerekli | `src/Cerberus.Agent.App/TrayHost.cs` | Static/unit + manual smoke | Tray context menu screenshot | Normal menu: status/setup/diagnostics/repair/quit; service start/stop sadece repair altinda |
+| 4 | Workspace/tenant dili agent UI'da eksik | Foundation kapandi, live/UI polish gerekli | `src/Cerberus.Agent.App/TrayHost.cs`, `src/Cerberus.Agent.App/MainWindow.xaml.cs` | Localization/status render unitleri | Agent panel/tray screenshot | Raw `agent_id` musteri UI'da yok; workspace/account/status alanlari var |
 | 5 | README ve release dokumani stale | Support kapandi | `README.md` | README string/static scan | Release operator dry-read | Per-machine split runtime, Program Files, Setup/Tray/Service/Updater/Uninstall dogru anlatilir |
 | 6 | Update modeli imzali MSI uzerinden kapanmali | Support kapandi, live update gerekli | `src/Cerberus.Agent.Updater/Program.cs`, `src/Cerberus.Agent.App/Updates/*`, `scripts/build-public-release.ps1` | `AgentUpdateManifestValidatorTests`, `AgentUpdateStagerTests`, release build | Eski MSI -> yeni MSI live update | Signed/checksum/channel gecmeden update yok; service path/version dogrulanir |
 | 7 | Uninstall ve portal lifecycle birlikte kapanmali | Support kapandi, live gerekli | `src/Cerberus.Agent.Uninstall/Program.cs`, backend lifecycle client | Unit/support + release build | Uninstall artifact + portal projection | Backend reachable ise self-deactivate; unreachable ise local uninstall devam eder ve portal TTL unavailable gosterir |
@@ -31,7 +31,7 @@ Agent mimarisi dogru yone donmus durumda: per-machine MSI, Program Files kurulum
 
 - **support/unit**: `dotnet test tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj -c Release` -> 131 passed, 0 failed, 0 skipped.
 - **support/build/package**: `$env:AGENT_RELEASE_ARTIFACT_BASE_URL='https://example.invalid/cerberus-agent'; pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/build-public-release.ps1 -Version 0.2.104-dev.local -Channel dev -SkipTests -AllowUnsignedDevBuild` -> split runtime publish + MSI build + checksum/SBOM/provenance/update-manifest/release-gate produced under `out/public-release/publish`.
-- **artifact**: `out/public-release/publish/Cerberus.Agent.Setup-dev-0.2.104-dev.local.msi` produced as unsigned dev MSI. This is build evidence, not customer-ready release evidence.
+- **artifact**: `out/public-release/publish/Cerberus.Agent-dev-0.2.104-dev.local.msi` produced as unsigned dev MSI. This is build evidence, not customer-ready release evidence.
 
 ## Upstream Karsilastirma Bulgulari
 
@@ -135,7 +135,7 @@ Agent mimarisi dogru yone donmus durumda: per-machine MSI, Program Files kurulum
 
 ## Mimari Kararlar
 
-- **Canonical runtime**: `Cerberus.Agent.Service.exe` boot process, `Cerberus.Agent.Tray.exe` user login UI, `Cerberus.Agent.Setup.exe` onboarding, `Cerberus.Agent.Updater.exe` MSI update, `Cerberus.Agent.Uninstall.exe` customer uninstall.
+- **Canonical runtime**: `Cerberus.Agent.Service.exe` boot process, `Cerberus.Agent.exe` user login tray/control center and onboarding, `Cerberus.Agent.Updater.exe` MSI update, `Cerberus.Agent.Uninstall.exe` customer uninstall.
 - **Customer flow**: CLI yok; MSI ve UI var. CLI sadece support/admin/debug.
 - **Security posture**: Service claim'den once baslamaz. EULA gizli kabul edilmez. Update signed/checksum/channel dogrulamadan uygulanmaz.
 - **Install root**: Program Files. User data AppData; machine logs/update staging ProgramData.

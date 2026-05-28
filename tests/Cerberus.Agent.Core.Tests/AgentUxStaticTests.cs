@@ -6,7 +6,7 @@ public sealed class AgentUxStaticTests
     public void TrayMenu_KeepsServiceControlsUnderRepairTools()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Tray", "Program.cs"));
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
 
         Assert.Contains("ExportDiagnostics", source);
         Assert.Contains("RepairTools", source);
@@ -24,7 +24,7 @@ public sealed class AgentUxStaticTests
 
         Assert.Contains("Id=\"StartMenuAgentShortcut\"", wxs);
         Assert.Contains("Name=\"Cerberus Agent\"", wxs);
-        Assert.Contains("Target=\"[INSTALLFOLDER]Cerberus.Agent.Tray.exe\"", wxs);
+        Assert.Contains("Target=\"[INSTALLFOLDER]Cerberus.Agent.exe\"", wxs);
         Assert.Contains("Arguments=\"--open\"", wxs);
         Assert.Contains("Id=\"StartMenuUninstallShortcut\"", wxs);
         Assert.DoesNotContain("StartMenuSetupShortcut", wxs);
@@ -34,7 +34,7 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
-    public void Installer_DesktopAndStartupShortcutsUseTrayEntryPoint()
+    public void Installer_DesktopAndStartupShortcutsUseUnifiedAgentEntryPoint()
     {
         var repoRoot = FindRepoRoot();
         var wxs = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
@@ -43,27 +43,32 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Name=\"desktopAgentShortcut\"", wxs);
         Assert.Contains("Id=\"StartupShortcut\"", wxs);
         Assert.Contains("Description=\"Start Cerberus Agent at sign-in\"", wxs);
+        Assert.Contains("Arguments=\"--background\"", wxs);
         Assert.DoesNotContain("DesktopSetupShortcut", wxs);
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Setup.exe\"", wxs);
+        Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Tray.exe\"", wxs);
     }
 
     [Fact]
-    public void Tray_SupportsCustomerOpenSignalsWithoutOpeningSetupWhenReady()
+    public void UnifiedAgent_SupportsCustomerOpenSignalsWithoutLaunchingSiblingSetup()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Tray", "Program.cs"));
+        var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
+        var args = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Args.cs"));
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
         var normalized = source.Replace("\r\n", "\n");
 
-        Assert.Contains("private const string OpenSignal = \"open\"", source);
-        Assert.Contains("private const string ConnectSignal = \"connect\"", source);
-        Assert.Contains("Has(\"--open\")", source);
-        Assert.Contains("Has(\"--connect\")", source);
+        Assert.Contains("private const string OpenSignal = \"open\"", program);
+        Assert.Contains("private const string ConnectSignal = \"connect\"", program);
+        Assert.Contains("Has(\"--open\")", args);
+        Assert.Contains("Has(\"--connect\")", args);
         Assert.Contains("case \"open\":", source);
         Assert.Contains("case \"connect\":", source);
-        Assert.Contains("OpenAgentAsync", source);
-        Assert.Contains("AgentStatus.IsSetupComplete", source);
-        Assert.Contains("ShowBalloonTip", source);
-        Assert.Contains("LaunchSibling(\"Cerberus.Agent.Setup.exe\")", source);
+        Assert.Contains("ShowWindow(centerOnScreen: false)", source);
+        Assert.Contains("ShowWindow(centerOnScreen: true)", source);
+        Assert.Contains("using var tray = new TrayHost()", program);
+        Assert.Contains("ShutdownMode.OnExplicitShutdown", program);
+        Assert.DoesNotContain("LaunchSibling", source);
         Assert.DoesNotContain("MouseButtons.Left)\n                LaunchSibling(\"Cerberus.Agent.Setup.exe\")", normalized);
     }
 
@@ -71,11 +76,11 @@ public sealed class AgentUxStaticTests
     public void Tray_UpdateCheckUsesPublicManifestWithoutAgentRegistration()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Tray", "Program.cs"));
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
         var english = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.resx"));
         var turkish = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.tr-TR.resx"));
 
-        Assert.Contains("GetUpdateCheckFailureDetail()", source);
+        Assert.Contains("UpdateCheckFailedDetail", source);
         Assert.Contains("BuildConfiguredManualSignal()", source);
         Assert.Contains("CreateUpdateHttpClient()", source);
         Assert.Contains("AgentUpdateSignal?", source);
@@ -118,7 +123,7 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Title=\"Cerberus Agent\"", xaml);
         Assert.Contains("<value>Cerberus Agent</value>", strings);
         Assert.Contains("AgentLocalizer.Get(\"Finish\")", code);
-        Assert.Contains("Close();", code);
+        Assert.Contains("Hide();", code);
         Assert.DoesNotContain("CERBERUS Agent Setup", xaml);
         Assert.DoesNotContain("CERBERUS Agent Setup", strings);
     }
@@ -129,6 +134,7 @@ public sealed class AgentUxStaticTests
         var repoRoot = FindRepoRoot();
         var window = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml.cs"));
         var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
+        var trayHost = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
 
         Assert.Contains("PositionNearNotificationArea", window);
         Assert.Contains("Screen.PrimaryScreen", window);
@@ -139,24 +145,61 @@ public sealed class AgentUxStaticTests
         Assert.Contains("TransformFromDevice", window);
         Assert.Contains("Left = originDip.X", window);
         Assert.Contains("Top = originDip.Y", window);
-        Assert.Contains("window.PositionNearNotificationArea()", program);
+        Assert.Contains("using var tray = new TrayHost()", program);
+        Assert.Contains("PositionFlyout", trayHost);
     }
 
     [Fact]
-    public void AppProject_DoesNotKeepLegacyInProcessTrayRuntime()
+    public void AppProject_IsUnifiedTrayAndControlCenterRuntime()
     {
         var repoRoot = FindRepoRoot();
         var program = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Program.cs"));
         var args = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Args.cs"));
         var project = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
 
-        Assert.DoesNotContain("using var tray = new TrayHost()", program);
+        Assert.Contains("using var tray = new TrayHost()", program);
         Assert.DoesNotContain("SingleInstanceGuard", program);
         Assert.DoesNotContain("args.Tray", program);
         Assert.DoesNotContain("bool Tray", args);
         Assert.DoesNotContain("--tray", args);
-        Assert.Contains("<Compile Remove=\"TrayHost.cs\" />", project);
+        Assert.DoesNotContain("<Compile Remove=\"TrayHost.cs\" />", project);
         Assert.Contains("<Compile Remove=\"SingleInstanceGuard.cs\" />", project);
+        Assert.Contains("<AssemblyName>Cerberus.Agent</AssemblyName>", project);
+    }
+
+    [Fact]
+    public void UnifiedAgent_IsOnlyCustomerUiProjectInBuildAndReleaseSurfaces()
+    {
+        var repoRoot = FindRepoRoot();
+        var solution = File.ReadAllText(Path.Combine(repoRoot, "Cerberus.WindowsAgent.slnx"));
+        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
+        var workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "auto-publish-exe.yml"));
+
+        Assert.Contains("src/Cerberus.Agent.App/Cerberus.Agent.App.csproj", solution);
+        Assert.DoesNotContain("src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj", solution);
+        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\" $true", releaseScript);
+        Assert.DoesNotContain("Publish-AgentProject \"src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj\"", releaseScript);
+        Assert.Contains("Cerberus.Agent.exe", releaseScript);
+        Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
+        Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
+        Assert.Contains("$allowedRuntimeExeNames", releaseScript);
+        Assert.Contains("createdump.exe", releaseScript);
+        Assert.Contains("Unexpected runtime executable(s) produced", releaseScript);
+        Assert.Contains("Cerberus.Agent-$channel-$cleanVersion", workflow);
+        Assert.DoesNotContain("Cerberus.Agent.Setup-$channel-$cleanVersion", workflow);
+    }
+
+    [Fact]
+    public void Installer_CloseApplicationsTerminatesUiWithoutPromptToContinueDialog()
+    {
+        var repoRoot = FindRepoRoot();
+        var wxs = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
+
+        Assert.Contains("CloseRunningAgentUi", wxs);
+        Assert.Contains("Target=\"Cerberus.Agent.exe\"", wxs);
+        Assert.Contains("TerminateProcess=\"1\"", wxs);
+        Assert.Contains("RebootPrompt=\"no\"", wxs);
+        Assert.DoesNotContain("PromptToContinue", wxs);
     }
 
     [Fact]
@@ -177,11 +220,13 @@ public sealed class AgentUxStaticTests
         var repoRoot = FindRepoRoot();
         var readme = File.ReadAllText(Path.Combine(repoRoot, "README.md"));
 
-        Assert.Contains("Cerberus.Agent.Setup.exe", readme);
-        Assert.Contains("Cerberus.Agent.Tray.exe", readme);
+        Assert.Contains("Cerberus.Agent.exe", readme);
         Assert.Contains("Cerberus.Agent.Service.exe", readme);
         Assert.Contains("Program Files\\Cerberus\\Windows Agent", readme);
         Assert.Contains("CREATE_DESKTOP_SHORTCUT", readme);
+        Assert.Contains("Cerberus.Agent-<channel>-<version>.msi", readme);
+        Assert.DoesNotContain("Cerberus.Agent.Setup.exe", readme);
+        Assert.DoesNotContain("Cerberus.Agent.Tray.exe", readme);
         Assert.DoesNotContain("Single Windows executable", readme);
         Assert.DoesNotContain("per-user install", readme);
         Assert.DoesNotContain("Cerberus.Agent.App.exe --tray", readme);
@@ -216,7 +261,7 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
-    public void Updater_RestartsTrayInOriginalUserSessionAfterMsiUpdate()
+    public void Updater_RestartsAgentUiInOriginalUserSessionAfterMsiUpdate()
     {
         var repoRoot = FindRepoRoot();
         var updater = File.ReadAllText(Path.Combine(
@@ -225,13 +270,13 @@ public sealed class AgentUxStaticTests
             "Cerberus.Agent.Updater",
             "Program.cs"));
 
-        Assert.Contains("closedApplications = CloseTrayAndSetup()", updater);
-        Assert.Contains("TryRestartTray(closedApplications, log)", updater);
+        Assert.Contains("closedApplications = CloseAgentUiApplications()", updater);
+        Assert.Contains("TryRestartAgentUi(closedApplications, log)", updater);
         Assert.Contains("WTSQueryUserToken", updater);
         Assert.Contains("CreateProcessAsUser", updater);
         Assert.Contains(@"winsta0\default", updater);
         Assert.Contains("CloseHandle(processInfo.hProcess)", updater);
-        Assert.Contains("Cerberus.Agent.Tray.exe", updater);
+        Assert.Contains("Cerberus.Agent.exe", updater);
     }
 
     private static string FindRepoRoot()
