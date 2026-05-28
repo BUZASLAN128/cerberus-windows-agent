@@ -7,6 +7,7 @@
     <AssemblyName>Cerberus.Agent.Updater</AssemblyName>
     <RootNamespace>Cerberus.Agent.Updater</RootNamespace>
     <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

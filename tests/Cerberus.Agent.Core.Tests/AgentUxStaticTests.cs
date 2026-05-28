@@ -279,6 +279,37 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Cerberus.Agent.exe", updater);
     }
 
+    [Fact]
+    public void UpdaterAndUninstaller_RequestAdministratorBeforeRunningMsiOperations()
+    {
+        var repoRoot = FindRepoRoot();
+        var updaterProject = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "Cerberus.Agent.Updater.csproj"));
+        var updaterManifest = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "app.manifest"));
+        var uninstallProject = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Uninstall",
+            "Cerberus.Agent.Uninstall.csproj"));
+        var uninstallManifest = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Uninstall",
+            "app.manifest"));
+
+        Assert.Contains("<ApplicationManifest>app.manifest</ApplicationManifest>", updaterProject);
+        Assert.Contains("<ApplicationManifest>app.manifest</ApplicationManifest>", uninstallProject);
+        Assert.Contains("requestedExecutionLevel level=\"requireAdministrator\"", updaterManifest);
+        Assert.Contains("requestedExecutionLevel level=\"requireAdministrator\"", uninstallManifest);
+    }
+
     private static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
