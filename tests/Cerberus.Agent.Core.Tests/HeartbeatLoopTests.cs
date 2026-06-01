@@ -106,6 +106,52 @@ public sealed class HeartbeatLoopTests
         Assert.Contains(handler.CommandResults, body => body.Contains("\"status\":\"DONE\""));
     }
 
+    [Fact]
+    public void CalculateErrorDelay_BacksOffAndCaps_WhenBackendStaysUnavailable()
+    {
+        var min = TimeSpan.FromSeconds(10);
+        var max = TimeSpan.FromMinutes(10);
+
+        Assert.Equal(TimeSpan.FromSeconds(10), HeartbeatLoop.CalculateErrorDelay(min, max, 1));
+        Assert.Equal(TimeSpan.FromSeconds(20), HeartbeatLoop.CalculateErrorDelay(min, max, 2));
+        Assert.Equal(TimeSpan.FromSeconds(40), HeartbeatLoop.CalculateErrorDelay(min, max, 3));
+        Assert.Equal(max, HeartbeatLoop.CalculateErrorDelay(min, max, 20));
+    }
+
+    [Fact]
+    public async Task RunAsync_RetriesImmediately_WhenBackoffResetRequested()
+    {
+        var handler = new InvalidHeartbeatPayloadHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var cachePath = Path.Combine(
+            Path.GetTempPath(),
+            "cerberus-agent-tests",
+            Guid.NewGuid().ToString("N"),
+            "idempotency.json");
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(cachePath, maxEntries: 10, ttl: TimeSpan.FromMinutes(5)));
+        var resetChecks = 0;
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromSeconds(30),
+            maxDelayOnError: TimeSpan.FromMinutes(10),
+            backoffResetRequested: _ =>
+                Task.FromResult(Interlocked.Increment(ref resetChecks) == 1),
+            log: NullAgentLogger.Instance);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.SecondHeartbeatAttemptTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.True(handler.HeartbeatAttempts >= 2);
+        Assert.True(resetChecks >= 1);
+    }
+
     private sealed class LoopCaptureHandler : HttpMessageHandler
     {
         public bool SnapshotSubmitted { get; private set; }
@@ -173,6 +219,37 @@ public sealed class HeartbeatLoopTests
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static HttpResponseMessage JsonResponse(string json)
+            => new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+    }
+
+    private sealed class InvalidHeartbeatPayloadHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource _secondHeartbeatAttempt =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int HeartbeatAttempts => Volatile.Read(ref _heartbeatAttempts);
+        public Task SecondHeartbeatAttemptTask => _secondHeartbeatAttempt.Task;
+
+        private int _heartbeatAttempts;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                if (Interlocked.Increment(ref _heartbeatAttempts) >= 2)
+                    _secondHeartbeatAttempt.TrySetResult();
+                return Task.FromResult(JsonResponse("""{"pending_commands":"""));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
 
         private static HttpResponseMessage JsonResponse(string json)

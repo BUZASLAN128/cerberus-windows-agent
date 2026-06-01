@@ -61,7 +61,11 @@ internal sealed class TrayHost : IDisposable
         open.Click += (_, _) => ShowWindow(centerOnScreen: false);
 
         _connectDevice = new ToolStripMenuItem(AgentLocalizer.Get("ConnectDevice"));
-        _connectDevice.Click += (_, _) => ShowWindow(centerOnScreen: true);
+        _connectDevice.Click += (_, _) =>
+        {
+            RequestHeartbeatBackoffReset("manual_connect");
+            ShowWindow(centerOnScreen: true);
+        };
 
         _checkUpdates = new ToolStripMenuItem(AgentLocalizer.Get("CheckUpdates"));
         _checkUpdates.Click += async (_, _) => await CheckUpdatesAsync(userInitiated: true).ConfigureAwait(true);
@@ -149,6 +153,7 @@ internal sealed class TrayHost : IDisposable
         };
         _startupUpdateTimer.Start();
 
+        RequestHeartbeatBackoffReset("tray_started");
         _ = RefreshAsync();
     }
 
@@ -162,9 +167,11 @@ internal sealed class TrayHost : IDisposable
             switch (message.Trim().ToLowerInvariant())
             {
                 case "open":
+                    RequestHeartbeatBackoffReset("tray_open_signal");
                     ShowWindow(centerOnScreen: false);
                     break;
                 case "connect":
+                    RequestHeartbeatBackoffReset("tray_connect_signal");
                     ShowWindow(centerOnScreen: true);
                     break;
                 case "check-updates":
@@ -226,6 +233,8 @@ internal sealed class TrayHost : IDisposable
 
     private void ShowWindow(bool centerOnScreen)
     {
+        RequestHeartbeatBackoffReset(centerOnScreen ? "tray_center_opened" : "tray_flyout_opened");
+
         // NotifyIcon events are WinForms-threaded; marshal all WPF window ops onto the WPF Dispatcher.
         System.Windows.Application.Current.Dispatcher.Invoke(() =>
         {
@@ -397,18 +406,19 @@ internal sealed class TrayHost : IDisposable
             _updateNow.Enabled = true;
             promptToApplyUpdate = userInitiated;
         }
-        catch
+        catch (Exception ex)
         {
+            var errorMessage = AgentDiagnosticsBundle.Redact(ex.Message);
             await _updateStateStore.WriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 WindowsDeviceInfo.GetAgentVersion(),
                 CancellationToken.None,
-                errorCode: AgentUpdateErrorCodes.ManifestUnavailable,
-                errorMessage: "Update check failed.",
+                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorMessage: errorMessage,
                 markChecked: true).ConfigureAwait(true);
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
-                ShowUpdateWarning(AgentLocalizer.Get("UpdateCheckFailedDetail"));
+                ShowUpdateWarning(BuildUpdateCheckFailureDetail(errorMessage));
         }
         finally
         {
@@ -599,6 +609,14 @@ internal sealed class TrayHost : IDisposable
             Timeout = TimeSpan.FromMinutes(10),
         };
 
+    private static string BuildUpdateCheckFailureDetail(string errorMessage)
+        => string.IsNullOrWhiteSpace(errorMessage)
+            ? AgentLocalizer.Get("UpdateCheckFailedDetail")
+            : $"{AgentLocalizer.Get("UpdateCheckFailedDetail")}{Environment.NewLine}{Environment.NewLine}Sebep: {errorMessage}";
+
+    private static void RequestHeartbeatBackoffReset(string reason)
+        => _ = HeartbeatBackoffResetSignal.TryRequest(reason);
+
     private bool ConfirmApplyCheckedUpdate()
     {
         if (_lastUpdateCheck is null || !_lastUpdateCheck.Available)
@@ -633,6 +651,7 @@ internal sealed class TrayHost : IDisposable
 
     public void Dispose()
     {
+        RequestHeartbeatBackoffReset("tray_stopped");
         try { _timer.Stop(); } catch { }
         try { _startupUpdateTimer.Stop(); } catch { }
         try

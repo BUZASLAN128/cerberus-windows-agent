@@ -99,7 +99,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _updateNow.Click += async (_, _) => await ApplyCheckedUpdateAsync().ConfigureAwait(true);
 
         _connectDevice = new ToolStripMenuItem(AgentLocalizer.Get("ConnectDevice"));
-        _connectDevice.Click += (_, _) => _ = OpenAgentAsync();
+        _connectDevice.Click += (_, _) =>
+        {
+            RequestHeartbeatBackoffReset("manual_connect");
+            _ = OpenAgentAsync();
+        };
 
         var diagnostics = new ToolStripMenuItem(AgentLocalizer.Get("ExportDiagnostics"));
         diagnostics.Click += async (_, _) => await ExportDiagnosticsAsync();
@@ -160,6 +164,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _startupUpdateTimer.Start();
 
+        RequestHeartbeatBackoffReset("tray_started");
         _ = RefreshAsync();
     }
 
@@ -167,6 +172,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            RequestHeartbeatBackoffReset("tray_stopped");
             _timer.Stop();
             _timer.Dispose();
             _startupUpdateTimer.Stop();
@@ -196,6 +202,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             case "open":
             case "connect":
+                RequestHeartbeatBackoffReset(message.Trim().Equals("connect", StringComparison.OrdinalIgnoreCase)
+                    ? "tray_connect_signal"
+                    : "tray_open_signal");
                 Post(() => _ = OpenAgentAsync());
                 break;
             case "check-updates":
@@ -243,6 +252,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task OpenAgentAsync()
     {
+        RequestHeartbeatBackoffReset("tray_opened");
         var setupComplete = _setupComplete || await Task.Run(AgentStatus.IsSetupComplete).ConfigureAwait(true);
         if (!setupComplete)
         {
@@ -320,18 +330,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
             _updateNow.Enabled = true;
         }
-        catch
+        catch (Exception ex)
         {
+            var errorMessage = AgentDiagnosticsBundle.Redact(ex.Message);
             await _updateStateStore.WriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 WindowsDeviceInfo.GetAgentVersion(),
                 CancellationToken.None,
-                errorCode: AgentUpdateErrorCodes.ManifestUnavailable,
-                errorMessage: "Update check failed.",
+                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorMessage: errorMessage,
                 markChecked: true).ConfigureAwait(true);
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
-                ShowUpdateMessage(GetUpdateCheckFailureDetail());
+                ShowUpdateMessage(GetUpdateCheckFailureDetail(errorMessage));
         }
         finally
         {
@@ -505,8 +516,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Timeout = TimeSpan.FromMinutes(10),
         };
 
-    private static string GetUpdateCheckFailureDetail()
-        => AgentLocalizer.Get("UpdateCheckFailedDetail");
+    private static string GetUpdateCheckFailureDetail(string? errorMessage = null)
+        => string.IsNullOrWhiteSpace(errorMessage)
+            ? AgentLocalizer.Get("UpdateCheckFailedDetail")
+            : $"{AgentLocalizer.Get("UpdateCheckFailedDetail")}{Environment.NewLine}{Environment.NewLine}Sebep: {errorMessage}";
+
+    private static void RequestHeartbeatBackoffReset(string reason)
+        => _ = HeartbeatBackoffResetSignal.TryRequest(reason);
 
     private static void ShowUpdateMessage(string message)
     {

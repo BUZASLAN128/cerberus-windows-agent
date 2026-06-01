@@ -96,6 +96,7 @@ internal static class ServiceMode
             telemetryBuffer: telemetryBuffer,
             log: log,
             commandTimeout: TimeSpan.FromSeconds(120),
+            backoffResetRequested: HeartbeatBackoffResetSignal.ConsumeDefaultAsync,
             metadata: metadata);
 
         try

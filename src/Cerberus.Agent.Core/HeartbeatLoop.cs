@@ -7,6 +7,7 @@ public sealed class HeartbeatLoop
     private readonly AgentApiClient _api;
     private readonly CommandDispatcher _dispatcher;
     private readonly TimeSpan _minDelayOnError;
+    private readonly TimeSpan _maxDelayOnError;
     private readonly IAgentLogger _log;
     private readonly IAgentStatusProvider? _status;
     private readonly Func<CancellationToken, Task<object?>>? _adStatusProvider;
@@ -21,6 +22,7 @@ public sealed class HeartbeatLoop
     private readonly TimeSpan _commandTimeout;
     private readonly int _commandConcurrency;
     private readonly TimeSpan _initialSnapshotDelay;
+    private readonly Func<CancellationToken, Task<bool>>? _backoffResetRequested;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -39,11 +41,18 @@ public sealed class HeartbeatLoop
         TimeSpan? commandTimeout = null,
         int commandConcurrency = 2,
         TimeSpan? initialSnapshotDelay = null,
+        TimeSpan? maxDelayOnError = null,
+        Func<CancellationToken, Task<bool>>? backoffResetRequested = null,
         AgentBuildMetadata? metadata = null)
     {
         _api = api;
         _dispatcher = dispatcher;
-        _minDelayOnError = minDelayOnError;
+        _minDelayOnError = minDelayOnError <= TimeSpan.Zero
+            ? TimeSpan.FromSeconds(10)
+            : minDelayOnError;
+        _maxDelayOnError = maxDelayOnError is null || maxDelayOnError.Value < _minDelayOnError
+            ? TimeSpan.FromMinutes(10)
+            : maxDelayOnError.Value;
         _status = statusProvider;
         _adStatusProvider = adStatusProvider;
         _updateStatusProvider = updateStatusProvider;
@@ -67,12 +76,14 @@ public sealed class HeartbeatLoop
         _initialSnapshotDelay = initialSnapshotDelay is null || initialSnapshotDelay.Value < TimeSpan.Zero
             ? TimeSpan.FromSeconds(60)
             : initialSnapshotDelay.Value;
+        _backoffResetRequested = backoffResetRequested;
     }
 
     public async Task RunAsync(CancellationToken ct)
     {
         var degraded = false;
         var startedEventSent = false;
+        var consecutiveHeartbeatErrors = 0;
         var nextSnapshotAt = DateTimeOffset.UtcNow.Add(_initialSnapshotDelay);
         while (!ct.IsCancellationRequested)
         {
@@ -108,6 +119,7 @@ public sealed class HeartbeatLoop
                 var hb = await _api.HeartbeatAsync(hbReq, ct);
 
                 degraded = false;
+                consecutiveHeartbeatErrors = 0;
 
                 var control = _responseHandler is null
                     ? HeartbeatControlAction.Continue
@@ -170,9 +182,87 @@ public sealed class HeartbeatLoop
             catch (Exception ex)
             {
                 degraded = true;
-                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}: {ex.Message}");
-                await Task.Delay(_minDelayOnError, ct);
+                consecutiveHeartbeatErrors++;
+                var retryDelay = CalculateErrorDelay(_minDelayOnError, _maxDelayOnError, consecutiveHeartbeatErrors);
+                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}: {ex.Message}. Next retry in {FormatDelay(retryDelay)}.");
+                bool resetRequested;
+                try
+                {
+                    resetRequested = await DelayForErrorBackoffAsync(retryDelay, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                if (resetRequested)
+                {
+                    consecutiveHeartbeatErrors = 0;
+                    _log.Info("Heartbeat retry backoff reset requested.");
+                }
             }
+        }
+    }
+
+    public static TimeSpan CalculateErrorDelay(TimeSpan minDelay, TimeSpan maxDelay, int consecutiveFailures)
+    {
+        if (minDelay <= TimeSpan.Zero)
+            minDelay = TimeSpan.FromSeconds(10);
+        if (maxDelay < minDelay)
+            maxDelay = minDelay;
+
+        var multiplier = Math.Pow(2, Math.Clamp(consecutiveFailures - 1, 0, 12));
+        var ticks = minDelay.Ticks * multiplier;
+        if (ticks >= maxDelay.Ticks)
+            return maxDelay;
+        return TimeSpan.FromTicks((long)ticks);
+    }
+
+    private static string FormatDelay(TimeSpan delay)
+        => delay >= TimeSpan.FromMinutes(1)
+            ? $"{Math.Ceiling(delay.TotalMinutes):0}m"
+            : $"{Math.Ceiling(delay.TotalSeconds):0}s";
+
+    private async Task<bool> DelayForErrorBackoffAsync(TimeSpan delay, CancellationToken ct)
+    {
+        if (_backoffResetRequested is null)
+        {
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+            return false;
+        }
+
+        var deadline = DateTimeOffset.UtcNow.Add(delay);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await ConsumeBackoffResetRequestAsync(ct).ConfigureAwait(false))
+                return true;
+
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                break;
+
+            await Task.Delay(remaining < TimeSpan.FromSeconds(2) ? remaining : TimeSpan.FromSeconds(2), ct)
+                .ConfigureAwait(false);
+        }
+
+        return await ConsumeBackoffResetRequestAsync(ct).ConfigureAwait(false);
+    }
+
+    private async Task<bool> ConsumeBackoffResetRequestAsync(CancellationToken ct)
+    {
+        try
+        {
+            return _backoffResetRequested is not null &&
+                   await _backoffResetRequested(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Heartbeat retry backoff reset check failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
     }
 
