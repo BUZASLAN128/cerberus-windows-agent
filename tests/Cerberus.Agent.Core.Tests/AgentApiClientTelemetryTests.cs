@@ -83,12 +83,55 @@ public sealed class AgentApiClientTelemetryTests
         Assert.Equal("agent_unregister_device", doc.RootElement.GetProperty("reason_code").GetString());
     }
 
+    [Fact]
+    public async Task HeartbeatAsync_OnUnauthorizedRefreshesTokenAndRetriesOnceWithNewNonce()
+    {
+        var handler = new UnauthorizedThenOkHandler(HeartbeatResponseJson());
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var tokens = new RefreshAwareTokenManager();
+        var client = new AgentApiClient(http, new StaticSecretStore(), tokens, new StaticSigner());
+
+        var response = await client.HeartbeatAsync(new { status = "connected" }, CancellationToken.None);
+
+        Assert.Equal(60, response.NextPollSeconds);
+        Assert.Equal(2, handler.CapturedAuthorizations.Count);
+        Assert.Equal(1, tokens.RefreshCount);
+        Assert.Equal("Bearer stale-token", handler.CapturedAuthorizations[0]);
+        Assert.Equal("Bearer fresh-token", handler.CapturedAuthorizations[1]);
+        Assert.NotEqual(handler.CapturedNonces[0], handler.CapturedNonces[1]);
+    }
+
     private static AgentBuildMetadata Metadata() => new(
         AgentVersion: "1.2.3",
         BuildId: "build-1",
         BuildChannel: "dev",
         BootId: "boot-1",
         SupportedSchemaVersions: AgentSchemaVersions.All);
+
+    private static string HeartbeatResponseJson() =>
+        """
+        {
+          "pending_commands": [],
+          "next_poll_seconds": 60,
+          "server_time": 0,
+          "server_time_utc": "2026-06-01T00:00:00Z",
+          "command_batch_size": 0,
+          "next_snapshot_seconds": 300,
+          "config_version": "agent-config.v1",
+          "lifecycle_state": "connected",
+          "registration_state": "claimed",
+          "claim_required": false,
+          "manifest_version": null,
+          "managed_account_manifest_hash": null,
+          "manifest_fresh_until": null,
+          "require_manifest_before_unlock": true,
+          "agent_status": "connected",
+          "version_policy": null,
+          "update": null,
+          "revoke": null,
+          "quarantine": null
+        }
+        """;
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
@@ -115,6 +158,41 @@ public sealed class AgentApiClientTelemetryTests
                     _responseBody,
                     Encoding.UTF8,
                     "application/json"),
+            };
+        }
+    }
+
+    private sealed class UnauthorizedThenOkHandler : HttpMessageHandler
+    {
+        private readonly string _okResponseBody;
+
+        public List<string?> CapturedAuthorizations { get; } = [];
+        public List<string> CapturedNonces { get; } = [];
+        public List<string?> CapturedBodies { get; } = [];
+
+        public UnauthorizedThenOkHandler(string okResponseBody)
+        {
+            _okResponseBody = okResponseBody;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CapturedAuthorizations.Add(request.Headers.Authorization?.ToString());
+            CapturedNonces.Add(request.Headers.GetValues("X-Nonce").Single());
+            CapturedBodies.Add(request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken));
+            if (CapturedAuthorizations.Count == 1)
+            {
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                {
+                    Content = new StringContent("""{"detail":"expired"}""", Encoding.UTF8, "application/json"),
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_okResponseBody, Encoding.UTF8, "application/json"),
             };
         }
     }
@@ -148,6 +226,20 @@ public sealed class AgentApiClientTelemetryTests
     {
         public Task<string> GetAccessTokenAsync(CancellationToken ct) => Task.FromResult("token");
         public Task RefreshAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class RefreshAwareTokenManager : ITokenManager
+    {
+        public int RefreshCount { get; private set; }
+
+        public Task<string> GetAccessTokenAsync(CancellationToken ct) =>
+            Task.FromResult(RefreshCount == 0 ? "stale-token" : "fresh-token");
+
+        public Task RefreshAsync(CancellationToken ct)
+        {
+            RefreshCount++;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class StaticSigner : IRequestSigner

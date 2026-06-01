@@ -13,6 +13,8 @@ internal static class TailscaleInstaller
     // Official Tailscale stable download endpoints (Windows MSI installers).
     // MSI is enterprise-friendly and supports policy properties (hide menus, no-launch, etc.).
     private const string StableBaseUrl = "https://pkgs.tailscale.com/stable/";
+    private const string OfficialDownloadHost = "pkgs.tailscale.com";
+    private const string AllowCustomDownloadEnvVar = "CERBERUS_TAILSCALE_ALLOW_CUSTOM_DOWNLOAD_URL";
     private const string DefaultMsiAmd64 = StableBaseUrl + "tailscale-setup-latest-amd64.msi";
     private const string DefaultMsiX86 = StableBaseUrl + "tailscale-setup-latest-x86.msi";
     private const string DefaultMsiArm64 = StableBaseUrl + "tailscale-setup-latest-arm64.msi";
@@ -30,10 +32,7 @@ internal static class TailscaleInstaller
             return;
         }
 
-        // Optional override (enterprise mirrors). Otherwise use official "latest" MSI for arch.
-        var url = Environment.GetEnvironmentVariable("CERBERUS_TAILSCALE_DOWNLOAD_URL")?.Trim();
-        if (string.IsNullOrWhiteSpace(url))
-            url = GetDefaultMsiUrlForThisMachine();
+        var url = ResolveDownloadUrlForThisMachine();
 
         // MSI properties to make the UI more "managed"/corporate (hide admin/update/debug menus).
         // These are stored under HKLM\\SOFTWARE\\Policies\\Tailscale by the MSI. (Tailscale docs)
@@ -62,14 +61,12 @@ internal static class TailscaleInstaller
         Action<string> log,
         CancellationToken ct)
     {
-        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var url) || url.Scheme != Uri.UriSchemeHttps)
-            throw new InvalidOperationException("Invalid Tailscale download URL (must be https).");
+        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var url) || !IsAllowedDownloadUri(url, IsCustomDownloadUrlAllowed()))
+            throw new InvalidOperationException("Invalid Tailscale download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
 
         Directory.CreateDirectory(destDir);
 
-        var fileName = downloadUrl.EndsWith(".msi", StringComparison.OrdinalIgnoreCase)
-            ? "tailscale-setup-latest.msi"
-            : "tailscale-setup-latest.exe";
+        var fileName = "tailscale-setup-latest.msi";
         var destPath = Path.Combine(destDir, fileName);
         var tmpPath = destPath + ".download";
 
@@ -141,6 +138,9 @@ internal static class TailscaleInstaller
                 log($"Signature check stderr: {Sanitizer.Redact(err)}");
             throw new InvalidOperationException($"Installer signature is not valid ({status}).");
         }
+
+        if (!IsTrustedSignerSubject(subject))
+            throw new InvalidOperationException("Installer signer is not trusted.");
     }
 
     private static void StartMsiInstall(string installerPath, string msiProps, Action<string> log)
@@ -191,5 +191,57 @@ internal static class TailscaleInstaller
             Architecture.Arm64 => DefaultMsiX86,
             _ => DefaultMsiAmd64,
         };
+    }
+
+    internal static string ResolveDownloadUrlForThisMachine()
+    {
+        var configured = Environment.GetEnvironmentVariable("CERBERUS_TAILSCALE_DOWNLOAD_URL")?.Trim();
+        if (string.IsNullOrWhiteSpace(configured))
+            return GetDefaultMsiUrlForThisMachine();
+
+        if (!Uri.TryCreate(configured, UriKind.Absolute, out var uri))
+            throw new InvalidOperationException("Invalid Tailscale download URL.");
+
+        if (!IsAllowedDownloadUri(uri, IsCustomDownloadUrlAllowed()))
+            throw new InvalidOperationException("Invalid Tailscale download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
+
+        return configured;
+    }
+
+    internal static bool IsAllowedDownloadUri(Uri uri, bool allowCustomMirror)
+    {
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!uri.AbsolutePath.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (IsOfficialStableMsiUri(uri))
+            return true;
+
+        return allowCustomMirror;
+    }
+
+    internal static bool IsOfficialStableMsiUri(Uri uri)
+    {
+        if (!string.Equals(uri.Host, OfficialDownloadHost, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!uri.AbsolutePath.StartsWith("/stable/", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var fileName = Path.GetFileName(uri.AbsolutePath);
+        return fileName.StartsWith("tailscale-setup-", StringComparison.OrdinalIgnoreCase) &&
+               fileName.EndsWith(".msi", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsTrustedSignerSubject(string? subject)
+        => !string.IsNullOrWhiteSpace(subject) &&
+           subject.Contains("Tailscale", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCustomDownloadUrlAllowed()
+    {
+        var value = Environment.GetEnvironmentVariable(AllowCustomDownloadEnvVar);
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
     }
 }

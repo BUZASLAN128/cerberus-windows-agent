@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -50,8 +51,7 @@ public sealed class AgentApiClient
             var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
             var path = $"/api/v1/agents/{id.AgentId}/heartbeat";
 
-            using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
 
             var payload = await resp.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOpts, ct).ConfigureAwait(false);
@@ -71,8 +71,7 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/commands/{commandId}/result";
 
-        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
     }
 
@@ -93,8 +92,7 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/diagnostic-bundles";
 
-        using var req = await BuildSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
         var payload = await resp.Content.ReadFromJsonAsync<AgentDiagnosticBundleAckResponse>(JsonOpts, ct).ConfigureAwait(false);
@@ -125,8 +123,7 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/tailscale/preauth";
 
-        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, new { }, ct).ConfigureAwait(false);
-        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, new { }, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
             // Surface backend reason (usually generic in prod, but helpful in dev).
@@ -149,8 +146,7 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/deactivate";
 
-        using var req = await BuildSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
         var payload = await resp.Content.ReadFromJsonAsync<AgentSelfDeactivateResponse>(JsonOpts, ct).ConfigureAwait(false);
@@ -168,18 +164,48 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
 
-        using var req = await BuildSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-        using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
         var payload = await resp.Content.ReadFromJsonAsync<AgentIngestAckResponse>(JsonOpts, ct).ConfigureAwait(false);
         return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
     }
 
-    private async Task<HttpRequestMessage> BuildSignedRequestAsync(HttpMethod method, string path, object body, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendSignedRequestAsync(
+        HttpMethod method,
+        string path,
+        object body,
+        CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);
-        return await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
+        return await SendSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseMessage> SendSignedJsonRequestAsync(
+        HttpMethod method,
+        string path,
+        string json,
+        CancellationToken ct)
+    {
+        var response = await SendSignedJsonRequestOnceAsync(method, path, json, ct).ConfigureAwait(false);
+        if (response.StatusCode != HttpStatusCode.Unauthorized)
+        {
+            return response;
+        }
+
+        response.Dispose();
+        await _tokens.RefreshAsync(ct).ConfigureAwait(false);
+        return await SendSignedJsonRequestOnceAsync(method, path, json, ct).ConfigureAwait(false);
+    }
+
+    private async Task<HttpResponseMessage> SendSignedJsonRequestOnceAsync(
+        HttpMethod method,
+        string path,
+        string json,
+        CancellationToken ct)
+    {
+        using var req = await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
+        return await _http.SendAsync(req, ct).ConfigureAwait(false);
     }
 
     private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)

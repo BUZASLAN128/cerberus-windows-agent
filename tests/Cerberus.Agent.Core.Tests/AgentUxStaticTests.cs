@@ -84,8 +84,15 @@ public sealed class AgentUxStaticTests
         Assert.Contains("BuildConfiguredManualSignal()", source);
         Assert.Contains("CreateUpdateHttpClient()", source);
         Assert.Contains("AgentUpdateSignal?", source);
+        Assert.Contains("UpdateNotFoundDetail", source);
+        Assert.Contains("ConfirmApplyCheckedUpdate()", source);
+        Assert.Contains("MessageBoxButtons.YesNo", source);
         Assert.Contains("UpdateNotConfiguredDetail", english);
         Assert.Contains("UpdateNotConfiguredDetail", turkish);
+        Assert.Contains("UpdateNotFoundDetail", english);
+        Assert.Contains("UpdateNotFoundDetail", turkish);
+        Assert.Contains("UpdateFoundPrompt", english);
+        Assert.Contains("UpdateFoundPrompt", turkish);
         Assert.DoesNotContain("SendUpdateCheckHeartbeatAsync", source);
         Assert.DoesNotContain("LoadUpdateSecretsAsync", source);
         Assert.DoesNotContain("Agent registration is not available for update checks", source);

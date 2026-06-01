@@ -8,7 +8,7 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentTokenManagerTests
 {
     [Fact]
-    public async Task GetAccessTokenAsync_DoesNotKeepReusableAccessTokenInProcessMemory()
+    public async Task GetAccessTokenAsync_ReusesAccessTokenUntilSafetyMargin()
     {
         var store = new CountingSecretStore();
         var handler = new JsonHandler("""{"access_token":"short-lived-access","expires_in":300}""");
@@ -16,16 +16,41 @@ public sealed class AgentTokenManagerTests
         {
             BaseAddress = new Uri("http://backend.local"),
         };
-        var manager = new AgentTokenManager(http, store);
+        var now = DateTimeOffset.Parse("2026-06-01T00:00:00Z");
+        var manager = new AgentTokenManager(http, store, TimeSpan.FromSeconds(90), () => now);
 
         var first = await manager.GetAccessTokenAsync(CancellationToken.None);
         var second = await manager.GetAccessTokenAsync(CancellationToken.None);
 
         Assert.Equal("short-lived-access", first);
         Assert.Equal("short-lived-access", second);
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal(1, store.LoadCount);
+        Assert.Empty(store.Saves);
+    }
+
+    [Fact]
+    public async Task GetAccessTokenAsync_RefreshesInsideSafetyMargin()
+    {
+        var store = new CountingSecretStore();
+        var handler = new QueueJsonHandler(
+            """{"access_token":"first-access","expires_in":120}""",
+            """{"access_token":"second-access","expires_in":120}""");
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://backend.local"),
+        };
+        var now = DateTimeOffset.Parse("2026-06-01T00:00:00Z");
+        var manager = new AgentTokenManager(http, store, TimeSpan.FromSeconds(90), () => now);
+
+        var first = await manager.GetAccessTokenAsync(CancellationToken.None);
+        now = now.AddSeconds(40);
+        var second = await manager.GetAccessTokenAsync(CancellationToken.None);
+
+        Assert.Equal("first-access", first);
+        Assert.Equal("second-access", second);
         Assert.Equal(2, handler.RequestCount);
         Assert.Equal(2, store.LoadCount);
-        Assert.Empty(store.Saves);
     }
 
     [Fact]
@@ -65,6 +90,28 @@ public sealed class AgentTokenManagerTests
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(_json, Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class QueueJsonHandler : HttpMessageHandler
+    {
+        private readonly Queue<string> _responses;
+
+        public int RequestCount { get; private set; }
+
+        public QueueJsonHandler(params string[] responses)
+        {
+            _responses = new Queue<string>(responses);
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            var json = _responses.Count > 0 ? _responses.Dequeue() : """{"access_token":"fallback-access","expires_in":120}""";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
             });
         }
     }

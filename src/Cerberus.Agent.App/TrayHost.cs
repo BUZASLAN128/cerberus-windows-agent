@@ -331,6 +331,7 @@ internal sealed class TrayHost : IDisposable
         if (_checkingUpdates || _applyingUpdate)
             return;
 
+        var promptToApplyUpdate = false;
         _checkingUpdates = true;
         _checkUpdates.Enabled = false;
         _updateNow.Enabled = false;
@@ -346,7 +347,7 @@ internal sealed class TrayHost : IDisposable
             {
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateUnavailable"));
                 if (userInitiated)
-                    ShowUpdateMessage(AgentLocalizer.Get("UpdateNotConfiguredDetail"));
+                    ShowUpdateWarning(AgentLocalizer.Get("UpdateNotConfiguredDetail"));
                 return;
             }
 
@@ -354,6 +355,8 @@ internal sealed class TrayHost : IDisposable
             if (!check.Available)
             {
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                if (userInitiated)
+                    ShowUpdateInfo(AgentLocalizer.Get("UpdateNotFoundDetail"));
                 return;
             }
 
@@ -361,18 +364,22 @@ internal sealed class TrayHost : IDisposable
             _lastUpdateCheck = check;
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
             _updateNow.Enabled = true;
+            promptToApplyUpdate = userInitiated;
         }
         catch
         {
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
-                ShowUpdateMessage(AgentLocalizer.Get("UpdateCheckFailedDetail"));
+                ShowUpdateWarning(AgentLocalizer.Get("UpdateCheckFailedDetail"));
         }
         finally
         {
             _checkingUpdates = false;
             _checkUpdates.Enabled = true;
         }
+
+        if (promptToApplyUpdate && ConfirmApplyCheckedUpdate())
+            await ApplyCheckedUpdateAsync().ConfigureAwait(true);
     }
 
     private async Task ApplyCheckedUpdateAsync()
@@ -414,7 +421,7 @@ internal sealed class TrayHost : IDisposable
         catch (Exception ex)
         {
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallFailed"));
-            ShowUpdateMessage(AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)));
+            ShowUpdateWarning(AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)));
             _updateNow.Enabled = _lastUpdateCheck?.Available == true;
         }
         finally
@@ -437,11 +444,11 @@ internal sealed class TrayHost : IDisposable
         try
         {
             var path = await AgentDiagnosticsBundle.ExportAsync().ConfigureAwait(true);
-            ShowUpdateMessage(AgentLocalizer.Format("DiagnosticsWritten", path));
+            ShowUpdateInfo(AgentLocalizer.Format("DiagnosticsWritten", path));
         }
         catch (Exception ex)
         {
-            ShowUpdateMessage(AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)));
+            ShowUpdateWarning(AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)));
         }
     }
 
@@ -468,13 +475,36 @@ internal sealed class TrayHost : IDisposable
             Timeout = TimeSpan.FromMinutes(10),
         };
 
-    private static void ShowUpdateMessage(string message)
+    private bool ConfirmApplyCheckedUpdate()
+    {
+        if (_lastUpdateCheck is null || !_lastUpdateCheck.Available)
+            return false;
+
+        var version = string.IsNullOrWhiteSpace(_lastUpdateCheck.Version)
+            ? "-"
+            : _lastUpdateCheck.Version;
+        var result = System.Windows.Forms.MessageBox.Show(
+            AgentLocalizer.Format("UpdateFoundPrompt", version),
+            AgentLocalizer.Get("UpdateFoundTitle"),
+            System.Windows.Forms.MessageBoxButtons.YesNo,
+            System.Windows.Forms.MessageBoxIcon.Information,
+            System.Windows.Forms.MessageBoxDefaultButton.Button2);
+        return result == System.Windows.Forms.DialogResult.Yes;
+    }
+
+    private static void ShowUpdateInfo(string message)
+        => ShowUpdateMessage(message, System.Windows.Forms.MessageBoxIcon.Information);
+
+    private static void ShowUpdateWarning(string message)
+        => ShowUpdateMessage(message, System.Windows.Forms.MessageBoxIcon.Warning);
+
+    private static void ShowUpdateMessage(string message, System.Windows.Forms.MessageBoxIcon icon)
     {
         System.Windows.Forms.MessageBox.Show(
             message,
             "Cerberus Agent",
             System.Windows.Forms.MessageBoxButtons.OK,
-            System.Windows.Forms.MessageBoxIcon.Warning);
+            icon);
     }
 
     public void Dispose()

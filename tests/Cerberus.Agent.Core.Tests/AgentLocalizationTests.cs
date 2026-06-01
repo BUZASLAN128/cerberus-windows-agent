@@ -32,6 +32,10 @@ public sealed class AgentLocalizationTests
 
         Assert.Contains("Updates are not configured", english);
         Assert.Contains("güncellemeler yapılandırılmamış", turkish);
+        Assert.Contains("No update was found", AgentLocalizer.Get("UpdateNotFoundDetail", CultureInfo.GetCultureInfo("en-US")));
+        Assert.Contains("Güncelleme bulunamadı", AgentLocalizer.Get("UpdateNotFoundDetail", CultureInfo.GetCultureInfo("tr-TR")));
+        Assert.Contains("Do you want to install it now", AgentLocalizer.Get("UpdateFoundPrompt", CultureInfo.GetCultureInfo("en-US")));
+        Assert.Contains("Şimdi kurulsun mu", AgentLocalizer.Get("UpdateFoundPrompt", CultureInfo.GetCultureInfo("tr-TR")));
         Assert.DoesNotContain("Agent registration", english);
         Assert.DoesNotContain("Agent registration", turkish);
         Assert.DoesNotContain("{0}", AgentLocalizer.Get("UpdateCheckFailedDetail", CultureInfo.GetCultureInfo("en-US")));

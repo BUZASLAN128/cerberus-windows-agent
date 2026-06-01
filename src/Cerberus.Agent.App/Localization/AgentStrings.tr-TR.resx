@@ -64,6 +64,10 @@
   <data name="UpdateInstallerStarted" xml:space="preserve"><value>kurulum başlatıldı</value></data>
   <data name="UpdateCheckFailed" xml:space="preserve"><value>denetim başarısız</value></data>
   <data name="UpdateInstallFailed" xml:space="preserve"><value>kurulum başarısız</value></data>
+  <data name="UpdateFoundTitle" xml:space="preserve"><value>Güncelleme bulundu</value></data>
+  <data name="UpdateFoundPrompt" xml:space="preserve"><value>{0} sürümü hazır. Şimdi kurulsun mu?</value></data>
+  <data name="UpdateNotFoundTitle" xml:space="preserve"><value>Güncelleme bulunamadı</value></data>
+  <data name="UpdateNotFoundDetail" xml:space="preserve"><value>Güncelleme bulunamadı. Cerberus Agent güncel.</value></data>
   <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Güncelleme denetimi tamamlanamadı. Lütfen biraz sonra tekrar deneyin.</value></data>
   <data name="UpdateNotConfiguredDetail" xml:space="preserve"><value>Bu kurulum için güncellemeler yapılandırılmamış.</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
