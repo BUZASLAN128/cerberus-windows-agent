@@ -40,6 +40,43 @@ public sealed class HeartbeatLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_IncludesUpdateStatusProviderPayload()
+    {
+        var handler = new LoopCaptureHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var cachePath = Path.Combine(
+            Path.GetTempPath(),
+            "cerberus-agent-tests",
+            Guid.NewGuid().ToString("N"),
+            "idempotency.json");
+        var dispatcher = new CommandDispatcher(
+            new[] { new CaptureCommandHandler() },
+            new IdempotencyCache(cachePath, maxEntries: 10, ttl: TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            updateStatusProvider: _ => Task.FromResult<object?>(new
+            {
+                schema_version = "agent.update.status.v1",
+                state = "staged",
+                target_version = "0.2.0",
+            }),
+            responseHandler: new HeartbeatResponseHandler(new StaticSecretStore(), NullAgentLogger.Instance),
+            log: NullAgentLogger.Instance);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.HeartbeatSubmittedTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Contains(handler.HeartbeatBodies, body => body.Contains("\"update_status\""));
+        Assert.Contains(handler.HeartbeatBodies, body => body.Contains("\"state\":\"staged\""));
+    }
+
+    [Fact]
     public async Task RunAsync_SubmitsFailedResultAndContinues_WhenCommandHandlerThrows()
     {
         var handler = new CommandFailureLoopHandler();
@@ -73,8 +110,12 @@ public sealed class HeartbeatLoopTests
     {
         public bool SnapshotSubmitted { get; private set; }
         public bool CommandResultSubmitted { get; private set; }
+        public List<string> HeartbeatBodies { get; } = new();
+        public Task HeartbeatSubmittedTask => _heartbeatSubmitted.Task;
         public Task SnapshotSubmittedTask => _snapshotSubmitted.Task;
 
+        private readonly TaskCompletionSource _heartbeatSubmitted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _snapshotSubmitted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -85,6 +126,8 @@ public sealed class HeartbeatLoopTests
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
             {
+                HeartbeatBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                _heartbeatSubmitted.TrySetResult();
                 return JsonResponse(
                     """
                     {

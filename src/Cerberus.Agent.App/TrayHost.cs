@@ -32,6 +32,7 @@ internal sealed class TrayHost : IDisposable
     private readonly ToolStripMenuItem _connectDevice;
     private readonly ToolStripMenuItem _checkUpdates;
     private readonly ToolStripMenuItem _updateNow;
+    private readonly AgentUpdateStateStore _updateStateStore;
     private readonly DispatcherTimer _timer;
     private readonly DispatcherTimer _startupUpdateTimer;
 
@@ -44,9 +45,11 @@ internal sealed class TrayHost : IDisposable
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private AgentUpdateSignal? _lastCheckedUpdateSignal;
     private AgentUpdateCheckResult? _lastUpdateCheck;
+    private string? _lastPromptedUpdateKey;
 
     public TrayHost()
     {
+        _updateStateStore = AgentUpdateStateStore.CreateDefault();
         _workspaceStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Workspace")}: -") { Enabled = false };
         _accountStatus = new ToolStripMenuItem($"{AgentLocalizer.Get("Account")}: -") { Enabled = false };
         _serviceStatus = new ToolStripMenuItem(AgentLocalizer.Format("ServiceStatus", "...")) { Enabled = false };
@@ -206,6 +209,7 @@ internal sealed class TrayHost : IDisposable
             _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));
 
             _connectDevice.Visible = !setupComplete;
+            await RefreshUpdateStateAsync().ConfigureAwait(true);
 
             _icon.Text = TrimTooltip($"CERBERUS Agent | {svc.Short} | {ts.Short} | reg={(registered ? "yes" : "no")}");
         }
@@ -336,15 +340,27 @@ internal sealed class TrayHost : IDisposable
         _checkUpdates.Enabled = false;
         _updateNow.Enabled = false;
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateChecking"));
+        await _updateStateStore.WriteTransitionAsync(
+            AgentUpdateStates.Checking,
+            WindowsDeviceInfo.GetAgentVersion(),
+            CancellationToken.None,
+            markChecked: false).ConfigureAwait(true);
 
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             using var updateHttp = CreateUpdateHttpClient();
-            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance);
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance, _updateStateStore);
             var signal = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
             if (coordinator is null || signal is null)
             {
+                await _updateStateStore.WriteTransitionAsync(
+                    AgentUpdateStates.Failed,
+                    WindowsDeviceInfo.GetAgentVersion(),
+                    CancellationToken.None,
+                    errorCode: AgentUpdateErrorCodes.NotConfigured,
+                    errorMessage: "Update trust is not configured.",
+                    markChecked: true).ConfigureAwait(true);
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateUnavailable"));
                 if (userInitiated)
                     ShowUpdateWarning(AgentLocalizer.Get("UpdateNotConfiguredDetail"));
@@ -354,6 +370,13 @@ internal sealed class TrayHost : IDisposable
             var check = await coordinator.CheckUpdateAsync(signal, cts.Token).ConfigureAwait(true);
             if (!check.Available)
             {
+                await _updateStateStore.WriteTransitionAsync(
+                    AgentUpdateStates.Current,
+                    WindowsDeviceInfo.GetAgentVersion(),
+                    CancellationToken.None,
+                    channel: signal.Channel,
+                    manifestUrl: signal.ManifestUrl,
+                    markChecked: true).ConfigureAwait(true);
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
                 if (userInitiated)
                     ShowUpdateInfo(AgentLocalizer.Get("UpdateNotFoundDetail"));
@@ -362,12 +385,27 @@ internal sealed class TrayHost : IDisposable
 
             _lastCheckedUpdateSignal = signal;
             _lastUpdateCheck = check;
+            await _updateStateStore.WriteTransitionAsync(
+                AgentUpdateStates.Available,
+                WindowsDeviceInfo.GetAgentVersion(),
+                CancellationToken.None,
+                targetVersion: check.Version,
+                channel: check.Channel ?? signal.Channel,
+                manifestUrl: check.ManifestUrl ?? signal.ManifestUrl,
+                markChecked: true).ConfigureAwait(true);
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Format("UpdateAvailable", check.Version ?? "-"));
             _updateNow.Enabled = true;
             promptToApplyUpdate = userInitiated;
         }
         catch
         {
+            await _updateStateStore.WriteTransitionAsync(
+                AgentUpdateStates.Failed,
+                WindowsDeviceInfo.GetAgentVersion(),
+                CancellationToken.None,
+                errorCode: AgentUpdateErrorCodes.ManifestUnavailable,
+                errorMessage: "Update check failed.",
+                markChecked: true).ConfigureAwait(true);
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
                 ShowUpdateWarning(AgentLocalizer.Get("UpdateCheckFailedDetail"));
@@ -384,6 +422,9 @@ internal sealed class TrayHost : IDisposable
 
     private async Task ApplyCheckedUpdateAsync()
     {
+        if (_lastCheckedUpdateSignal is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
+            await RestoreCheckedUpdateFromStateAsync().ConfigureAwait(true);
+
         if (_lastCheckedUpdateSignal is null || _lastUpdateCheck is null || !_lastUpdateCheck.Available)
         {
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateCheckRequired"));
@@ -403,7 +444,7 @@ internal sealed class TrayHost : IDisposable
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
             using var updateHttp = CreateUpdateHttpClient();
-            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance)
+            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance, _updateStateStore)
                                ?? throw new InvalidOperationException("Update trust is not configured.");
             var launched = await coordinator
                 .StageAndLaunchUpdateAsync(_lastCheckedUpdateSignal, requireElevation: true, ct: cts.Token)
@@ -420,6 +461,15 @@ internal sealed class TrayHost : IDisposable
         }
         catch (Exception ex)
         {
+            await _updateStateStore.WriteTransitionAsync(
+                AgentUpdateStates.Failed,
+                WindowsDeviceInfo.GetAgentVersion(),
+                CancellationToken.None,
+                targetVersion: _lastUpdateCheck?.Version,
+                channel: _lastUpdateCheck?.Channel,
+                manifestUrl: _lastUpdateCheck?.ManifestUrl,
+                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorMessage: AgentDiagnosticsBundle.Redact(ex.Message)).ConfigureAwait(true);
             _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallFailed"));
             ShowUpdateWarning(AgentLocalizer.Format("UpdateInstallFailedDetail", AgentDiagnosticsBundle.Redact(ex.Message)));
             _updateNow.Enabled = _lastUpdateCheck?.Available == true;
@@ -438,6 +488,80 @@ internal sealed class TrayHost : IDisposable
         _updateNow.Enabled = false;
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", status);
     }
+
+    private async Task RefreshUpdateStateAsync()
+    {
+        if (_checkingUpdates || _applyingUpdate)
+            return;
+
+        var state = await _updateStateStore
+            .ReconcileInstallerResultAsync(WindowsDeviceInfo.GetAgentVersion(), CancellationToken.None)
+            .ConfigureAwait(true);
+        ApplyUpdateStateToMenu(state);
+        if (string.Equals(state.State, AgentUpdateStates.Prompting, StringComparison.Ordinal))
+            await PromptForUpdateOnceAsync(state).ConfigureAwait(true);
+    }
+
+    private void ApplyUpdateStateToMenu(AgentUpdateState state)
+    {
+        _updateNow.Enabled = AgentUpdateStates.CanApply(state.State);
+        _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", StateLabel(state));
+    }
+
+    private async Task RestoreCheckedUpdateFromStateAsync()
+    {
+        var state = await _updateStateStore
+            .ReconcileInstallerResultAsync(WindowsDeviceInfo.GetAgentVersion(), CancellationToken.None)
+            .ConfigureAwait(true);
+        if (!AgentUpdateStates.CanApply(state.State) || string.IsNullOrWhiteSpace(state.ManifestUrl))
+            return;
+
+        _lastCheckedUpdateSignal = new AgentUpdateSignal(
+            Required: false,
+            Recommended: true,
+            ManifestUrl: state.ManifestUrl,
+            Reason: "manual_update_apply",
+            Channel: state.Channel ?? WindowsDeviceInfo.GetBuildChannel());
+        _lastUpdateCheck = new AgentUpdateCheckResult(
+            Available: true,
+            Required: false,
+            Recommended: true,
+            Version: state.TargetVersion,
+            Channel: state.Channel,
+            Reason: "manual_update_apply",
+            ManifestUrl: state.ManifestUrl,
+            ArtifactKind: "msi");
+        ApplyUpdateStateToMenu(state);
+    }
+
+    private async Task PromptForUpdateOnceAsync(AgentUpdateState state)
+    {
+        var key = $"{state.CampaignId ?? "-"}:{state.TargetVersion ?? "-"}:{state.ArtifactSha256 ?? "-"}";
+        if (string.Equals(_lastPromptedUpdateKey, key, StringComparison.Ordinal))
+            return;
+
+        _lastPromptedUpdateKey = key;
+        await RestoreCheckedUpdateFromStateAsync().ConfigureAwait(true);
+        if (_lastUpdateCheck?.Available == true && ConfirmApplyCheckedUpdate())
+            await ApplyCheckedUpdateAsync().ConfigureAwait(true);
+    }
+
+    private static string StateLabel(AgentUpdateState state)
+        => state.State switch
+        {
+            AgentUpdateStates.NotChecked => AgentLocalizer.Get("UpdateNotChecked"),
+            AgentUpdateStates.Checking => AgentLocalizer.Get("UpdateChecking"),
+            AgentUpdateStates.Current => AgentLocalizer.Get("UpdateCurrent"),
+            AgentUpdateStates.Available => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
+            AgentUpdateStates.Downloading => AgentLocalizer.Get("UpdateChecking"),
+            AgentUpdateStates.Staged => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
+            AgentUpdateStates.Prompting => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
+            AgentUpdateStates.Applying => AgentLocalizer.Get("UpdateInstalling"),
+            AgentUpdateStates.InstallerStarted => AgentLocalizer.Get("UpdateInstallerStarted"),
+            AgentUpdateStates.Applied => AgentLocalizer.Get("UpdateCurrent"),
+            AgentUpdateStates.Failed => AgentLocalizer.Get("UpdateCheckFailed"),
+            _ => AgentLocalizer.Get("UpdateNotChecked"),
+        };
 
     private static async Task ExportDiagnosticsAsync()
     {

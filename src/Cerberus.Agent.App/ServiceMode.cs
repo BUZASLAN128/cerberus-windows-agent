@@ -41,6 +41,7 @@ internal static class ServiceMode
             BuildChannel: buildChannel,
             BootId: Guid.NewGuid().ToString("N"),
             SupportedSchemaVersions: AgentSchemaVersions.All);
+        var updateStateStore = AgentUpdateStateStore.CreateDefault();
 
         var cachePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -63,16 +64,25 @@ internal static class ServiceMode
             new TailscaleEnsureConnectedHandler(),
         };
         handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers());
+        handlers.Add(new AgentUpdateRequestCommandHandler(
+            () => BuildUpdateCoordinator(updateHttp, log, updateStateStore),
+            updateStateStore,
+            log,
+            agentVersion));
 
         var dispatcher = new CommandDispatcher(handlers, idempotency);
         var statusProvider = new TailscaleStatusProvider();
-        var updateCoordinator = BuildUpdateCoordinator(updateHttp, log);
+        var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
         var loop = new HeartbeatLoop(
             api,
             dispatcher,
             minDelayOnError: TimeSpan.FromSeconds(10),
             statusProvider: statusProvider,
             adStatusProvider: _ => Task.FromResult<object?>(BuildAdStatus()),
+            updateStatusProvider: async cancel =>
+                (await updateStateStore.ReconcileInstallerResultAsync(
+                    WindowsDeviceInfo.GetAgentVersion(),
+                    cancel).ConfigureAwait(false)).ToHeartbeatStatus(),
             agentVersion: agentVersion,
             buildId: buildId,
             buildChannel: buildChannel,
@@ -98,8 +108,11 @@ internal static class ServiceMode
         }
     }
 
-    private static IAgentUpdateCoordinator? BuildUpdateCoordinator(HttpClient http, IAgentLogger log)
-        => AgentUpdateTrustFactory.BuildCoordinator(http, log);
+    private static AgentUpdateCoordinator? BuildUpdateCoordinator(
+        HttpClient http,
+        IAgentLogger log,
+        AgentUpdateStateStore stateStore)
+        => AgentUpdateTrustFactory.BuildCoordinator(http, log, stateStore);
 
     internal static string ResolveUpdateManifestPublicKey(
         string? envPem,

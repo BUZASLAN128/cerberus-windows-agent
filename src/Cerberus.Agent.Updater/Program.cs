@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
 using Cerberus.Agent.App;
+using Cerberus.Agent.Core;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.Updater;
@@ -34,7 +35,12 @@ internal static class Program
                 $"/i \"{fullMsiPath}\" /qn /norestart CERBERUS_EULA_ACCEPTED=1 /l*v \"{msiLogPath}\"",
                 log);
             log.Write($"msiexec exit code: {exitCode}; msi log: {msiLogPath}");
-            if (exitCode != 0)
+            var installerResult = AgentUpdateInstallerResult.FromMsiExitCode(
+                exitCode,
+                exitCode == 0 || exitCode == 3010 ? null : $"msiexec failed with exit code {exitCode}.",
+                msiLogPath);
+            WriteInstallerResult(installerResult, log);
+            if (!string.Equals(installerResult.State, AgentUpdateStates.Applied, StringComparison.Ordinal))
             {
                 TryStartService();
                 TryRestartAgentUi(closedApplications, log);
@@ -50,9 +56,26 @@ internal static class Program
         {
             Console.Error.WriteLine(ex.Message);
             log.Write($"Updater failed: {ex}");
+            WriteInstallerResult(AgentUpdateInstallerResult.Failure(ex), log);
             TryStartService();
             TryRestartAgentUi(closedApplications, log);
             return 1;
+        }
+    }
+
+    private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
+    {
+        try
+        {
+            AgentUpdateStateStore.CreateDefault()
+                .WriteInstallerResultAsync(result, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+            log.Write($"Updater result written: state={result.State}; code={result.ErrorCode ?? "-"}; msi_exit={result.MsiExitCode?.ToString() ?? "-"}");
+        }
+        catch (Exception ex)
+        {
+            log.Write($"Updater result write failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

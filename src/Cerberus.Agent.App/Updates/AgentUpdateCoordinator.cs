@@ -11,20 +11,28 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     private readonly AgentUpdateStager _stager;
     private readonly IAgentLogger _log;
     private readonly AgentUpdateLaunchGate _automaticLaunchGate;
+    private readonly AgentUpdateStateStore? _stateStore;
 
     public AgentUpdateCoordinator(AgentUpdateStager stager, IAgentLogger log)
-        : this(stager, log, new AgentUpdateLaunchGate(AutomaticLaunchCooldown))
+        : this(stager, log, new AgentUpdateLaunchGate(AutomaticLaunchCooldown), stateStore: null)
+    {
+    }
+
+    public AgentUpdateCoordinator(AgentUpdateStager stager, IAgentLogger log, AgentUpdateStateStore? stateStore)
+        : this(stager, log, new AgentUpdateLaunchGate(AutomaticLaunchCooldown), stateStore)
     {
     }
 
     internal AgentUpdateCoordinator(
         AgentUpdateStager stager,
         IAgentLogger log,
-        AgentUpdateLaunchGate automaticLaunchGate)
+        AgentUpdateLaunchGate automaticLaunchGate,
+        AgentUpdateStateStore? stateStore = null)
     {
         _stager = stager;
         _log = log;
         _automaticLaunchGate = automaticLaunchGate;
+        _stateStore = stateStore;
     }
 
     public async Task HandleUpdateAsync(HeartbeatResponse response, CancellationToken ct)
@@ -47,8 +55,8 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         try
         {
             _log.Warn(
-                $"Agent automatic update accepted: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
-            await StageAndLaunchUpdateAsync(response, requireElevation: false, ct).ConfigureAwait(false);
+                $"Agent update policy staged locally: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
+            await StageUpdateAsync(response, campaignId: null, commandId: null, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -63,13 +71,79 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public Task<AgentUpdateCheckResult> CheckUpdateAsync(AgentUpdateSignal signal, CancellationToken ct)
         => _stager.CheckAsync(signal, ct);
 
+    public async Task<AgentUpdatePlan?> StageUpdateAsync(
+        HeartbeatResponse response,
+        string? campaignId,
+        string? commandId,
+        CancellationToken ct)
+    {
+        var signal = AgentUpdateStager.FromHeartbeat(response);
+        return await StageUpdateAsync(signal, campaignId, commandId, ct).ConfigureAwait(false);
+    }
+
+    public async Task<AgentUpdatePlan?> StageUpdateAsync(
+        AgentUpdateSignal signal,
+        string? campaignId,
+        string? commandId,
+        CancellationToken ct)
+    {
+        await WriteStateAsync(
+            AgentUpdateStates.Downloading,
+            ct,
+            channel: signal.Channel,
+            manifestUrl: signal.ManifestUrl,
+            campaignId: campaignId,
+            commandId: commandId).ConfigureAwait(false);
+
+        try
+        {
+            var plan = await _stager.StageAsync(signal, ct).ConfigureAwait(false);
+            if (plan is null)
+            {
+                await WriteStateAsync(
+                    AgentUpdateStates.Current,
+                    ct,
+                    channel: signal.Channel,
+                    manifestUrl: signal.ManifestUrl,
+                    campaignId: campaignId,
+                    commandId: commandId,
+                    markChecked: true).ConfigureAwait(false);
+                return null;
+            }
+
+            await WriteStateAsync(
+                AgentUpdateStates.Staged,
+                ct,
+                targetVersion: plan.Version,
+                channel: plan.Channel,
+                manifestUrl: signal.ManifestUrl,
+                campaignId: campaignId,
+                commandId: commandId,
+                artifactSha256: plan.Sha256).ConfigureAwait(false);
+            return plan;
+        }
+        catch (Exception ex)
+        {
+            await WriteStateAsync(
+                AgentUpdateStates.Failed,
+                ct,
+                channel: signal.Channel,
+                manifestUrl: signal.ManifestUrl,
+                campaignId: campaignId,
+                commandId: commandId,
+                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorMessage: ex.Message).ConfigureAwait(false);
+            throw;
+        }
+    }
+
     public async Task<bool> StageAndLaunchUpdateAsync(
         HeartbeatResponse response,
         bool requireElevation,
         CancellationToken ct)
     {
-        var plan = await _stager.StageAsync(response, ct).ConfigureAwait(false);
-        return StageAndLaunchUpdate(plan, requireElevation);
+        var signal = AgentUpdateStager.FromHeartbeat(response);
+        return await StageAndLaunchUpdateAsync(signal, requireElevation, ct).ConfigureAwait(false);
     }
 
     public async Task<bool> StageAndLaunchUpdateAsync(
@@ -77,8 +151,46 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         bool requireElevation,
         CancellationToken ct)
     {
-        var plan = await _stager.StageAsync(signal, ct).ConfigureAwait(false);
-        return StageAndLaunchUpdate(plan, requireElevation);
+        var plan = await StageUpdateAsync(signal, campaignId: null, commandId: null, ct).ConfigureAwait(false);
+        if (plan is null)
+            return false;
+
+        await WriteStateAsync(
+            AgentUpdateStates.Applying,
+            ct,
+            targetVersion: plan.Version,
+            channel: plan.Channel,
+            manifestUrl: signal.ManifestUrl,
+            artifactSha256: plan.Sha256).ConfigureAwait(false);
+
+        try
+        {
+            var launched = StageAndLaunchUpdate(plan, requireElevation);
+            if (launched)
+            {
+                await WriteStateAsync(
+                    AgentUpdateStates.InstallerStarted,
+                    ct,
+                    targetVersion: plan.Version,
+                    channel: plan.Channel,
+                    manifestUrl: signal.ManifestUrl,
+                    artifactSha256: plan.Sha256).ConfigureAwait(false);
+            }
+            return launched;
+        }
+        catch (Exception ex)
+        {
+            await WriteStateAsync(
+                AgentUpdateStates.Failed,
+                ct,
+                targetVersion: plan.Version,
+                channel: plan.Channel,
+                manifestUrl: signal.ManifestUrl,
+                artifactSha256: plan.Sha256,
+                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorMessage: ex.Message).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private bool StageAndLaunchUpdate(AgentUpdatePlan? plan, bool requireElevation)
@@ -187,5 +299,35 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
         {
         }
+    }
+
+    private Task WriteStateAsync(
+        string state,
+        CancellationToken ct,
+        string? targetVersion = null,
+        string? channel = null,
+        string? manifestUrl = null,
+        string? campaignId = null,
+        string? commandId = null,
+        string? artifactSha256 = null,
+        string? errorCode = null,
+        string? errorMessage = null,
+        bool markChecked = false)
+    {
+        return _stateStore is null
+            ? Task.CompletedTask
+            : _stateStore.WriteTransitionAsync(
+                state,
+                WindowsDeviceInfo.GetAgentVersion(),
+                ct,
+                targetVersion: targetVersion,
+                channel: channel,
+                manifestUrl: manifestUrl,
+                campaignId: campaignId,
+                commandId: commandId,
+                artifactSha256: artifactSha256,
+                errorCode: errorCode,
+                errorMessage: errorMessage,
+                markChecked: markChecked);
     }
 }

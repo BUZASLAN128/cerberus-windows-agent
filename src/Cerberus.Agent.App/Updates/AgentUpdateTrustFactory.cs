@@ -8,7 +8,10 @@ namespace Cerberus.Agent.App.Updates;
 
 internal static class AgentUpdateTrustFactory
 {
-    public static AgentUpdateCoordinator? BuildCoordinator(HttpClient http, IAgentLogger log)
+    public static AgentUpdateCoordinator? BuildCoordinator(
+        HttpClient http,
+        IAgentLogger log,
+        AgentUpdateStateStore? stateStore = null)
     {
         var registryConfig = ReadUpdateTrustConfigFromRegistry();
         var publicKeys = ResolveUpdateManifestPublicKeys(
@@ -35,7 +38,10 @@ internal static class AgentUpdateTrustFactory
             AllowedArtifactPrefixes: SplitCsv(prefixSource),
             CurrentVersion: WindowsDeviceInfo.GetAgentVersion(),
             AllowChannelDowngrade: IsDevChannel(expectedChannel));
-        return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, AgentUpdateStager.DefaultStagingRoot, log), log);
+        return new AgentUpdateCoordinator(
+            new AgentUpdateStager(http, trust, AgentUpdateStager.DefaultStagingRoot, log),
+            log,
+            stateStore);
     }
 
     public static AgentUpdateSignal? BuildConfiguredManualSignal()

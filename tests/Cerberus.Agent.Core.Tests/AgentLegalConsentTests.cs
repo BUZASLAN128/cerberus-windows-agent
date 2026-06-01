@@ -201,6 +201,9 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_EULA_ACCEPTED=1", updater);
         Assert.Contains("/l*v", updater);
         Assert.Contains("msiexec exit code", updater);
+        Assert.Contains("AgentUpdateInstallerResult.FromMsiExitCode", updater);
+        Assert.Contains("WriteInstallerResult", updater);
+        Assert.Contains("AgentUpdateStateStore.CreateDefault()", updater);
 
         Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.en-us.wxl")));
         Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.tr-tr.wxl")));

@@ -222,6 +222,50 @@ $($publicKeyPem.Trim())
 '@
 "@ | Set-Content -LiteralPath $backendEnvPath -Encoding utf8
 
+$agentEnvPath = Join-Path $stateDir "agent-update-env.ps1"
+@"
+`$env:CERBERUS_AGENT_UPDATE_MANIFEST_URL = "$baseDownloadUrl/$latestTag/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
+`$env:AGENT_UPDATE_MANIFEST_URL = "$baseDownloadUrl/$latestTag/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
+`$env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES = "$baseDownloadUrl/"
+`$env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64 = "$publicKeyB64"
+"@ | Set-Content -LiteralPath $agentEnvPath -Encoding utf8
+
+$commandPayloadPath = Join-Path $stateDir "agent-update-request-command.json"
+$commandPayload = [ordered]@{
+  schema_version = "agent.update.request.v1"
+  campaign_id = "update-lab-$Channel-$TargetVersion"
+  mode = "stage_and_prompt"
+  target_version = $TargetVersion
+  channel = $Channel
+  manifest_url = "$baseDownloadUrl/$latestTag/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
+  reason = "update_lab_acceptance"
+  jitter_seconds = 600
+}
+$commandPayload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $commandPayloadPath -Encoding utf8
+
+$acceptanceNotesPath = Join-Path $stateDir "acceptance-notes.md"
+@"
+# Cerberus Agent Update Lab
+
+This lab prepares signed local update artifacts and support files only. It does not install, uninstall, publish, or force an update.
+
+Generated files:
+
+- Backend env: $backendEnvPath
+- Agent env: $agentEnvPath
+- Command payload: $commandPayloadPath
+- Expected agent state file: %ProgramData%\CerberusAgent\updates\update-state.json
+- Expected updater result file: %ProgramData%\CerberusAgent\updates\update-result.json
+
+Suggested support flow:
+
+1. Source the backend env file before starting the backend used for update request testing.
+2. Source the agent env file in the agent process environment for local signed manifest checks.
+3. Enqueue agent.update.request with the generated command payload through the existing portal/API command path.
+4. Verify heartbeat update_status stores agent:update_status:{agent_id} and the portal/API projection shows the same state.
+5. Treat unit/API checks as support evidence. Do not claim public-agent acceptance without a real installed-agent path.
+"@ | Set-Content -LiteralPath $acceptanceNotesPath -Encoding utf8
+
 $summary = [ordered]@{
   schema = "cerberus.agent.update_lab.v1"
   web_root = $webRoot
@@ -232,6 +276,11 @@ $summary = [ordered]@{
   target_msi_url = "$baseDownloadUrl/$targetTag/$(Get-InstallerBase $TargetVersion).msi"
   manifest_url = "$baseDownloadUrl/$latestTag/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
   backend_env = $backendEnvPath
+  agent_env = $agentEnvPath
+  command_payload = $commandPayloadPath
+  update_state_path = "%ProgramData%\CerberusAgent\updates\update-state.json"
+  update_result_path = "%ProgramData%\CerberusAgent\updates\update-result.json"
+  acceptance_notes = $acceptanceNotesPath
   server_pid_file = if ($NoServe) { $null } else { $serverPidPath }
 }
 

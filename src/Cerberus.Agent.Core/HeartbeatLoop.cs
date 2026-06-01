@@ -10,6 +10,7 @@ public sealed class HeartbeatLoop
     private readonly IAgentLogger _log;
     private readonly IAgentStatusProvider? _status;
     private readonly Func<CancellationToken, Task<object?>>? _adStatusProvider;
+    private readonly Func<CancellationToken, Task<object?>>? _updateStatusProvider;
     private readonly string _agentVersion;
     private readonly string _buildId;
     private readonly string _buildChannel;
@@ -27,6 +28,7 @@ public sealed class HeartbeatLoop
         TimeSpan minDelayOnError,
         IAgentStatusProvider? statusProvider = null,
         Func<CancellationToken, Task<object?>>? adStatusProvider = null,
+        Func<CancellationToken, Task<object?>>? updateStatusProvider = null,
         string agentVersion = "0.0.0",
         string buildId = "unknown",
         string buildChannel = "dev",
@@ -44,6 +46,7 @@ public sealed class HeartbeatLoop
         _minDelayOnError = minDelayOnError;
         _status = statusProvider;
         _adStatusProvider = adStatusProvider;
+        _updateStatusProvider = updateStatusProvider;
         _metadata = metadata ?? new AgentBuildMetadata(
             AgentVersion: string.IsNullOrWhiteSpace(agentVersion) ? "0.0.0" : agentVersion,
             BuildId: string.IsNullOrWhiteSpace(buildId) ? (string.IsNullOrWhiteSpace(agentVersion) ? "0.0.0" : agentVersion) : buildId,
@@ -98,6 +101,7 @@ public sealed class HeartbeatLoop
                     supported_schema_versions = AgentSchemaVersions.All,
                     tailscale,
                     ad = _adStatusProvider is null ? null : await _adStatusProvider(ct),
+                    update_status = _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
                     capabilities = _dispatcher.HandlerTypes,
                 };
 
@@ -195,7 +199,10 @@ public sealed class HeartbeatLoop
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var res = await _dispatcher.DispatchAsync(cmd, _commandTimeout, ct).ConfigureAwait(false);
+            var timeout = string.Equals(cmd.Type, "agent.update.request", StringComparison.Ordinal)
+                ? Max(_commandTimeout, TimeSpan.FromMinutes(20))
+                : _commandTimeout;
+            var res = await _dispatcher.DispatchAsync(cmd, timeout, ct).ConfigureAwait(false);
             var resultBody = new
             {
                 status = res.Status,
@@ -211,6 +218,9 @@ public sealed class HeartbeatLoop
             gate.Release();
         }
     }
+
+    private static TimeSpan Max(TimeSpan left, TimeSpan right)
+        => left >= right ? left : right;
 
     private async Task TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
     {
