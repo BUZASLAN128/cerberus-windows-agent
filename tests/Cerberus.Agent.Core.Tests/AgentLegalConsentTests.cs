@@ -73,6 +73,8 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("WixToolset.Util.wixext", project);
         Assert.Contains("<AcceptEula>wix7</AcceptEula>", project);
         Assert.Contains("<InstallerPlatform>x64</InstallerPlatform>", project);
+        Assert.Contains("<SuppressIces>ICE91</SuppressIces>", project);
+        Assert.Contains("<SuppressIces Condition=\"'$(Channel)' == 'dev'\">$(SuppressIces);ICE61</SuppressIces>", project);
         Assert.Contains("UpdateManifestPublicKeyB64", project);
         Assert.Contains("UpdateAllowedArtifactPrefixes", project);
         Assert.Contains($"EulaVersion={AgentLegalConsent.EulaVersion}", project);
@@ -148,6 +150,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Wait=\"yes\"", package);
         Assert.Contains("TerminateProcess=\"1\"", package);
         Assert.Contains("Schedule=\"afterInstallExecute\"", package);
+        Assert.Contains("<?if $(var.ReleaseChannel) = dev ?>", package);
+        Assert.Contains("AllowDowngrades=\"yes\"", package);
+        Assert.Contains("<?else ?>", package);
+        Assert.Contains("DowngradeErrorMessage=\"A newer version of Cerberus Windows Agent is already installed.\"", package);
         Assert.Contains("override Wix4CloseApplications_X64", package);
         Assert.Contains("After=\"InstallInitialize\"", package);
         Assert.Contains("After=\"RemoveExistingProducts\"", package);

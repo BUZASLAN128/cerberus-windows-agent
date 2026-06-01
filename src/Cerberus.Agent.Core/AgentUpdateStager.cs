@@ -9,6 +9,7 @@ public sealed record AgentUpdateTrust(
     IReadOnlyList<string> AllowedArtifactPrefixes,
     string CurrentVersion,
     bool AllowRollbackManifest = false,
+    bool AllowChannelDowngrade = false,
     long MaxArtifactBytes = 200 * 1024 * 1024);
 
 public sealed record AgentUpdateSignal(
@@ -179,7 +180,8 @@ public sealed class AgentUpdateStager
             _trust.ExpectedChannel,
             _trust.AllowedArtifactPrefixes,
             currentVersion: _trust.CurrentVersion,
-            allowRollbackManifest: _trust.AllowRollbackManifest);
+            allowRollbackManifest: _trust.AllowRollbackManifest,
+            allowChannelDowngrade: _trust.AllowChannelDowngrade);
     }
 
     private bool IsActionableManifest(AgentUpdateManifest manifest)
@@ -189,7 +191,8 @@ public sealed class AgentUpdateStager
             return true;
         if (compare > 0)
             return true;
-        return compare < 0 && _trust.AllowRollbackManifest && manifest.RollbackAllowed;
+        return compare < 0 &&
+               (_trust.AllowChannelDowngrade || (_trust.AllowRollbackManifest && manifest.RollbackAllowed));
     }
 
     public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)

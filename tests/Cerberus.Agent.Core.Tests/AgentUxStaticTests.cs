@@ -117,6 +117,8 @@ public sealed class AgentUxStaticTests
         Assert.Contains("AgentUpdateDefaults.ManifestPublicKeysB64", trustFactory);
         Assert.Contains("AgentUpdateDefaults.ManifestUrl", trustFactory);
         Assert.Contains("AgentUpdateDefaults.AllowedArtifactPrefixes", trustFactory);
+        Assert.Contains("AllowChannelDowngrade: IsDevChannel(expectedChannel)", trustFactory);
+        Assert.Contains("string.Equals(channel, \"dev\", StringComparison.OrdinalIgnoreCase)", trustFactory);
     }
 
     [Fact]

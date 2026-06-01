@@ -135,6 +135,50 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
+    public async Task CheckAsync_AllowsSignedDevChannelDowngradeForSmokeBuilds()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v0.2.128");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash, version: "0.2.128-dev.128", channel: "dev");
+        var requestedPaths = new List<string>();
+        var http = new HttpClient(new StaticHandler(request =>
+        {
+            requestedPaths.Add(request.RequestUri?.AbsolutePath ?? "");
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+                return new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json");
+            throw new InvalidOperationException("Manual check must not download the artifact.");
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-dev-downgrade-check-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
+                ExpectedChannel: "dev",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "0.2.1003.0",
+                AllowChannelDowngrade: true),
+            root);
+        var signal = new AgentUpdateSignal(
+            Required: false,
+            Recommended: true,
+            ManifestUrl: "https://releases.cerberus.local/manifest.json",
+            Reason: "manual_update_check",
+            Channel: "dev");
+
+        var check = await stager.CheckAsync(signal, CancellationToken.None);
+
+        Assert.True(check.Available);
+        Assert.Equal("0.2.128-dev.128", check.Version);
+        Assert.Equal("dev", check.Channel);
+        Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
+        Assert.False(Directory.Exists(Path.Combine(root, "0.2.128-dev.128")));
+    }
+
+    [Fact]
     public async Task CheckAsync_ReturnsNoneForSameReleaseCorePrereleaseManifest()
     {
         using var rsa = RSA.Create(2048);
@@ -362,13 +406,17 @@ public sealed class AgentUpdateStagerTests
             Revoke: null,
             Quarantine: null);
 
-    private static AgentUpdateManifest SignedManifest(RSA rsa, string sha256, string version = "1.2.0")
+    private static AgentUpdateManifest SignedManifest(
+        RSA rsa,
+        string sha256,
+        string version = "1.2.0",
+        string channel = "stable")
     {
         var unsigned = new AgentUpdateManifest(
             ArtifactKind: "msi",
             Version: version,
-            Channel: "stable",
-            ArtifactUrl: $"https://releases.cerberus.local/Cerberus.Agent-stable-{version}.msi",
+            Channel: channel,
+            ArtifactUrl: $"https://releases.cerberus.local/Cerberus.Agent-{channel}-{version}.msi",
             Sha256: sha256,
             SigningIdentity: "Cerberus Agent Release",
             ReleasedAtUtc: "2026-05-07T00:00:00Z",

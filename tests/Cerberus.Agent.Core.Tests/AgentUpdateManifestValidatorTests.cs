@@ -131,6 +131,51 @@ public sealed class AgentUpdateManifestValidatorTests
     }
 
     [Fact]
+    public void Validate_AllowsSignedChannelDowngradeOnlyWhenPolicyAllowsIt()
+    {
+        using var rsa = RSA.Create(2048);
+        var devManifest = SignedManifest(rsa, version: "0.2.128-dev.128", channel: "dev");
+
+        var denied = Assert.Throws<InvalidOperationException>(() =>
+            AgentUpdateManifestValidator.Validate(
+                devManifest,
+                PublicKeyPem(rsa),
+                "dev",
+                new[] { "https://releases.cerberus.local/" },
+                currentVersion: "0.2.1003.0"));
+        Assert.Contains("downgrade denied", denied.Message);
+
+        var validated = AgentUpdateManifestValidator.Validate(
+            devManifest,
+            PublicKeyPem(rsa),
+            "dev",
+            new[] { "https://releases.cerberus.local/" },
+            currentVersion: "0.2.1003.0",
+            allowChannelDowngrade: true);
+
+        Assert.Equal("0.2.128-dev.128", validated.Version);
+    }
+
+    [Fact]
+    public void Validate_DoesNotLetChannelDowngradeBypassSignature()
+    {
+        using var rsa = RSA.Create(2048);
+        var tampered = SignedManifest(rsa, version: "0.2.128-dev.128", channel: "dev")
+            with { Sha256 = new string('b', 64) };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AgentUpdateManifestValidator.Validate(
+                tampered,
+                PublicKeyPem(rsa),
+                "dev",
+                new[] { "https://releases.cerberus.local/" },
+                currentVersion: "0.2.1003.0",
+                allowChannelDowngrade: true));
+
+        Assert.Contains("signature invalid", ex.Message);
+    }
+
+    [Fact]
     public void Validate_ComparesSemverReleaseCoreWithoutPrereleaseSuffix()
     {
         using var rsa = RSA.Create(2048);

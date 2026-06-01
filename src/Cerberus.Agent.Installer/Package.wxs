@@ -10,9 +10,16 @@
       Scope="perMachine"
       Compressed="yes">
 
+    <?if $(var.ReleaseChannel) = dev ?>
+    <!-- Dev artifacts can be superseded by local smoke builds with higher MSI ProductVersion values. -->
+    <MajorUpgrade
+        Schedule="afterInstallExecute"
+        AllowDowngrades="yes" />
+    <?else ?>
     <MajorUpgrade
         Schedule="afterInstallExecute"
         DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
+    <?endif ?>
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />

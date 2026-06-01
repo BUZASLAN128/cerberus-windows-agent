@@ -28,11 +28,13 @@ internal static class AgentUpdateTrustFactory
         if (string.IsNullOrWhiteSpace(prefixSource))
             prefixSource = AgentUpdateDefaults.AllowedArtifactPrefixes;
 
+        var expectedChannel = WindowsDeviceInfo.GetBuildChannel();
         var trust = new AgentUpdateTrust(
             ManifestPublicKeyPems: publicKeys,
-            ExpectedChannel: WindowsDeviceInfo.GetBuildChannel(),
+            ExpectedChannel: expectedChannel,
             AllowedArtifactPrefixes: SplitCsv(prefixSource),
-            CurrentVersion: WindowsDeviceInfo.GetAgentVersion());
+            CurrentVersion: WindowsDeviceInfo.GetAgentVersion(),
+            AllowChannelDowngrade: IsDevChannel(expectedChannel));
         return new AgentUpdateCoordinator(new AgentUpdateStager(http, trust, AgentUpdateStager.DefaultStagingRoot, log), log);
     }
 
@@ -233,6 +235,9 @@ internal static class AgentUpdateTrustFactory
             .Where(item => !string.IsNullOrWhiteSpace(item) && !string.Equals(item, "__cerberus_unset__", StringComparison.Ordinal))
             .ToArray();
     }
+
+    private static bool IsDevChannel(string? channel)
+        => string.Equals(channel, "dev", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeManifestUrl(string? value)
     {

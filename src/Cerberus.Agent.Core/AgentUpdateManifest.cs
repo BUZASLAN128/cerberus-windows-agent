@@ -37,14 +37,16 @@ public static class AgentUpdateManifestValidator
         string expectedChannel,
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
-        bool allowRollbackManifest = false)
+        bool allowRollbackManifest = false,
+        bool allowChannelDowngrade = false)
         => ParseAndValidateJson(
             json,
             new[] { publicKeyPem },
             expectedChannel,
             allowedArtifactPrefixes,
             currentVersion,
-            allowRollbackManifest);
+            allowRollbackManifest,
+            allowChannelDowngrade);
 
     public static AgentUpdateManifest ParseAndValidateJson(
         string json,
@@ -52,7 +54,8 @@ public static class AgentUpdateManifestValidator
         string expectedChannel,
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
-        bool allowRollbackManifest = false)
+        bool allowRollbackManifest = false,
+        bool allowChannelDowngrade = false)
     {
         using var doc = JsonDocument.Parse(json);
         foreach (var property in doc.RootElement.EnumerateObject())
@@ -69,7 +72,8 @@ public static class AgentUpdateManifestValidator
             expectedChannel,
             allowedArtifactPrefixes,
             currentVersion,
-            allowRollbackManifest);
+            allowRollbackManifest,
+            allowChannelDowngrade);
     }
 
     public static AgentUpdateManifest Validate(
@@ -78,14 +82,16 @@ public static class AgentUpdateManifestValidator
         string expectedChannel,
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
-        bool allowRollbackManifest = false)
+        bool allowRollbackManifest = false,
+        bool allowChannelDowngrade = false)
         => Validate(
             manifest,
             new[] { publicKeyPem },
             expectedChannel,
             allowedArtifactPrefixes,
             currentVersion,
-            allowRollbackManifest);
+            allowRollbackManifest,
+            allowChannelDowngrade);
 
     public static AgentUpdateManifest Validate(
         AgentUpdateManifest manifest,
@@ -93,7 +99,8 @@ public static class AgentUpdateManifestValidator
         string expectedChannel,
         IReadOnlyList<string> allowedArtifactPrefixes,
         string? currentVersion = null,
-        bool allowRollbackManifest = false)
+        bool allowRollbackManifest = false,
+        bool allowChannelDowngrade = false)
     {
         Require(manifest.ArtifactKind, "Update manifest artifact kind missing.");
         Require(manifest.Version, "Update manifest version missing.");
@@ -124,7 +131,7 @@ public static class AgentUpdateManifestValidator
         var versionCompare = AgentVersionComparer.CompareReleaseCore(manifest.Version, currentVersion);
         if (versionCompare is < 0)
         {
-            if (!(allowRollbackManifest && manifest.RollbackAllowed))
+            if (!(allowChannelDowngrade || (allowRollbackManifest && manifest.RollbackAllowed)))
                 throw new InvalidOperationException("Update manifest downgrade denied.");
         }
 

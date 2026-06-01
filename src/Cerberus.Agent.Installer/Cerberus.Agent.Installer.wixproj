@@ -13,6 +13,7 @@
     <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</UpdateAllowedArtifactPrefixes>
     <OutputName>$(InstallerAssetBase)</OutputName>
     <SuppressIces>ICE91</SuppressIces>
+    <SuppressIces Condition="'$(Channel)' == 'dev'">$(SuppressIces);ICE61</SuppressIces>
     <DefineConstants>
       AgentPublishDir=$(AgentPublishDir);
       ReleaseVersion=$(Version);
