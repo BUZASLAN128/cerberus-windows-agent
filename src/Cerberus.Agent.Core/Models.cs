@@ -42,7 +42,8 @@ public sealed record HeartbeatResponse(
     [property: JsonPropertyName("version_policy")] VersionPolicy? VersionPolicy,
     [property: JsonPropertyName("update")] IReadOnlyDictionary<string, JsonElement>? Update,
     [property: JsonPropertyName("revoke")] IReadOnlyDictionary<string, JsonElement>? Revoke,
-    [property: JsonPropertyName("quarantine")] IReadOnlyDictionary<string, JsonElement>? Quarantine);
+    [property: JsonPropertyName("quarantine")] IReadOnlyDictionary<string, JsonElement>? Quarantine,
+    [property: JsonPropertyName("tenant_name")] string? TenantName = null);
 
 public sealed record AgentSelfDeactivateRequest(
     [property: JsonPropertyName("schema_version")] string SchemaVersion,

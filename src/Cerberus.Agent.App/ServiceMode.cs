@@ -63,7 +63,8 @@ internal static class ServiceMode
             new RdpQuickTestHandler(),
             new TailscaleEnsureConnectedHandler(),
         };
-        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers());
+        var localUserPolicy = LocalUserCommandPolicy.FromEnvironmentAndRegistry();
+        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(localUserPolicy));
         handlers.Add(new AgentUpdateRequestCommandHandler(
             () => BuildUpdateCoordinator(updateHttp, log, updateStateStore),
             updateStateStore,

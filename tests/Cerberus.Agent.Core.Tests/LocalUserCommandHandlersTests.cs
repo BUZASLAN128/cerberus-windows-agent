@@ -9,10 +9,29 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class LocalUserCommandHandlersTests
 {
     [Fact]
-    public async Task CreateManagedUser_RejectsUsernameWithoutManagedPrefix()
+    public async Task CreateManagedUser_DeniesCreateWhenPolicyDisabled()
     {
         var handler = LocalUserCommandHandlers
             .CreateDefaultHandlers()
+            .Single(item => item.Type == "windows.local_user.create");
+        var command = new AgentCommand(
+            "cmd-id",
+            handler.Type,
+            "idem",
+            new { username = "cerb_sennu_k7m2q6x4" });
+
+        var result = await handler.HandleAsync(command, CancellationToken.None);
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Contains("disabled by local agent policy", result.Stderr);
+        Assert.Contains("local_user_create_disabled_by_policy", Convert.ToString(result.PostVerify));
+    }
+
+    [Fact]
+    public async Task CreateManagedUser_RejectsUsernameWithoutManagedPrefix()
+    {
+        var handler = LocalUserCommandHandlers
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -30,7 +49,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task DeleteManagedUser_RejectsMissingAuditCorrelation()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.delete");
         var command = new AgentCommand(
             "cmd-id",
@@ -48,7 +67,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task CreateManagedUser_AcceptsManagedUsernameShapeBeforeAuditGate()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -66,7 +85,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task CreateManagedUser_RejectsUsernameOverWindowsLocalLimit()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -84,7 +103,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task CreateManagedUser_RejectsManagedUsernameWithInvalidBase32Suffix()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -102,7 +121,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task CreateManagedUser_RejectsCurrentManagedUsernameWithoutMarkerIdentity()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -124,7 +143,7 @@ public sealed class LocalUserCommandHandlersTests
     public async Task CreateManagedUser_RejectsInvalidCredentialPublicKeyBeforeMutation()
     {
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -153,7 +172,7 @@ public sealed class LocalUserCommandHandlersTests
         using var rsa = RSA.Create(1024);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -182,7 +201,7 @@ public sealed class LocalUserCommandHandlersTests
         using var rsa = RSA.Create(2048);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -212,7 +231,7 @@ public sealed class LocalUserCommandHandlersTests
         using var rsa = RSA.Create(2048);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -241,7 +260,7 @@ public sealed class LocalUserCommandHandlersTests
     {
         var aad = "tenant|credential|rdp|1";
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",
@@ -276,7 +295,7 @@ public sealed class LocalUserCommandHandlersTests
         using var rsa = RSA.Create(2048);
         var publicPem = PublicKeyPem(rsa);
         var handler = LocalUserCommandHandlers
-            .CreateDefaultHandlers()
+            .CreateDefaultHandlers(LocalUserCommandPolicy.CreateEnabledPolicy)
             .Single(item => item.Type == "windows.local_user.create");
         var command = new AgentCommand(
             "cmd-id",

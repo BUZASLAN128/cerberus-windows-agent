@@ -30,6 +30,8 @@ public sealed class HeartbeatResponseHandler
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
     {
+        await PersistUiContextAsync(response, ct).ConfigureAwait(false);
+
         if (response.Revoke is not null &&
             IsTrue(response.Revoke, "revoked") &&
             IsTrue(response.Revoke, "clear_local_credentials"))
@@ -63,6 +65,26 @@ public sealed class HeartbeatResponseHandler
 
         await TryHandleUpdateAsync(response, ct).ConfigureAwait(false);
         return HeartbeatControlAction.Continue;
+    }
+
+    private async Task PersistUiContextAsync(HeartbeatResponse response, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(response.TenantName))
+            return;
+
+        try
+        {
+            var (identity, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+            await AgentUiContextStore.WriteBestEffortAsync(
+                identity,
+                response.TenantName,
+                accountLabel: null,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Agent UI context update failed: {ex.GetType().Name}");
+        }
     }
 
     private async Task TryHandleUpdateAsync(HeartbeatResponse response, CancellationToken ct)

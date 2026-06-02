@@ -2,6 +2,7 @@ using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.IO;
@@ -151,6 +152,7 @@ public partial class MainWindow : Window
         ServiceLabel.Text = AgentLocalizer.Get("Service");
         TailscaleLabel.Text = AgentLocalizer.Get("Connector");
         RegisteredLabel.Text = AgentLocalizer.Get("Registered");
+        LocalUserCreateLabel.Text = AgentLocalizer.Get("LocalUserCreate");
         DeviceSetupLabel.Text = AgentLocalizer.Get("DeviceSetup");
         DeviceSetupDetail.Text = AgentLocalizer.Get("DeviceSetupDetail");
         AdvancedRepairExpander.Header = AgentLocalizer.Get("AdvancedRepairTools");
@@ -186,10 +188,12 @@ public partial class MainWindow : Window
             // IMPORTANT: Keep the UI responsive. ServiceController calls can block; run off-thread.
             var svcTask = Task.Run(AgentStatus.GetService);
             var registeredTask = Task.Run(AgentStatus.IsRegistered);
+            var localUserPolicyTask = Task.Run(LocalUserCommandPolicy.FromEnvironmentAndRegistry);
             var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
 
             var svc = await svcTask;
             var registered = await registeredTask;
+            var localUserPolicy = await localUserPolicyTask;
             var ts = await tsTask;
             if (!Dispatcher.CheckAccess())
             {
@@ -216,6 +220,12 @@ public partial class MainWindow : Window
             ServiceValue.Text = svc.Text;
             TailscaleValue.Text = ts.Text;
             RegisteredValue.Text = registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No");
+            LocalUserCreateValue.Text = localUserPolicy.CreateEnabled
+                ? AgentLocalizer.Get("Enabled")
+                : AgentLocalizer.Get("Disabled");
+            LocalUserCreateValue.Foreground = localUserPolicy.CreateEnabled
+                ? new SolidColorBrush(MediaColor.FromRgb(20, 83, 45))
+                : new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
 
             var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
             ReadinessValue.Text = setupComplete ? AgentLocalizer.Get("ReadyToConnect") : AgentLocalizer.Get("SetupRequired");

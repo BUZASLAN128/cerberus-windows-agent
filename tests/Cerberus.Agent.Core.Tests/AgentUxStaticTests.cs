@@ -17,6 +17,22 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void TrayMenu_UsesPersistedUiContextForWorkspaceAndAccount()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
+        var contextStore = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Core", "AgentUiContextStore.cs"));
+
+        Assert.Contains("AgentUiContextStore.ReadBestEffort()", source);
+        Assert.Contains("AgentUiContextStore.DisplayTenant(uiContext)", source);
+        Assert.Contains("AgentUiContextStore.DisplayAccount(uiContext)", source);
+        Assert.DoesNotContain("_workspaceStatus.Text = $\"{AgentLocalizer.Get(\"Workspace\")}: -\";", source);
+        Assert.DoesNotContain("_accountStatus.Text = $\"{AgentLocalizer.Get(\"Account\")}: -\";", source);
+        Assert.Contains("ui-context.json", contextStore);
+        Assert.Contains("TenantName", contextStore);
+    }
+
+    [Fact]
     public void Installer_ExposesSingleCustomerFacingAgentShortcut()
     {
         var repoRoot = FindRepoRoot();

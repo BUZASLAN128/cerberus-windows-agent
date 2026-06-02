@@ -208,9 +208,10 @@ internal sealed class TrayHost : IDisposable
             }
             var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
             _setupComplete = setupComplete;
+            var uiContext = registered ? AgentUiContextStore.ReadBestEffort() : null;
 
-            _workspaceStatus.Text = $"{AgentLocalizer.Get("Workspace")}: -";
-            _accountStatus.Text = $"{AgentLocalizer.Get("Account")}: -";
+            _workspaceStatus.Text = $"{AgentLocalizer.Get("Workspace")}: {AgentUiContextStore.DisplayTenant(uiContext)}";
+            _accountStatus.Text = $"{AgentLocalizer.Get("Account")}: {AgentUiContextStore.DisplayAccount(uiContext)}";
             _serviceStatus.Text = AgentLocalizer.Format("ServiceStatus", svc.Text);
             _tailscaleStatus.Text = AgentLocalizer.Format("ConnectorStatus", ts.Text);
             _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));

@@ -107,6 +107,11 @@ public sealed class AgentRegistrar
             parsed.TailscaleLoginServer,
             parsed.TailscaleAuthkey,
             ct).ConfigureAwait(false);
+        await AgentUiContextStore.WriteBestEffortAsync(
+            identity,
+            parsed.TenantName,
+            accountLabel: null,
+            ct).ConfigureAwait(false);
 
         await WriteTailscaleProofFileAsync(identity, parsed.TailscaleLoginServer, parsed.TailscaleAuthkey, ct).ConfigureAwait(false);
 
@@ -197,6 +202,7 @@ public sealed class AgentRegistrar
     private sealed record AgentRegisterResponse(
         [property: JsonPropertyName("agent_id")] string AgentId,
         [property: JsonPropertyName("tenant_id")] string TenantId,
+        [property: JsonPropertyName("tenant_name")] string? TenantName,
         [property: JsonPropertyName("tailscale_login_server")] string? TailscaleLoginServer,
         [property: JsonPropertyName("tailscale_authkey")] string? TailscaleAuthkey,
         [property: JsonPropertyName("agent_refresh_token")] string AgentRefreshToken,

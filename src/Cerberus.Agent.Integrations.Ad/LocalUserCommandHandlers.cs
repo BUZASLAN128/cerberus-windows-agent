@@ -42,20 +42,37 @@ public static partial class LocalUserCommandHandlers
     private static readonly TimeSpan LocalMutationCooldown = TimeSpan.FromSeconds(2);
     private static readonly ConcurrentDictionary<string, DateTimeOffset> LastLocalMutationByKey = new(StringComparer.OrdinalIgnoreCase);
 
-    public static ICommandHandler[] CreateDefaultHandlers()
-        =>
+    public static ICommandHandler[] CreateDefaultHandlers(LocalUserCommandPolicy? policy = null)
+    {
+        policy ??= LocalUserCommandPolicy.CreateDisabled;
+        return
         [
-            new CreateManagedUser(),
+            new CreateManagedUser(policy),
             new DisableManagedUser(),
             new DeleteManagedUser(),
         ];
+    }
 
     private sealed class CreateManagedUser : ICommandHandler
     {
+        private readonly LocalUserCommandPolicy _policy;
+
+        public CreateManagedUser(LocalUserCommandPolicy policy)
+        {
+            _policy = policy;
+        }
+
         public string Type => "windows.local_user.create";
 
         public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
         {
+            if (!_policy.CreateEnabled)
+            {
+                return Task.FromResult(Fail(
+                    "local_user_create_disabled_by_policy",
+                    "Managed local user create is disabled by local agent policy."));
+            }
+
             if (!TryReadPayload(command, out var payload, out var failure))
                 return Task.FromResult(failure);
 

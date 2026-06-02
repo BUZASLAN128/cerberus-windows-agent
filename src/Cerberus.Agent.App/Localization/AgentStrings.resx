@@ -9,6 +9,7 @@
   <data name="Service" xml:space="preserve"><value>Service</value></data>
   <data name="Connector" xml:space="preserve"><value>Connector</value></data>
   <data name="Registered" xml:space="preserve"><value>Registered</value></data>
+  <data name="LocalUserCreate" xml:space="preserve"><value>User create</value></data>
   <data name="Status" xml:space="preserve"><value>Status</value></data>
   <data name="Workspace" xml:space="preserve"><value>Workspace</value></data>
   <data name="Account" xml:space="preserve"><value>Account</value></data>
@@ -79,6 +80,8 @@
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Update could not start: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>yes</value></data>
   <data name="No" xml:space="preserve"><value>no</value></data>
+  <data name="Enabled" xml:space="preserve"><value>enabled</value></data>
+  <data name="Disabled" xml:space="preserve"><value>disabled</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Uninstall Cerberus Agent</value></data>
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.</value></data>

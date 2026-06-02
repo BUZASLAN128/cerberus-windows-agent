@@ -9,6 +9,7 @@
   <data name="Service" xml:space="preserve"><value>Servis</value></data>
   <data name="Connector" xml:space="preserve"><value>Bağlantı</value></data>
   <data name="Registered" xml:space="preserve"><value>Kayıt</value></data>
+  <data name="LocalUserCreate" xml:space="preserve"><value>Kullanıcı</value></data>
   <data name="Status" xml:space="preserve"><value>Durum</value></data>
   <data name="Workspace" xml:space="preserve"><value>Çalışma alanı</value></data>
   <data name="Account" xml:space="preserve"><value>Hesap</value></data>
@@ -79,6 +80,8 @@
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>evet</value></data>
   <data name="No" xml:space="preserve"><value>hayır</value></data>
+  <data name="Enabled" xml:space="preserve"><value>açık</value></data>
+  <data name="Disabled" xml:space="preserve"><value>kapalı</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Cerberus Agent Kaldırma</value></data>
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent bu bilgisayardan kaldırılacak. Portal erişilebilirse bu cihazın raporlaması da durdurulur.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Kurulum kaydı bulunamadı. Servis durdurulmaya çalışıldı; kalan dosyalar için Windows Uygulamalar ayarlarını kullanın.</value></data>
