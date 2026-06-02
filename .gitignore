@@ -25,6 +25,8 @@ packages/
 *.log
 *.tmp
 *.temp
+windows-agent-yardimci-kaynaklar/*
+research/*
 
 # Coverage and reports
 coverage/

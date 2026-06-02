@@ -106,7 +106,15 @@ public sealed class AgentUpdateStager
         {
             _log.Info(
                 $"Agent update skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
-            return AgentUpdateCheckResult.None;
+            return new AgentUpdateCheckResult(
+                Available: false,
+                Required: signal.Required,
+                Recommended: signal.Recommended,
+                Version: manifest.Version,
+                Channel: manifest.Channel,
+                Reason: "not_newer_than_current",
+                ManifestUrl: signal.ManifestUrl,
+                ArtifactKind: manifest.ArtifactKind);
         }
 
         return new AgentUpdateCheckResult(

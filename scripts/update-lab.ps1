@@ -149,6 +149,7 @@ if (-not $NoBuild) {
         -Channel $Channel `
         -OutputRoot $versionBuildOutputRoot `
         -AllowUnsignedDevBuild `
+        -AllowEphemeralManifestKey `
         -SkipTests
     } finally {
       $env:AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM = $oldPrivateKey

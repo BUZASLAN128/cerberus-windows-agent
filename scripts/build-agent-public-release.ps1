@@ -19,7 +19,8 @@ param(
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
   [int]$DefaultOAuthRedirectPort = 0,
   [switch]$SkipTests,
-  [switch]$AllowUnsignedDevBuild
+  [switch]$AllowUnsignedDevBuild,
+  [switch]$AllowEphemeralManifestKey
 )
 
 $ErrorActionPreference = "Stop"
@@ -202,7 +203,10 @@ if ($Channel -eq "dev") {
 }
 
 $manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
-if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -and $AllowUnsignedDevBuild) {
+if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and
+    $Channel -eq "dev" -and
+    $AllowUnsignedDevBuild -and
+    $AllowEphemeralManifestKey) {
   if ([string]::Equals($env:GITHUB_ACTIONS, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "GitHub dev releases require stable AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM; ephemeral manifest keys are local/lab only."
   }
@@ -210,7 +214,7 @@ if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and $Channel -eq "dev" -a
   $manifestPrivateKey = $ephemeralManifestKey.ExportPkcs8PrivateKeyPem()
 }
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
-  throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing."
+  throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing. Use -AllowEphemeralManifestKey only for local update-lab artifacts that will not be published as latest."
 }
 if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64) -or [string]::IsNullOrWhiteSpace($AgentUpdateManifestPublicKeysB64)) {
   $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
@@ -237,6 +241,9 @@ $artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT
 if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
   $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
   $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
+}
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
+  throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
 }
 
 if (-not $SkipTests) {
@@ -404,9 +411,6 @@ if ($secretHits.Count -gt 0) {
   throw "Release secret scan failed:`n$preview"
 }
 
-if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
-  throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
-}
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
 $canonical = @(

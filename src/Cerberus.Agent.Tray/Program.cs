@@ -276,10 +276,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _checkingUpdates = true;
         _checkUpdates.Enabled = false;
         _updateNow.Enabled = false;
+        var currentVersion = WindowsDeviceInfo.GetAgentVersion();
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateChecking"));
         await _updateStateStore.WriteTransitionAsync(
             AgentUpdateStates.Checking,
-            WindowsDeviceInfo.GetAgentVersion(),
+            currentVersion,
             CancellationToken.None).ConfigureAwait(true);
 
         try
@@ -292,7 +293,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 await _updateStateStore.WriteTransitionAsync(
                     AgentUpdateStates.Failed,
-                    WindowsDeviceInfo.GetAgentVersion(),
+                    currentVersion,
                     CancellationToken.None,
                     errorCode: AgentUpdateErrorCodes.NotConfigured,
                     errorMessage: "Update trust is not configured.",
@@ -308,12 +309,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 await _updateStateStore.WriteTransitionAsync(
                     AgentUpdateStates.Current,
-                    WindowsDeviceInfo.GetAgentVersion(),
+                    currentVersion,
                     CancellationToken.None,
+                    targetVersion: check.Version,
                     channel: signal.Channel,
                     manifestUrl: signal.ManifestUrl,
                     markChecked: true).ConfigureAwait(true);
                 ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
+                if (userInitiated)
+                    ShowUpdateMessage(BuildUpdateNotFoundDetail(currentVersion, check.Version), MessageBoxIcon.Information);
                 return;
             }
 
@@ -321,7 +325,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _lastUpdateCheck = check;
             await _updateStateStore.WriteTransitionAsync(
                 AgentUpdateStates.Available,
-                WindowsDeviceInfo.GetAgentVersion(),
+                currentVersion,
                 CancellationToken.None,
                 targetVersion: check.Version,
                 channel: check.Channel ?? signal.Channel,
@@ -332,17 +336,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
+            var errorCode = AgentUpdateErrorCodes.Classify(ex);
             var errorMessage = AgentDiagnosticsBundle.Redact(ex.Message);
             await _updateStateStore.WriteTransitionAsync(
                 AgentUpdateStates.Failed,
-                WindowsDeviceInfo.GetAgentVersion(),
+                currentVersion,
                 CancellationToken.None,
-                errorCode: AgentUpdateErrorCodes.Classify(ex),
+                errorCode: errorCode,
                 errorMessage: errorMessage,
                 markChecked: true).ConfigureAwait(true);
             ClearCheckedUpdate(AgentLocalizer.Get("UpdateCheckFailed"));
             if (userInitiated)
-                ShowUpdateMessage(GetUpdateCheckFailureDetail(errorMessage));
+                ShowUpdateMessage(GetUpdateCheckFailureDetail(errorCode, errorMessage));
         }
         finally
         {
@@ -516,21 +521,37 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Timeout = TimeSpan.FromMinutes(10),
         };
 
-    private static string GetUpdateCheckFailureDetail(string? errorMessage = null)
-        => string.IsNullOrWhiteSpace(errorMessage)
-            ? AgentLocalizer.Get("UpdateCheckFailedDetail")
-            : $"{AgentLocalizer.Get("UpdateCheckFailedDetail")}{Environment.NewLine}{Environment.NewLine}Sebep: {errorMessage}";
+    private static string BuildUpdateNotFoundDetail(string currentVersion, string? latestVersion)
+        => string.IsNullOrWhiteSpace(latestVersion)
+            ? AgentLocalizer.Get("UpdateNotFoundDetail")
+            : AgentLocalizer.Format("UpdateNotFoundDetailWithVersions", currentVersion, latestVersion);
+
+    private static string GetUpdateCheckFailureDetail(string errorCode, string? errorMessage = null)
+    {
+        var detailKey = errorCode switch
+        {
+            AgentUpdateErrorCodes.SignatureInvalid => "UpdateCheckFailedSignatureDetail",
+            AgentUpdateErrorCodes.ManifestInvalid => "UpdateCheckFailedManifestDetail",
+            AgentUpdateErrorCodes.ManifestUnavailable => "UpdateCheckFailedNetworkDetail",
+            AgentUpdateErrorCodes.ArtifactUrlDenied => "UpdateCheckFailedArtifactDetail",
+            _ => "UpdateCheckFailedDetail",
+        };
+        var detail = AgentLocalizer.Get(detailKey);
+        return string.IsNullOrWhiteSpace(errorMessage)
+            ? detail
+            : $"{detail}{Environment.NewLine}{Environment.NewLine}{AgentLocalizer.Format("UpdateCheckFailureReason", errorMessage)}";
+    }
 
     private static void RequestHeartbeatBackoffReset(string reason)
         => _ = HeartbeatBackoffResetSignal.TryRequest(reason);
 
-    private static void ShowUpdateMessage(string message)
+    private static void ShowUpdateMessage(string message, MessageBoxIcon icon = MessageBoxIcon.Warning)
     {
         MessageBox.Show(
             message,
             "Cerberus Agent",
             MessageBoxButtons.OK,
-            MessageBoxIcon.Warning);
+            icon);
     }
 
     private static void LaunchSibling(string fileName, string? arguments = null)

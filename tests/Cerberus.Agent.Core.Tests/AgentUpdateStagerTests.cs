@@ -209,6 +209,8 @@ public sealed class AgentUpdateStagerTests
         var check = await stager.CheckAsync(UpdateResponse(), CancellationToken.None);
 
         Assert.False(check.Available);
+        Assert.Equal("1.2.0-dev.42", check.Version);
+        Assert.Equal("not_newer_than_current", check.Reason);
         Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
         Assert.False(Directory.Exists(Path.Combine(root, "1.2.0-dev.42")));
     }

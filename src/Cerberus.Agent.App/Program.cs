@@ -60,6 +60,15 @@ internal static class Program
                 .GetResult();
         }
 
+        if (parsed.UpdateCheckOnce || parsed.UpdateApplyOnce)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(parsed.UpdateApplyOnce ? 15 : 2));
+            return UpdateCommandMode
+                .RunAsync(apply: parsed.UpdateApplyOnce, cts.Token)
+                .GetAwaiter()
+                .GetResult();
+        }
+
         if (parsed.ExportTailscaleUp)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -178,10 +187,12 @@ internal static class Program
            !args.SelfTest &&
            !args.Background &&
            !args.Open &&
-           !args.Connect &&
-           !args.CheckUpdates &&
-           !args.UpdateNow &&
-           !args.InstallService &&
+            !args.Connect &&
+            !args.CheckUpdates &&
+            !args.UpdateNow &&
+            !args.UpdateCheckOnce &&
+            !args.UpdateApplyOnce &&
+            !args.InstallService &&
            !args.UninstallService &&
            !args.UnregisterDevice &&
            !args.StartService &&

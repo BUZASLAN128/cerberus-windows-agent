@@ -68,7 +68,13 @@
   <data name="UpdateFoundPrompt" xml:space="preserve"><value>Version {0} is available. Do you want to install it now?</value></data>
   <data name="UpdateNotFoundTitle" xml:space="preserve"><value>No update found</value></data>
   <data name="UpdateNotFoundDetail" xml:space="preserve"><value>No update was found. Cerberus Agent is up to date.</value></data>
+  <data name="UpdateNotFoundDetailWithVersions" xml:space="preserve"><value>No update was found. Installed version: {0}. Latest manifest version: {1}.</value></data>
   <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Update check could not be completed. Please try again later.</value></data>
+  <data name="UpdateCheckFailedSignatureDetail" xml:space="preserve"><value>Update signature could not be verified. The published package was not signed with a key trusted by this installation.</value></data>
+  <data name="UpdateCheckFailedManifestDetail" xml:space="preserve"><value>Update manifest is invalid. The published update metadata must be fixed before this agent can install it.</value></data>
+  <data name="UpdateCheckFailedNetworkDetail" xml:space="preserve"><value>Update manifest could not be reached. Check the update URL or network connection.</value></data>
+  <data name="UpdateCheckFailedArtifactDetail" xml:space="preserve"><value>Update package URL is not trusted by this installation.</value></data>
+  <data name="UpdateCheckFailureReason" xml:space="preserve"><value>Reason: {0}</value></data>
   <data name="UpdateNotConfiguredDetail" xml:space="preserve"><value>Updates are not configured for this installation.</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Update could not start: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>yes</value></data>

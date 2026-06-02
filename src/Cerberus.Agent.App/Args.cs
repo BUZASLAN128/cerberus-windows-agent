@@ -19,6 +19,8 @@ internal sealed record AgentArgs(
     bool Connect,
     bool CheckUpdates,
     bool UpdateNow,
+    bool UpdateCheckOnce,
+    bool UpdateApplyOnce,
     string? SelfTestOutFile,
     string? CasdoorTokenFile,
     string? ApplyUpdatePlan,
@@ -66,6 +68,8 @@ internal static class Args
         var connect = Has("--connect") || Has("/connect");
         var checkUpdates = Has("--check-updates") || Has("/check-updates");
         var updateNow = Has("--update-now") || Has("/update-now");
+        var updateCheckOnce = Has("--update-check-once");
+        var updateApplyOnce = Has("--update-apply-once");
         var selfTestOutFile = Value("--self-test-out");
         var casdoorTokenFile = Value("--casdoor-token-file") ?? Value("--token-file");
         var applyUpdatePlan = Value("--apply-staged-update");
@@ -90,6 +94,8 @@ internal static class Args
             connect,
             checkUpdates,
             updateNow,
+            updateCheckOnce,
+            updateApplyOnce,
             selfTestOutFile,
             casdoorTokenFile,
             applyUpdatePlan,

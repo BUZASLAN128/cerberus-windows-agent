@@ -68,7 +68,13 @@
   <data name="UpdateFoundPrompt" xml:space="preserve"><value>{0} sürümü hazır. Şimdi kurulsun mu?</value></data>
   <data name="UpdateNotFoundTitle" xml:space="preserve"><value>Güncelleme bulunamadı</value></data>
   <data name="UpdateNotFoundDetail" xml:space="preserve"><value>Güncelleme bulunamadı. Cerberus Agent güncel.</value></data>
+  <data name="UpdateNotFoundDetailWithVersions" xml:space="preserve"><value>Güncelleme bulunamadı. Kurulu sürüm: {0}. Latest manifest sürümü: {1}.</value></data>
   <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Güncelleme denetimi tamamlanamadı. Lütfen biraz sonra tekrar deneyin.</value></data>
+  <data name="UpdateCheckFailedSignatureDetail" xml:space="preserve"><value>Güncelleme imzası doğrulanamadı. Yayındaki paket bu kurulumun güvendiği anahtarla imzalanmamış.</value></data>
+  <data name="UpdateCheckFailedManifestDetail" xml:space="preserve"><value>Güncelleme manifesti geçersiz. Bu ajan kurulmadan önce yayındaki güncelleme bilgisi düzeltilmeli.</value></data>
+  <data name="UpdateCheckFailedNetworkDetail" xml:space="preserve"><value>Güncelleme manifestine ulaşılamadı. Güncelleme adresini veya ağ bağlantısını kontrol edin.</value></data>
+  <data name="UpdateCheckFailedArtifactDetail" xml:space="preserve"><value>Güncelleme paket adresi bu kurulum tarafından güvenilir kabul edilmiyor.</value></data>
+  <data name="UpdateCheckFailureReason" xml:space="preserve"><value>Sebep: {0}</value></data>
   <data name="UpdateNotConfiguredDetail" xml:space="preserve"><value>Bu kurulum için güncellemeler yapılandırılmamış.</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
   <data name="Yes" xml:space="preserve"><value>evet</value></data>
