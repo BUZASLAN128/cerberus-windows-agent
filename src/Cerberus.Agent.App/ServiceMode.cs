@@ -1,4 +1,5 @@
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.Integrations.Ad;
@@ -57,11 +58,13 @@ internal static class ServiceMode
             maxBytes: 512 * 1024,
             ttl: TimeSpan.FromHours(24));
 
+        var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var handlers = new List<ICommandHandler>
         {
             new HealthSnapshotHandler(),
             new RdpQuickTestHandler(),
             new TailscaleEnsureConnectedHandler(),
+            new DiagnosticBundleCollectCommandHandler(diagnosticUploader),
         };
         var localUserPolicy = LocalUserCommandPolicy.FromEnvironmentAndRegistry();
         handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(localUserPolicy));
@@ -100,12 +103,25 @@ internal static class ServiceMode
             backoffResetRequested: HeartbeatBackoffResetSignal.ConsumeDefaultAsync,
             metadata: metadata);
 
+        using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var diagnosticScheduler = new DiagnosticBundleScheduler(diagnosticUploader, log);
+        var diagnosticSchedulerTask = diagnosticScheduler.RunAsync(serviceCts.Token);
+
         try
         {
-            await loop.RunAsync(ct);
+            await loop.RunAsync(serviceCts.Token);
         }
         finally
         {
+            serviceCts.Cancel();
+            try
+            {
+                await diagnosticSchedulerTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected during service shutdown.
+            }
             log.Info("Service mode stopped.");
         }
     }

@@ -29,7 +29,10 @@
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentClaimGate.cs" Link="Actions\AgentClaimGate.cs" />
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentServiceProvisioning.cs" Link="Actions\AgentServiceProvisioning.cs" />
     <Compile Include="..\Cerberus.Agent.App\AgentStatus.cs" Link="AgentStatus.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Diagnostics\AgentDiagnosticBundleUploader.cs" Link="Diagnostics\AgentDiagnosticBundleUploader.cs" />
     <Compile Include="..\Cerberus.Agent.App\Diagnostics\AgentDiagnosticsBundle.cs" Link="Diagnostics\AgentDiagnosticsBundle.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Diagnostics\DiagnosticBundleCollectCommandHandler.cs" Link="Diagnostics\DiagnosticBundleCollectCommandHandler.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Diagnostics\DiagnosticBundleScheduler.cs" Link="Diagnostics\DiagnosticBundleScheduler.cs" />
     <Compile Include="..\Cerberus.Agent.App\Elevation.cs" Link="Elevation.cs" />
     <Compile Include="..\Cerberus.Agent.App\Legal\AgentLegalConsent.cs" Link="Legal\AgentLegalConsent.cs" />
     <Compile Include="..\Cerberus.Agent.App\Localization\AgentLocalizer.cs" Link="Localization\AgentLocalizer.cs" />
