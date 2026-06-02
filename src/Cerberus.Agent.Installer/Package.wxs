@@ -36,8 +36,21 @@
     <Property Id="CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES" Value="$(var.UpdateAllowedArtifactPrefixes)" Secure="yes" />
     <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
     <Property Id="START_TRAY_ON_LOGIN" Value="1" Secure="yes" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchAgentAfterInstall)" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.ProjectDir)Assets\cerberus-wix-banner.png" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.ProjectDir)Assets\cerberus-wix-dialog.png" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)Assets\EULA.rtf" />
-    <ui:WixUI Id="WixUI_InstallDir" />
+    <UI>
+      <ui:WixUI Id="WixUI_InstallDir" />
+      <Publish
+          Dialog="ExitDialog"
+          Control="Finish"
+          Event="DoAction"
+          Value="LaunchAgentUi"
+          Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE"
+          Order="1" />
+    </UI>
     <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-app.ico" />
     <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
     <util:CloseApplication
@@ -120,7 +133,6 @@
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="StartExistingCerberusServiceAfterRepair" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RemoveLegacyUserStartupShortcut" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="LaunchAgentUi" After="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
     </InstallExecuteSequence>
   </Package>
 

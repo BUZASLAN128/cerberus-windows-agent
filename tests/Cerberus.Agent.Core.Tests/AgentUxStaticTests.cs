@@ -122,6 +122,54 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void ReleaseBuild_IncludesManifestSigningPublicKeyInRuntimeAndInstallerTrust()
+    {
+        var repoRoot = FindRepoRoot();
+        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
+
+        Assert.Contains("Get-ManifestPublicKeyPem $manifestPrivateKey", releaseScript);
+        Assert.Contains("$UpdateManifestPublicKeyB64 = $manifestPublicKeyB64", releaseScript);
+        Assert.Contains("$AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64", releaseScript);
+        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
+        Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
+    }
+
+    [Fact]
+    public void HeadlessUpdateCommand_ReconcilesInstallerResultBeforeReportingState()
+    {
+        var repoRoot = FindRepoRoot();
+        var updateCommand = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "Updates",
+            "UpdateCommandMode.cs"));
+
+        Assert.Contains("ReconcileInstallerResultAsync(currentVersion, ct)", updateCommand);
+        Assert.Contains("BuildConfiguredManualSignal()", updateCommand);
+        Assert.True(
+            updateCommand.IndexOf("ReconcileInstallerResultAsync(currentVersion, ct)", StringComparison.Ordinal) <
+            updateCommand.IndexOf("BuildConfiguredManualSignal()", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WindowsDeviceInfo_ReportsSemverInformationalVersionInsteadOfFourPartAssemblyVersion()
+    {
+        var repoRoot = FindRepoRoot();
+        var deviceInfo = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "WindowsDeviceInfo.cs"));
+
+        Assert.Contains("AssemblyInformationalVersionAttribute", deviceInfo);
+        Assert.Contains("info.Split('+', 2, StringSplitOptions.TrimEntries)[0].Trim()", deviceInfo);
+        Assert.True(
+            deviceInfo.IndexOf("GetInformationalVersion()", StringComparison.Ordinal) <
+            deviceInfo.IndexOf("GetName().Version", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void SetupHelper_UsesUnifiedAgentTitleAndFinishReadyState()
     {
         var repoRoot = FindRepoRoot();

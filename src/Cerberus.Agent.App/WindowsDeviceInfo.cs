@@ -11,6 +11,10 @@ internal static class WindowsDeviceInfo
     {
         try
         {
+            var info = GetInformationalVersion();
+            if (!string.IsNullOrWhiteSpace(info))
+                return info;
+
             var v = GetProductAssembly().GetName().Version;
             return v?.ToString() ?? "0.0.0";
         }
@@ -24,8 +28,7 @@ internal static class WindowsDeviceInfo
     {
         try
         {
-            var asm = GetProductAssembly();
-            var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            var info = GetInformationalVersion();
             return string.IsNullOrWhiteSpace(info) ? GetAgentVersion() : info;
         }
         catch
@@ -64,4 +67,15 @@ internal static class WindowsDeviceInfo
 
     private static Assembly GetProductAssembly()
         => Assembly.GetEntryAssembly() ?? typeof(WindowsDeviceInfo).Assembly;
+
+    private static string GetInformationalVersion()
+    {
+        var info = GetProductAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (string.IsNullOrWhiteSpace(info))
+            return "";
+
+        return info.Split('+', 2, StringSplitOptions.TrimEntries)[0].Trim();
+    }
 }

@@ -197,6 +197,13 @@ Invoke-ProcessChecked `
 
 Write-Step "Waiting for target version $targetVersion"
 $finalVersions = Wait-ForTargetVersion -TargetVersion $targetVersion -TimeoutSeconds 240
+
+Write-Step "Reconciling installer result with updated agent"
+Invoke-ProcessChecked `
+  -FilePath $agentExe `
+  -Arguments "--update-check-once" `
+  -Name "post-current-check" | Out-Null
+
 Write-JsonArtifact "after-update-service.json" (Get-ServiceSnapshot "after-update")
 Write-JsonArtifact "after-update-binaries.json" $finalVersions
 

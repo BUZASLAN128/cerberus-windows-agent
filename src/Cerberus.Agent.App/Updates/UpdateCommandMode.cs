@@ -15,10 +15,14 @@ internal static class UpdateCommandMode
     {
         var stateStore = AgentUpdateStateStore.CreateDefault();
         var currentVersion = WindowsDeviceInfo.GetAgentVersion();
+        await stateStore
+            .ReconcileInstallerResultAsync(currentVersion, ct)
+            .ConfigureAwait(false);
+
         var signal = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
         if (signal is null)
         {
-            await stateStore.WriteTransitionAsync(
+            await stateStore.TryWriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 currentVersion,
                 ct,
@@ -29,7 +33,7 @@ internal static class UpdateCommandMode
             return 2;
         }
 
-        await stateStore.WriteTransitionAsync(
+        await stateStore.TryWriteTransitionAsync(
             AgentUpdateStates.Checking,
             currentVersion,
             ct,
@@ -44,7 +48,7 @@ internal static class UpdateCommandMode
             var check = await coordinator.CheckUpdateAsync(signal, ct).ConfigureAwait(false);
             if (!check.Available)
             {
-                await stateStore.WriteTransitionAsync(
+                await stateStore.TryWriteTransitionAsync(
                     AgentUpdateStates.Current,
                     currentVersion,
                     ct,
@@ -65,7 +69,7 @@ internal static class UpdateCommandMode
 
             if (!apply)
             {
-                await stateStore.WriteTransitionAsync(
+                await stateStore.TryWriteTransitionAsync(
                     AgentUpdateStates.Available,
                     currentVersion,
                     ct,
@@ -106,7 +110,7 @@ internal static class UpdateCommandMode
         catch (Exception ex)
         {
             var errorCode = AgentUpdateErrorCodes.Classify(ex);
-            await stateStore.WriteTransitionAsync(
+            await stateStore.TryWriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 currentVersion,
                 CancellationToken.None,

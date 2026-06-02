@@ -350,7 +350,7 @@ internal sealed class TrayHost : IDisposable
         _updateNow.Enabled = false;
         var currentVersion = WindowsDeviceInfo.GetAgentVersion();
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateChecking"));
-        await _updateStateStore.WriteTransitionAsync(
+        await _updateStateStore.TryWriteTransitionAsync(
             AgentUpdateStates.Checking,
             currentVersion,
             CancellationToken.None,
@@ -364,7 +364,7 @@ internal sealed class TrayHost : IDisposable
             var signal = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
             if (coordinator is null || signal is null)
             {
-                await _updateStateStore.WriteTransitionAsync(
+                await _updateStateStore.TryWriteTransitionAsync(
                     AgentUpdateStates.Failed,
                     currentVersion,
                     CancellationToken.None,
@@ -380,7 +380,7 @@ internal sealed class TrayHost : IDisposable
             var check = await coordinator.CheckUpdateAsync(signal, cts.Token).ConfigureAwait(true);
             if (!check.Available)
             {
-                await _updateStateStore.WriteTransitionAsync(
+                await _updateStateStore.TryWriteTransitionAsync(
                     AgentUpdateStates.Current,
                     currentVersion,
                     CancellationToken.None,
@@ -396,7 +396,7 @@ internal sealed class TrayHost : IDisposable
 
             _lastCheckedUpdateSignal = signal;
             _lastUpdateCheck = check;
-            await _updateStateStore.WriteTransitionAsync(
+            await _updateStateStore.TryWriteTransitionAsync(
                 AgentUpdateStates.Available,
                 currentVersion,
                 CancellationToken.None,
@@ -412,7 +412,7 @@ internal sealed class TrayHost : IDisposable
         {
             var errorCode = AgentUpdateErrorCodes.Classify(ex);
             var errorMessage = AgentDiagnosticsBundle.Redact(ex.Message);
-            await _updateStateStore.WriteTransitionAsync(
+            await _updateStateStore.TryWriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 currentVersion,
                 CancellationToken.None,
@@ -474,7 +474,7 @@ internal sealed class TrayHost : IDisposable
         }
         catch (Exception ex)
         {
-            await _updateStateStore.WriteTransitionAsync(
+            await _updateStateStore.TryWriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 WindowsDeviceInfo.GetAgentVersion(),
                 CancellationToken.None,

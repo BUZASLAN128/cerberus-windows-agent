@@ -179,9 +179,18 @@ public sealed class AgentUpdateStager
             !string.Equals(signal.Channel, _trust.ExpectedChannel, StringComparison.Ordinal))
             throw new InvalidOperationException("Update signal channel mismatch.");
 
-        using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
-        manifestResponse.EnsureSuccessStatusCode();
-        var manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        string manifestJson;
+        try
+        {
+            using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
+            manifestResponse.EnsureSuccessStatusCode();
+            manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            throw new InvalidOperationException("Update manifest unavailable.", ex);
+        }
+
         return AgentUpdateManifestValidator.ParseAndValidateJson(
             manifestJson,
             _trust.ManifestPublicKeyPems,
@@ -297,11 +306,22 @@ public sealed class AgentUpdateStager
             artifactDir,
             $".{Path.GetFileName(artifactPath)}.{Guid.NewGuid():N}.part");
 
-        using var response = await _http.GetAsync(
-            manifest.ArtifactUrl,
-            HttpCompletionOption.ResponseHeadersRead,
-            ct).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.GetAsync(
+                manifest.ArtifactUrl,
+                HttpCompletionOption.ResponseHeadersRead,
+                ct).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            throw new InvalidOperationException("Update artifact download failed.", ex);
+        }
+
+        using (response)
+        {
         if (response.Content.Headers.ContentLength is > 0 &&
             response.Content.Headers.ContentLength > _trust.MaxArtifactBytes)
             throw new InvalidOperationException("Update artifact exceeds size limit.");
@@ -346,6 +366,7 @@ public sealed class AgentUpdateStager
         {
             TryDeleteFile(tempPath);
             throw;
+        }
         }
 
         File.Move(tempPath, artifactPath, overwrite: true);

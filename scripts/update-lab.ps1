@@ -53,26 +53,48 @@ function Copy-ReleaseAssets([string]$Version, [string]$BuildPublishDir, [string]
   }
 }
 
-function Get-CanonicalManifestPayload([pscustomobject]$Manifest) {
+function Get-ManifestJsonNode([string]$ManifestPath) {
+  $json = Get-Content -Raw -LiteralPath $ManifestPath
+  $node = [System.Text.Json.Nodes.JsonNode]::Parse($json)
+  Write-Output -NoEnumerate $node
+}
+
+function Get-ManifestString([System.Text.Json.Nodes.JsonNode]$Manifest, [string]$Name) {
+  $value = $Manifest[$Name]
+  if ($null -eq $value) {
+    throw "Update manifest field is missing: $Name"
+  }
+  return $value.GetValue[string]()
+}
+
+function Get-ManifestBool([System.Text.Json.Nodes.JsonNode]$Manifest, [string]$Name) {
+  $value = $Manifest[$Name]
+  if ($null -eq $value) {
+    throw "Update manifest field is missing: $Name"
+  }
+  return $value.GetValue[bool]()
+}
+
+function Get-CanonicalManifestPayload([System.Text.Json.Nodes.JsonNode]$Manifest) {
   return @(
-    ([string]$Manifest.artifact_kind).ToLowerInvariant(),
-    [string]$Manifest.version,
-    [string]$Manifest.channel,
-    [string]$Manifest.artifact_url,
-    ([string]$Manifest.sha256).ToLowerInvariant(),
-    [string]$Manifest.signing_identity,
-    [string]$Manifest.released_at_utc,
-    [string]$Manifest.minimum_protocol_version,
-    $(if ([bool]$Manifest.rollback_allowed) { "true" } else { "false" })
+    (Get-ManifestString $Manifest "artifact_kind").ToLowerInvariant(),
+    (Get-ManifestString $Manifest "version"),
+    (Get-ManifestString $Manifest "channel"),
+    (Get-ManifestString $Manifest "artifact_url"),
+    (Get-ManifestString $Manifest "sha256").ToLowerInvariant(),
+    (Get-ManifestString $Manifest "signing_identity"),
+    (Get-ManifestString $Manifest "released_at_utc"),
+    (Get-ManifestString $Manifest "minimum_protocol_version"),
+    $(if (Get-ManifestBool $Manifest "rollback_allowed") { "true" } else { "false" })
   ) -join "`n"
 }
 
 function Test-ManifestSignature([string]$ManifestPath, [string]$PublicKeyPem) {
-  $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+  $manifest = Get-ManifestJsonNode $ManifestPath
   $rsa = [Security.Cryptography.RSA]::Create()
   $rsa.ImportFromPem($PublicKeyPem)
   $payload = [Text.Encoding]::UTF8.GetBytes((Get-CanonicalManifestPayload $manifest))
-  $signature = [Convert]::FromBase64String([string]$manifest.signature)
+  $signature = [Convert]::FromBase64String((Get-ManifestString $manifest "signature"))
   return $rsa.VerifyData(
     $payload,
     $signature,
@@ -81,15 +103,17 @@ function Test-ManifestSignature([string]$ManifestPath, [string]$PublicKeyPem) {
 }
 
 function Set-ManifestSignature([string]$ManifestPath, [string]$PrivateKeyPem) {
-  $manifest = Get-Content -Raw -LiteralPath $ManifestPath | ConvertFrom-Json
+  $manifest = Get-ManifestJsonNode $ManifestPath
   $rsa = [Security.Cryptography.RSA]::Create()
   $rsa.ImportFromPem($PrivateKeyPem)
   $signature = $rsa.SignData(
     [Text.Encoding]::UTF8.GetBytes((Get-CanonicalManifestPayload $manifest)),
     [Security.Cryptography.HashAlgorithmName]::SHA256,
     [Security.Cryptography.RSASignaturePadding]::Pkcs1)
-  $manifest.signature = [Convert]::ToBase64String($signature)
-  $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ManifestPath -Encoding utf8
+  $manifest["signature"] = [Convert]::ToBase64String($signature)
+  $jsonOptions = [System.Text.Json.JsonSerializerOptions]::new()
+  $jsonOptions.WriteIndented = $true
+  $manifest.ToJsonString($jsonOptions) | Set-Content -LiteralPath $ManifestPath -Encoding utf8
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path

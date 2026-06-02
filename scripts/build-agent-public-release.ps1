@@ -40,17 +40,6 @@ function ConvertTo-Base64Utf8([string]$Value) {
   return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value.Trim()))
 }
 
-function Get-FirstListValue([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
-    return ""
-  }
-  $first = @($Value -split "[,;`r`n]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
-  if ($first.Count -eq 0) {
-    return ""
-  }
-  return $first[0].Trim()
-}
-
 function Find-SignTool {
   $candidates = @(
     "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
@@ -216,18 +205,9 @@ if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
   throw "Required environment variable 'AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM' is missing. Use -AllowEphemeralManifestKey only for local update-lab artifacts that will not be published as latest."
 }
-if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64) -or [string]::IsNullOrWhiteSpace($AgentUpdateManifestPublicKeysB64)) {
-  $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
-  if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
-    $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
-  }
-  if ([string]::IsNullOrWhiteSpace($AgentUpdateManifestPublicKeysB64)) {
-    $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
-  }
-}
-if ([string]::IsNullOrWhiteSpace($UpdateManifestPublicKeyB64)) {
-  $UpdateManifestPublicKeyB64 = Get-FirstListValue $AgentUpdateManifestPublicKeysB64
-}
+$manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
+$UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
+$AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"

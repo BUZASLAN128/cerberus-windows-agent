@@ -56,6 +56,24 @@ public sealed class AgentUpdateManifestValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsManifestWhenReleaseTrustKeyDoesNotMatchSigner()
+    {
+        using var signer = RSA.Create(2048);
+        using var staleReleaseKey = RSA.Create(2048);
+        var manifest = SignedManifest(signer);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AgentUpdateManifestValidator.Validate(
+                manifest,
+                PublicKeyPem(staleReleaseKey),
+                "stable",
+                new[] { "https://releases.cerberus.local/" },
+                currentVersion: "1.1.0"));
+
+        Assert.Contains("signature invalid", ex.Message);
+    }
+
+    [Fact]
     public void Validate_RejectsUnsignedManifestAndDeniedArtifactUrl()
     {
         using var rsa = RSA.Create(2048);

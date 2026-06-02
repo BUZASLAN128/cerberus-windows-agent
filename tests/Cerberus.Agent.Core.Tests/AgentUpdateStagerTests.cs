@@ -135,6 +135,28 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
+    public async Task CheckAsync_ClassifiesManifestHttpFailureAsUnavailable()
+    {
+        using var rsa = RSA.Create(2048);
+        var http = new HttpClient(new ResponseHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-manifest-404-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            stager.CheckAsync(UpdateResponse(), CancellationToken.None));
+
+        Assert.Contains("manifest unavailable", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(AgentUpdateErrorCodes.ManifestUnavailable, AgentUpdateErrorCodes.Classify(ex));
+    }
+
+    [Fact]
     public async Task CheckAsync_AllowsSignedDevChannelDowngradeForSmokeBuilds()
     {
         using var rsa = RSA.Create(2048);
@@ -293,6 +315,45 @@ public sealed class AgentUpdateStagerTests
         Assert.Contains("checksum mismatch", ex.Message);
         Assert.Equal(existingArtifact, await File.ReadAllBytesAsync(artifactPath));
         Assert.Empty(Directory.GetFiles(stageDir, "*.part"));
+    }
+
+    [Fact]
+    public async Task StageAsync_ClassifiesArtifactHttpFailureAsDownloadFailed()
+    {
+        using var rsa = RSA.Create(2048);
+        var expectedArtifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(expectedArtifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var http = new HttpClient(new ResponseHandler(request =>
+        {
+            if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                        Encoding.UTF8,
+                        "application/json"),
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-artifact-404-test-" + Guid.NewGuid().ToString("N"));
+        var stager = new AgentUpdateStager(
+            http,
+            new AgentUpdateTrust(
+                ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
+                ExpectedChannel: "stable",
+                AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                CurrentVersion: "1.1.0"),
+            root);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            stager.StageAsync(UpdateResponse(), CancellationToken.None));
+
+        Assert.Contains("artifact download failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(AgentUpdateErrorCodes.DownloadFailed, AgentUpdateErrorCodes.Classify(ex));
     }
 
     [Fact]
@@ -476,6 +537,25 @@ public sealed class AgentUpdateStagerTests
                 Content = _content(request),
                 RequestMessage = request,
             });
+        }
+    }
+
+    private sealed class ResponseHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _response;
+
+        public ResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> response)
+        {
+            _response = response;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var response = _response(request);
+            response.RequestMessage = request;
+            return Task.FromResult(response);
         }
     }
 

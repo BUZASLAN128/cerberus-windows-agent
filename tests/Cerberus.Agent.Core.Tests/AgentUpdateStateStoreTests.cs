@@ -43,6 +43,28 @@ public sealed class AgentUpdateStateStoreTests
     }
 
     [Fact]
+    public async Task TryWriteTransitionAsync_ReturnsTransitionWhenStatePathCannotBeWritten()
+    {
+        var root = NewRoot();
+        await File.WriteAllTextAsync(root, "not-a-directory");
+        var store = NewStore(root);
+
+        var state = await store.TryWriteTransitionAsync(
+            AgentUpdateStates.Current,
+            currentVersion: "0.2.0",
+            CancellationToken.None,
+            targetVersion: "0.2.0",
+            channel: "dev",
+            manifestUrl: "https://releases.example.test/update-manifest.json",
+            markChecked: true);
+
+        Assert.Equal(AgentUpdateStates.Current, state.State);
+        Assert.Equal("0.2.0", state.CurrentVersion);
+        Assert.False(Directory.Exists(root));
+        Assert.True(File.Exists(root));
+    }
+
+    [Fact]
     public async Task ReconcileInstallerResult_UpdatesStateWithoutLeakingLogPath()
     {
         var root = NewRoot();

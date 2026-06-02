@@ -4,6 +4,7 @@
   <String Id="ProductLanguage" Value="1055" />
   <String Id="DowngradeError" Value="Cerberus Windows Agent'ın daha yeni bir sürümü zaten kurulu." />
   <String Id="LaunchConditionEula" Value="Cerberus Windows Agent kurulumu için EULA kabul edilmelidir. Kurulum arayüzünü kullanın veya onaylı yönetilen kurulum için CERBERUS_EULA_ACCEPTED=1 geçin." />
+  <String Id="LaunchAgentAfterInstall" Value="Kurulum bitince Cerberus Agent'ı aç" />
   <String Id="StartMenuAgentShortcut" Value="Cerberus Agent" />
   <String Id="StartMenuUninstallShortcut" Value="Cerberus Ajanı Kaldır" />
 </WixLocalization>

@@ -165,7 +165,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("sc.exe&quot; start CerberusAgent", package);
         Assert.Contains("RemoveLegacyUserStartupShortcut", package);
         Assert.Contains("Cerberus Agent Tray.lnk", package);
-        Assert.Contains("Condition=\"NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE\"", package);
+        Assert.Contains("WIXUI_EXITDIALOGOPTIONALCHECKBOX", package);
+        Assert.Contains("Dialog=\"ExitDialog\"", package);
+        Assert.Contains("Value=\"LaunchAgentUi\"", package);
+        Assert.Contains("Condition=\"WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE\"", package);
         Assert.Contains("StartupShortcutComponent", package);
         Assert.Contains("StartupFolder", package);
         Assert.Contains("trayAutostart", package);

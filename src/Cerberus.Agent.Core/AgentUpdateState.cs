@@ -57,6 +57,10 @@ public static class AgentUpdateErrorCodes
             return HashMismatch;
         if (ex.Message.Contains("artifact URL", StringComparison.OrdinalIgnoreCase))
             return ArtifactUrlDenied;
+        if (ex.Message.Contains("download failed", StringComparison.OrdinalIgnoreCase))
+            return DownloadFailed;
+        if (ex.Message.Contains("unavailable", StringComparison.OrdinalIgnoreCase))
+            return ManifestUnavailable;
         if (ex.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase))
             return ManifestInvalid;
         return Unknown;
@@ -316,8 +320,89 @@ public sealed class AgentUpdateStateStore
         bool markChecked = false,
         string? installerResultId = null)
     {
+        var next = await BuildTransitionAsync(
+            state,
+            currentVersion,
+            ct,
+            targetVersion,
+            channel,
+            manifestUrl,
+            campaignId,
+            commandId,
+            artifactSha256,
+            errorCode,
+            errorMessage,
+            msiExitCode,
+            requiresReboot,
+            markChecked,
+            installerResultId).ConfigureAwait(false);
+        await WriteAsync(next, ct).ConfigureAwait(false);
+        return next;
+    }
+
+    public async Task<AgentUpdateState> TryWriteTransitionAsync(
+        string state,
+        string? currentVersion,
+        CancellationToken ct,
+        string? targetVersion = null,
+        string? channel = null,
+        string? manifestUrl = null,
+        string? campaignId = null,
+        string? commandId = null,
+        string? artifactSha256 = null,
+        string? errorCode = null,
+        string? errorMessage = null,
+        int? msiExitCode = null,
+        bool? requiresReboot = null,
+        bool markChecked = false,
+        string? installerResultId = null)
+    {
+        var next = await BuildTransitionAsync(
+            state,
+            currentVersion,
+            ct,
+            targetVersion,
+            channel,
+            manifestUrl,
+            campaignId,
+            commandId,
+            artifactSha256,
+            errorCode,
+            errorMessage,
+            msiExitCode,
+            requiresReboot,
+            markChecked,
+            installerResultId).ConfigureAwait(false);
+        try
+        {
+            await WriteAsync(next, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        return next;
+    }
+
+    private async Task<AgentUpdateState> BuildTransitionAsync(
+        string state,
+        string? currentVersion,
+        CancellationToken ct,
+        string? targetVersion,
+        string? channel,
+        string? manifestUrl,
+        string? campaignId,
+        string? commandId,
+        string? artifactSha256,
+        string? errorCode,
+        string? errorMessage,
+        int? msiExitCode,
+        bool? requiresReboot,
+        bool markChecked,
+        string? installerResultId)
+    {
         var existing = await ReadAsync(currentVersion, ct).ConfigureAwait(false);
-        var next = existing.Transition(
+        return existing.Transition(
             state,
             currentVersion,
             targetVersion,
@@ -332,8 +417,6 @@ public sealed class AgentUpdateStateStore
             requiresReboot,
             markChecked,
             installerResultId);
-        await WriteAsync(next, ct).ConfigureAwait(false);
-        return next;
     }
 
     public async Task<AgentUpdateState> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)

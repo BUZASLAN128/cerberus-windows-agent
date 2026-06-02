@@ -316,7 +316,7 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     {
         return _stateStore is null
             ? Task.CompletedTask
-            : _stateStore.WriteTransitionAsync(
+            : _stateStore.TryWriteTransitionAsync(
                 state,
                 WindowsDeviceInfo.GetAgentVersion(),
                 ct,
