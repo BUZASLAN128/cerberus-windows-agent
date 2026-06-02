@@ -106,11 +106,14 @@ public sealed class AgentLegalConsentTests
         Assert.DoesNotContain("ProgramFilesFolder", package);
         Assert.DoesNotContain("RemoveLegacyAppDataInstallFolder", package);
         Assert.DoesNotContain("LegacyAppDataCleanupComponent", package);
+        Assert.Contains("<Directory Id=\"APPFOLDER\" Name=\"app\" />", package);
+        Assert.Contains("<ComponentGroup Id=\"AgentComponents\" Directory=\"APPFOLDER\">", package);
         Assert.Contains("<Files Include=\"$(var.AgentPublishDir)\\**\">", package);
         Assert.Contains("<Exclude Files=\"$(var.AgentPublishDir)\\**\\*.pdb\" />", package);
         Assert.Contains("Cerberus.Agent.exe", package);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
         Assert.Contains("LaunchAgentUi", package);
+        Assert.Contains("ExeCommand='\"[APPFOLDER]Cerberus.Agent.exe\" --open'", package);
         Assert.DoesNotContain("Cerberus.Agent.App.exe\" --tray", package);
         Assert.Contains("CloseRunningAgentTray", package);
         Assert.Contains("CloseRunningAgentSetup", package);
@@ -133,6 +136,8 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CREATE_DESKTOP_SHORTCUT", package);
         Assert.Contains("START_TRAY_ON_LOGIN", package);
         Assert.Contains("Name=\"backendUrl\"", package);
+        Assert.Contains("Name=\"runtimeRoot\"", package);
+        Assert.Contains("Value=\"[APPFOLDER]\"", package);
         Assert.Contains("Name=\"ssoBaseUrl\"", package);
         Assert.Contains("Name=\"ssoClientId\"", package);
         Assert.Contains("Name=\"language\"", package);
@@ -160,6 +165,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("RepairExistingCerberusServicePath", package);
         Assert.Contains("StartExistingCerberusServiceAfterRepair", package);
         Assert.Contains("Cerberus.Agent.Service.exe", package);
+        Assert.Contains("[APPFOLDER]Cerberus.Agent.Service.exe", package);
         Assert.Contains("Condition=\"NOT REMOVE AND WIX_UPGRADE_DETECTED\"", package);
         Assert.Contains("sc.exe&quot; config CerberusAgent", package);
         Assert.Contains("sc.exe&quot; start CerberusAgent", package);
@@ -186,6 +192,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
+        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", releaseScript);
+        Assert.Contains("service_binary = \"app/Cerberus.Agent.Service.exe\"", releaseScript);
+        Assert.Contains("updater_binary = \"app/Cerberus.Agent.Updater.exe\"", releaseScript);
+        Assert.Contains("uninstall_binary = \"app/Cerberus.Agent.Uninstall.exe\"", releaseScript);
         Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
         Assert.Contains("Copy-ChannelLatestAliases", releaseScript);
         Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", releaseScript);
@@ -222,6 +232,18 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("$latestInstallerBase", workflow);
         Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
         Assert.Contains("$latestInstallerBase.msi", workflow);
+
+        var eulaRtf = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Assets",
+            "EULA.rtf"));
+        Assert.Contains($"Document version: {AgentLegalConsent.EulaVersion}", eulaRtf);
+        Assert.Contains("secure network connector", eulaRtf);
+        Assert.Contains("Cerberus-operated tailnet control plane", eulaRtf);
+        Assert.DoesNotContain("Headscale", eulaRtf, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DERP", eulaRtf, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -248,6 +270,25 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("WIX_UPGRADE_DETECTED", condition);
         Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT", condition);
         Assert.DoesNotContain("LicenseAccepted", condition);
+    }
+
+    [Fact]
+    public void ThirdPartyNotice_DocumentsSecureNetworkConnectorBoundary()
+    {
+        var repoRoot = FindRepoRoot();
+        var notice = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "docs",
+            "legal",
+            "THIRD-PARTY-NOTICES.md"));
+
+        Assert.Contains("does not bundle or redistribute", notice, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi", notice);
+        Assert.Contains("CERBERUS_TAILSCALE_ALLOW_CUSTOM_DOWNLOAD_URL", notice);
+        Assert.Contains("valid Authenticode signature", notice);
+        Assert.Contains("vendor-neutral labels", notice);
+        Assert.Contains("not legal advice", notice, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not installer execution or service acceptance evidence", notice, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

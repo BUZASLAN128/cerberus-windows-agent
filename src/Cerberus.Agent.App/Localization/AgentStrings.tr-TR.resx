@@ -41,10 +41,10 @@
   <data name="Stop" xml:space="preserve"><value>Durdur</value></data>
   <data name="UnregisterDevice" xml:space="preserve"><value>Cihaz kaydını kaldır</value></data>
   <data name="ServiceRemovalNote" xml:space="preserve"><value>Servisi kaldırmak cihaz kaydını korur. Cihaz sıfırlama ayrı bir işlemdir.</value></data>
-  <data name="Tailscale" xml:space="preserve"><value>Tailscale</value></data>
-  <data name="ExportTailscale" xml:space="preserve"><value>Tailscale komutunu dışa aktar</value></data>
-  <data name="InstallTailscale" xml:space="preserve"><value>Tailscale kur</value></data>
-  <data name="TailscaleUnavailableNote" xml:space="preserve"><value>Çalışma alanınız için Tailscale yapılandırılmadıysa dışa aktarma kullanılamaz.</value></data>
+  <data name="Tailscale" xml:space="preserve"><value>Güvenli ağ</value></data>
+  <data name="ExportTailscale" xml:space="preserve"><value>Güvenli ağ komutunu dışa aktar</value></data>
+  <data name="InstallTailscale" xml:space="preserve"><value>Güvenli ağ bağlayıcısını kur</value></data>
+  <data name="TailscaleUnavailableNote" xml:space="preserve"><value>Çalışma alanınız için güvenli ağ erişimi yapılandırılmadıysa dışa aktarma kullanılamaz.</value></data>
   <data name="CmdNotExported" xml:space="preserve"><value>komut henüz dışa aktarılmadı</value></data>
   <data name="AfterSetupNote" xml:space="preserve"><value>Cerberus Windows bildirim alanından çalışmaya devam eder.</value></data>
   <data name="OpenSetup" xml:space="preserve"><value>Cerberus Agent'ı aç</value></data>

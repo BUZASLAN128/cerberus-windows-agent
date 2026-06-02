@@ -96,15 +96,21 @@ public static partial class LocalUserCommandHandlers
         => new($"WinNT://{Environment.MachineName},computer");
 
     private static CommandResult? EnsureLocalAccountsSupported(LocalUserPayload payload)
-        => IsDomainController()
+        => EnsureLocalAccountsSupportedForProductType(ReadMachineProductType(), payload);
+
+    private static CommandResult? EnsureLocalAccountsSupportedForProductType(string? productType, LocalUserPayload payload)
+        => IsDomainControllerProductType(productType)
             ? Fail("local_accounts_unsupported_on_domain_controller", UnsupportedDomainControllerMessage, payload)
             : null;
 
     private static bool IsDomainController()
-        => IsDomainControllerProductType(Convert.ToString(Registry.GetValue(
+        => IsDomainControllerProductType(ReadMachineProductType());
+
+    private static string? ReadMachineProductType()
+        => Convert.ToString(Registry.GetValue(
             @"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\ProductOptions",
             "ProductType",
-            null)));
+            null));
 
     private static bool IsDomainControllerProductType(string? productType)
         => string.Equals(productType, DomainControllerProductType, StringComparison.OrdinalIgnoreCase);

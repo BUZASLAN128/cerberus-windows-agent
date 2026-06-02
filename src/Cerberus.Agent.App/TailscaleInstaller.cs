@@ -28,7 +28,7 @@ internal static class TailscaleInstaller
             ct: ct);
         if (installed)
         {
-            log("Tailscale already installed.");
+            log("Secure network connector is already installed.");
             return;
         }
 
@@ -62,7 +62,7 @@ internal static class TailscaleInstaller
         CancellationToken ct)
     {
         if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var url) || !IsAllowedDownloadUri(url, IsCustomDownloadUrlAllowed()))
-            throw new InvalidOperationException("Invalid Tailscale download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
+            throw new InvalidOperationException("Invalid secure network connector download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
 
         Directory.CreateDirectory(destDir);
 
@@ -70,7 +70,7 @@ internal static class TailscaleInstaller
         var destPath = Path.Combine(destDir, fileName);
         var tmpPath = destPath + ".download";
 
-        log("Downloading Tailscale installer...");
+        log("Downloading secure network connector installer...");
         log($"URL: {Sanitizer.Redact(downloadUrl)}");
         log($"To: {destPath}");
 
@@ -90,7 +90,7 @@ internal static class TailscaleInstaller
         if (len < 500_000)
             throw new InvalidOperationException("Downloaded file is unexpectedly small; aborting.");
 
-        log($"Download complete ({len} bytes).");
+        log($"Secure network connector download complete ({len} bytes).");
         return destPath;
     }
 
@@ -200,10 +200,10 @@ internal static class TailscaleInstaller
             return GetDefaultMsiUrlForThisMachine();
 
         if (!Uri.TryCreate(configured, UriKind.Absolute, out var uri))
-            throw new InvalidOperationException("Invalid Tailscale download URL.");
+            throw new InvalidOperationException("Invalid secure network connector download URL.");
 
         if (!IsAllowedDownloadUri(uri, IsCustomDownloadUrlAllowed()))
-            throw new InvalidOperationException("Invalid Tailscale download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
+            throw new InvalidOperationException("Invalid secure network connector download URL. Use the official stable MSI endpoint or explicitly allow a managed HTTPS MSI mirror.");
 
         return configured;
     }

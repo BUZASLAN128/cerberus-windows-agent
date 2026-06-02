@@ -452,15 +452,18 @@ public sealed class LocalUserCommandHandlersTests
             .GetMethod("TryAcquireMutationSlot", BindingFlags.NonPublic | BindingFlags.Static);
         Assert.NotNull(method);
         var now = DateTimeOffset.UtcNow;
-        var args = new object?[] { "create", "cerb_ratea_k7m2q6x4", now, null };
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+        var suffixBytes = RandomNumberGenerator.GetBytes(8);
+        var username = "cerb_ratea_" + new string(suffixBytes.Select(item => alphabet[item % alphabet.Length]).ToArray());
+        var args = new object?[] { "create", username, now, null };
 
         Assert.True(Assert.IsType<bool>(method.Invoke(null, args)));
 
-        args = ["create", "cerb_ratea_k7m2q6x4", now.AddMilliseconds(100), null];
+        args = ["create", username, now.AddMilliseconds(100), null];
         Assert.False(Assert.IsType<bool>(method.Invoke(null, args)));
         Assert.True(Assert.IsType<TimeSpan>(args[3]) > TimeSpan.Zero);
 
-        args = ["disable", "cerb_ratea_k7m2q6x4", now.AddMilliseconds(100), null];
+        args = ["disable", username, now.AddMilliseconds(100), null];
         Assert.True(Assert.IsType<bool>(method.Invoke(null, args)));
     }
 
@@ -476,6 +479,30 @@ public sealed class LocalUserCommandHandlersTests
         Assert.False(Assert.IsType<bool>(method.Invoke(null, ["ServerNT"])));
         Assert.False(Assert.IsType<bool>(method.Invoke(null, ["WinNT"])));
         Assert.False(Assert.IsType<bool>(method.Invoke(null, [null])));
+    }
+
+    [Fact]
+    public void EnsureLocalAccountsSupportedForProductType_FailsClosedOnDomainControllers()
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("EnsureLocalAccountsSupportedForProductType", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var payload = LocalUserPayload(
+            "cerb_sennu_k7m2q6x4",
+            "credential-profile-id",
+            "tenant-key-id",
+            "public-key",
+            "aad");
+
+        var result = Assert.IsType<CommandResult>(method.Invoke(null, ["LanmanNT", payload]));
+
+        Assert.Equal("FAILED", result.Status);
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("domain controllers", result.Stderr);
+        Assert.Contains("local_accounts_unsupported_on_domain_controller", Convert.ToString(result.PostVerify));
+
+        Assert.Null(method.Invoke(null, ["ServerNT", payload]));
+        Assert.Null(method.Invoke(null, ["WinNT", payload]));
     }
 
     private static string PublicKeyPem(RSA rsa)

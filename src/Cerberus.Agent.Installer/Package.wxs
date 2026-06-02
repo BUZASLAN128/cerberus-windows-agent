@@ -96,8 +96,8 @@
 
     <CustomAction
         Id="LaunchAgentUi"
-        Directory="INSTALLFOLDER"
-        ExeCommand='"[INSTALLFOLDER]Cerberus.Agent.exe" --open'
+        Directory="APPFOLDER"
+        ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --open'
         Execute="immediate"
         Return="asyncNoWait" />
     <CustomAction
@@ -105,8 +105,8 @@
         Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
     <CustomAction
         Id="RepairExistingCerberusServicePath"
-        Directory="INSTALLFOLDER"
-        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;\&quot;[INSTALLFOLDER]Cerberus.Agent.Service.exe\&quot;&quot; start= auto'
+        Directory="APPFOLDER"
+        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;\&quot;[APPFOLDER]Cerberus.Agent.Service.exe\&quot;&quot; start= auto'
         Execute="deferred"
         Impersonate="no"
         Return="ignore" />
@@ -139,7 +139,9 @@
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CompanyFolder" Name="Cerberus">
-        <Directory Id="INSTALLFOLDER" Name="Windows Agent" />
+        <Directory Id="INSTALLFOLDER" Name="Windows Agent">
+          <Directory Id="APPFOLDER" Name="app" />
+        </Directory>
       </Directory>
     </StandardDirectory>
 
@@ -149,7 +151,7 @@
   </Fragment>
 
   <Fragment>
-    <ComponentGroup Id="AgentComponents" Directory="INSTALLFOLDER">
+    <ComponentGroup Id="AgentComponents" Directory="APPFOLDER">
       <Files Include="$(var.AgentPublishDir)\**">
         <Exclude Files="$(var.AgentPublishDir)\**\*.pdb" />
         <Exclude Files="$(var.AgentPublishDir)\**\*.wixpdb" />
@@ -160,10 +162,12 @@
             Name="CerberusAgent"
             Stop="both"
             Wait="yes" />
+        <RemoveFolder Id="RemoveAppFolder" Directory="APPFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveCompanyFolder" Directory="CompanyFolder" On="uninstall" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="agentExeInstalled" Type="integer" Value="1" KeyPath="yes" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="installRoot" Type="string" Value="[INSTALLFOLDER]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="runtimeRoot" Type="string" Value="[APPFOLDER]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ProductCode" Type="string" Value="[ProductCode]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="productVersion" Type="string" Value="$(var.ReleaseVersion)" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateChannel" Type="string" Value="[CERBERUS_CHANNEL]" />
@@ -196,15 +200,15 @@
           Id="StartMenuAgentShortcut"
           Name="Cerberus Agent"
           Description="Open Cerberus Agent"
-          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
+          Target="[APPFOLDER]Cerberus.Agent.exe"
           Arguments="--open"
-          WorkingDirectory="INSTALLFOLDER" />
+          WorkingDirectory="APPFOLDER" />
       <Shortcut
           Id="StartMenuUninstallShortcut"
           Name="Uninstall Cerberus Agent"
           Description="Remove Cerberus Windows Agent"
-          Target="[INSTALLFOLDER]Cerberus.Agent.Uninstall.exe"
-          WorkingDirectory="INSTALLFOLDER" />
+          Target="[APPFOLDER]Cerberus.Agent.Uninstall.exe"
+          WorkingDirectory="APPFOLDER" />
       <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
     </Component>
@@ -221,9 +225,9 @@
           Id="StartupShortcut"
           Name="Cerberus Agent"
           Description="Start Cerberus Agent at sign-in"
-          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
+          Target="[APPFOLDER]Cerberus.Agent.exe"
           Arguments="--background"
-          WorkingDirectory="INSTALLFOLDER" />
+          WorkingDirectory="APPFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="trayAutostart" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
@@ -234,9 +238,9 @@
           Id="DesktopAgentShortcut"
           Name="Cerberus Agent"
           Description="Open Cerberus Agent"
-          Target="[INSTALLFOLDER]Cerberus.Agent.exe"
+          Target="[APPFOLDER]Cerberus.Agent.exe"
           Arguments="--open"
-          WorkingDirectory="INSTALLFOLDER" />
+          WorkingDirectory="APPFOLDER" />
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopAgentShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>

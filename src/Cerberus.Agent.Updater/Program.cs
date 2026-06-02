@@ -242,9 +242,24 @@ internal static class Program
 
     private static string? ResolveInstalledAgentUiPath()
     {
+        var runtimeRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "runtimeRoot");
+        if (!string.IsNullOrWhiteSpace(runtimeRoot))
+        {
+            var runtimePath = Path.Combine(runtimeRoot.Trim(), "Cerberus.Agent.exe");
+            if (File.Exists(runtimePath))
+                return runtimePath;
+        }
+
         var installRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "installRoot");
         if (!string.IsNullOrWhiteSpace(installRoot))
-            return Path.Combine(installRoot.Trim(), "Cerberus.Agent.exe");
+        {
+            var root = installRoot.Trim();
+            var appPath = Path.Combine(root, "app", "Cerberus.Agent.exe");
+            if (File.Exists(appPath))
+                return appPath;
+
+            return Path.Combine(root, "Cerberus.Agent.exe");
+        }
 
         var serviceImagePath = ReadRegistryString(
             $@"SYSTEM\CurrentControlSet\Services\{ServiceInstaller.ServiceName}",
@@ -258,6 +273,7 @@ internal static class Program
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "Cerberus",
             "Windows Agent",
+            "app",
             "Cerberus.Agent.exe");
     }
 

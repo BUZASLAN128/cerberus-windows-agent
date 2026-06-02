@@ -1,28 +1,52 @@
 using Cerberus.Agent.App;
-using System.Threading.Tasks;
-
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class ProcessInstanceGuardTests
 {
     [Fact]
-    public async Task TryAcquireRejectsSecondOwnerForSameMutex()
+    public void TryAcquireRejectsSecondOwnerForSameMutex()
     {
         var suffix = Guid.NewGuid().ToString("N");
         var mutexName = $@"Local\CerberusAgent.Tests.{suffix}";
         var pipeName = $"CerberusAgent.Tests.{suffix}";
 
-        Assert.True(ProcessInstanceGuard.TryAcquire(mutexName, pipeName, null, out var first));
-        using (first)
-        {
-            var secondThreadResult = await Task.Run(() =>
-            {
-                var acquired = ProcessInstanceGuard.TryAcquire(mutexName, pipeName, null, out var second);
-                return (acquired, second);
-            });
+        using var firstReady = new ManualResetEventSlim(false);
+        using var releaseFirst = new ManualResetEventSlim(false);
+        Exception? firstOwnerException = null;
 
-            Assert.False(secondThreadResult.acquired);
-            Assert.Null(secondThreadResult.second);
+        var firstOwnerThread = new Thread(() =>
+        {
+            try
+            {
+                Assert.True(ProcessInstanceGuard.TryAcquire(mutexName, pipeName, null, out var first));
+                using (first)
+                {
+                    firstReady.Set();
+                    releaseFirst.Wait();
+                }
+            }
+            catch (Exception ex)
+            {
+                firstOwnerException = ex;
+                firstReady.Set();
+            }
+        });
+
+        firstOwnerThread.Start();
+        Assert.True(firstReady.Wait(TimeSpan.FromSeconds(5)));
+        Assert.Null(firstOwnerException);
+
+        try
+        {
+            Assert.False(ProcessInstanceGuard.TryAcquire(mutexName, pipeName, null, out var second));
+            Assert.Null(second);
         }
+        finally
+        {
+            releaseFirst.Set();
+            Assert.True(firstOwnerThread.Join(TimeSpan.FromSeconds(5)));
+        }
+
+        Assert.Null(firstOwnerException);
     }
 }

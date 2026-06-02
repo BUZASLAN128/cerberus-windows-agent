@@ -41,10 +41,10 @@
   <data name="Stop" xml:space="preserve"><value>Stop</value></data>
   <data name="UnregisterDevice" xml:space="preserve"><value>Unregister device</value></data>
   <data name="ServiceRemovalNote" xml:space="preserve"><value>Removing the service keeps this device registered. Device reset is separate.</value></data>
-  <data name="Tailscale" xml:space="preserve"><value>Tailscale</value></data>
-  <data name="ExportTailscale" xml:space="preserve"><value>Export Tailscale command</value></data>
-  <data name="InstallTailscale" xml:space="preserve"><value>Install Tailscale</value></data>
-  <data name="TailscaleUnavailableNote" xml:space="preserve"><value>If your workspace is not configured for Tailscale, export will be unavailable.</value></data>
+  <data name="Tailscale" xml:space="preserve"><value>Secure network</value></data>
+  <data name="ExportTailscale" xml:space="preserve"><value>Export secure network command</value></data>
+  <data name="InstallTailscale" xml:space="preserve"><value>Install secure network connector</value></data>
+  <data name="TailscaleUnavailableNote" xml:space="preserve"><value>If your workspace is not configured for secure network access, export will be unavailable.</value></data>
   <data name="CmdNotExported" xml:space="preserve"><value>command not exported yet</value></data>
   <data name="AfterSetupNote" xml:space="preserve"><value>Cerberus keeps running from the Windows tray.</value></data>
   <data name="OpenSetup" xml:space="preserve"><value>Open Cerberus Agent</value></data>

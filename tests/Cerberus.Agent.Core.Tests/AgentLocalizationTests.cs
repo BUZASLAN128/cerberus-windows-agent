@@ -41,4 +41,20 @@ public sealed class AgentLocalizationTests
         Assert.DoesNotContain("{0}", AgentLocalizer.Get("UpdateCheckFailedDetail", CultureInfo.GetCultureInfo("en-US")));
         Assert.DoesNotContain("{0}", AgentLocalizer.Get("UpdateCheckFailedDetail", CultureInfo.GetCultureInfo("tr-TR")));
     }
+
+    [Fact]
+    public void ConnectorRepairLabels_DoNotExposeVendorNameToCustomers()
+    {
+        var englishCulture = CultureInfo.GetCultureInfo("en-US");
+        var turkishCulture = CultureInfo.GetCultureInfo("tr-TR");
+
+        Assert.Equal("Secure network", AgentLocalizer.Get("Tailscale", englishCulture));
+        Assert.Equal("Güvenli ağ", AgentLocalizer.Get("Tailscale", turkishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("ExportTailscale", englishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("InstallTailscale", englishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("TailscaleUnavailableNote", englishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("ExportTailscale", turkishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("InstallTailscale", turkishCulture));
+        Assert.DoesNotContain("Tailscale", AgentLocalizer.Get("TailscaleUnavailableNote", turkishCulture));
+    }
 }

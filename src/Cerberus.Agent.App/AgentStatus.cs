@@ -77,16 +77,16 @@ internal static class AgentStatus
                 timeout: TimeSpan.FromSeconds(2),
                 ct: ct);
             if (!installed)
-                return ("not installed", "ts:none");
+                return ("not installed", "net:none");
             if (connected)
-                return ("connected", "ts:up");
+                return ("connected", "net:up");
             if (!string.IsNullOrWhiteSpace(err))
-                return ("not connected", "ts:down");
-            return ("not connected", "ts:down");
+                return ("not connected", "net:down");
+            return ("not connected", "net:down");
         }
         catch
         {
-            return ("unknown", "ts:?");
+            return ("unknown", "net:?");
         }
     }
 }

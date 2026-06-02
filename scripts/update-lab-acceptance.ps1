@@ -61,7 +61,12 @@ function Get-InstalledBinaryVersions {
     return @()
   }
 
-  return @(Get-ChildItem -LiteralPath $installRoot -Filter "Cerberus.Agent*.exe" |
+  $runtimeRoot = Join-Path $installRoot "app"
+  if (-not (Test-Path -LiteralPath $runtimeRoot)) {
+    $runtimeRoot = $installRoot
+  }
+
+  return @(Get-ChildItem -LiteralPath $runtimeRoot -Filter "Cerberus.Agent*.exe" |
     ForEach-Object {
       [PSCustomObject]@{
         name = $_.Name
@@ -70,6 +75,16 @@ function Get-InstalledBinaryVersions {
         path = $_.FullName
       }
     })
+}
+
+function Get-InstalledAgentExe {
+  $installRoot = "C:\Program Files\Cerberus\Windows Agent"
+  $appAgentExe = Join-Path (Join-Path $installRoot "app") "Cerberus.Agent.exe"
+  if (Test-Path -LiteralPath $appAgentExe) {
+    return $appAgentExe
+  }
+
+  return (Join-Path $installRoot "Cerberus.Agent.exe")
 }
 
 function Get-ServiceSnapshot([string]$Phase) {
@@ -179,7 +194,7 @@ Invoke-ProcessChecked `
   -Name "install-old" `
   -AllowedExitCodes @(0, 3010) | Out-Null
 
-$agentExe = "C:\Program Files\Cerberus\Windows Agent\Cerberus.Agent.exe"
+$agentExe = Get-InstalledAgentExe
 Write-JsonArtifact "after-old-install-service.json" (Get-ServiceSnapshot "after-old-install")
 Write-JsonArtifact "after-old-install-binaries.json" (Get-InstalledBinaryVersions)
 

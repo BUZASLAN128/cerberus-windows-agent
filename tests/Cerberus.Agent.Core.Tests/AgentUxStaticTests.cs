@@ -40,9 +40,11 @@ public sealed class AgentUxStaticTests
 
         Assert.Contains("Id=\"StartMenuAgentShortcut\"", wxs);
         Assert.Contains("Name=\"Cerberus Agent\"", wxs);
-        Assert.Contains("Target=\"[INSTALLFOLDER]Cerberus.Agent.exe\"", wxs);
+        Assert.Contains("Target=\"[APPFOLDER]Cerberus.Agent.exe\"", wxs);
         Assert.Contains("Arguments=\"--open\"", wxs);
+        Assert.Contains("WorkingDirectory=\"APPFOLDER\"", wxs);
         Assert.Contains("Id=\"StartMenuUninstallShortcut\"", wxs);
+        Assert.Contains("Target=\"[APPFOLDER]Cerberus.Agent.Uninstall.exe\"", wxs);
         Assert.DoesNotContain("StartMenuSetupShortcut", wxs);
         Assert.DoesNotContain("StartMenuTrayShortcut", wxs);
         Assert.DoesNotContain("Name=\"Cerberus Agent Setup\"", wxs);
@@ -59,10 +61,13 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Name=\"desktopAgentShortcut\"", wxs);
         Assert.Contains("Id=\"StartupShortcut\"", wxs);
         Assert.Contains("Description=\"Start Cerberus Agent at sign-in\"", wxs);
+        Assert.Contains("Target=\"[APPFOLDER]Cerberus.Agent.exe\"", wxs);
         Assert.Contains("Arguments=\"--background\"", wxs);
+        Assert.Contains("WorkingDirectory=\"APPFOLDER\"", wxs);
         Assert.DoesNotContain("DesktopSetupShortcut", wxs);
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Setup.exe\"", wxs);
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Tray.exe\"", wxs);
+        Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.exe\"", wxs);
     }
 
     [Fact]
@@ -254,6 +259,7 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\" $true", releaseScript);
         Assert.DoesNotContain("Publish-AgentProject \"src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj\"", releaseScript);
         Assert.Contains("Cerberus.Agent.exe", releaseScript);
+        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", releaseScript);
         Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
         Assert.Contains("$allowedRuntimeExeNames", releaseScript);
@@ -295,6 +301,8 @@ public sealed class AgentUxStaticTests
         var readme = File.ReadAllText(Path.Combine(repoRoot, "README.md"));
 
         Assert.Contains("Cerberus.Agent.exe", readme);
+        Assert.Contains("app/Cerberus.Agent.exe", readme);
+        Assert.Contains("app\\Cerberus.Agent.exe --open", readme);
         Assert.Contains("Cerberus.Agent.Service.exe", readme);
         Assert.Contains("Program Files\\Cerberus\\Windows Agent", readme);
         Assert.Contains("CREATE_DESKTOP_SHORTCUT", readme);
@@ -350,6 +358,8 @@ public sealed class AgentUxStaticTests
         Assert.Contains("CreateProcessAsUser", updater);
         Assert.Contains(@"winsta0\default", updater);
         Assert.Contains("CloseHandle(processInfo.hProcess)", updater);
+        Assert.Contains("runtimeRoot", updater);
+        Assert.Contains("\"app\"", updater);
         Assert.Contains("Cerberus.Agent.exe", updater);
     }
 

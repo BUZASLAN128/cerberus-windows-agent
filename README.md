@@ -10,6 +10,7 @@ Per-machine Windows agent package for endpoint onboarding, secure agent identity
 - Auto Publish Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
 - CI Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml
 - Create Public Release: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
+- Third-Party Notices: docs/legal/THIRD-PARTY-NOTICES.md
 
 Badges:
 
@@ -35,10 +36,10 @@ Primary use cases:
 
 The customer-facing runtime follows a service + single tray client model:
 
-- `Cerberus.Agent.exe`: single user-session tray client and control center. It opens the same panel for status, onboarding, diagnostics, and updates.
-- `Cerberus.Agent.Service.exe`: Windows service runtime for heartbeat, telemetry, command polling, and update coordination.
-- `Cerberus.Agent.Updater.exe`: signed/checksum-verified MSI update applier.
-- `Cerberus.Agent.Uninstall.exe`: customer-facing uninstall wrapper with best-effort portal deactivation.
+- `app/Cerberus.Agent.exe`: single user-session tray client and control center. It opens the same panel for status, onboarding, diagnostics, and updates.
+- `app/Cerberus.Agent.Service.exe`: Windows service runtime for heartbeat, telemetry, command polling, and update coordination.
+- `app/Cerberus.Agent.Updater.exe`: signed/checksum-verified MSI update applier.
+- `app/Cerberus.Agent.Uninstall.exe`: customer-facing uninstall wrapper with best-effort portal deactivation.
 
 Support/admin CLI flags remain available through the agent binary for diagnostics and controlled automation:
 `--open`, `--connect`, `--check-updates`, `--update-now`, `--register`, `--heartbeat-once`, `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`, `--export-tailscale-up`, `--self-test`, `--apply-staged-update`, and `--accept-eula`.
@@ -207,7 +208,7 @@ Preview customer installs use the MSI asset from the mutable `preview-latest` Gi
 1. Download `Cerberus.Agent-preview-<version>.msi`.
 2. Accept the MSI EULA dialog.
 3. Complete the per-machine install under `Program Files\Cerberus\Windows Agent`.
-4. The installer opens `Cerberus.Agent.exe --open`.
+4. The installer opens `app\Cerberus.Agent.exe --open`.
 5. The Cerberus Agent panel handles PKCE login, registration, portal claim/lock, UAC service install/start, heartbeat, and ready state.
 
 The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKLM\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
@@ -338,7 +339,7 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
   - no PowerShell custom action
   - desktop shortcut disabled by default
   - agent tray startup enabled by default
-  - post-install launch: `Cerberus.Agent.exe --open`
+  - post-install launch: `app\Cerberus.Agent.exe --open`
 - Produces full release package:
   - `*.exe`
   - `*.msi`

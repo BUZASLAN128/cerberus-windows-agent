@@ -22,7 +22,7 @@
       UpdateManifestUrl=$(UpdateManifestUrl);
       UpdateManifestPublicKeyB64=$(UpdateManifestPublicKeyB64);
       UpdateAllowedArtifactPrefixes=$(UpdateAllowedArtifactPrefixes);
-      EulaVersion=agent-eula-2026-05-23.v1;
+      EulaVersion=agent-eula-2026-06-02.v2;
       PrivacyNoticeVersion=agent-privacy-2026-05-23.v1;
       SecurityDisclosureVersion=agent-security-2026-05-23.v1
     </DefineConstants>

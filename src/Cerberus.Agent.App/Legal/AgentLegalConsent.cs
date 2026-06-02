@@ -27,7 +27,7 @@ internal sealed record AgentLegalConsentRecord(
 internal static class AgentLegalConsent
 {
     public const string ProductName = "Cerberus Windows Agent";
-    public const string EulaVersion = "agent-eula-2026-05-23.v1";
+    public const string EulaVersion = "agent-eula-2026-06-02.v2";
     public const string PrivacyNoticeVersion = "agent-privacy-2026-05-23.v1";
     public const string SecurityDisclosureVersion = "agent-security-2026-05-23.v1";
 

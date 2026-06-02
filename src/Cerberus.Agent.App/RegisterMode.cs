@@ -83,7 +83,7 @@ internal static class RegisterMode
 
             var cmdPath = await TailscaleUpExporter.ExportAsync(ct);
             if (cmdPath is not null)
-                log.Info($"Wrote tailscale up command file: {cmdPath}");
+                log.Info($"Wrote secure network command file: {cmdPath}");
 
             log.Info("Secrets stored via DPAPI (CurrentUser).");
             return 0;

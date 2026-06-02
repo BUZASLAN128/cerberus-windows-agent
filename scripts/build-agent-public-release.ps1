@@ -434,10 +434,10 @@ $gate = [ordered]@{
     headless_eula_property = "CERBERUS_EULA_ACCEPTED=1"
     consent_storage = "hklm_registry_imported_by_agent"
     launches_agent_arguments = ""
-    ui_binary = "Cerberus.Agent.exe"
-    service_binary = "Cerberus.Agent.Service.exe"
-    updater_binary = "Cerberus.Agent.Updater.exe"
-    uninstall_binary = "Cerberus.Agent.Uninstall.exe"
+    ui_binary = "app/Cerberus.Agent.exe"
+    service_binary = "app/Cerberus.Agent.Service.exe"
+    updater_binary = "app/Cerberus.Agent.Updater.exe"
+    uninstall_binary = "app/Cerberus.Agent.Uninstall.exe"
     powershell_custom_action_present = $false
   }
   sbom_present = (Test-Path -LiteralPath $sbom)

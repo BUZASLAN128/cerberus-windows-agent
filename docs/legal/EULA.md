@@ -1,6 +1,6 @@
 # Cerberus Windows Agent End User License Agreement
 
-Document version: `agent-eula-2026-05-23.v1`
+Document version: `agent-eula-2026-06-02.v2`
 
 This End User License Agreement governs installation and use of the Cerberus Windows Agent. The agent must not be installed, registered, or run as a Windows service unless the current legal package has been accepted.
 
@@ -62,7 +62,8 @@ The agent may make local changes required for governed desktop operations, inclu
 - creating, disabling, rotating, or deleting Cerberus-managed local Windows accounts when commanded by the authorized control plane;
 - applying local account flags required for managed account safety, such as preventing password changes and password expiration;
 - preparing remote desktop group membership for authorized managed accounts;
-- exporting or applying private mesh connectivity commands when the workspace is configured for that feature.
+- installing or using an optional secure network connector when the workspace is configured for that feature;
+- connecting the device to a Cerberus-operated tailnet control plane for governed private access.
 
 The agent should not write internal assignment identifiers, tokens, or control-plane metadata into Windows user-facing account descriptions.
 
