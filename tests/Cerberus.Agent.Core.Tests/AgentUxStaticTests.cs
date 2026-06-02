@@ -337,6 +337,26 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void Updater_WritesCurrentStateFromVerifiedUpdatePlanAfterMsiSuccess()
+    {
+        var repoRoot = FindRepoRoot();
+        var updater = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "Program.cs"));
+
+        Assert.Contains("WriteCurrentStateFromPlan(fullMsiPath, installerResult, log)", updater);
+        Assert.Contains("\"update-plan.json\"", updater);
+        Assert.Contains("AgentUpdateStates.Current", updater);
+        Assert.Contains("targetVersion: version", updater);
+        Assert.Contains("installerResultId: result.ResultId", updater);
+        Assert.True(
+            updater.IndexOf("WriteInstallerResult(installerResult, log)", StringComparison.Ordinal) <
+            updater.IndexOf("WriteCurrentStateFromPlan(fullMsiPath, installerResult, log)", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void UpdaterAndUninstaller_RequestAdministratorBeforeRunningMsiOperations()
     {
         var repoRoot = FindRepoRoot();

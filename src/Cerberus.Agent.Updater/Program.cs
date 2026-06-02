@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using Cerberus.Agent.App;
 using Cerberus.Agent.Core;
 using Microsoft.Win32;
@@ -47,6 +48,7 @@ internal static class Program
                 return exitCode;
             }
 
+            WriteCurrentStateFromPlan(fullMsiPath, installerResult, log);
             TryStartService();
             TryRestartAgentUi(closedApplications, log);
             log.Write("Cerberus Agent updater completed.");
@@ -78,6 +80,56 @@ internal static class Program
             log.Write($"Updater result write failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    private static void WriteCurrentStateFromPlan(
+        string msiPath,
+        AgentUpdateInstallerResult result,
+        UpdaterLog log)
+    {
+        try
+        {
+            var planPath = Path.Combine(Path.GetDirectoryName(msiPath) ?? "", "update-plan.json");
+            if (!File.Exists(planPath))
+            {
+                log.Write("Updater current state skipped: update plan was not found.");
+                return;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(planPath));
+            var root = document.RootElement;
+            var version = ReadPlanString(root, "version");
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                log.Write("Updater current state skipped: update plan version was missing.");
+                return;
+            }
+
+            AgentUpdateStateStore.CreateDefault()
+                .WriteTransitionAsync(
+                    AgentUpdateStates.Current,
+                    version,
+                    CancellationToken.None,
+                    targetVersion: version,
+                    channel: ReadPlanString(root, "channel"),
+                    artifactSha256: ReadPlanString(root, "sha256"),
+                    msiExitCode: result.MsiExitCode,
+                    requiresReboot: result.RequiresReboot,
+                    markChecked: true,
+                    installerResultId: result.ResultId)
+                .GetAwaiter()
+                .GetResult();
+            log.Write($"Updater current state written: version={version}; result_id={result.ResultId}");
+        }
+        catch (Exception ex)
+        {
+            log.Write($"Updater current state write failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static string? ReadPlanString(JsonElement root, string propertyName)
+        => root.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static void TryStopService()
     {
