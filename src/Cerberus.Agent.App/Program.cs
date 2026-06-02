@@ -3,6 +3,7 @@ using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.App;
 
@@ -67,6 +68,23 @@ internal static class Program
                 .RunAsync(apply: parsed.UpdateApplyOnce, cts.Token)
                 .GetAwaiter()
                 .GetResult();
+        }
+
+        if (parsed.EnableLocalUserCreate || parsed.DisableLocalUserCreate)
+        {
+            try
+            {
+                LocalUserCommandPolicy.WriteRegistryCreateEnabled(parsed.EnableLocalUserCreate);
+                Console.WriteLine(parsed.EnableLocalUserCreate
+                    ? "Local user create policy enabled."
+                    : "Local user create policy disabled.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                return 2;
+            }
         }
 
         if (parsed.ExportTailscaleUp)
@@ -187,12 +205,14 @@ internal static class Program
            !args.SelfTest &&
            !args.Background &&
            !args.Open &&
-            !args.Connect &&
-            !args.CheckUpdates &&
-            !args.UpdateNow &&
-            !args.UpdateCheckOnce &&
-            !args.UpdateApplyOnce &&
-            !args.InstallService &&
+           !args.Connect &&
+           !args.CheckUpdates &&
+           !args.UpdateNow &&
+           !args.UpdateCheckOnce &&
+           !args.UpdateApplyOnce &&
+           !args.EnableLocalUserCreate &&
+           !args.DisableLocalUserCreate &&
+           !args.InstallService &&
            !args.UninstallService &&
            !args.UnregisterDevice &&
            !args.StartService &&

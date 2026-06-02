@@ -153,8 +153,6 @@ public partial class MainWindow : Window
         TailscaleLabel.Text = AgentLocalizer.Get("Connector");
         RegisteredLabel.Text = AgentLocalizer.Get("Registered");
         LocalUserCreateLabel.Text = AgentLocalizer.Get("LocalUserCreate");
-        DeviceSetupLabel.Text = AgentLocalizer.Get("DeviceSetup");
-        DeviceSetupDetail.Text = AgentLocalizer.Get("DeviceSetupDetail");
         AdvancedRepairExpander.Header = AgentLocalizer.Get("AdvancedRepairTools");
         ServiceRepairLabel.Text = AgentLocalizer.Get("Service");
         TailscaleRepairLabel.Text = AgentLocalizer.Get("Tailscale");
@@ -226,6 +224,10 @@ public partial class MainWindow : Window
             LocalUserCreateValue.Foreground = localUserPolicy.CreateEnabled
                 ? new SolidColorBrush(MediaColor.FromRgb(20, 83, 45))
                 : new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
+            LocalUserCreateToggleBtn.Content = localUserPolicy.CreateEnabled
+                ? AgentLocalizer.Get("Disable")
+                : AgentLocalizer.Get("Enable");
+            LocalUserCreateToggleBtn.IsEnabled = !_busy;
 
             var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
             ReadinessValue.Text = setupComplete ? AgentLocalizer.Get("ReadyToConnect") : AgentLocalizer.Get("SetupRequired");
@@ -234,11 +236,15 @@ public partial class MainWindow : Window
                 : AgentLocalizer.Get("SetupRequiredDetail");
             SetReadinessTone(setupComplete);
 
-            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("Finish") : AgentLocalizer.Get("StartSetup");
+            DeviceSetupLabel.Text = setupComplete ? AgentLocalizer.Get("StatusReport") : AgentLocalizer.Get("DeviceSetup");
+            DeviceSetupDetail.Text = setupComplete
+                ? AgentLocalizer.Get("StatusReportDetail")
+                : AgentLocalizer.Get("DeviceSetupDetail");
+            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("CloseWindow") : AgentLocalizer.Get("StartSetup");
             OnboardBtn.IsEnabled = !_busy && (setupComplete || cfgOk);
             if (setupComplete)
             {
-                OnboardHint.Text = AgentLocalizer.Get("ReadyHint");
+                OnboardHint.Text = AgentLocalizer.Get("StatusReportReadyHint");
             }
             else if (registered && !svc.Installed)
             {
@@ -404,6 +410,38 @@ public partial class MainWindow : Window
         RunServiceCommand(ServiceControlCommand.Stop);
     }
 
+    private async void LocalUserCreateToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_busy)
+            return;
+
+        var current = LocalUserCommandPolicy.FromEnvironmentAndRegistry();
+        var enable = !current.CreateEnabled;
+        if (enable)
+        {
+            var answer = System.Windows.MessageBox.Show(
+                this,
+                AgentLocalizer.Get("LocalUserCreateEnablePrompt"),
+                AgentLocalizer.Get("LocalUserCreate"),
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+            if (answer != MessageBoxResult.OK)
+                return;
+        }
+
+        _busy = true;
+        try
+        {
+            var result = RunLocalUserCreatePolicyCommand(enable);
+            Log(result.Message);
+        }
+        finally
+        {
+            _busy = false;
+            await RefreshAsync();
+        }
+    }
+
     private async void ExportTs_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -445,6 +483,39 @@ public partial class MainWindow : Window
     {
         var result = ServiceControlAction.Run(command);
         Log(result.Message);
+    }
+
+    private static ServiceControlResult RunLocalUserCreatePolicyCommand(bool enable)
+    {
+        var argument = enable ? "--enable-local-user-create" : "--disable-local-user-create";
+        if (!Elevation.IsAdministrator())
+        {
+            return Elevation.TryRunElevated(argument)
+                ? new ServiceControlResult(
+                    Succeeded: true,
+                    enable
+                        ? AgentLocalizer.Get("LocalUserCreateEnableElevationOpened")
+                        : AgentLocalizer.Get("LocalUserCreateDisableElevationOpened"))
+                : new ServiceControlResult(
+                    Succeeded: false,
+                    AgentLocalizer.Get("ElevationRequestFailed"));
+        }
+
+        try
+        {
+            LocalUserCommandPolicy.WriteRegistryCreateEnabled(enable);
+            return new ServiceControlResult(
+                Succeeded: true,
+                enable
+                    ? AgentLocalizer.Get("LocalUserCreateEnabledMessage")
+                    : AgentLocalizer.Get("LocalUserCreateDisabledMessage"));
+        }
+        catch (Exception ex)
+        {
+            return new ServiceControlResult(
+                Succeeded: false,
+                AgentLocalizer.Format("LocalUserCreatePolicyFailed", Sanitizer.Redact(ex.Message)));
+        }
     }
 
     private async void InstallTs_Click(object sender, RoutedEventArgs e)

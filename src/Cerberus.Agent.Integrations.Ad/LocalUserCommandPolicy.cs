@@ -16,6 +16,13 @@ public sealed record LocalUserCommandPolicy(bool CreateEnabled)
                ?? ReadRegistryBool()
                ?? false);
 
+    public static void WriteRegistryCreateEnabled(bool enabled)
+    {
+        using var key = Registry.LocalMachine.CreateSubKey(RegistryPath, writable: true)
+            ?? throw new InvalidOperationException("Cerberus Windows Agent registry policy path could not be opened.");
+        key.SetValue(RegistryValueName, enabled ? 1 : 0, RegistryValueKind.DWord);
+    }
+
     private static bool? ReadRegistryBool()
     {
         try

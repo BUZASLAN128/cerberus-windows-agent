@@ -55,8 +55,8 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
         try
         {
             _log.Warn(
-                $"Agent update policy staged locally: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
-            await StageUpdateAsync(response, campaignId: null, commandId: null, ct).ConfigureAwait(false);
+                $"Agent update policy applying through service: version={check.Version ?? "-"}, channel={check.Channel ?? "-"}, reason={check.Reason ?? "-"}");
+            await StageAndLaunchUpdateAsync(signal, requireElevation: false, ct).ConfigureAwait(false);
         }
         catch
         {

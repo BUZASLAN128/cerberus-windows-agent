@@ -7,6 +7,7 @@ using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
 using System.Drawing;
 using System.Net.Http;
+using System.ServiceProcess;
 using System.Threading;
 using System.Windows;
 using System.Windows.Media;
@@ -456,6 +457,11 @@ internal sealed class TrayHost : IDisposable
 
         try
         {
+            if (await TryRequestServiceUpdateApplyAsync().ConfigureAwait(true))
+                return;
+
+            ShowUpdateWarning(AgentLocalizer.Get("UpdateRequiresElevationDetail"));
+
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
             using var updateHttp = CreateUpdateHttpClient();
             var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance, _updateStateStore)
@@ -492,6 +498,36 @@ internal sealed class TrayHost : IDisposable
         {
             _applyingUpdate = false;
             _checkUpdates.Enabled = true;
+        }
+    }
+
+    private async Task<bool> TryRequestServiceUpdateApplyAsync()
+    {
+        var svc = AgentStatus.GetService();
+        if (!svc.Installed || !string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        try
+        {
+            using var controller = new ServiceController(ServiceInstaller.ServiceName);
+            controller.ExecuteCommand(WindowsServiceHost.ApplyUpdateCommand);
+            await _updateStateStore.TryWriteTransitionAsync(
+                AgentUpdateStates.Applying,
+                WindowsDeviceInfo.GetAgentVersion(),
+                CancellationToken.None,
+                targetVersion: _lastUpdateCheck?.Version,
+                channel: _lastUpdateCheck?.Channel ?? _lastCheckedUpdateSignal?.Channel,
+                manifestUrl: _lastUpdateCheck?.ManifestUrl ?? _lastCheckedUpdateSignal?.ManifestUrl,
+                markChecked: true).ConfigureAwait(true);
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateServiceRequested"));
+            ShowBalloon("Cerberus Agent", AgentLocalizer.Get("UpdateServiceRequestedDetail"), ToolTipIcon.Info);
+            _lastCheckedUpdateSignal = null;
+            _lastUpdateCheck = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            return false;
         }
     }
 
@@ -567,9 +603,9 @@ internal sealed class TrayHost : IDisposable
             AgentUpdateStates.Checking => AgentLocalizer.Get("UpdateChecking"),
             AgentUpdateStates.Current => AgentLocalizer.Get("UpdateCurrent"),
             AgentUpdateStates.Available => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
-            AgentUpdateStates.Downloading => AgentLocalizer.Get("UpdateChecking"),
-            AgentUpdateStates.Staged => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
-            AgentUpdateStates.Prompting => AgentLocalizer.Format("UpdateAvailable", state.TargetVersion ?? "-"),
+            AgentUpdateStates.Downloading => AgentLocalizer.Get("UpdateDownloading"),
+            AgentUpdateStates.Staged => AgentLocalizer.Get("UpdateReadyToInstall"),
+            AgentUpdateStates.Prompting => AgentLocalizer.Get("UpdateReadyToInstall"),
             AgentUpdateStates.Applying => AgentLocalizer.Get("UpdateInstalling"),
             AgentUpdateStates.InstallerStarted => AgentLocalizer.Get("UpdateInstallerStarted"),
             AgentUpdateStates.Applied => AgentLocalizer.Get("UpdateCurrent"),

@@ -23,6 +23,10 @@
   <data name="ConnectDevice" xml:space="preserve"><value>Bu cihazı bağla</value></data>
   <data name="Ready" xml:space="preserve"><value>Hazır</value></data>
   <data name="Finish" xml:space="preserve"><value>Bitir</value></data>
+  <data name="CloseWindow" xml:space="preserve"><value>Pencereyi kapat</value></data>
+  <data name="StatusReport" xml:space="preserve"><value>Durum raporu</value></data>
+  <data name="StatusReportDetail" xml:space="preserve"><value>Bu cihaz kayıtlı, Windows servisi çalışıyor ve Cerberus bildirim alanından raporlamaya devam eder.</value></data>
+  <data name="StatusReportReadyHint" xml:space="preserve"><value>Güncel durum: kayıtlı ve servis çalışıyor.</value></data>
   <data name="ReadyHint" xml:space="preserve"><value>Hazır. Cihaz kayıtlı ve servis çalışıyor.</value></data>
   <data name="AgentReadyTrayDetail" xml:space="preserve"><value>Bu cihaz bağlı ve Cerberus servisi çalışıyor.</value></data>
   <data name="RegisteredInstallServiceHint" xml:space="preserve"><value>Kayıt tamamlandı. Servisi kurmak için kurulumu tamamlayın.</value></data>
@@ -61,7 +65,11 @@
   <data name="UpdateUnavailable" xml:space="preserve"><value>yapılandırılmadı</value></data>
   <data name="UpdateAvailable" xml:space="preserve"><value>{0} hazır</value></data>
   <data name="UpdateCheckRequired" xml:space="preserve"><value>önce denetleyin</value></data>
+  <data name="UpdateDownloading" xml:space="preserve"><value>güncelleme indiriliyor</value></data>
+  <data name="UpdateReadyToInstall" xml:space="preserve"><value>kuruluma hazır</value></data>
   <data name="UpdateInstalling" xml:space="preserve"><value>kurulum başlatılıyor</value></data>
+  <data name="UpdateServiceRequested" xml:space="preserve"><value>kurulum istendi</value></data>
+  <data name="UpdateServiceRequestedDetail" xml:space="preserve"><value>Cerberus servisi güncellemeyi arka planda uygulayacak.</value></data>
   <data name="UpdateInstallerStarted" xml:space="preserve"><value>kurulum başlatıldı</value></data>
   <data name="UpdateCheckFailed" xml:space="preserve"><value>denetim başarısız</value></data>
   <data name="UpdateInstallFailed" xml:space="preserve"><value>kurulum başarısız</value></data>
@@ -77,7 +85,17 @@
   <data name="UpdateCheckFailedArtifactDetail" xml:space="preserve"><value>Güncelleme paket adresi bu kurulum tarafından güvenilir kabul edilmiyor.</value></data>
   <data name="UpdateCheckFailureReason" xml:space="preserve"><value>Sebep: {0}</value></data>
   <data name="UpdateNotConfiguredDetail" xml:space="preserve"><value>Bu kurulum için güncellemeler yapılandırılmamış.</value></data>
+  <data name="UpdateRequiresElevationDetail" xml:space="preserve"><value>Windows servisi güncellemeyi arka planda uygulamaya hazır olmadığı için Cerberus Agent bu güncelleme için yönetici onayı isteyecek.</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
+  <data name="Enable" xml:space="preserve"><value>Aç</value></data>
+  <data name="Disable" xml:space="preserve"><value>Kapat</value></data>
+  <data name="LocalUserCreateEnablePrompt" xml:space="preserve"><value>Bu işlem ajanın Windows yerel hesap oluşturma iznini bu cihazda açar. Backend politikası da açık olmalıdır; backend kapalıysa oluşturma komutları yine reddedilir. Devam edilsin mi?</value></data>
+  <data name="LocalUserCreateEnabledMessage" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası açıldı.</value></data>
+  <data name="LocalUserCreateDisabledMessage" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası kapatıldı.</value></data>
+  <data name="LocalUserCreateEnableElevationOpened" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikasını açmak için UAC onayı açıldı.</value></data>
+  <data name="LocalUserCreateDisableElevationOpened" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikasını kapatmak için UAC onayı açıldı.</value></data>
+  <data name="LocalUserCreatePolicyFailed" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası değiştirilemedi: {0}</value></data>
+  <data name="ElevationRequestFailed" xml:space="preserve"><value>Yönetici onayı istenemedi.</value></data>
   <data name="Yes" xml:space="preserve"><value>evet</value></data>
   <data name="No" xml:space="preserve"><value>hayır</value></data>
   <data name="Enabled" xml:space="preserve"><value>açık</value></data>

@@ -195,7 +195,8 @@ public sealed class AgentUxStaticTests
 
         Assert.Contains("Title=\"Cerberus Agent\"", xaml);
         Assert.Contains("<value>Cerberus Agent</value>", strings);
-        Assert.Contains("AgentLocalizer.Get(\"Finish\")", code);
+        Assert.Contains("AgentLocalizer.Get(\"CloseWindow\")", code);
+        Assert.Contains("AgentLocalizer.Get(\"StatusReport\")", code);
         Assert.Contains("Hide();", code);
         Assert.DoesNotContain("CERBERUS Agent Setup", xaml);
         Assert.DoesNotContain("CERBERUS Agent Setup", strings);
@@ -401,6 +402,43 @@ public sealed class AgentUxStaticTests
         Assert.Contains("<ApplicationManifest>app.manifest</ApplicationManifest>", uninstallProject);
         Assert.Contains("requestedExecutionLevel level=\"requireAdministrator\"", updaterManifest);
         Assert.Contains("requestedExecutionLevel level=\"requireAdministrator\"", uninstallManifest);
+    }
+
+    [Fact]
+    public void Updater_IsWindowsExecutableAndTrayDelegatesApplyToServiceFirst()
+    {
+        var repoRoot = FindRepoRoot();
+        var updaterProject = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Updater",
+            "Cerberus.Agent.Updater.csproj"));
+        var serviceHost = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "WindowsServiceHost.cs"));
+        var trayHost = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "TrayHost.cs"));
+        var coordinator = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.App",
+            "Updates",
+            "AgentUpdateCoordinator.cs"));
+
+        Assert.Contains("<OutputType>WinExe</OutputType>", updaterProject);
+        Assert.Contains("internal const int ApplyUpdateCommand = 129", serviceHost);
+        Assert.Contains("protected override void OnCustomCommand(int command)", serviceHost);
+        Assert.Contains("UpdateCommandMode.RunAsync(apply: true", serviceHost);
+        Assert.Contains("controller.ExecuteCommand(WindowsServiceHost.ApplyUpdateCommand)", trayHost);
+        Assert.Contains("TryRequestServiceUpdateApplyAsync()", trayHost);
+        Assert.Contains("UpdateRequiresElevationDetail", trayHost);
+        Assert.Contains("StageAndLaunchUpdateAsync(signal, requireElevation: false", coordinator);
+        Assert.DoesNotContain("await StageUpdateAsync(response, campaignId: null, commandId: null, ct)", coordinator);
     }
 
     private static string FindRepoRoot()

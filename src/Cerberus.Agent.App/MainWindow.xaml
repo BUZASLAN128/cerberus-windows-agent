@@ -121,6 +121,9 @@
                     <StackPanel>
                         <TextBlock Name="LocalUserCreateLabel" Foreground="#FF6B7280" FontSize="11" Text="User create" />
                         <TextBlock Name="LocalUserCreateValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
+                        <Button Name="LocalUserCreateToggleBtn" Margin="0,6,0,0" Height="24" Padding="6,2"
+                                FontSize="11" Click="LocalUserCreateToggle_Click"
+                                Style="{StaticResource CerberusButtonBase}">Enable</Button>
                     </StackPanel>
                 </Border>
             </UniformGrid>

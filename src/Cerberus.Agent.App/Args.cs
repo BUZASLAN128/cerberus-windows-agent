@@ -21,6 +21,8 @@ internal sealed record AgentArgs(
     bool UpdateNow,
     bool UpdateCheckOnce,
     bool UpdateApplyOnce,
+    bool EnableLocalUserCreate,
+    bool DisableLocalUserCreate,
     string? SelfTestOutFile,
     string? CasdoorTokenFile,
     string? ApplyUpdatePlan,
@@ -70,6 +72,8 @@ internal static class Args
         var updateNow = Has("--update-now") || Has("/update-now");
         var updateCheckOnce = Has("--update-check-once");
         var updateApplyOnce = Has("--update-apply-once");
+        var enableLocalUserCreate = Has("--enable-local-user-create");
+        var disableLocalUserCreate = Has("--disable-local-user-create");
         var selfTestOutFile = Value("--self-test-out");
         var casdoorTokenFile = Value("--casdoor-token-file") ?? Value("--token-file");
         var applyUpdatePlan = Value("--apply-staged-update");
@@ -96,6 +100,8 @@ internal static class Args
             updateNow,
             updateCheckOnce,
             updateApplyOnce,
+            enableLocalUserCreate,
+            disableLocalUserCreate,
             selfTestOutFile,
             casdoorTokenFile,
             applyUpdatePlan,
