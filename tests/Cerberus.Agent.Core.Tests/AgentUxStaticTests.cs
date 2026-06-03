@@ -79,18 +79,75 @@ public sealed class AgentUxStaticTests
         var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
         var normalized = source.Replace("\r\n", "\n");
 
-        Assert.Contains("private const string OpenSignal = \"open\"", program);
-        Assert.Contains("private const string ConnectSignal = \"connect\"", program);
+        Assert.Contains("AgentUiSignals.Open", program);
+        Assert.Contains("AgentUiSignals.Connect", program);
         Assert.Contains("Has(\"--open\")", args);
         Assert.Contains("Has(\"--connect\")", args);
-        Assert.Contains("case \"open\":", source);
-        Assert.Contains("case \"connect\":", source);
+        Assert.Contains("case AgentUiSignals.Open:", source);
+        Assert.Contains("case AgentUiSignals.Connect:", source);
+        Assert.Contains("case AgentUiSignals.Open:\n                    RequestHeartbeatBackoffReset(\"tray_open_signal\");\n                    ShowWindow(centerOnScreen: true);", normalized);
+        Assert.Contains("case AgentUiSignals.Connect:\n                    RequestHeartbeatBackoffReset(\"tray_connect_signal\");\n                    ShowWindow(centerOnScreen: true);", normalized);
         Assert.Contains("ShowWindow(centerOnScreen: false)", source);
         Assert.Contains("ShowWindow(centerOnScreen: true)", source);
         Assert.Contains("using var tray = new TrayHost()", program);
         Assert.Contains("ShutdownMode.OnExplicitShutdown", program);
         Assert.DoesNotContain("LaunchSibling", source);
         Assert.DoesNotContain("MouseButtons.Left)\n                LaunchSibling(\"Cerberus.Agent.Setup.exe\")", normalized);
+    }
+
+    [Fact]
+    public void UiSignals_AllowlistRejectsPrivilegedOrArbitraryPipePayloads()
+    {
+        Assert.True(Cerberus.Agent.App.AgentUiSignals.TryNormalize(" OPEN ", out var open));
+        Assert.Equal(Cerberus.Agent.App.AgentUiSignals.Open, open);
+        Assert.True(Cerberus.Agent.App.AgentUiSignals.TryNormalize("connect", out var connect));
+        Assert.Equal(Cerberus.Agent.App.AgentUiSignals.Connect, connect);
+        Assert.True(Cerberus.Agent.App.AgentUiSignals.TryNormalize("check-updates", out var checkUpdates));
+        Assert.Equal(Cerberus.Agent.App.AgentUiSignals.CheckUpdates, checkUpdates);
+        Assert.True(Cerberus.Agent.App.AgentUiSignals.TryNormalize("update-now", out var updateNow));
+        Assert.Equal(Cerberus.Agent.App.AgentUiSignals.UpdateNow, updateNow);
+
+        var denied = new[]
+        {
+            "",
+            "start-service",
+            "stop-service",
+            "install-service",
+            "uninstall-service",
+            "enable-local-user-create",
+            "disable-local-user-create",
+            "--apply-update-plan=C:\\temp\\plan.json",
+            "powershell -enc test",
+            "ad.user.create",
+        };
+
+        foreach (var signal in denied)
+        {
+            Assert.False(Cerberus.Agent.App.AgentUiSignals.TryNormalize(signal, out _));
+        }
+    }
+
+    [Fact]
+    public void ServiceMutationEntrypointsRemainAdminGated()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceInstaller.cs"));
+        var normalized = source.Replace("\r\n", "\n");
+
+        Assert.Contains("public static void InstallOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
+        Assert.Contains("public static void UninstallOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
+        Assert.Contains("public static void StartOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
+        Assert.Contains("public static void StopOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
+    }
+
+    [Fact]
+    public void ServiceMode_DoesNotRegisterAdUserMutationHandlersByDefault()
+    {
+        var repoRoot = FindRepoRoot();
+        var serviceMode = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceMode.cs"));
+
+        Assert.DoesNotContain("AdUserCommandHandlers.CreateDefaultHandlers", serviceMode);
+        Assert.Contains("LocalUserCommandHandlers.CreateDefaultHandlers(localUserPolicy)", serviceMode);
     }
 
     [Fact]

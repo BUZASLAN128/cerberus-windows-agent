@@ -240,10 +240,26 @@ public sealed class AgentLegalConsentTests
             "Assets",
             "EULA.rtf"));
         Assert.Contains($"Document version: {AgentLegalConsent.EulaVersion}", eulaRtf);
+        Assert.Contains($"Privacy Notice version: {AgentLegalConsent.PrivacyNoticeVersion}", eulaRtf);
         Assert.Contains("secure network connector", eulaRtf);
         Assert.Contains("Cerberus-operated tailnet control plane", eulaRtf);
         Assert.DoesNotContain("Headscale", eulaRtf, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("DERP", eulaRtf, StringComparison.OrdinalIgnoreCase);
+
+        var privacyNotice = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "docs",
+            "legal",
+            "PRIVACY-NOTICE.md"));
+        Assert.Contains($"Document version: `{AgentLegalConsent.PrivacyNoticeVersion}`", privacyNotice);
+        Assert.Contains("optional secure network connector status", privacyNotice);
+        Assert.Contains("device identity, connection state, private network addressing", privacyNotice);
+        Assert.Contains("connector auth keys", privacyNotice);
+        Assert.Contains("THIRD-PARTY-NOTICES.md", privacyNotice);
+        Assert.Contains("official Tailscale services", privacyNotice);
+        Assert.Contains("organization-managed Tailscale account", privacyNotice);
+        Assert.DoesNotContain("Headscale", privacyNotice, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DERP", privacyNotice, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

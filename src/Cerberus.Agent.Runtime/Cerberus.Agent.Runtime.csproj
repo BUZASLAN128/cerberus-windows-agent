@@ -29,6 +29,7 @@
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentClaimGate.cs" Link="Actions\AgentClaimGate.cs" />
     <Compile Include="..\Cerberus.Agent.App\Actions\AgentServiceProvisioning.cs" Link="Actions\AgentServiceProvisioning.cs" />
     <Compile Include="..\Cerberus.Agent.App\AgentStatus.cs" Link="AgentStatus.cs" />
+    <Compile Include="..\Cerberus.Agent.App\AgentUiSignals.cs" Link="AgentUiSignals.cs" />
     <Compile Include="..\Cerberus.Agent.App\Diagnostics\AgentDiagnosticBundleUploader.cs" Link="Diagnostics\AgentDiagnosticBundleUploader.cs" />
     <Compile Include="..\Cerberus.Agent.App\Diagnostics\AgentDiagnosticsBundle.cs" Link="Diagnostics\AgentDiagnosticsBundle.cs" />
     <Compile Include="..\Cerberus.Agent.App\Diagnostics\DiagnosticBundleCollectCommandHandler.cs" Link="Diagnostics\DiagnosticBundleCollectCommandHandler.cs" />

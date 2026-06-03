@@ -60,6 +60,92 @@ public sealed class AgentApiClientTelemetryTests
     }
 
     [Fact]
+    public async Task SafeTelemetrySubmit_RetriesSnapshotProbeAndDiagnosticOnceOnTransientOutage()
+    {
+        var handler = new TransientThenOkHandler(
+            expectedPaths:
+            [
+                "/api/v1/agents/a1/snapshot",
+                "/api/v1/agents/a1/probe-results",
+                "/api/v1/agents/a1/diagnostic-bundles",
+            ],
+            okBodies:
+            [
+                """{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":["identity"]}""",
+                """{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":[]}""",
+                """{"status":"accepted","bundle_id":"bundle-1","accepted":1,"ignored":0,"reason":null}""",
+            ]);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        await client.SubmitSnapshotAsync(
+            AgentSnapshotFactory.Create(
+                Metadata(),
+                DateTimeOffset.Parse("2026-05-07T00:00:00Z"),
+                new Dictionary<string, object?> { ["identity"] = new { status = "ok" } }),
+            CancellationToken.None);
+        await client.SubmitProbeResultAsync(
+            AgentTelemetryFactory.CreateProbeResult(
+                Metadata(),
+                resultId: "res-12345678",
+                probeId: "agent.self_test",
+                status: "ok",
+                payload: new Dictionary<string, object?>()),
+            CancellationToken.None);
+        await client.SubmitDiagnosticBundleAsync(
+            AgentTelemetryFactory.CreateDiagnosticBundle(
+                Metadata(),
+                clientBundleId: "diag-12345678",
+                manifest: new Dictionary<string, object?>(),
+                summary: new Dictionary<string, object?>(),
+                payload: new Dictionary<string, object?>(),
+                collectedAtUtc: DateTimeOffset.Parse("2026-05-07T00:00:00Z")),
+            CancellationToken.None);
+
+        Assert.Equal(2, handler.AttemptsByPath["/api/v1/agents/a1/snapshot"]);
+        Assert.Equal(2, handler.AttemptsByPath["/api/v1/agents/a1/probe-results"]);
+        Assert.Equal(2, handler.AttemptsByPath["/api/v1/agents/a1/diagnostic-bundles"]);
+    }
+
+    [Fact]
+    public async Task UnsafeTelemetrySubmit_DoesNotRetryEventsCommandResultPreauthOrSelfDeactivate()
+    {
+        var handler = new AlwaysUnavailableHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SubmitEventsAsync(
+            AgentTelemetryFactory.CreateEvents(
+                Metadata(),
+                new[]
+                {
+                    new AgentEventItem(
+                        EventId: "evt-12345678",
+                        Type: "agent.started",
+                        OccurredAt: "2026-05-07T00:00:00Z",
+                        Severity: "info",
+                        Payload: new Dictionary<string, object?>()),
+                }),
+            CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SubmitCommandResultAsync(
+            "cmd-1",
+            new { status = "DONE" },
+            CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SelfDeactivateAsync(
+            new AgentSelfDeactivateRequest(
+                SchemaVersion: "agent.self-deactivate.v1",
+                ReasonCode: "unit",
+                Reason: "unit"),
+            CancellationToken.None));
+
+        Assert.Equal(1, handler.AttemptsByPath["/api/v1/agents/a1/events"]);
+        Assert.Equal(1, handler.AttemptsByPath["/api/v1/agents/a1/commands/cmd-1/result"]);
+        Assert.Equal(1, handler.AttemptsByPath["/api/v1/agents/a1/tailscale/preauth"]);
+        Assert.Equal(1, handler.AttemptsByPath["/api/v1/agents/a1/deactivate"]);
+    }
+
+    [Fact]
     public async Task SelfDeactivateAsync_PostsSignedDeactivateEndpoint()
     {
         var handler = new CaptureHandler(
@@ -159,6 +245,57 @@ public sealed class AgentApiClientTelemetryTests
                     Encoding.UTF8,
                     "application/json"),
             };
+        }
+    }
+
+    private sealed class TransientThenOkHandler : HttpMessageHandler
+    {
+        private readonly Queue<string> _expectedPaths;
+        private readonly Queue<string> _okBodies;
+
+        public Dictionary<string, int> AttemptsByPath { get; } = new(StringComparer.Ordinal);
+
+        public TransientThenOkHandler(IEnumerable<string> expectedPaths, IEnumerable<string> okBodies)
+        {
+            _expectedPaths = new Queue<string>(expectedPaths);
+            _okBodies = new Queue<string>(okBodies);
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            AttemptsByPath.TryGetValue(path, out var attempts);
+            AttemptsByPath[path] = attempts + 1;
+
+            if (attempts == 0)
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                {
+                    Content = new StringContent("""{"detail":"unavailable"}""", Encoding.UTF8, "application/json"),
+                });
+            }
+
+            Assert.Equal(_expectedPaths.Dequeue(), path);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_okBodies.Dequeue(), Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    private sealed class AlwaysUnavailableHandler : HttpMessageHandler
+    {
+        public Dictionary<string, int> AttemptsByPath { get; } = new(StringComparer.Ordinal);
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            AttemptsByPath.TryGetValue(path, out var attempts);
+            AttemptsByPath[path] = attempts + 1;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent("""{"detail":"unavailable"}""", Encoding.UTF8, "application/json"),
+            });
         }
     }
 

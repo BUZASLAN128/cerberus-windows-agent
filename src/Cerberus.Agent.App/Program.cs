@@ -11,11 +11,6 @@ internal static class Program
 {
     private const string UiMutexName = "Global\\CerberusAgent.Ui.SingleInstance";
     private const string UiPipeName = "CerberusAgent.Ui.SingleInstancePipe";
-    private const string OpenSignal = "open";
-    private const string ConnectSignal = "connect";
-    private const string CheckUpdatesSignal = "check-updates";
-    private const string UpdateNowSignal = "update-now";
-
     [STAThread]
     public static int Main(string[] args)
     {
@@ -223,13 +218,13 @@ internal static class Program
     private static string? ParseStartupSignal(AgentArgs args)
     {
         if (args.UpdateNow)
-            return UpdateNowSignal;
+            return AgentUiSignals.UpdateNow;
         if (args.CheckUpdates)
-            return CheckUpdatesSignal;
+            return AgentUiSignals.CheckUpdates;
         if (args.Connect)
-            return ConnectSignal;
+            return AgentUiSignals.Connect;
         if (args.Open)
-            return OpenSignal;
+            return AgentUiSignals.Open;
         return null;
     }
 

@@ -76,13 +76,13 @@ public sealed class AgentApiClient
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("snapshot", body, ct);
+        SubmitIngestAsync("snapshot", body, retryTransient: true, ct: ct);
 
     public Task<AgentIngestAckResponse> SubmitEventsAsync(AgentEventBatchRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("events", body, ct);
+        SubmitIngestAsync("events", body, retryTransient: false, ct: ct);
 
     public Task<AgentIngestAckResponse> SubmitProbeResultAsync(AgentProbeResultRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("probe-results", body, ct);
+        SubmitIngestAsync("probe-results", body, retryTransient: true, ct: ct);
 
     public async Task<AgentDiagnosticBundleAckResponse> SubmitDiagnosticBundleAsync(
         AgentDiagnosticBundleRequest body,
@@ -92,11 +92,14 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/diagnostic-bundles";
 
-        using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        return await RetryHelper.WithRetryAsync(async () =>
+        {
+            using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
 
-        var payload = await resp.Content.ReadFromJsonAsync<AgentDiagnosticBundleAckResponse>(JsonOpts, ct).ConfigureAwait(false);
-        return payload ?? throw new InvalidOperationException("Agent diagnostic bundle response missing.");
+            var payload = await resp.Content.ReadFromJsonAsync<AgentDiagnosticBundleAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+            return payload ?? throw new InvalidOperationException("Agent diagnostic bundle response missing.");
+        }, maxRetries: 1, ct: ct).ConfigureAwait(false);
     }
 
     public async Task<AgentIngestAckResponse> SubmitOfflineTelemetryAsync(OfflineTelemetryRecord record, CancellationToken ct)
@@ -108,7 +111,13 @@ public sealed class AgentApiClient
             OfflineTelemetryKinds.ProbeResult => "probe-results",
             _ => throw new InvalidOperationException($"Unknown offline telemetry kind: {record.Kind}"),
         };
-        return await SubmitIngestJsonAsync(endpoint, record.Json, ct).ConfigureAwait(false);
+        var retryTransient = record.Kind switch
+        {
+            OfflineTelemetryKinds.Snapshot => true,
+            OfflineTelemetryKinds.ProbeResult => true,
+            _ => false,
+        };
+        return await SubmitIngestJsonAsync(endpoint, record.Json, retryTransient, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -153,22 +162,37 @@ public sealed class AgentApiClient
         return payload ?? throw new InvalidOperationException("Agent self-deactivate response missing.");
     }
 
-    private async Task<AgentIngestAckResponse> SubmitIngestAsync(string endpoint, object body, CancellationToken ct)
+    private async Task<AgentIngestAckResponse> SubmitIngestAsync(
+        string endpoint,
+        object body,
+        bool retryTransient,
+        CancellationToken ct)
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);
-        return await SubmitIngestJsonAsync(endpoint, json, ct).ConfigureAwait(false);
+        return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
     }
 
-    private async Task<AgentIngestAckResponse> SubmitIngestJsonAsync(string endpoint, string json, CancellationToken ct)
+    private async Task<AgentIngestAckResponse> SubmitIngestJsonAsync(
+        string endpoint,
+        string json,
+        bool retryTransient,
+        CancellationToken ct)
     {
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
 
-        using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        async Task<AgentIngestAckResponse> SubmitOnceAsync()
+        {
+            using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
 
-        var payload = await resp.Content.ReadFromJsonAsync<AgentIngestAckResponse>(JsonOpts, ct).ConfigureAwait(false);
-        return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
+            var payload = await resp.Content.ReadFromJsonAsync<AgentIngestAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+            return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
+        }
+
+        return retryTransient
+            ? await RetryHelper.WithRetryAsync(SubmitOnceAsync, maxRetries: 1, ct: ct).ConfigureAwait(false)
+            : await SubmitOnceAsync().ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedRequestAsync(

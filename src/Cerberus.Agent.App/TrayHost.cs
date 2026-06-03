@@ -165,20 +165,23 @@ internal sealed class TrayHost : IDisposable
 
         System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
         {
-            switch (message.Trim().ToLowerInvariant())
+            if (!AgentUiSignals.TryNormalize(message, out var signal))
+                return;
+
+            switch (signal)
             {
-                case "open":
+                case AgentUiSignals.Open:
                     RequestHeartbeatBackoffReset("tray_open_signal");
-                    ShowWindow(centerOnScreen: false);
+                    ShowWindow(centerOnScreen: true);
                     break;
-                case "connect":
+                case AgentUiSignals.Connect:
                     RequestHeartbeatBackoffReset("tray_connect_signal");
                     ShowWindow(centerOnScreen: true);
                     break;
-                case "check-updates":
+                case AgentUiSignals.CheckUpdates:
                     _ = CheckUpdatesAsync(userInitiated: true);
                     break;
-                case "update-now":
+                case AgentUiSignals.UpdateNow:
                     _ = ApplyCheckedUpdateAsync();
                     break;
             }

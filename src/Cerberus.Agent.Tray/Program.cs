@@ -13,11 +13,6 @@ internal static class Program
 {
     private const string TrayMutexName = "Global\\CerberusAgent.Tray.SingleInstance";
     private const string TrayPipeName = "CerberusAgent.Tray.SingleInstancePipe";
-    private const string OpenSignal = "open";
-    private const string ConnectSignal = "connect";
-    private const string CheckUpdatesSignal = "check-updates";
-    private const string UpdateNowSignal = "update-now";
-
     [STAThread]
     public static void Main(string[] args)
     {
@@ -44,13 +39,13 @@ internal static class Program
 
         bool Has(string value) => args.Any(arg => string.Equals(arg, value, StringComparison.OrdinalIgnoreCase));
         if (Has("--open") || Has("/open"))
-            return OpenSignal;
+            return AgentUiSignals.Open;
         if (Has("--connect") || Has("/connect"))
-            return ConnectSignal;
+            return AgentUiSignals.Connect;
         if (Has("--check-updates") || Has("/check-updates"))
-            return CheckUpdatesSignal;
+            return AgentUiSignals.CheckUpdates;
         if (Has("--update-now") || Has("/update-now"))
-            return UpdateNowSignal;
+            return AgentUiSignals.UpdateNow;
         return null;
     }
 }
@@ -198,19 +193,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 action();
         }
 
-        switch (message.Trim().ToLowerInvariant())
+        if (!AgentUiSignals.TryNormalize(message, out var signal))
+            return;
+
+        switch (signal)
         {
-            case "open":
-            case "connect":
-                RequestHeartbeatBackoffReset(message.Trim().Equals("connect", StringComparison.OrdinalIgnoreCase)
+            case AgentUiSignals.Open:
+            case AgentUiSignals.Connect:
+                RequestHeartbeatBackoffReset(signal == AgentUiSignals.Connect
                     ? "tray_connect_signal"
                     : "tray_open_signal");
                 Post(() => _ = OpenAgentAsync());
                 break;
-            case "check-updates":
+            case AgentUiSignals.CheckUpdates:
                 Post(() => _ = CheckUpdatesAsync(userInitiated: true));
                 break;
-            case "update-now":
+            case AgentUiSignals.UpdateNow:
                 Post(() => _ = ApplyCheckedUpdateAsync());
                 break;
         }

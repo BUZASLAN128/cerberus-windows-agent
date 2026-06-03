@@ -42,8 +42,9 @@ public sealed class ProcessInstanceGuard : IDisposable
                 return true;
             }
 
-            if (!string.IsNullOrWhiteSpace(signalExisting))
-                TrySignalExisting(pipeName, signalExisting);
+            var normalizedSignal = AgentUiSignals.NormalizeOrNull(signalExisting);
+            if (normalizedSignal is not null)
+                TrySignalExisting(pipeName, normalizedSignal);
 
             mutex.Dispose();
             return false;
@@ -79,9 +80,9 @@ public sealed class ProcessInstanceGuard : IDisposable
                     if (read <= 0)
                         continue;
 
-                    var message = Encoding.UTF8.GetString(buffer, 0, read).Trim();
-                    if (message.Length > 0)
-                        onSignal(message);
+                    var message = Encoding.UTF8.GetString(buffer, 0, read);
+                    if (AgentUiSignals.TryNormalize(message, out var signal))
+                        onSignal(signal);
                 }
                 catch (OperationCanceledException)
                 {

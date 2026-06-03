@@ -70,6 +70,7 @@ public sealed class WindowsTelemetryCollectorTests
         var json = JsonSerializer.Serialize(section);
 
         Assert.DoesNotContain("windows.local_user.create", json);
+        Assert.DoesNotContain("ad.user.", json);
         Assert.Contains("windows.local_user.disable", json);
         Assert.Contains("windows.local_user.delete", json);
     }

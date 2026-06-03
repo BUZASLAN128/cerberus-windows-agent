@@ -88,6 +88,32 @@ registration state, service installed, service running, heartbeat time,
 snapshot persisted, portal display, command readiness, and cleanup/uninstall
 state.
 
+## Windows Desktop Visual Verification
+
+Use Computer Use when Windows agent work depends on the real Windows GUI:
+installer screens, tray/app windows, enrollment dialogs, service-control UI,
+permission prompts, visible error states, or a bug that only reproduces in the
+desktop interface.
+
+Computer Use is visual evidence, not the default replacement for deterministic
+checks. Prefer PowerShell, service status, logs, repo-native tests, installer
+exit codes, and source inspection for repeatable validation. Pair Computer Use
+evidence with the matching non-GUI command, log, or test whenever feasible.
+
+When using Computer Use on Windows:
+
+- Keep the target app visible on the active desktop.
+- Scope the task to one app, window, or flow at a time.
+- Stay present for credential, administrator, security, network, or privacy
+  prompts.
+- Do not approve destructive, credential-revealing, or system-wide changes
+  without explicit user approval.
+- Record evidence: app/window tested, visible state observed, and matching
+  command/log/test artifact when available.
+
+For local web UI checks, use Browser/Chrome first. Use Computer Use only when
+the required evidence is outside the browser or depends on the Windows desktop.
+
 ## Live Evidence Checklist
 
 For live acceptance, record exact command output or artifact paths for the
