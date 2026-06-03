@@ -51,7 +51,7 @@
           Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE"
           Order="1" />
     </UI>
-    <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-app.ico" />
+    <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-favicon.ico" />
     <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
     <util:CloseApplication
         Id="CloseRunningAgentUi"

@@ -9,24 +9,50 @@
   <data name="Service" xml:space="preserve"><value>Servis</value></data>
   <data name="Connector" xml:space="preserve"><value>Bağlantı</value></data>
   <data name="Registered" xml:space="preserve"><value>Kayıt</value></data>
-  <data name="LocalUserCreate" xml:space="preserve"><value>Kullanıcı</value></data>
+  <data name="LocalUserCreate" xml:space="preserve"><value>Hesap açma</value></data>
+  <data name="LocalUserCreateHint" xml:space="preserve"><value>Yönetilen hesap açma için web portalı ve bu bilgisayar üzerinden onay gerekir. İki onay tamamlanmadan hesap oluşturulamaz.</value></data>
   <data name="Status" xml:space="preserve"><value>Durum</value></data>
+  <data name="StatusSummary" xml:space="preserve"><value>Servis: {0}  •  Ağ: {1}  •  Kayıt: {2}</value></data>
+  <data name="SystemInfo" xml:space="preserve"><value>Sistem bilgisi</value></data>
+  <data name="ServiceStatusLabel" xml:space="preserve"><value>Servis durumu</value></data>
+  <data name="ConnectorStatusLabel" xml:space="preserve"><value>Ağ bağlantısı</value></data>
+  <data name="RegistrationStatusLabel" xml:space="preserve"><value>Kayıt durumu</value></data>
+  <data name="AgentVersionLabel" xml:space="preserve"><value>Agent sürümü</value></data>
+  <data name="LastRefreshLabel" xml:space="preserve"><value>Son kontrol</value></data>
+  <data name="JustNow" xml:space="preserve"><value>az önce</value></data>
+  <data name="Activity" xml:space="preserve"><value>Son işlemler</value></data>
   <data name="Workspace" xml:space="preserve"><value>Çalışma alanı</value></data>
   <data name="Account" xml:space="preserve"><value>Hesap</value></data>
   <data name="SetupRequired" xml:space="preserve"><value>Kurulum gerekli</value></data>
   <data name="SetupRequiredDetail" xml:space="preserve"><value>Oturum açıp bu cihazı kaydetmek ve Windows servisini kurmak için kurulumu başlatın.</value></data>
-  <data name="ReadyToConnect" xml:space="preserve"><value>Bağlanmaya hazır</value></data>
-  <data name="ReadyToConnectDetail" xml:space="preserve"><value>Bu cihaz kayıtlı ve Cerberus Windows servisi çalışıyor.</value></data>
+  <data name="ReadyToConnect" xml:space="preserve"><value>Cihaz aktif</value></data>
+  <data name="ReadyToConnectDetail" xml:space="preserve"><value>Bu cihaz kayıtlı, bağlantısı hazır ve Cerberus Windows servisi üzerinden raporlama yapıyor.</value></data>
   <data name="DeviceSetup" xml:space="preserve"><value>Cihaz kurulumu</value></data>
   <data name="DeviceSetupDetail" xml:space="preserve"><value>Koşulları kabul edin, oturum açın ve Cerberus'un bu cihazı kaydedip Windows servisini başlatmasına izin verin.</value></data>
   <data name="StartSetup" xml:space="preserve"><value>Bu cihazı bağla</value></data>
   <data name="ConnectDevice" xml:space="preserve"><value>Bu cihazı bağla</value></data>
   <data name="Ready" xml:space="preserve"><value>Hazır</value></data>
   <data name="Finish" xml:space="preserve"><value>Bitir</value></data>
-  <data name="CloseWindow" xml:space="preserve"><value>Pencereyi kapat</value></data>
+  <data name="CloseWindow" xml:space="preserve"><value>Kapat</value></data>
   <data name="StatusReport" xml:space="preserve"><value>Durum raporu</value></data>
-  <data name="StatusReportDetail" xml:space="preserve"><value>Bu cihaz kayıtlı, Windows servisi çalışıyor ve Cerberus bildirim alanından raporlamaya devam eder.</value></data>
-  <data name="StatusReportReadyHint" xml:space="preserve"><value>Güncel durum: kayıtlı ve servis çalışıyor.</value></data>
+  <data name="StatusReportDetail" xml:space="preserve"><value>Kurulum için ek işlem gerekmiyor. Cerberus arka planda çalışmaya ve cihaz durumunu raporlamaya devam eder.</value></data>
+  <data name="StatusReportReadyHint" xml:space="preserve"><value>Cihaz kayıtlı. Servis çalışıyor. Arka plan raporlaması aktif.</value></data>
+  <data name="ReportRegistrationMissingTitle" xml:space="preserve"><value>Kayıt gerekli</value></data>
+  <data name="ReportRegistrationMissingDetail" xml:space="preserve"><value>Bu cihaz henüz bir çalışma alanına kayıtlı değil.</value></data>
+  <data name="ReportRegistrationMissingHint" xml:space="preserve"><value>Oturum açmak, cihazı kaydetmek ve raporlamayı başlatmak için kurulumu başlatın.</value></data>
+  <data name="ReportServiceMissingTitle" xml:space="preserve"><value>Servis kurulu değil</value></data>
+  <data name="ReportServiceMissingDetail" xml:space="preserve"><value>Cihaz kayıtlı, ancak Windows servisi kurulu değil.</value></data>
+  <data name="ReportServiceMissingHint" xml:space="preserve"><value>Kurulumu tamamlayın veya onarım araçlarından servisi kurun.</value></data>
+  <data name="ReportServiceStoppedTitle" xml:space="preserve"><value>Servis çalışmıyor</value></data>
+  <data name="ReportServiceStoppedDetail" xml:space="preserve"><value>Windows servisi durduğu sürece Cerberus güvenilir şekilde raporlayamaz.</value></data>
+  <data name="ReportServiceStoppedHint" xml:space="preserve"><value>Onarım araçlarından servisi başlatın; tekrar durursa yeniden kurulum gerekir.</value></data>
+  <data name="ReportServiceChangingTitle" xml:space="preserve"><value>Servis durumu değişiyor</value></data>
+  <data name="ReportServiceChangingDetail" xml:space="preserve"><value>Windows servisi başlatılıyor veya durduruluyor.</value></data>
+  <data name="ReportServiceChangingHint" xml:space="preserve"><value>Kısa süre bekleyin; durum otomatik yenilenecek.</value></data>
+  <data name="ReportNetworkIssueTitle" xml:space="preserve"><value>Ağ bağlantısı hazır değil</value></data>
+  <data name="ReportNetworkIssueDetail" xml:space="preserve"><value>Servis çalışıyor, ancak güvenli ağ bağlantısı hazır değil.</value></data>
+  <data name="ReportNetworkMissingDetail" xml:space="preserve"><value>Servis çalışıyor, ancak güvenli ağ bağlayıcısı kurulu değil.</value></data>
+  <data name="ReportNetworkIssueHint" xml:space="preserve"><value>Uzaktan erişim bekleniyorsa onarım araçlarından güvenli ağ ayarını kontrol edin.</value></data>
   <data name="ReadyHint" xml:space="preserve"><value>Hazır. Cihaz kayıtlı ve servis çalışıyor.</value></data>
   <data name="AgentReadyTrayDetail" xml:space="preserve"><value>Bu cihaz bağlı ve Cerberus servisi çalışıyor.</value></data>
   <data name="RegisteredInstallServiceHint" xml:space="preserve"><value>Kayıt tamamlandı. Servisi kurmak için kurulumu tamamlayın.</value></data>
@@ -89,17 +115,26 @@
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Güncelleme başlatılamadı: {0}</value></data>
   <data name="Enable" xml:space="preserve"><value>Aç</value></data>
   <data name="Disable" xml:space="preserve"><value>Kapat</value></data>
-  <data name="LocalUserCreateEnablePrompt" xml:space="preserve"><value>Bu işlem ajanın Windows yerel hesap oluşturma iznini bu cihazda açar. Backend politikası da açık olmalıdır; backend kapalıysa oluşturma komutları yine reddedilir. Devam edilsin mi?</value></data>
+  <data name="LocalUserCreateEnablePrompt" xml:space="preserve"><value>Bu işlem yönetilen hesap açma için bu bilgisayardaki onayı verir. Hesap oluşturulabilmesi için web portalından da onay verilmiş olmalıdır. Devam edilsin mi?</value></data>
   <data name="LocalUserCreateEnabledMessage" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası açıldı.</value></data>
   <data name="LocalUserCreateDisabledMessage" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası kapatıldı.</value></data>
   <data name="LocalUserCreateEnableElevationOpened" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikasını açmak için UAC onayı açıldı.</value></data>
   <data name="LocalUserCreateDisableElevationOpened" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikasını kapatmak için UAC onayı açıldı.</value></data>
   <data name="LocalUserCreatePolicyFailed" xml:space="preserve"><value>Yerel kullanıcı oluşturma politikası değiştirilemedi: {0}</value></data>
   <data name="ElevationRequestFailed" xml:space="preserve"><value>Yönetici onayı istenemedi.</value></data>
-  <data name="Yes" xml:space="preserve"><value>evet</value></data>
-  <data name="No" xml:space="preserve"><value>hayır</value></data>
-  <data name="Enabled" xml:space="preserve"><value>açık</value></data>
-  <data name="Disabled" xml:space="preserve"><value>kapalı</value></data>
+  <data name="ServiceRunning" xml:space="preserve"><value>Çalışıyor</value></data>
+  <data name="ServiceStopped" xml:space="preserve"><value>Durdu</value></data>
+  <data name="ServiceStarting" xml:space="preserve"><value>Başlatılıyor</value></data>
+  <data name="ServiceStopping" xml:space="preserve"><value>Durduruluyor</value></data>
+  <data name="ServiceNotInstalled" xml:space="preserve"><value>Kurulu değil</value></data>
+  <data name="ConnectorConnected" xml:space="preserve"><value>Bağlı</value></data>
+  <data name="ConnectorNotConnected" xml:space="preserve"><value>Bağlı değil</value></data>
+  <data name="ConnectorNotInstalled" xml:space="preserve"><value>Kurulu değil</value></data>
+  <data name="StatusUnknown" xml:space="preserve"><value>Bilinmiyor</value></data>
+  <data name="Yes" xml:space="preserve"><value>Evet</value></data>
+  <data name="No" xml:space="preserve"><value>Hayır</value></data>
+  <data name="Enabled" xml:space="preserve"><value>Açık</value></data>
+  <data name="Disabled" xml:space="preserve"><value>Kapalı</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Cerberus Agent Kaldırma</value></data>
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent bu bilgisayardan kaldırılacak. Portal erişilebilirse bu cihazın raporlaması da durdurulur.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Kurulum kaydı bulunamadı. Servis durdurulmaya çalışıldı; kalan dosyalar için Windows Uygulamalar ayarlarını kullanın.</value></data>

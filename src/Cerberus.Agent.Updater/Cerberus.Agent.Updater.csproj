@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Cerberus.Agent.Updater</AssemblyName>
     <RootNamespace>Cerberus.Agent.Updater</RootNamespace>
-    <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 

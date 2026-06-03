@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Cerberus.Agent.Service</AssemblyName>
     <RootNamespace>Cerberus.Agent.Service</RootNamespace>
-    <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

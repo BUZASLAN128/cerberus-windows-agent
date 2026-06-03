@@ -13,6 +13,10 @@
         ShowInTaskbar="False"
         Topmost="True"
         Background="#FFFFFFFF"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="Auto"
         PreviewKeyDown="Window_PreviewKeyDown"
         PreviewMouseDown="Window_PreviewMouseDown">
     <shell:WindowChrome.WindowChrome>
@@ -29,8 +33,9 @@
             <Setter Property="Foreground" Value="#FF111827" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="BorderBrush" Value="#FFE5E7EB" />
-            <Setter Property="Padding" Value="12,8" />
+            <Setter Property="Padding" Value="12,7" />
             <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
@@ -86,10 +91,14 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <StackPanel>
-                <TextBlock Name="TitleText" FontSize="20" FontWeight="SemiBold" Foreground="#FF111827" Text="Cerberus Agent" />
-                <TextBlock Name="SubtitleText" Margin="0,4,0,0" Foreground="#FF6B7280" Text="Connect this device to your workspace" />
-            </StackPanel>
+
+            <Image Width="178"
+                   Height="40"
+                   HorizontalAlignment="Left"
+                   Source="pack://application:,,,/Assets/cerberus-logo.png"
+                   Stretch="Uniform"
+                   RenderOptions.BitmapScalingMode="HighQuality"
+                   SnapsToDevicePixels="True" />
 
             <Button Grid.Column="1" Width="28" Height="28" Click="Close_Click"
                     Style="{StaticResource CerberusButtonBase}"
@@ -98,58 +107,85 @@
 
         <ScrollViewer Grid.Row="1" Margin="0,16,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
-            <UniformGrid Columns="4" Margin="0,0,0,10">
-                <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10" Margin="0,0,8,0">
+            <Border CornerRadius="12" Background="#FFF8FAFC" BorderBrush="#FFE2E8F0" BorderThickness="1" Padding="14" Margin="0,0,0,10">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
                     <StackPanel>
-                        <TextBlock Name="ServiceLabel" Foreground="#FF6B7280" FontSize="11" Text="Service" />
-                        <TextBlock Name="ServiceValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Name="LocalUserCreateLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Account creation" />
+                            <TextBlock Text=": " Foreground="#FF111827" FontWeight="SemiBold" />
+                            <TextBlock Name="LocalUserCreateValue" Foreground="#FF92400E" FontWeight="SemiBold" Text="-" />
+                        </StackPanel>
+                        <TextBlock Name="LocalUserCreateHint" Margin="0,5,10,0" Foreground="#FF6B7280" FontSize="11"
+                                   TextWrapping="Wrap" Text="Disabled by default. Backend policy must also allow account creation." />
                     </StackPanel>
-                </Border>
-                <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10" Margin="0,0,8,0">
-                    <StackPanel>
-                        <TextBlock Name="TailscaleLabel" Foreground="#FF6B7280" FontSize="11" Text="Tailscale" />
-                        <TextBlock Name="TailscaleValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
-                    </StackPanel>
-                </Border>
-                <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10">
-                    <StackPanel>
-                        <TextBlock Name="RegisteredLabel" Foreground="#FF6B7280" FontSize="11" Text="Registered" />
-                        <TextBlock Name="RegisteredValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
-                    </StackPanel>
-                </Border>
-                <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="10" Margin="8,0,0,0">
-                    <StackPanel>
-                        <TextBlock Name="LocalUserCreateLabel" Foreground="#FF6B7280" FontSize="11" Text="User create" />
-                        <TextBlock Name="LocalUserCreateValue" Foreground="#FF111827" FontWeight="SemiBold" Text="-" />
-                        <Button Name="LocalUserCreateToggleBtn" Margin="0,6,0,0" Height="24" Padding="6,2"
-                                FontSize="11" Click="LocalUserCreateToggle_Click"
-                                Style="{StaticResource CerberusButtonBase}">Enable</Button>
-                    </StackPanel>
-                </Border>
-            </UniformGrid>
+                    <Button Name="LocalUserCreateToggleBtn" Grid.Column="1" Width="58" Height="28" Padding="8,0"
+                            VerticalAlignment="Top" Click="LocalUserCreateToggle_Click"
+                            Style="{StaticResource CerberusButtonBase}">Enable</Button>
+                </Grid>
+            </Border>
 
-            <Border Name="ReadinessPanel" CornerRadius="14" Background="#FFF0FDF4" BorderBrush="#FFBBF7D0" BorderThickness="1" Padding="14" Margin="0,0,0,10">
+            <Border Name="ReadinessPanel" CornerRadius="12" Background="#FFF0FDF4" BorderBrush="#FFBBF7D0" BorderThickness="1" Padding="14" Margin="0,0,0,10">
                 <StackPanel>
                     <TextBlock Name="ReadinessValue" Foreground="#FF14532D" FontSize="16" FontWeight="SemiBold" Text="Checking setup..." />
                     <TextBlock Name="ReadinessDetail" Margin="0,6,0,0" Foreground="#FF166534" TextWrapping="Wrap"
                                Text="Cerberus is checking registration and Windows service status." />
+                    <TextBlock Name="ReadinessHint" Margin="0,8,0,0" Foreground="#FF166534" FontSize="11" TextWrapping="Wrap" Text="-" />
                 </StackPanel>
             </Border>
 
-            <Border CornerRadius="14" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14">
+            <Border Name="DeviceSetupCard" CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14" Margin="0,0,0,10">
                 <StackPanel>
                     <TextBlock Name="DeviceSetupLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Device setup" />
-                    <TextBlock Name="DeviceSetupDetail" Margin="0,6,0,0" Foreground="#FF6B7280"
+                    <TextBlock Name="DeviceSetupDetail" Margin="0,6,0,0" Foreground="#FF6B7280" TextWrapping="Wrap"
                                Text="Accept the terms, sign in, and let Cerberus register this device and start the Windows service." />
-                    <Button Name="OnboardBtn" Margin="0,12,0,0" Height="42" Click="Onboard_Click"
+                    <Button Name="OnboardBtn" Margin="0,12,0,0" Width="156" Height="34" HorizontalAlignment="Right" Click="Onboard_Click"
                             Style="{StaticResource CerberusButtonPrimary}">
                         Connect this device
                     </Button>
-                    <TextBlock Name="OnboardHint" Margin="0,8,0,0" Foreground="#FF6B7280" FontSize="11" Text="-" />
+                    <TextBlock Name="OnboardHint" Margin="0,8,0,0" Foreground="#FF6B7280" FontSize="11" TextWrapping="Wrap" Text="-" />
                 </StackPanel>
             </Border>
 
-            <Expander Name="AdvancedRepairExpander" Margin="0,14,0,0" Header="Advanced repair tools" Foreground="#FF374151">
+            <Border CornerRadius="12" Background="#FFFFFFFF" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="14" Margin="0,0,0,10">
+                <StackPanel>
+                    <TextBlock Name="SystemInfoLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="System information" />
+
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Name="ServiceInfoLabel" Grid.Row="0" Foreground="#FF64748B" FontSize="12" Text="Service status" />
+                        <TextBlock Name="ServiceInfoValue" Grid.Row="0" Grid.Column="1" Foreground="#FF0F766E" FontSize="12" FontWeight="SemiBold" Text="-" />
+
+                        <TextBlock Name="ConnectorInfoLabel" Grid.Row="1" Margin="0,9,0,0" Foreground="#FF64748B" FontSize="12" Text="Network connection" />
+                        <TextBlock Name="ConnectorInfoValue" Grid.Row="1" Grid.Column="1" Margin="18,9,0,0" Foreground="#FF0F766E" FontSize="12" FontWeight="SemiBold" Text="-" />
+
+                        <TextBlock Name="RegisteredInfoLabel" Grid.Row="2" Margin="0,9,0,0" Foreground="#FF64748B" FontSize="12" Text="Registration" />
+                        <TextBlock Name="RegisteredInfoValue" Grid.Row="2" Grid.Column="1" Margin="18,9,0,0" Foreground="#FF0F766E" FontSize="12" FontWeight="SemiBold" Text="-" />
+
+                        <TextBlock Name="VersionInfoLabel" Grid.Row="3" Margin="0,9,0,0" Foreground="#FF64748B" FontSize="12" Text="Agent version" />
+                        <TextBlock Name="VersionInfoValue" Grid.Row="3" Grid.Column="1" Margin="18,9,0,0" Foreground="#FF334155" FontSize="12" FontWeight="SemiBold" Text="-" />
+
+                        <TextBlock Name="LastRefreshInfoLabel" Grid.Row="4" Margin="0,9,0,0" Foreground="#FF64748B" FontSize="12" Text="Last check" />
+                        <TextBlock Name="LastRefreshInfoValue" Grid.Row="4" Grid.Column="1" Margin="18,9,0,0" Foreground="#FF334155" FontSize="12" FontWeight="SemiBold" Text="-" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <Expander Name="AdvancedRepairExpander" Margin="0,4,0,0" Header="Advanced repair tools" Foreground="#FF374151">
             <Grid Margin="0,10,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -189,9 +225,12 @@
             </Grid>
             </Expander>
 
-            <Border CornerRadius="14" Background="#FFF9FAFB" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="12" Margin="0,14,0,0">
-                <TextBox Name="StatusText" Background="#FFF9FAFB" Foreground="#FF111827" BorderThickness="0"
-                         IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Height="90" />
+            <Border CornerRadius="12" Background="#FFF9FAFB" BorderBrush="#FFE5E7EB" BorderThickness="1" Padding="12" Margin="0,14,0,0">
+                <StackPanel>
+                    <TextBlock Name="ActivityLogLabel" Foreground="#FF6B7280" FontSize="11" FontWeight="SemiBold" Text="Activity" />
+                    <TextBox Name="StatusText" Margin="0,6,0,0" Background="#FFF9FAFB" Foreground="#FF111827" BorderThickness="0"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Height="58" />
+                </StackPanel>
             </Border>
             </StackPanel>
         </ScrollViewer>

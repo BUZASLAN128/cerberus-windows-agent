@@ -16,7 +16,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Cerberus.Agent</AssemblyName>
-    <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
     <StartupObject>Cerberus.Agent.App.Program</StartupObject>
     <AgentDefaultBackendUrlBase64 Condition="'$(AgentDefaultBackendUrlBase64)' == ''"></AgentDefaultBackendUrlBase64>
     <AgentDefaultSsoBaseUrlBase64 Condition="'$(AgentDefaultSsoBaseUrlBase64)' == ''"></AgentDefaultSsoBaseUrlBase64>
@@ -70,6 +70,10 @@
 
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="..\Assets\cerberus-logo.png" Link="Assets\cerberus-logo.png" />
   </ItemGroup>
 
 </Project>

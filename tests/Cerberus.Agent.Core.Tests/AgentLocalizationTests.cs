@@ -20,8 +20,10 @@ public sealed class AgentLocalizationTests
     [Fact]
     public void Get_ReturnsEnglishFallbackAndTurkishOverride()
     {
-        Assert.Equal("Ready to connect", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("en-US")));
-        Assert.Equal("Bağlanmaya hazır", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("tr-TR")));
+        Assert.Equal("Device active", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("en-US")));
+        Assert.Equal("Cihaz aktif", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("tr-TR")));
+        Assert.Equal("Running", AgentLocalizer.Get("ServiceRunning", CultureInfo.GetCultureInfo("en-US")));
+        Assert.Equal("Çalışıyor", AgentLocalizer.Get("ServiceRunning", CultureInfo.GetCultureInfo("tr-TR")));
     }
 
     [Fact]

@@ -24,6 +24,7 @@ namespace Cerberus.Agent.App;
 internal sealed class TrayHost : IDisposable
 {
     private readonly NotifyIcon _icon;
+    private readonly TrayIconAnimator _trayIconAnimator;
     private readonly ToolStripMenuItem _workspaceStatus;
     private readonly ToolStripMenuItem _accountStatus;
     private readonly ToolStripMenuItem _serviceStatus;
@@ -42,6 +43,7 @@ internal sealed class TrayHost : IDisposable
     private bool _setupComplete;
     private bool _checkingUpdates;
     private bool _applyingUpdate;
+    private int _trayActivityCount;
     private int _refreshing;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private AgentUpdateSignal? _lastCheckedUpdateSignal;
@@ -129,6 +131,7 @@ internal sealed class TrayHost : IDisposable
             Visible = true,
             ContextMenuStrip = menu,
         };
+        _trayIconAnimator = new TrayIconAnimator(_icon);
 
         _icon.MouseClick += (_, e) =>
         {
@@ -339,9 +342,17 @@ internal sealed class TrayHost : IDisposable
             return;
         }
 
-        var result = ServiceControlAction.Run(command);
-        ShowBalloon("Service", result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
-        _ = RefreshAsync();
+        BeginTrayActivity();
+        try
+        {
+            var result = ServiceControlAction.Run(command);
+            ShowBalloon("Service", result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Error);
+            _ = RefreshAsync();
+        }
+        finally
+        {
+            EndTrayActivity();
+        }
     }
 
     private async Task CheckUpdatesAsync(bool userInitiated)
@@ -351,6 +362,7 @@ internal sealed class TrayHost : IDisposable
 
         var promptToApplyUpdate = false;
         _checkingUpdates = true;
+        BeginTrayActivity();
         _checkUpdates.Enabled = false;
         _updateNow.Enabled = false;
         var currentVersion = WindowsDeviceInfo.GetAgentVersion();
@@ -432,6 +444,7 @@ internal sealed class TrayHost : IDisposable
         {
             _checkingUpdates = false;
             _checkUpdates.Enabled = true;
+            EndTrayActivity();
         }
 
         if (promptToApplyUpdate && ConfirmApplyCheckedUpdate())
@@ -454,6 +467,7 @@ internal sealed class TrayHost : IDisposable
             return;
 
         _applyingUpdate = true;
+        BeginTrayActivity();
         _checkUpdates.Enabled = false;
         _updateNow.Enabled = false;
         _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstalling"));
@@ -501,6 +515,7 @@ internal sealed class TrayHost : IDisposable
         {
             _applyingUpdate = false;
             _checkUpdates.Enabled = true;
+            EndTrayActivity();
         }
     }
 
@@ -616,8 +631,9 @@ internal sealed class TrayHost : IDisposable
             _ => AgentLocalizer.Get("UpdateNotChecked"),
         };
 
-    private static async Task ExportDiagnosticsAsync()
+    private async Task ExportDiagnosticsAsync()
     {
+        BeginTrayActivity();
         try
         {
             var path = await AgentDiagnosticsBundle.ExportAsync().ConfigureAwait(true);
@@ -627,6 +643,25 @@ internal sealed class TrayHost : IDisposable
         {
             ShowUpdateWarning(AgentLocalizer.Format("DiagnosticsFailed", AgentDiagnosticsBundle.Redact(ex.Message)));
         }
+        finally
+        {
+            EndTrayActivity();
+        }
+    }
+
+    private void BeginTrayActivity()
+    {
+        if (Interlocked.Increment(ref _trayActivityCount) == 1)
+            _trayIconAnimator.Start();
+    }
+
+    private void EndTrayActivity()
+    {
+        if (Interlocked.Decrement(ref _trayActivityCount) > 0)
+            return;
+
+        Interlocked.Exchange(ref _trayActivityCount, 0);
+        _trayIconAnimator.Stop();
     }
 
     private void ShowBalloon(string title, string msg, ToolTipIcon icon)
@@ -723,6 +758,7 @@ internal sealed class TrayHost : IDisposable
         }
         catch { }
         try { _icon.Visible = false; } catch { }
+        try { _trayIconAnimator.Dispose(); } catch { }
         try { _icon.Dispose(); } catch { }
     }
 }

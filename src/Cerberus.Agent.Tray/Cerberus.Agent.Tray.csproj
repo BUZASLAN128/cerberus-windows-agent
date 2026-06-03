@@ -7,7 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>Cerberus.Agent.Tray</AssemblyName>
     <RootNamespace>Cerberus.Agent.Tray</RootNamespace>
-    <ApplicationIcon>..\Assets\cerberus-app.ico</ApplicationIcon>
+    <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

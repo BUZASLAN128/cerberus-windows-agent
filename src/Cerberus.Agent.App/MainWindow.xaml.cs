@@ -8,6 +8,7 @@ using Cerberus.Agent.Security;
 using System.IO;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using MediaColor = System.Windows.Media.Color;
@@ -16,6 +17,7 @@ namespace Cerberus.Agent.App;
 
 public partial class MainWindow : Window
 {
+    private static readonly string AgentVersion = WindowsDeviceInfo.GetAgentVersion();
     private readonly DispatcherTimer _timer;
     private volatile bool _busy;
     private int _refreshing;
@@ -147,12 +149,15 @@ public partial class MainWindow : Window
     private void ApplyLocalizedText()
     {
         Title = AgentLocalizer.Get("AppTitle");
-        TitleText.Text = AgentLocalizer.Get("AppTitle");
-        SubtitleText.Text = AgentLocalizer.Get("AppSubtitle");
-        ServiceLabel.Text = AgentLocalizer.Get("Service");
-        TailscaleLabel.Text = AgentLocalizer.Get("Connector");
-        RegisteredLabel.Text = AgentLocalizer.Get("Registered");
         LocalUserCreateLabel.Text = AgentLocalizer.Get("LocalUserCreate");
+        LocalUserCreateHint.Text = AgentLocalizer.Get("LocalUserCreateHint");
+        ActivityLogLabel.Text = AgentLocalizer.Get("Activity");
+        SystemInfoLabel.Text = AgentLocalizer.Get("SystemInfo");
+        ServiceInfoLabel.Text = AgentLocalizer.Get("ServiceStatusLabel");
+        ConnectorInfoLabel.Text = AgentLocalizer.Get("ConnectorStatusLabel");
+        RegisteredInfoLabel.Text = AgentLocalizer.Get("RegistrationStatusLabel");
+        VersionInfoLabel.Text = AgentLocalizer.Get("AgentVersionLabel");
+        LastRefreshInfoLabel.Text = AgentLocalizer.Get("LastRefreshLabel");
         AdvancedRepairExpander.Header = AgentLocalizer.Get("AdvancedRepairTools");
         ServiceRepairLabel.Text = AgentLocalizer.Get("Service");
         TailscaleRepairLabel.Text = AgentLocalizer.Get("Tailscale");
@@ -215,9 +220,18 @@ public partial class MainWindow : Window
             var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
             _setupComplete = setupComplete;
 
-            ServiceValue.Text = svc.Text;
-            TailscaleValue.Text = ts.Text;
-            RegisteredValue.Text = registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No");
+            var serviceText = FormatServiceStatus(svc.Text);
+            var connectorText = FormatConnectorStatus(ts.Text);
+            var registeredText = registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No");
+
+            ServiceInfoValue.Text = serviceText;
+            ConnectorInfoValue.Text = connectorText;
+            RegisteredInfoValue.Text = registeredText;
+            VersionInfoValue.Text = AgentVersion;
+            LastRefreshInfoValue.Text = AgentLocalizer.Get("JustNow");
+            SetInfoValueTone(ServiceInfoValue, IsHealthyServiceStatus(svc.Text));
+            SetInfoValueTone(ConnectorInfoValue, IsHealthyConnectorStatus(ts.Text));
+            SetInfoValueTone(RegisteredInfoValue, registered);
             LocalUserCreateValue.Text = localUserPolicy.CreateEnabled
                 ? AgentLocalizer.Get("Enabled")
                 : AgentLocalizer.Get("Disabled");
@@ -230,18 +244,20 @@ public partial class MainWindow : Window
             LocalUserCreateToggleBtn.IsEnabled = !_busy;
 
             var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
-            ReadinessValue.Text = setupComplete ? AgentLocalizer.Get("ReadyToConnect") : AgentLocalizer.Get("SetupRequired");
-            ReadinessDetail.Text = setupComplete
-                ? AgentLocalizer.Get("ReadyToConnectDetail")
-                : AgentLocalizer.Get("SetupRequiredDetail");
-            SetReadinessTone(setupComplete);
+            var statusReport = BuildStatusReport(registered, svc, ts);
+            ReadinessValue.Text = AgentLocalizer.Get("StatusReport");
+            ReadinessDetail.Text = statusReport.Detail;
+            ReadinessHint.Text = statusReport.Hint;
+            SetReadinessTone(statusReport.Tone);
 
             DeviceSetupLabel.Text = setupComplete ? AgentLocalizer.Get("StatusReport") : AgentLocalizer.Get("DeviceSetup");
             DeviceSetupDetail.Text = setupComplete
                 ? AgentLocalizer.Get("StatusReportDetail")
                 : AgentLocalizer.Get("DeviceSetupDetail");
-            OnboardBtn.Content = setupComplete ? AgentLocalizer.Get("CloseWindow") : AgentLocalizer.Get("StartSetup");
-            OnboardBtn.IsEnabled = !_busy && (setupComplete || cfgOk);
+            DeviceSetupCard.Visibility = setupComplete ? Visibility.Collapsed : Visibility.Visible;
+            OnboardBtn.Content = AgentLocalizer.Get("StartSetup");
+            OnboardBtn.Visibility = Visibility.Visible;
+            OnboardBtn.IsEnabled = !_busy && cfgOk;
             if (setupComplete)
             {
                 OnboardHint.Text = AgentLocalizer.Get("StatusReportReadyHint");
@@ -252,7 +268,7 @@ public partial class MainWindow : Window
             }
             else if (registered)
             {
-                OnboardHint.Text = AgentLocalizer.Format("RegisteredServiceStatusHint", svc.Text);
+                OnboardHint.Text = AgentLocalizer.Format("RegisteredServiceStatusHint", serviceText);
             }
             else if (!cfgOk)
             {
@@ -353,14 +369,91 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SetReadinessTone(bool ready)
+    private static StatusReport BuildStatusReport(
+        bool registered,
+        (string Text, string Short, bool CanStart, bool CanStop, bool Installed) service,
+        (string Text, string Short) connector)
     {
-        if (ready)
+        if (!registered)
+        {
+            return new StatusReport(
+                AgentLocalizer.Get("ReportRegistrationMissingDetail"),
+                AgentLocalizer.Get("ReportRegistrationMissingHint"),
+                "warning");
+        }
+
+        if (!service.Installed || string.Equals(NormalizeStatusKey(service.Text), "not installed", StringComparison.Ordinal))
+        {
+            return new StatusReport(
+                AgentLocalizer.Get("ReportServiceMissingDetail"),
+                AgentLocalizer.Get("ReportServiceMissingHint"),
+                "warning");
+        }
+
+        var serviceKey = NormalizeStatusKey(service.Text);
+        if (string.Equals(serviceKey, "stopped", StringComparison.Ordinal))
+        {
+            return new StatusReport(
+                AgentLocalizer.Get("ReportServiceStoppedDetail"),
+                AgentLocalizer.Get("ReportServiceStoppedHint"),
+                "danger");
+        }
+
+        if (string.Equals(serviceKey, "starting", StringComparison.Ordinal) ||
+            string.Equals(serviceKey, "stopping", StringComparison.Ordinal))
+        {
+            return new StatusReport(
+                AgentLocalizer.Get("ReportServiceChangingDetail"),
+                AgentLocalizer.Get("ReportServiceChangingHint"),
+                "info");
+        }
+
+        var connectorKey = NormalizeStatusKey(connector.Text);
+        if (!string.Equals(connectorKey, "connected", StringComparison.Ordinal))
+        {
+            return new StatusReport(
+                string.Equals(connectorKey, "not installed", StringComparison.Ordinal)
+                    ? AgentLocalizer.Get("ReportNetworkMissingDetail")
+                    : AgentLocalizer.Get("ReportNetworkIssueDetail"),
+                AgentLocalizer.Get("ReportNetworkIssueHint"),
+                "warning");
+        }
+
+        return new StatusReport(
+            AgentLocalizer.Get("StatusReportDetail"),
+            AgentLocalizer.Get("StatusReportReadyHint"),
+            "ok");
+    }
+
+    private void SetReadinessTone(string tone)
+    {
+        if (string.Equals(tone, "ok", StringComparison.OrdinalIgnoreCase))
         {
             ReadinessPanel.Background = new SolidColorBrush(MediaColor.FromRgb(240, 253, 244));
             ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(187, 247, 208));
             ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(20, 83, 45));
             ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(22, 101, 52));
+            ReadinessHint.Foreground = new SolidColorBrush(MediaColor.FromRgb(22, 101, 52));
+            return;
+        }
+
+        if (string.Equals(tone, "danger", StringComparison.OrdinalIgnoreCase))
+        {
+            ReadinessPanel.Background = new SolidColorBrush(MediaColor.FromRgb(254, 242, 242));
+            ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(254, 202, 202));
+            ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(153, 27, 27));
+            ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(127, 29, 29));
+            ReadinessHint.Foreground = new SolidColorBrush(MediaColor.FromRgb(127, 29, 29));
+            return;
+        }
+
+        if (string.Equals(tone, "info", StringComparison.OrdinalIgnoreCase))
+        {
+            ReadinessPanel.Background = new SolidColorBrush(MediaColor.FromRgb(239, 246, 255));
+            ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(191, 219, 254));
+            ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(30, 64, 175));
+            ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(30, 64, 175));
+            ReadinessHint.Foreground = new SolidColorBrush(MediaColor.FromRgb(30, 64, 175));
             return;
         }
 
@@ -368,7 +461,50 @@ public partial class MainWindow : Window
         ReadinessPanel.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(253, 230, 138));
         ReadinessValue.Foreground = new SolidColorBrush(MediaColor.FromRgb(120, 53, 15));
         ReadinessDetail.Foreground = new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
+        ReadinessHint.Foreground = new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
     }
+
+    private static void SetInfoValueTone(TextBlock textBlock, bool healthy)
+    {
+        textBlock.Foreground = healthy
+            ? new SolidColorBrush(MediaColor.FromRgb(15, 118, 110))
+            : new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
+    }
+
+    private static string FormatServiceStatus(string status)
+        => NormalizeStatusKey(status) switch
+        {
+            "running" => AgentLocalizer.Get("ServiceRunning"),
+            "stopped" => AgentLocalizer.Get("ServiceStopped"),
+            "starting" => AgentLocalizer.Get("ServiceStarting"),
+            "stopping" => AgentLocalizer.Get("ServiceStopping"),
+            "not installed" => AgentLocalizer.Get("ServiceNotInstalled"),
+            "unknown" => AgentLocalizer.Get("StatusUnknown"),
+            _ => status,
+        };
+
+    private static string FormatConnectorStatus(string status)
+        => NormalizeStatusKey(status) switch
+        {
+            "connected" => AgentLocalizer.Get("ConnectorConnected"),
+            "not connected" => AgentLocalizer.Get("ConnectorNotConnected"),
+            "not installed" => AgentLocalizer.Get("ConnectorNotInstalled"),
+            "unknown" => AgentLocalizer.Get("StatusUnknown"),
+            _ => status,
+        };
+
+    private static string NormalizeStatusKey(string status)
+        => string.IsNullOrWhiteSpace(status)
+            ? "unknown"
+            : status.Trim().ToLowerInvariant();
+
+    private static bool IsHealthyServiceStatus(string status)
+        => string.Equals(NormalizeStatusKey(status), "running", StringComparison.Ordinal);
+
+    private static bool IsHealthyConnectorStatus(string status)
+        => string.Equals(NormalizeStatusKey(status), "connected", StringComparison.Ordinal);
+
+    private sealed record StatusReport(string Detail, string Hint, string Tone);
 
     private void InstallSvc_Click(object sender, RoutedEventArgs e)
     {

@@ -9,24 +9,50 @@
   <data name="Service" xml:space="preserve"><value>Service</value></data>
   <data name="Connector" xml:space="preserve"><value>Connector</value></data>
   <data name="Registered" xml:space="preserve"><value>Registered</value></data>
-  <data name="LocalUserCreate" xml:space="preserve"><value>User create</value></data>
+  <data name="LocalUserCreate" xml:space="preserve"><value>Account creation</value></data>
+  <data name="LocalUserCreateHint" xml:space="preserve"><value>Managed account creation requires approval in the web portal and on this computer. Accounts cannot be created until both approvals are complete.</value></data>
   <data name="Status" xml:space="preserve"><value>Status</value></data>
+  <data name="StatusSummary" xml:space="preserve"><value>Service: {0}  •  Network: {1}  •  Registered: {2}</value></data>
+  <data name="SystemInfo" xml:space="preserve"><value>System information</value></data>
+  <data name="ServiceStatusLabel" xml:space="preserve"><value>Service status</value></data>
+  <data name="ConnectorStatusLabel" xml:space="preserve"><value>Network connection</value></data>
+  <data name="RegistrationStatusLabel" xml:space="preserve"><value>Registration</value></data>
+  <data name="AgentVersionLabel" xml:space="preserve"><value>Agent version</value></data>
+  <data name="LastRefreshLabel" xml:space="preserve"><value>Last check</value></data>
+  <data name="JustNow" xml:space="preserve"><value>just now</value></data>
+  <data name="Activity" xml:space="preserve"><value>Activity</value></data>
   <data name="Workspace" xml:space="preserve"><value>Workspace</value></data>
   <data name="Account" xml:space="preserve"><value>Account</value></data>
   <data name="SetupRequired" xml:space="preserve"><value>Setup required</value></data>
   <data name="SetupRequiredDetail" xml:space="preserve"><value>Run setup to sign in, register this device, and install the Windows service.</value></data>
-  <data name="ReadyToConnect" xml:space="preserve"><value>Ready to connect</value></data>
-  <data name="ReadyToConnectDetail" xml:space="preserve"><value>This device is registered and the Cerberus Windows service is running.</value></data>
+  <data name="ReadyToConnect" xml:space="preserve"><value>Device active</value></data>
+  <data name="ReadyToConnectDetail" xml:space="preserve"><value>This device is registered, connected, and reporting through the Cerberus Windows service.</value></data>
   <data name="DeviceSetup" xml:space="preserve"><value>Device setup</value></data>
   <data name="DeviceSetupDetail" xml:space="preserve"><value>Accept the terms, sign in, and let Cerberus register this device and start the Windows service.</value></data>
   <data name="StartSetup" xml:space="preserve"><value>Connect this device</value></data>
   <data name="ConnectDevice" xml:space="preserve"><value>Connect this device</value></data>
   <data name="Ready" xml:space="preserve"><value>Ready</value></data>
   <data name="Finish" xml:space="preserve"><value>Finish</value></data>
-  <data name="CloseWindow" xml:space="preserve"><value>Close window</value></data>
+  <data name="CloseWindow" xml:space="preserve"><value>Close</value></data>
   <data name="StatusReport" xml:space="preserve"><value>Status report</value></data>
-  <data name="StatusReportDetail" xml:space="preserve"><value>This device is registered, the Windows service is running, and Cerberus will keep reporting from the tray.</value></data>
-  <data name="StatusReportReadyHint" xml:space="preserve"><value>Current status: registered and service running.</value></data>
+  <data name="StatusReportDetail" xml:space="preserve"><value>No setup action is required. Cerberus continues to run in the background and report device health.</value></data>
+  <data name="StatusReportReadyHint" xml:space="preserve"><value>Device registered. Service running. Background reporting active.</value></data>
+  <data name="ReportRegistrationMissingTitle" xml:space="preserve"><value>Registration required</value></data>
+  <data name="ReportRegistrationMissingDetail" xml:space="preserve"><value>This device is not registered to a workspace yet.</value></data>
+  <data name="ReportRegistrationMissingHint" xml:space="preserve"><value>Start setup to sign in, register the device, and enable reporting.</value></data>
+  <data name="ReportServiceMissingTitle" xml:space="preserve"><value>Service not installed</value></data>
+  <data name="ReportServiceMissingDetail" xml:space="preserve"><value>The device is registered, but the Windows service is not installed.</value></data>
+  <data name="ReportServiceMissingHint" xml:space="preserve"><value>Finish setup or use repair tools to install the service.</value></data>
+  <data name="ReportServiceStoppedTitle" xml:space="preserve"><value>Service stopped</value></data>
+  <data name="ReportServiceStoppedDetail" xml:space="preserve"><value>Cerberus cannot report reliably while the Windows service is stopped.</value></data>
+  <data name="ReportServiceStoppedHint" xml:space="preserve"><value>Use repair tools to start the service, or reinstall if it stops again.</value></data>
+  <data name="ReportServiceChangingTitle" xml:space="preserve"><value>Service state changing</value></data>
+  <data name="ReportServiceChangingDetail" xml:space="preserve"><value>The Windows service is starting or stopping.</value></data>
+  <data name="ReportServiceChangingHint" xml:space="preserve"><value>Wait a moment; the status will refresh automatically.</value></data>
+  <data name="ReportNetworkIssueTitle" xml:space="preserve"><value>Network not connected</value></data>
+  <data name="ReportNetworkIssueDetail" xml:space="preserve"><value>The service is running, but secure network connectivity is not ready.</value></data>
+  <data name="ReportNetworkMissingDetail" xml:space="preserve"><value>The service is running, but the secure network connector is not installed.</value></data>
+  <data name="ReportNetworkIssueHint" xml:space="preserve"><value>Check secure network setup from repair tools if remote access is expected.</value></data>
   <data name="ReadyHint" xml:space="preserve"><value>Ready. Device is registered and service is running.</value></data>
   <data name="AgentReadyTrayDetail" xml:space="preserve"><value>This device is connected and the Cerberus service is running.</value></data>
   <data name="RegisteredInstallServiceHint" xml:space="preserve"><value>Registered. Finish setup to install the service.</value></data>
@@ -89,17 +115,26 @@
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Update could not start: {0}</value></data>
   <data name="Enable" xml:space="preserve"><value>Enable</value></data>
   <data name="Disable" xml:space="preserve"><value>Disable</value></data>
-  <data name="LocalUserCreateEnablePrompt" xml:space="preserve"><value>This enables Windows local account creation for this agent. Backend policy must also allow it; if backend policy is off, create commands will still be denied. Continue?</value></data>
+  <data name="LocalUserCreateEnablePrompt" xml:space="preserve"><value>This approves managed account creation on this computer. Account creation still requires approval from the web portal before any account can be created. Continue?</value></data>
   <data name="LocalUserCreateEnabledMessage" xml:space="preserve"><value>Local user create policy enabled.</value></data>
   <data name="LocalUserCreateDisabledMessage" xml:space="preserve"><value>Local user create policy disabled.</value></data>
   <data name="LocalUserCreateEnableElevationOpened" xml:space="preserve"><value>UAC prompt opened to enable local user create policy.</value></data>
   <data name="LocalUserCreateDisableElevationOpened" xml:space="preserve"><value>UAC prompt opened to disable local user create policy.</value></data>
   <data name="LocalUserCreatePolicyFailed" xml:space="preserve"><value>Local user create policy could not be changed: {0}</value></data>
   <data name="ElevationRequestFailed" xml:space="preserve"><value>Administrator approval could not be requested.</value></data>
-  <data name="Yes" xml:space="preserve"><value>yes</value></data>
-  <data name="No" xml:space="preserve"><value>no</value></data>
-  <data name="Enabled" xml:space="preserve"><value>enabled</value></data>
-  <data name="Disabled" xml:space="preserve"><value>disabled</value></data>
+  <data name="ServiceRunning" xml:space="preserve"><value>Running</value></data>
+  <data name="ServiceStopped" xml:space="preserve"><value>Stopped</value></data>
+  <data name="ServiceStarting" xml:space="preserve"><value>Starting</value></data>
+  <data name="ServiceStopping" xml:space="preserve"><value>Stopping</value></data>
+  <data name="ServiceNotInstalled" xml:space="preserve"><value>Not installed</value></data>
+  <data name="ConnectorConnected" xml:space="preserve"><value>Connected</value></data>
+  <data name="ConnectorNotConnected" xml:space="preserve"><value>Not connected</value></data>
+  <data name="ConnectorNotInstalled" xml:space="preserve"><value>Not installed</value></data>
+  <data name="StatusUnknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="Yes" xml:space="preserve"><value>Yes</value></data>
+  <data name="No" xml:space="preserve"><value>No</value></data>
+  <data name="Enabled" xml:space="preserve"><value>Enabled</value></data>
+  <data name="Disabled" xml:space="preserve"><value>Disabled</value></data>
   <data name="UninstallTitle" xml:space="preserve"><value>Uninstall Cerberus Agent</value></data>
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.</value></data>

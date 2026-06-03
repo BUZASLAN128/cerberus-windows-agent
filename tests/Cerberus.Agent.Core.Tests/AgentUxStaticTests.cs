@@ -178,6 +178,38 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
+    public void TrayIcon_AnimatesDuringVisibleWorkAndReturnsToIdle()
+    {
+        var repoRoot = FindRepoRoot();
+        var trayHost = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayHost.cs"));
+        var animator = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "TrayIconAnimator.cs"));
+
+        Assert.Contains("private readonly TrayIconAnimator _trayIconAnimator", trayHost);
+        Assert.Contains("_trayIconAnimator = new TrayIconAnimator(_icon)", trayHost);
+        Assert.Contains("BeginTrayActivity();", trayHost);
+        Assert.Contains("EndTrayActivity();", trayHost);
+        Assert.Contains("_trayIconAnimator.Start();", trayHost);
+        Assert.Contains("_trayIconAnimator.Stop();", trayHost);
+        Assert.Contains("_trayIconAnimator.Dispose();", trayHost);
+        Assert.Contains("private async Task ExportDiagnosticsAsync()", trayHost);
+        Assert.DoesNotContain("private static async Task ExportDiagnosticsAsync()", trayHost);
+
+        Assert.Contains("DispatcherTimer", animator);
+        Assert.Contains("FrameCount = 24", animator);
+        Assert.Contains("Interval = TimeSpan.FromMilliseconds(80)", animator);
+        Assert.Contains("MinimumVisibleDuration = TimeSpan.FromMilliseconds(4000)", animator);
+        Assert.Contains("ScheduleStop(remaining)", animator);
+        Assert.Contains("CancelPendingStop();", animator);
+        Assert.Contains("DrawRotatedLogo(graphics, sourceBitmap, i)", animator);
+        Assert.Contains("graphics.RotateTransform(angle)", animator);
+        Assert.Contains("graphics.DrawImage(sourceBitmap, target)", animator);
+        Assert.Contains("SmoothingMode.AntiAlias", animator);
+        Assert.Contains("HighQualityBicubic", animator);
+        Assert.Contains("DestroyIcon(handle)", animator);
+        Assert.Contains("_notifyIcon.Icon = _idleIcon", animator);
+    }
+
+    [Fact]
     public void UpdateRuntime_EmbedsPublicManifestTrustDefaults()
     {
         var repoRoot = FindRepoRoot();
@@ -253,13 +285,30 @@ public sealed class AgentUxStaticTests
         var repoRoot = FindRepoRoot();
         var xaml = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml"));
         var code = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "MainWindow.xaml.cs"));
+        var project = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
+        var installer = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
         var strings = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Localization", "AgentStrings.resx"));
 
         Assert.Contains("Title=\"Cerberus Agent\"", xaml);
         Assert.Contains("<value>Cerberus Agent</value>", strings);
-        Assert.Contains("AgentLocalizer.Get(\"CloseWindow\")", code);
-        Assert.Contains("AgentLocalizer.Get(\"StatusReport\")", code);
+        Assert.Contains("cerberus-logo.png", project);
+        Assert.Contains("cerberus-favicon.ico", project);
+        Assert.Contains("cerberus-favicon.ico", installer);
+        Assert.Contains("pack://application:,,,/Assets/cerberus-logo.png", xaml);
+        Assert.DoesNotContain("cerberus-app-mark", project);
+        Assert.DoesNotContain("cerberus-app-mark", installer);
+        Assert.DoesNotContain("cerberus-app-mark", xaml);
+        Assert.Contains("SystemInfoLabel", xaml);
+        Assert.Contains("DeviceSetupCard.Visibility = setupComplete ? Visibility.Collapsed : Visibility.Visible", code);
+        Assert.Contains("BuildStatusReport(registered, svc, ts)", code);
+        Assert.Contains("ReadinessValue.Text = AgentLocalizer.Get(\"StatusReport\")", code);
+        Assert.Contains("AgentLocalizer.Get(\"StatusReportDetail\")", code);
+        Assert.Contains("ReportServiceStoppedTitle", strings);
+        Assert.Contains("ReportNetworkIssueTitle", strings);
+        Assert.Contains("FormatServiceStatus(svc.Text)", code);
+        Assert.Contains("FormatConnectorStatus(ts.Text)", code);
         Assert.Contains("Hide();", code);
+        Assert.DoesNotContain("UniformGrid Columns=\"4\"", xaml);
         Assert.DoesNotContain("CERBERUS Agent Setup", xaml);
         Assert.DoesNotContain("CERBERUS Agent Setup", strings);
     }
