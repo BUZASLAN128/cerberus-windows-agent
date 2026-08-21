@@ -98,9 +98,9 @@ public sealed class AgentRegistrar
             HttpCompletionOption.ResponseHeadersRead,
             ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw await AgentHttpFailure.CreateAsync("Register", resp, ct).ConfigureAwait(false);
+            throw await AgentHttpFailure.CreateAsync("Register", resp, _http, ct).ConfigureAwait(false);
 
-        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var body = await AgentHttpFailure.ReadBodyAsStringAsync("Register", resp, _http, ct).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<AgentRegisterResponse>(body, JsonOpts);
         if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId))
             throw new InvalidOperationException("Register response missing agent_id/tenant_id.");

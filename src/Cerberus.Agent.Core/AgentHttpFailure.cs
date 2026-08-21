@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -9,7 +10,9 @@ internal static class AgentHttpFailure
     // Keep error inspection below the size used by the backend's compact error
     // envelope.  The response body is never included in a failure message.
     private const int MaxErrorBodyBytes = 4096;
+    private const int MaxSuccessBodyBytes = 64 * 1024;
     private const int MaxRequestIdLength = 64;
+    private static readonly TimeSpan InfiniteTimeoutFallback = TimeSpan.FromSeconds(30);
 
     private static readonly Regex RequestIdPattern = new(
         "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
@@ -38,14 +41,69 @@ internal static class AgentHttpFailure
     private static readonly HashSet<string> KnownTransportCodes =
         new(ErrorCodeByStatus.Values.Append("REQUEST_FAILED").Append("CSRF_FAILED"), StringComparer.Ordinal);
 
+    public static TimeSpan GetContentReadTimeout(HttpClient http)
+    {
+        var timeout = http.Timeout;
+        return timeout != Timeout.InfiniteTimeSpan && timeout > TimeSpan.Zero
+            ? timeout
+            : InfiniteTimeoutFallback;
+    }
+
     public static async Task<HttpRequestException> CreateAsync(
         string operation,
         HttpResponseMessage response,
+        HttpClient http,
         CancellationToken ct)
     {
         var requestId = TryGetRequestId(response);
-        var code = await TryReadTransportCodeAsync(response, ct).ConfigureAwait(false);
+        var code = await TryReadTransportCodeAsync(response, http, ct).ConfigureAwait(false);
         return CreateException(operation, response.StatusCode, code, requestId);
+    }
+
+    public static HttpRequestException CreateStatusOnly(string operation, HttpResponseMessage response) =>
+        CreateException(operation, response.StatusCode, code: null, TryGetRequestId(response));
+
+    public static async Task<string> ReadBodyAsStringAsync(
+        string operation,
+        HttpResponseMessage response,
+        HttpClient http,
+        CancellationToken ct)
+    {
+        try
+        {
+            var body = await ReadBoundedBodyAsync(response, http, ct, MaxSuccessBodyBytes).ConfigureAwait(false);
+            return Encoding.UTF8.GetString(body);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            throw CreateStatusOnly(operation, response);
+        }
+    }
+
+    public static async Task<T?> ReadJsonAsync<T>(
+        string operation,
+        HttpResponseMessage response,
+        HttpClient http,
+        JsonSerializerOptions options,
+        CancellationToken ct)
+    {
+        try
+        {
+            var body = await ReadBoundedBodyAsync(response, http, ct, MaxSuccessBodyBytes).ConfigureAwait(false);
+            return JsonSerializer.Deserialize<T>(body, options);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            throw CreateStatusOnly(operation, response);
+        }
     }
 
     private static HttpRequestException CreateException(
@@ -72,40 +130,58 @@ internal static class AgentHttpFailure
 
     private static async Task<string?> TryReadTransportCodeAsync(
         HttpResponseMessage response,
+        HttpClient http,
         CancellationToken ct)
     {
         try
         {
-            var content = response.Content;
-            if (content is null || content.Headers.ContentLength is > MaxErrorBodyBytes)
-                return null;
-
-            await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            var buffer = new byte[MaxErrorBodyBytes + 1];
-            var length = 0;
-
-            while (length < buffer.Length)
-            {
-                var read = await stream.ReadAsync(buffer.AsMemory(length), ct).ConfigureAwait(false);
-                if (read == 0)
-                    break;
-                length += read;
-            }
-
-            // A body larger than the inspection budget is not parsed.  Reading
-            // one extra byte lets this remain fail-closed when Content-Length is
-            // absent or inaccurate.
-            if (length == buffer.Length)
-                return null;
-
-            return ParseTransportCode(buffer.AsMemory(0, length), (int)response.StatusCode);
+            var body = await ReadBoundedBodyAsync(response, http, ct, MaxErrorBodyBytes).ConfigureAwait(false);
+            return ParseTransportCode(body, (int)response.StatusCode);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
-            // Response-body reads and JSON parsing are diagnostic-only.  Any
-            // failure falls back to the status and independently safe header.
+            // Response-body reads are diagnostic-only.  Any internal deadline,
+            // read, or size failure falls back to status and safe headers.
             return null;
         }
+    }
+
+    private static async Task<byte[]> ReadBoundedBodyAsync(
+        HttpResponseMessage response,
+        HttpClient http,
+        CancellationToken callerCt,
+        int maxBytes)
+    {
+        var content = response.Content;
+        if (content is null)
+            return Array.Empty<byte>();
+        if (content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
+            throw new InvalidOperationException("Response body exceeds the inspection limit.");
+
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
+        deadline.CancelAfter(GetContentReadTimeout(http));
+
+        await using var stream = await content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+        var buffer = new byte[maxBytes + 1];
+        var length = 0;
+        while (length < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(length), deadline.Token).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            length += read;
+        }
+
+        // Read one extra byte so an absent or inaccurate Content-Length cannot
+        // make an oversized response look parseable.
+        if (length == buffer.Length)
+            throw new InvalidOperationException("Response body exceeds the inspection limit.");
+
+        return buffer.AsSpan(0, length).ToArray();
     }
 
     private static string? ParseTransportCode(ReadOnlyMemory<byte> body, int statusCode)

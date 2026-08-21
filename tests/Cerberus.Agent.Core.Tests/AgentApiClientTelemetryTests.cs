@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Cerberus.Agent.Core;
@@ -164,6 +165,87 @@ public sealed class AgentApiClientTelemetryTests
     }
 
     [Fact]
+    public async Task GetTailscalePreauthAsync_AcceptsValidSuccessBodyAt65536Bytes()
+    {
+        var body = PadToLength("{\"tailscale_login_server\":\"https://login.test\",\"tailscale_authkey\":\"tskey-test\"}", 65536);
+        var handler = new FailureHandler(HttpStatusCode.OK, new ByteArrayContent(Encoding.UTF8.GetBytes(body)));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        var result = await client.GetTailscalePreauthAsync(CancellationToken.None);
+
+        Assert.Equal("https://login.test", result.LoginServer);
+    }
+
+    [Fact]
+    public async Task GetTailscalePreauthAsync_RejectsSuccessBodyAt65537BytesWithStatusOnlyException()
+    {
+        var body = PadToLength("{\"tailscale_login_server\":\"https://login.test\",\"tailscale_authkey\":\"tskey-test\"}", 65537);
+        var handler = new FailureHandler(HttpStatusCode.OK, new ByteArrayContent(Encoding.UTF8.GetBytes(body)));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+
+        Assert.Equal("Tailscale preauth failed (200).", exception.Message);
+    }
+
+    [Fact]
+    public async Task GetTailscalePreauthAsync_WhenErrorBodyStalls_UsesBoundedReadDeadline()
+    {
+        var handler = new FailureHandler(HttpStatusCode.BadRequest, new StallingContent());
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(50) };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+
+        Assert.Equal("Tailscale preauth failed (400).", exception.Message);
+    }
+
+    [Fact]
+    public async Task GetTailscalePreauthAsync_WhenCallerCancelsStalledErrorBody_PropagatesCancellation()
+    {
+        var handler = new FailureHandler(HttpStatusCode.BadRequest, new StallingContent());
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = Timeout.InfiniteTimeSpan };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetTailscalePreauthAsync(cts.Token));
+    }
+
+    [Fact]
+    public async Task GetTailscalePreauthAsync_WhenSuccessBodyStalls_UsesHttpClientTimeoutAndDoesNotExposeBody()
+    {
+        var handler = new FailureHandler(HttpStatusCode.OK, new StallingContent("preauth-body-marker"));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(50) };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+
+        stopwatch.Stop();
+        Assert.Equal("Tailscale preauth failed (200).", exception.Message);
+        Assert.DoesNotContain("preauth-body-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task GetTailscalePreauthAsync_WhenCallerCancelsStalledSuccessBody_PropagatesCancellationWithoutBody()
+    {
+        var handler = new FailureHandler(HttpStatusCode.OK, new StallingContent("preauth-body-marker"));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = Timeout.InfiniteTimeSpan };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetTailscalePreauthAsync(cts.Token));
+
+        stopwatch.Stop();
+        Assert.DoesNotContain("preauth-body-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
     public async Task SelfDeactivateAsync_PostsSignedDeactivateEndpoint()
     {
         var handler = new CaptureHandler(
@@ -205,6 +287,23 @@ public sealed class AgentApiClientTelemetryTests
         Assert.NotEqual(handler.CapturedNonces[0], handler.CapturedNonces[1]);
     }
 
+    [Fact]
+    public async Task GetTailscalePreauthAsync_OnUnauthorizedDisposesFirstResponseAndRetriesOnce()
+    {
+        var firstContent = new DisposableContent("{\"detail\":\"expired\"}");
+        var handler = new UnauthorizedPreauthThenOkHandler(firstContent);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var tokens = new RefreshAwareTokenManager();
+        var client = new AgentApiClient(http, new StaticSecretStore(), tokens, new StaticSigner());
+
+        var result = await client.GetTailscalePreauthAsync(CancellationToken.None);
+
+        Assert.Equal("https://login.test", result.LoginServer);
+        Assert.True(firstContent.Disposed);
+        Assert.Equal(2, handler.Attempts);
+        Assert.Equal(1, tokens.RefreshCount);
+    }
+
     private static AgentBuildMetadata Metadata() => new(
         AgentVersion: "1.2.3",
         BuildId: "build-1",
@@ -236,6 +335,13 @@ public sealed class AgentApiClientTelemetryTests
           "quarantine": null
         }
         """;
+
+    private static string PadToLength(string value, int length)
+    {
+        var current = Encoding.UTF8.GetByteCount(value);
+        Assert.True(current <= length);
+        return value + new string(' ', length - current);
+    }
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
@@ -279,6 +385,49 @@ public sealed class AgentApiClientTelemetryTests
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(new HttpResponseMessage(_statusCode) { Content = _content });
+    }
+
+    private sealed class StallingContent : HttpContent
+    {
+        private readonly byte[] _prefix;
+
+        public StallingContent(string? prefix = null) => _prefix = Encoding.UTF8.GetBytes(prefix ?? string.Empty);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(_prefix));
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+
+        private sealed class StallingStream : Stream
+        {
+            private readonly byte[] _prefix;
+            private int _offset;
+
+            public StallingStream(byte[] prefix) => _prefix = prefix;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => 0;
+            public override long Position { get => 0; set => throw new NotSupportedException(); }
+            public override void Flush() => throw new NotSupportedException();
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_offset < _prefix.Length)
+                {
+                    var count = Math.Min(buffer.Length, _prefix.Length - _offset);
+                    _prefix.AsSpan(_offset, count).CopyTo(buffer.Span);
+                    _offset += count;
+                    return count;
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return 0;
+            }
+        }
     }
 
     private sealed class TransientThenOkHandler : HttpMessageHandler
@@ -364,6 +513,36 @@ public sealed class AgentApiClientTelemetryTests
             {
                 Content = new StringContent(_okResponseBody, Encoding.UTF8, "application/json"),
             };
+        }
+    }
+
+    private sealed class UnauthorizedPreauthThenOkHandler : HttpMessageHandler
+    {
+        private readonly DisposableContent _firstContent;
+        public int Attempts { get; private set; }
+
+        public UnauthorizedPreauthThenOkHandler(DisposableContent firstContent) => _firstContent = firstContent;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            return Task.FromResult(Attempts == 1
+                ? new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = _firstContent }
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"tailscale_login_server\":\"https://login.test\",\"tailscale_authkey\":\"tskey-test\"}", Encoding.UTF8, "application/json"),
+                });
+        }
+    }
+
+    private sealed class DisposableContent : StringContent
+    {
+        public bool Disposed { get; private set; }
+        public DisposableContent(string content) : base(content, Encoding.UTF8, "application/json") { }
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
         }
     }
 

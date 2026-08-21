@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Cerberus.Agent.Core;
@@ -276,6 +277,102 @@ public sealed class AgentRegistrarTests
         Assert.Equal("Register failed (400).", exception.Message);
     }
 
+    [Fact]
+    public async Task RegisterAsync_AcceptsValidSuccessBodyAt65536Bytes()
+    {
+        var body = PadToLength(RegisterResponseJson(), 65536);
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+
+        var identity = await Register(NewRegistrar(http));
+
+        Assert.Equal("a1", identity.AgentId);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_RejectsSuccessBodyAt65537BytesWithoutBodyInException()
+    {
+        var body = PadToLength(RegisterResponseJson(), 65537);
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+
+        Assert.Equal("Register failed (200).", exception.Message);
+        Assert.DoesNotContain("MARKER", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenSuccessBodyStalls_UsesBoundedReadDeadline()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StallingContent() });
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://example.test"),
+            Timeout = TimeSpan.FromMilliseconds(50),
+        };
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+
+        Assert.Equal("Register failed (200).", exception.Message);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenErrorBodyStalls_UsesHttpClientTimeoutAndDoesNotExposeBody()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StallingContent("register-body-marker"),
+        });
+        using var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://example.test"),
+            Timeout = TimeSpan.FromMilliseconds(50),
+        };
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+
+        stopwatch.Stop();
+        Assert.Equal("Register failed (400).", exception.Message);
+        Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenCallerCancelsStalledErrorBody_PropagatesCancellationWithoutBody()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StallingContent("register-body-marker"),
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = Timeout.InfiniteTimeSpan };
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Register(NewRegistrar(http), cts.Token));
+
+        stopwatch.Stop();
+        Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenCallerCancelsStalledSuccessBody_PropagatesCancellation()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StallingContent() });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = Timeout.InfiniteTimeSpan };
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Register(NewRegistrar(http), cts.Token));
+    }
+
     private static AgentRegistrar NewRegistrar(HttpClient http) => new(
         http,
         new CaptureSecretStore(),
@@ -290,6 +387,25 @@ public sealed class AgentRegistrarTests
         buildId: "build-abc",
         buildChannel: "dev",
         ct: CancellationToken.None);
+
+    private static Task<AgentIdentity> Register(AgentRegistrar registrar, CancellationToken ct) => registrar.RegisterAsync(
+        oauthToken: "Bearer tok",
+        backendUrlForStorage: "http://backend",
+        deviceFingerprint: "fp",
+        agentVersion: "1.2.3",
+        buildId: "build-abc",
+        buildChannel: "dev",
+        ct: ct);
+
+    private static string RegisterResponseJson() =>
+        "{\"agent_id\":\"a1\",\"tenant_id\":\"t1\",\"agent_refresh_token\":\"rt1\",\"jwt_public_key_pem\":null,\"telemetry_base_url\":\"http://telemetry.test\"}";
+
+    private static string PadToLength(string value, int length)
+    {
+        var current = Encoding.UTF8.GetByteCount(value);
+        Assert.True(current <= length);
+        return value + new string(' ', length - current);
+    }
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
@@ -368,6 +484,49 @@ public sealed class AgentRegistrarTests
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new IOException("body unavailable");
         protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("body unavailable");
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
+    }
+
+    private sealed class StallingContent : HttpContent
+    {
+        private readonly byte[] _prefix;
+
+        public StallingContent(string? prefix = null) => _prefix = Encoding.UTF8.GetBytes(prefix ?? string.Empty);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(_prefix));
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+
+        private sealed class StallingStream : Stream
+        {
+            private readonly byte[] _prefix;
+            private int _offset;
+
+            public StallingStream(byte[] prefix) => _prefix = prefix;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => 0;
+            public override long Position { get => 0; set => throw new NotSupportedException(); }
+            public override void Flush() => throw new NotSupportedException();
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_offset < _prefix.Length)
+                {
+                    var count = Math.Min(buffer.Length, _prefix.Length - _offset);
+                    _prefix.AsSpan(_offset, count).CopyTo(buffer.Span);
+                    _offset += count;
+                    return count;
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return 0;
+            }
+        }
     }
 
     private sealed class CaptureSecretStore : ISecretStore
