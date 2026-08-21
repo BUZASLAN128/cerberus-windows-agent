@@ -134,7 +134,7 @@ public sealed class AgentApiClient
 
         using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, new { }, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw AgentHttpFailure.Create("Tailscale preauth", resp);
+            throw await AgentHttpFailure.CreateAsync("Tailscale preauth", resp, ct).ConfigureAwait(false);
 
         var payload = await resp.Content.ReadFromJsonAsync<TailscalePreauthResponse>(JsonOpts, ct).ConfigureAwait(false);
         if (payload is null ||
@@ -224,7 +224,7 @@ public sealed class AgentApiClient
         CancellationToken ct)
     {
         using var req = await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
-        return await _http.SendAsync(req, ct).ConfigureAwait(false);
+        return await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
     }
 
     private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)

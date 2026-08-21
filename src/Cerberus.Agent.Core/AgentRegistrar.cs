@@ -89,9 +89,16 @@ public sealed class AgentRegistrar
             LocationHint: null);
 
         _log.Info("Registering agent...");
-        using var resp = await _http.PostAsJsonAsync("/api/v1/agents/register", req, JsonOpts, ct).ConfigureAwait(false);
+        using var registerRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/agents/register")
+        {
+            Content = JsonContent.Create(req, options: JsonOpts),
+        };
+        using var resp = await _http.SendAsync(
+            registerRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw AgentHttpFailure.Create("Register", resp);
+            throw await AgentHttpFailure.CreateAsync("Register", resp, ct).ConfigureAwait(false);
 
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<AgentRegisterResponse>(body, JsonOpts);

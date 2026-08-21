@@ -183,12 +183,121 @@ public sealed class AgentRegistrarTests
         Assert.DoesNotContain(sensitiveBody, exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RegisterAsync_OnCanonicalError_RetainsCodeAndRequestIdWithoutBody()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("{\"error_code\":\"REQUEST_INVALID\",\"detail\":\"secret\"}", Encoding.UTF8, "application/json"),
+        });
+        handler.Response.Headers.Add("X-Request-ID", "req-123");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var registrar = NewRegistrar(http);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(registrar));
+
+        Assert.Equal("Register failed (400). [code=REQUEST_INVALID, request_id=req-123]", exception.Message);
+        Assert.DoesNotContain("secret", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("{\"error_code\":\"REQUEST_FAILED\"}", "req-123")]
+    [InlineData("{\"error_code\":\"UNKNOWN\"}", "req-123")]
+    [InlineData("{\"error_code\":\"REQUEST_INVALID\",\"error_code\":\"REQUEST_INVALID\"}", "req-123")]
+    [InlineData("not-json", "req-123")]
+    [InlineData("{\"error_code\":\"REQUEST_INVALID\"}", "bad value")]
+    [InlineData("{\"error_code\":\"REQUEST_INVALID\"}", "é")]
+    [InlineData("{\"error_code\":\"REQUEST_INVALID\"}", "12345678901234567890123456789012345678901234567890123456789012345")]
+    public async Task RegisterAsync_OnInvalidErrorEnvelopeOrRequestId_FallsBackToStatusOnly(string body, string requestId)
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        });
+        handler.Response.Headers.TryAddWithoutValidation("X-Request-ID", requestId);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var registrar = NewRegistrar(http);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(registrar));
+
+        var expected = body.Contains("REQUEST_INVALID", StringComparison.Ordinal) && !body.Contains("error_code\":\"REQUEST_INVALID\",\"error_code", StringComparison.Ordinal)
+            ? requestId == "req-123"
+                ? "Register failed (400). [code=REQUEST_INVALID, request_id=req-123]"
+                : "Register failed (400). [code=REQUEST_INVALID]"
+            : requestId == "req-123"
+                ? "Register failed (400). [request_id=req-123]"
+                : "Register failed (400).";
+        Assert.Equal(expected, exception.Message);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithMultipleRequestIds_FallsBackToStatusOnly()
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("{\"error_code\":\"REQUEST_INVALID\"}", Encoding.UTF8, "application/json"),
+        };
+        response.Headers.Add("X-Request-ID", new[] { "req-1", "req-2" });
+        var handler = new CaptureHandler(response);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+
+        Assert.Equal("Register failed (400). [code=REQUEST_INVALID]", exception.Message);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WithUnknownLengthOversizedBody_InspectsAtMostMaxPlusOneBytes()
+    {
+        var content = new CountingContent(Encoding.UTF8.GetBytes("{\"error_code\":\"REQUEST_INVALID\"}MARKER" + new string('x', 64 * 1024)));
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = content });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var registrar = NewRegistrar(http);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(registrar));
+
+        Assert.Equal("Register failed (400).", exception.Message);
+        Assert.InRange(content.BytesRead, 1, 4097);
+        Assert.DoesNotContain("MARKER", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RegisterAsync_WhenErrorBodyReadFails_FallsBackToStatusOnly()
+    {
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new ThrowingContent(),
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var registrar = NewRegistrar(http);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(registrar));
+
+        Assert.Equal("Register failed (400).", exception.Message);
+    }
+
+    private static AgentRegistrar NewRegistrar(HttpClient http) => new(
+        http,
+        new CaptureSecretStore(),
+        new StubKeyPairs("priv-pem", "pub-pem"),
+        log: NullAgentLogger.Instance);
+
+    private static Task<AgentIdentity> Register(AgentRegistrar registrar) => registrar.RegisterAsync(
+        oauthToken: "Bearer tok",
+        backendUrlForStorage: "http://backend",
+        deviceFingerprint: "fp",
+        agentVersion: "1.2.3",
+        buildId: "build-abc",
+        buildChannel: "dev",
+        ct: CancellationToken.None);
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpResponseMessage _response;
 
         public HttpRequestMessage? CapturedRequest { get; private set; }
         public string? CapturedBody { get; private set; }
+        public HttpResponseMessage Response => _response;
 
         public CaptureHandler(HttpResponseMessage response)
         {
@@ -202,6 +311,63 @@ public sealed class AgentRegistrarTests
                 CapturedBody = await request.Content.ReadAsStringAsync(cancellationToken);
             return _response;
         }
+    }
+
+    private sealed class CountingContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        public CountingContent(byte[] bytes) => _bytes = bytes;
+        public int BytesRead { get; private set; }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new CountingStream(_bytes, this));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        private sealed class CountingStream : MemoryStream
+        {
+            private readonly byte[] _bytes;
+            private readonly CountingContent _owner;
+            public CountingStream(byte[] bytes, CountingContent owner) : base(bytes, writable: false)
+            {
+                _bytes = bytes;
+                _owner = owner;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var read = base.Read(buffer, offset, count);
+                _owner.BytesRead += read;
+                return read;
+            }
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                var remaining = _bytes.Length - (int)Position;
+                var read = Math.Min(buffer.Length, Math.Max(remaining, 0));
+                if (read > 0)
+                {
+                    _bytes.AsMemory((int)Position, read).CopyTo(buffer);
+                    Position += read;
+                }
+                _owner.BytesRead += read;
+                return ValueTask.FromResult(read);
+            }
+        }
+    }
+
+    private sealed class ThrowingContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new IOException("body unavailable");
+        protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("body unavailable");
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 
     private sealed class CaptureSecretStore : ISecretStore
