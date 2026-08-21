@@ -230,6 +230,26 @@ public sealed class AgentApiClientTelemetryTests
     }
 
     [Fact]
+    public async Task GetTailscalePreauthAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
+    {
+        const int timeoutMs = 500;
+        var handler = new FailureHandler(
+            HttpStatusCode.OK,
+            new StallingContent("preauth-delay-marker"),
+            TimeSpan.FromMilliseconds(300));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+
+        stopwatch.Stop();
+        Assert.Equal("Tailscale preauth failed (200).", exception.Message);
+        Assert.DoesNotContain("preauth-delay-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromMilliseconds(700));
+    }
+
+    [Fact]
     public async Task GetTailscalePreauthAsync_WhenCallerCancelsStalledSuccessBody_PropagatesCancellationWithoutBody()
     {
         var handler = new FailureHandler(HttpStatusCode.OK, new StallingContent("preauth-body-marker"));
@@ -377,14 +397,21 @@ public sealed class AgentApiClientTelemetryTests
         private readonly HttpStatusCode _statusCode;
         private readonly HttpContent _content;
 
-        public FailureHandler(HttpStatusCode statusCode, HttpContent content)
+        public FailureHandler(HttpStatusCode statusCode, HttpContent content, TimeSpan? headerDelay = null)
         {
             _statusCode = statusCode;
             _content = content;
+            _headerDelay = headerDelay ?? TimeSpan.Zero;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(_statusCode) { Content = _content });
+        private readonly TimeSpan _headerDelay;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (_headerDelay > TimeSpan.Zero)
+                await Task.Delay(_headerDelay, cancellationToken);
+            return new HttpResponseMessage(_statusCode) { Content = _content };
+        }
     }
 
     private sealed class StallingContent : HttpContent

@@ -346,6 +346,24 @@ public sealed class AgentRegistrarTests
     }
 
     [Fact]
+    public async Task RegisterAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
+    {
+        const int timeoutMs = 500;
+        var handler = new CaptureHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StallingContent("register-delay-marker") },
+            TimeSpan.FromMilliseconds(300));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+        var stopwatch = Stopwatch.StartNew();
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+
+        stopwatch.Stop();
+        Assert.Equal("Register failed (400).", exception.Message);
+        Assert.DoesNotContain("register-delay-marker", exception.Message, StringComparison.Ordinal);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromMilliseconds(700));
+    }
+
+    [Fact]
     public async Task RegisterAsync_WhenCallerCancelsStalledErrorBody_PropagatesCancellationWithoutBody()
     {
         var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
@@ -415,16 +433,21 @@ public sealed class AgentRegistrarTests
         public string? CapturedBody { get; private set; }
         public HttpResponseMessage Response => _response;
 
-        public CaptureHandler(HttpResponseMessage response)
+        public CaptureHandler(HttpResponseMessage response, TimeSpan? headerDelay = null)
         {
             _response = response;
+            _headerDelay = headerDelay ?? TimeSpan.Zero;
         }
+
+        private readonly TimeSpan _headerDelay;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             CapturedRequest = request;
             if (request.Content is not null)
                 CapturedBody = await request.Content.ReadAsStringAsync(cancellationToken);
+            if (_headerDelay > TimeSpan.Zero)
+                await Task.Delay(_headerDelay, cancellationToken);
             return _response;
         }
     }

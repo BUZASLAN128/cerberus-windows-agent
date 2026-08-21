@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
 
@@ -67,14 +68,20 @@ internal sealed class CasdoorOAuthClient
         };
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        using var resp = await http.SendAsync(req, ct);
+        using var deadline = AgentHttpFailure.CreateDeadline(http, ct);
+        using var resp = await http.SendAsync(
+            req,
+            HttpCompletionOption.ResponseHeadersRead,
+            deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException(
-                $"Token exchange failed ({(int)resp.StatusCode}).",
-                inner: null,
-                statusCode: resp.StatusCode);
+            throw AgentHttpFailure.CreateStatusOnly("Token exchange", resp);
 
-        var raw = await resp.Content.ReadAsStringAsync(ct);
+        var raw = await AgentHttpFailure.ReadBodyAsStringAsync(
+            "Token exchange",
+            resp,
+            http,
+            ct,
+            deadline.Token).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<TokenResponse>(raw, JsonOpts);
         if (parsed is null || string.IsNullOrWhiteSpace(parsed.AccessToken))
             throw new InvalidOperationException("Token exchange response missing access_token.");

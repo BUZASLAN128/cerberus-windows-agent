@@ -5,7 +5,10 @@ using System.Text.RegularExpressions;
 
 namespace Cerberus.Agent.Core;
 
-internal static class AgentHttpFailure
+/// <summary>
+/// Applies bounded, status-safe response handling to agent HTTP calls.
+/// </summary>
+public static class AgentHttpFailure
 {
     // Keep error inspection below the size used by the backend's compact error
     // envelope.  The response body is never included in a failure message.
@@ -41,6 +44,16 @@ internal static class AgentHttpFailure
     private static readonly HashSet<string> KnownTransportCodes =
         new(ErrorCodeByStatus.Values.Append("REQUEST_FAILED").Append("CSRF_FAILED"), StringComparer.Ordinal);
 
+    /// <summary>
+    /// Creates the single timeout budget shared by response-header and body reads.
+    /// </summary>
+    public static CancellationTokenSource CreateDeadline(HttpClient http, CancellationToken callerCt)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
+        deadline.CancelAfter(GetContentReadTimeout(http));
+        return deadline;
+    }
+
     public static TimeSpan GetContentReadTimeout(HttpClient http)
     {
         var timeout = http.Timeout;
@@ -53,10 +66,11 @@ internal static class AgentHttpFailure
         string operation,
         HttpResponseMessage response,
         HttpClient http,
-        CancellationToken ct)
+        CancellationToken ct,
+        CancellationToken? deadlineCt = null)
     {
         var requestId = TryGetRequestId(response);
-        var code = await TryReadTransportCodeAsync(response, http, ct).ConfigureAwait(false);
+        var code = await TryReadTransportCodeAsync(response, http, ct, deadlineCt).ConfigureAwait(false);
         return CreateException(operation, response.StatusCode, code, requestId);
     }
 
@@ -67,11 +81,12 @@ internal static class AgentHttpFailure
         string operation,
         HttpResponseMessage response,
         HttpClient http,
-        CancellationToken ct)
+        CancellationToken ct,
+        CancellationToken? deadlineCt = null)
     {
         try
         {
-            var body = await ReadBoundedBodyAsync(response, http, ct, MaxSuccessBodyBytes).ConfigureAwait(false);
+            var body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxSuccessBodyBytes).ConfigureAwait(false);
             return Encoding.UTF8.GetString(body);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -89,11 +104,12 @@ internal static class AgentHttpFailure
         HttpResponseMessage response,
         HttpClient http,
         JsonSerializerOptions options,
-        CancellationToken ct)
+        CancellationToken ct,
+        CancellationToken? deadlineCt = null)
     {
         try
         {
-            var body = await ReadBoundedBodyAsync(response, http, ct, MaxSuccessBodyBytes).ConfigureAwait(false);
+            var body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxSuccessBodyBytes).ConfigureAwait(false);
             return JsonSerializer.Deserialize<T>(body, options);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -131,11 +147,12 @@ internal static class AgentHttpFailure
     private static async Task<string?> TryReadTransportCodeAsync(
         HttpResponseMessage response,
         HttpClient http,
-        CancellationToken ct)
+        CancellationToken ct,
+        CancellationToken? deadlineCt)
     {
         try
         {
-            var body = await ReadBoundedBodyAsync(response, http, ct, MaxErrorBodyBytes).ConfigureAwait(false);
+            var body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxErrorBodyBytes).ConfigureAwait(false);
             return ParseTransportCode(body, (int)response.StatusCode);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -154,6 +171,7 @@ internal static class AgentHttpFailure
         HttpResponseMessage response,
         HttpClient http,
         CancellationToken callerCt,
+        CancellationToken? deadlineCt,
         int maxBytes)
     {
         var content = response.Content;
@@ -162,15 +180,15 @@ internal static class AgentHttpFailure
         if (content.Headers.ContentLength is long contentLength && contentLength > maxBytes)
             throw new InvalidOperationException("Response body exceeds the inspection limit.");
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
-        deadline.CancelAfter(GetContentReadTimeout(http));
+        using var ownedDeadline = deadlineCt is null ? CreateDeadline(http, callerCt) : null;
+        var readCt = deadlineCt ?? ownedDeadline!.Token;
 
-        await using var stream = await content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+        await using var stream = await content.ReadAsStreamAsync(readCt).ConfigureAwait(false);
         var buffer = new byte[maxBytes + 1];
         var length = 0;
         while (length < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(length), deadline.Token).ConfigureAwait(false);
+            var read = await stream.ReadAsync(buffer.AsMemory(length), readCt).ConfigureAwait(false);
             if (read == 0)
                 break;
             length += read;

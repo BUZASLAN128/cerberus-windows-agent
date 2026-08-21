@@ -132,21 +132,29 @@ public sealed class AgentApiClient
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/tailscale/preauth";
 
+        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
         using var resp = await SendSignedRequestAsync(
             HttpMethod.Post,
             path,
             new { },
             ct,
-            HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            HttpCompletionOption.ResponseHeadersRead,
+            deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw await AgentHttpFailure.CreateAsync("Tailscale preauth", resp, _http, ct).ConfigureAwait(false);
+            throw await AgentHttpFailure.CreateAsync(
+                "Tailscale preauth",
+                resp,
+                _http,
+                ct,
+                deadline.Token).ConfigureAwait(false);
 
         var payload = await AgentHttpFailure.ReadJsonAsync<TailscalePreauthResponse>(
             "Tailscale preauth",
             resp,
             _http,
             JsonOpts,
-            ct).ConfigureAwait(false);
+            ct,
+            deadline.Token).ConfigureAwait(false);
         if (payload is null ||
             string.IsNullOrWhiteSpace(payload.TailscaleLoginServer) ||
             string.IsNullOrWhiteSpace(payload.TailscaleAuthkey))
@@ -205,10 +213,11 @@ public sealed class AgentApiClient
         string path,
         object body,
         CancellationToken ct,
-        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
+        CancellationToken? deadlineCt = null)
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);
-        return await SendSignedJsonRequestAsync(method, path, json, ct, completionOption).ConfigureAwait(false);
+        return await SendSignedJsonRequestAsync(method, path, json, ct, completionOption, deadlineCt).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedJsonRequestAsync(
@@ -216,9 +225,16 @@ public sealed class AgentApiClient
         string path,
         string json,
         CancellationToken ct,
-        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
+        CancellationToken? deadlineCt = null)
     {
-        var response = await SendSignedJsonRequestOnceAsync(method, path, json, ct, completionOption).ConfigureAwait(false);
+        var response = await SendSignedJsonRequestOnceAsync(
+            method,
+            path,
+            json,
+            ct,
+            completionOption,
+            deadlineCt).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.Unauthorized)
         {
             return response;
@@ -226,7 +242,13 @@ public sealed class AgentApiClient
 
         response.Dispose();
         await _tokens.RefreshAsync(ct).ConfigureAwait(false);
-        return await SendSignedJsonRequestOnceAsync(method, path, json, ct, completionOption).ConfigureAwait(false);
+        return await SendSignedJsonRequestOnceAsync(
+            method,
+            path,
+            json,
+            ct,
+            completionOption,
+            deadlineCt).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedJsonRequestOnceAsync(
@@ -234,10 +256,11 @@ public sealed class AgentApiClient
         string path,
         string json,
         CancellationToken ct,
-        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
+        CancellationToken? deadlineCt = null)
     {
         using var req = await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
-        return await _http.SendAsync(req, completionOption, ct).ConfigureAwait(false);
+        return await _http.SendAsync(req, completionOption, deadlineCt ?? ct).ConfigureAwait(false);
     }
 
     private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)

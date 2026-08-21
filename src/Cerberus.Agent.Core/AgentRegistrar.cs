@@ -93,14 +93,20 @@ public sealed class AgentRegistrar
         {
             Content = JsonContent.Create(req, options: JsonOpts),
         };
+        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
         using var resp = await _http.SendAsync(
             registerRequest,
             HttpCompletionOption.ResponseHeadersRead,
-            ct).ConfigureAwait(false);
+            deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw await AgentHttpFailure.CreateAsync("Register", resp, _http, ct).ConfigureAwait(false);
+            throw await AgentHttpFailure.CreateAsync("Register", resp, _http, ct, deadline.Token).ConfigureAwait(false);
 
-        var body = await AgentHttpFailure.ReadBodyAsStringAsync("Register", resp, _http, ct).ConfigureAwait(false);
+        var body = await AgentHttpFailure.ReadBodyAsStringAsync(
+            "Register",
+            resp,
+            _http,
+            ct,
+            deadline.Token).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<AgentRegisterResponse>(body, JsonOpts);
         if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId))
             throw new InvalidOperationException("Register response missing agent_id/tenant_id.");
