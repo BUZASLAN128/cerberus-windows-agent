@@ -15,7 +15,7 @@ internal static class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
     {
-        using var log = AgentFileLogger.CreateDefault(alsoConsole: true);
+        using var log = AgentFileLogger.CreateService(alsoConsole: true);
         log.Info("Service mode starting.");
 
         var secrets = new DpapiSecretStore(SecretStoreScope.Machine);

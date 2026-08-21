@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.Core;
 
@@ -24,6 +25,50 @@ public sealed class AgentDiagnosticsBundleTests
         Assert.DoesNotContain("BEGIN PRIVATE KEY", redacted);
         Assert.Contains("safe status", redacted);
         Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
+    public async Task ExportAsync_WithExplicitLogDirectory_CollectsOnlyOverrideAndRedactsContent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-diagnostics-tests", Guid.NewGuid().ToString("N"));
+        var outputDir = Path.Combine(root, "output");
+        var selectedLogDir = Path.Combine(root, "selected");
+        var ignoredLogDir = Path.Combine(root, "ignored");
+        Directory.CreateDirectory(selectedLogDir);
+        Directory.CreateDirectory(ignoredLogDir);
+        await File.WriteAllTextAsync(Path.Combine(selectedLogDir, "selected.log"), "refresh_token: selected-secret\nsafe status");
+        await File.WriteAllTextAsync(Path.Combine(ignoredLogDir, "ignored.log"), "ignored log content");
+
+        try
+        {
+            var archivePath = await AgentDiagnosticsBundle.ExportAsync(outputDir, selectedLogDir);
+            using var archive = ZipFile.OpenRead(archivePath);
+
+            var selected = archive.GetEntry("logs/selected.log");
+            Assert.NotNull(selected);
+            using var reader = new StreamReader(selected!.Open());
+            var content = await reader.ReadToEndAsync();
+            Assert.DoesNotContain("selected-secret", content);
+            Assert.Contains("[REDACTED]", content);
+            Assert.Contains("safe status", content);
+            Assert.Null(archive.GetEntry("logs/ignored.log"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExportAsync_DefaultLogCollectionReferencesBothUserAndServiceDirectories()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Diagnostics", "AgentDiagnosticsBundle.cs"));
+
+        Assert.Contains("AgentFileLogger.UserLogDirectory", source);
+        Assert.Contains("AgentFileLogger.ServiceLogDirectory", source);
+        Assert.Contains("logDir is null", source);
     }
 
     [Fact]
@@ -121,4 +166,19 @@ public sealed class AgentDiagnosticsBundleTests
         BuildChannel: "dev",
         BootId: "boot-1",
         SupportedSchemaVersions: AgentSchemaVersions.All);
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "src", "Cerberus.Agent.App")) &&
+                Directory.Exists(Path.Combine(dir.FullName, "tests", "Cerberus.Agent.Core.Tests")))
+                return dir.FullName;
+
+            dir = dir.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Could not locate cerberus-windows-agent repository root.");
+    }
 }

@@ -10,7 +10,7 @@ internal static class RegisterMode
 {
     public static async Task<int> RunAsync(AgentArgs args, CancellationToken ct)
     {
-        using var log = AgentFileLogger.CreateDefault(alsoConsole: true);
+        using var log = AgentFileLogger.CreateUser(alsoConsole: true);
 
         try
         {

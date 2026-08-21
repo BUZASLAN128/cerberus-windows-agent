@@ -7,7 +7,7 @@ internal static class SetupMode
 {
     public static async Task<int> RunAsync(CancellationToken ct)
     {
-        using var log = AgentFileLogger.CreateDefault(alsoConsole: true);
+        using var log = AgentFileLogger.CreateUser(alsoConsole: true);
         try
         {
             var cfg = UiConfigStore.LoadMergedWithEnv();

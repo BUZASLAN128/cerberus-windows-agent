@@ -31,15 +31,21 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
         _writer = OpenWriter(logFilePath);
     }
 
-    public static AgentFileLogger CreateDefault(bool alsoConsole = true)
-    {
-        var baseDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+    public static string UserLogDirectory => GetLogDirectory(Environment.SpecialFolder.LocalApplicationData);
+
+    public static string ServiceLogDirectory => GetLogDirectory(Environment.SpecialFolder.CommonApplicationData);
+
+    public static AgentFileLogger CreateUser(bool alsoConsole = true)
+        => new(Path.Combine(UserLogDirectory, "agent-ui.log"), alsoConsole);
+
+    public static AgentFileLogger CreateService(bool alsoConsole = true)
+        => new(Path.Combine(ServiceLogDirectory, "agent.log"), alsoConsole);
+
+    private static string GetLogDirectory(Environment.SpecialFolder folder)
+        => Path.Combine(
+            Environment.GetFolderPath(folder),
             "CerberusAgent",
             "logs");
-        var path = Path.Combine(baseDir, "agent.log");
-        return new AgentFileLogger(path, alsoConsole);
-    }
 
     public void Info(string message) => Write("INFO", message, null);
     public void Warn(string message) => Write("WARN", message, null);
