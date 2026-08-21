@@ -348,10 +348,10 @@ public sealed class AgentRegistrarTests
     [Fact]
     public async Task RegisterAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
     {
-        const int timeoutMs = 500;
+        const int timeoutMs = 2000;
         var handler = new CaptureHandler(
             new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StallingContent("register-delay-marker") },
-            TimeSpan.FromMilliseconds(300));
+            TimeSpan.FromMilliseconds(1500));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
         var stopwatch = Stopwatch.StartNew();
 
@@ -360,7 +360,7 @@ public sealed class AgentRegistrarTests
         stopwatch.Stop();
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromMilliseconds(700));
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
     }
 
     [Fact]

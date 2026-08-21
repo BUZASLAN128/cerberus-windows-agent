@@ -232,11 +232,11 @@ public sealed class AgentApiClientTelemetryTests
     [Fact]
     public async Task GetTailscalePreauthAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
     {
-        const int timeoutMs = 500;
+        const int timeoutMs = 2000;
         var handler = new FailureHandler(
             HttpStatusCode.OK,
             new StallingContent("preauth-delay-marker"),
-            TimeSpan.FromMilliseconds(300));
+            TimeSpan.FromMilliseconds(1500));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
         var stopwatch = Stopwatch.StartNew();
@@ -246,7 +246,7 @@ public sealed class AgentApiClientTelemetryTests
         stopwatch.Stop();
         Assert.Equal("Tailscale preauth failed (200).", exception.Message);
         Assert.DoesNotContain("preauth-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromMilliseconds(700));
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
     }
 
     [Fact]
