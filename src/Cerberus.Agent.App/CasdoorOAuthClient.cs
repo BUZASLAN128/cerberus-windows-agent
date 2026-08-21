@@ -68,10 +68,13 @@ internal sealed class CasdoorOAuthClient
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         using var resp = await http.SendAsync(req, ct);
-        var raw = await resp.Content.ReadAsStringAsync(ct);
         if (!resp.IsSuccessStatusCode)
-            throw new HttpRequestException($"Token exchange failed ({(int)resp.StatusCode}). {raw}");
+            throw new HttpRequestException(
+                $"Token exchange failed ({(int)resp.StatusCode}).",
+                inner: null,
+                statusCode: resp.StatusCode);
 
+        var raw = await resp.Content.ReadAsStringAsync(ct);
         var parsed = JsonSerializer.Deserialize<TokenResponse>(raw, JsonOpts);
         if (parsed is null || string.IsNullOrWhiteSpace(parsed.AccessToken))
             throw new InvalidOperationException("Token exchange response missing access_token.");

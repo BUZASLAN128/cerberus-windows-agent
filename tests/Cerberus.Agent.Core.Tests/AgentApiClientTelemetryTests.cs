@@ -146,6 +146,24 @@ public sealed class AgentApiClientTelemetryTests
     }
 
     [Fact]
+    public async Task GetTailscalePreauthAsync_OnHttpFailure_ThrowsStatusOnlyAndDoesNotExposeResponseBody()
+    {
+        var sensitiveBody = "sql=SELECT topology tenant=0000 token=secret-token <html>internal details</html>" + new string('x', 64 * 1024);
+        var handler = new FailureHandler(
+            HttpStatusCode.BadGateway,
+            new StringContent(sensitiveBody, Encoding.UTF8, "text/plain"));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.GetTailscalePreauthAsync(CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Equal("Tailscale preauth failed (502).", exception.Message);
+        Assert.DoesNotContain(sensitiveBody, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SelfDeactivateAsync_PostsSignedDeactivateEndpoint()
     {
         var handler = new CaptureHandler(
@@ -246,6 +264,21 @@ public sealed class AgentApiClientTelemetryTests
                     "application/json"),
             };
         }
+    }
+
+    private sealed class FailureHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _statusCode;
+        private readonly HttpContent _content;
+
+        public FailureHandler(HttpStatusCode statusCode, HttpContent content)
+        {
+            _statusCode = statusCode;
+            _content = content;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(_statusCode) { Content = _content });
     }
 
     private sealed class TransientThenOkHandler : HttpMessageHandler

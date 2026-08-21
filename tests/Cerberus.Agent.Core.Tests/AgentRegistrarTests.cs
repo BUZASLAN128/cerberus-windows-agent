@@ -154,6 +154,35 @@ public sealed class AgentRegistrarTests
         Assert.Equal("http://telemetry.test", secrets.LastSaved!.Value.BackendUrl);
     }
 
+    [Fact]
+    public async Task RegisterAsync_OnHttpFailure_ThrowsStatusOnlyAndDoesNotExposeResponseBody()
+    {
+        var sensitiveBody = "sql=SELECT topology tenant=0000 token=secret-token <html>internal details</html>" + new string('x', 64 * 1024);
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadGateway)
+        {
+            Content = new StringContent(sensitiveBody, Encoding.UTF8, "text/plain"),
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test") };
+        var registrar = new AgentRegistrar(
+            http,
+            new CaptureSecretStore(),
+            new StubKeyPairs("priv-pem", "pub-pem"),
+            log: NullAgentLogger.Instance);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => registrar.RegisterAsync(
+            oauthToken: "Bearer tok",
+            backendUrlForStorage: "http://backend",
+            deviceFingerprint: "fp",
+            agentVersion: "1.2.3",
+            buildId: "build-abc",
+            buildChannel: "dev",
+            ct: CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.BadGateway, exception.StatusCode);
+        Assert.Equal("Register failed (502).", exception.Message);
+        Assert.DoesNotContain(sensitiveBody, exception.Message, StringComparison.Ordinal);
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         private readonly HttpResponseMessage _response;

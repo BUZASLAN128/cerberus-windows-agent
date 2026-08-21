@@ -134,12 +134,7 @@ public sealed class AgentApiClient
 
         using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, new { }, ct).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-        {
-            // Surface backend reason (usually generic in prod, but helpful in dev).
-            var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (body.Length > 800) body = body[..800] + "...";
-            throw new HttpRequestException($"Tailscale preauth failed: {(int)resp.StatusCode} {resp.ReasonPhrase}: {body}");
-        }
+            throw AgentHttpFailure.Create("Tailscale preauth", resp);
 
         var payload = await resp.Content.ReadFromJsonAsync<TailscalePreauthResponse>(JsonOpts, ct).ConfigureAwait(false);
         if (payload is null ||
