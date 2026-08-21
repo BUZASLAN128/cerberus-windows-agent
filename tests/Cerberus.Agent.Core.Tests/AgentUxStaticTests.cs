@@ -1,3 +1,6 @@
+using System.Xml.Linq;
+using Cerberus.Agent.Observability;
+
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUxStaticTests
@@ -68,6 +71,69 @@ public sealed class AgentUxStaticTests
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Setup.exe\"", wxs);
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.Tray.exe\"", wxs);
         Assert.DoesNotContain("Target=\"[INSTALLFOLDER]Cerberus.Agent.exe\"", wxs);
+    }
+
+    [Fact]
+    public void Installer_RemovesLegacyStartupShortcutUnconditionally()
+    {
+        var repoRoot = FindRepoRoot();
+        var wxs = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.wxs"));
+        var document = XDocument.Parse(wxs, LoadOptions.PreserveWhitespace);
+        var ns = XNamespace.Get("http://wixtoolset.org/schemas/v4/wxs");
+        var installComponent = document.Descendants(ns + "Component")
+            .Single(component => (string?)component.Attribute("Id") == "AgentInstallRegistryComponent");
+        var legacyCleanup = installComponent.Elements(ns + "RemoveFile")
+            .Single(removeFile => (string?)removeFile.Attribute("Id") == "RemoveLegacyStartupShortcut");
+        var startupComponent = document.Descendants(ns + "Component")
+            .Single(component => (string?)component.Attribute("Id") == "StartupShortcutComponent");
+
+        Assert.Equal("Cerberus Agent Tray.lnk", (string?)legacyCleanup.Attribute("Name"));
+        Assert.Equal("StartupFolder", (string?)legacyCleanup.Attribute("Directory"));
+        Assert.Equal("install", (string?)legacyCleanup.Attribute("On"));
+        Assert.Null(installComponent.Attribute("Condition"));
+        Assert.NotSame(installComponent, startupComponent);
+        Assert.Equal("START_TRAY_ON_LOGIN = 1", (string?)startupComponent.Attribute("Condition"));
+        Assert.Equal("--background", (string?)startupComponent.Element(ns + "Shortcut")?.Attribute("Arguments"));
+    }
+
+    [Fact]
+    public void LoggerFactories_KeepUserAndServiceOwnershipDistinct()
+    {
+        var repoRoot = FindRepoRoot();
+        var logger = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Observability", "AgentFileLogger.cs"));
+
+        Assert.Contains("Environment.SpecialFolder.LocalApplicationData", logger);
+        Assert.Contains("Environment.SpecialFolder.CommonApplicationData", logger);
+        Assert.Contains("Path.Combine(UserLogDirectory, \"agent-ui.log\")", logger);
+        Assert.Contains("Path.Combine(ServiceLogDirectory, \"agent.log\")", logger);
+        Assert.NotEqual(AgentFileLogger.UserLogDirectory, AgentFileLogger.ServiceLogDirectory);
+    }
+
+    [Fact]
+    public void AppEntrypoints_MapInteractiveLoggingToUserAndServiceModeToService()
+    {
+        var repoRoot = FindRepoRoot();
+        var appRoot = Path.Combine(repoRoot, "src", "Cerberus.Agent.App");
+        var userEntrypoints = new[]
+        {
+            "ExportTailscaleUpMode.cs",
+            "HeartbeatOnceMode.cs",
+            "MainWindow.xaml.cs",
+            "RegisterMode.cs",
+            "SelfTestMode.cs",
+            "SetupMode.cs",
+        };
+
+        foreach (var file in userEntrypoints)
+        {
+            var source = File.ReadAllText(Path.Combine(appRoot, file));
+            Assert.Contains("AgentFileLogger.CreateUser", source);
+            Assert.DoesNotContain("AgentFileLogger.CreateDefault", source);
+        }
+
+        var serviceMode = File.ReadAllText(Path.Combine(appRoot, "ServiceMode.cs"));
+        Assert.Contains("AgentFileLogger.CreateService", serviceMode);
+        Assert.DoesNotContain("AgentFileLogger.CreateDefault", serviceMode);
     }
 
     [Fact]

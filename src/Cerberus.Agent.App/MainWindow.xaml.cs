@@ -349,7 +349,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            using var log = AgentFileLogger.CreateDefault(alsoConsole: false);
+            using var log = AgentFileLogger.CreateUser(alsoConsole: false);
             var result = await new AgentSetupFlow().RunAsync(
                 _config,
                 log,

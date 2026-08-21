@@ -10,7 +10,7 @@ internal static class HeartbeatOnceMode
 {
     public static async Task<int> RunAsync(CancellationToken ct)
     {
-        using var log = AgentFileLogger.CreateDefault(alsoConsole: true);
+        using var log = AgentFileLogger.CreateUser(alsoConsole: true);
         try
         {
             var secrets = new DpapiSecretStore(SecretStoreScope.User);

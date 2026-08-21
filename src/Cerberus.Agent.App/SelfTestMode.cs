@@ -19,7 +19,7 @@ internal static class SelfTestMode
 
     public static async Task<int> RunAsync(bool json, string? outFile, CancellationToken ct)
     {
-        using var log = AgentFileLogger.CreateDefault(alsoConsole: !json);
+        using var log = AgentFileLogger.CreateUser(alsoConsole: !json);
 
         var started = DateTimeOffset.UtcNow;
         var report = new SelfTestReport

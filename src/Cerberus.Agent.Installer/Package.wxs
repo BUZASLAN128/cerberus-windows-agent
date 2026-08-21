@@ -165,6 +165,11 @@
         <RemoveFolder Id="RemoveAppFolder" Directory="APPFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveCompanyFolder" Directory="CompanyFolder" On="uninstall" />
+        <RemoveFile
+            Id="RemoveLegacyStartupShortcut"
+            Name="Cerberus Agent Tray.lnk"
+            Directory="StartupFolder"
+            On="install" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="agentExeInstalled" Type="integer" Value="1" KeyPath="yes" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="installRoot" Type="string" Value="[INSTALLFOLDER]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="runtimeRoot" Type="string" Value="[APPFOLDER]" />

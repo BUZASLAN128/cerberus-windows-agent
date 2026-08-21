@@ -79,34 +79,49 @@ internal static class AgentDiagnosticsBundle
 
     private static async Task CopyRecentLogsAsync(ZipArchive archive, string? logDir, CancellationToken ct)
     {
-        logDir ??= Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
-            "logs");
-        if (!Directory.Exists(logDir))
-            return;
+        var logDirectories = logDir is null
+            ? new[] { AgentFileLogger.UserLogDirectory, AgentFileLogger.ServiceLogDirectory }
+            : new[] { logDir! };
 
-        var files = Directory
-            .EnumerateFiles(logDir, "*.log", SearchOption.TopDirectoryOnly)
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .Take(3)
-            .ToArray();
-
-        foreach (var file in files)
+        foreach (var directory in logDirectories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            ct.ThrowIfCancellationRequested();
+            if (!Directory.Exists(directory))
+                continue;
+
+            string[] files;
             try
             {
-                var text = await File.ReadAllTextAsync(file, ct);
-                await WriteTextEntryAsync(archive, $"logs/{Path.GetFileName(file)}", Redact(text), ct);
+                files = Directory
+                    .EnumerateFiles(directory, "*.log", SearchOption.TopDirectoryOnly)
+                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                    .Take(3)
+                    .ToArray();
             }
             catch (IOException)
             {
-                // Diagnostics should continue if one log is locked.
+                continue;
             }
             catch (UnauthorizedAccessException)
             {
-                // Diagnostics should continue if one log is not readable by the current user.
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var text = await File.ReadAllTextAsync(file, ct);
+                    await WriteTextEntryAsync(archive, $"logs/{Path.GetFileName(file)}", Redact(text), ct);
+                }
+                catch (IOException)
+                {
+                    // Diagnostics should continue if one log is locked.
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // Diagnostics should continue if one log is not readable by the current user.
+                }
             }
         }
     }
