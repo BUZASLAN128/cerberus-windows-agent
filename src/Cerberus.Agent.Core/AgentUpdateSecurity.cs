@@ -61,24 +61,26 @@ public static class AgentUpdateSecurity
         }
 
         var protectionTargets = GetProtectionTargets(fullRoot).ToArray();
+        var productRoot = Path.Combine(
+            NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)), "CerberusAgent");
+        var productRootWasMissing = !Directory.Exists(productRoot);
         foreach (var directory in protectionTargets)
         {
             ValidateExistingAncestors(directory);
+            var existed = Directory.Exists(directory);
             Directory.CreateDirectory(directory);
             ValidateNoReparsePoint(directory, "Privileged update directory");
+            // Shared ancestors also contain lifecycle/provisioning state. Their
+            // owner sets their policy; an update record write must not reset it.
+            if (existed && !string.Equals(directory, fullRoot, StringComparison.OrdinalIgnoreCase))
+                continue;
             // Keep the product root restrictive while its privileged children
             // are being created, then restore its narrow signal-file grants.
             ApplyProtectedAcl(directory, isProductRoot: false);
         }
 
-        var productRoot = Path.Combine(
-            NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)),
-            "CerberusAgent");
-        if (protectionTargets.Any(directory =>
-                string.Equals(directory, productRoot, StringComparison.OrdinalIgnoreCase)))
-        {
+        if (productRootWasMissing && protectionTargets.Contains(productRoot, StringComparer.OrdinalIgnoreCase))
             ApplyProtectedAcl(productRoot, isProductRoot: true);
-        }
 
         ValidateNoReparsePoint(fullRoot, "Privileged update root");
     }
@@ -170,7 +172,7 @@ public static class AgentUpdateSecurity
         var fullPath = Path.GetFullPath(path);
         var fullDirectory = NormalizeRoot(directory);
         return string.Equals(fullPath, fullDirectory, StringComparison.OrdinalIgnoreCase) ||
-               fullPath.StartsWith(fullDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+               fullPath.StartsWith(Path.EndsInDirectorySeparator(fullDirectory) ? fullDirectory : fullDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IEnumerable<string> GetProtectionTargets(string fullRoot)

@@ -48,9 +48,11 @@ public sealed class AgentUpdateStagerTests
         Assert.NotNull(plan);
         Assert.Equal("1.2.0", plan.Version);
         Assert.True(File.Exists(plan.ArtifactPath));
-        Assert.True(File.Exists(Path.Combine(root, "1.2.0", "update-plan.json")));
+        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(plan.ArtifactPath)!, AgentUpdateSecurity.PlanFileName)));
+        Assert.NotNull(plan.AttemptId);
+        Assert.Equal(plan.AttemptId, new AgentUpdateJournalStore(root).Read().AttemptId);
         Assert.Contains(log.InfoMessages, item => item.Contains("download progress", StringComparison.Ordinal));
-        Assert.False(Directory.Exists(Path.Combine(root, "0.9.0")));
+        Assert.True(Directory.Exists(Path.Combine(root, "0.9.0")));
     }
 
     [Fact]
@@ -253,7 +255,7 @@ public sealed class AgentUpdateStagerTests
                     JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
                     Encoding.UTF8,
                     "application/json");
-            throw new InvalidOperationException("Artifact should not be downloaded when a verified staged MSI exists.");
+            return new ByteArrayContent(artifact);
         }));
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-reuse-test-" + Guid.NewGuid().ToString("N"));
         var stageDir = Path.Combine(root, "1.2.0");
@@ -270,9 +272,13 @@ public sealed class AgentUpdateStagerTests
                 CurrentVersion: "1.1.0"),
             root);
 
+        var first = await stager.StageAsync(UpdateResponse(), CancellationToken.None);
+        Assert.NotNull(first);
+        requestedPaths.Clear();
         var plan = await stager.StageAsync(UpdateResponse(), CancellationToken.None);
 
         Assert.NotNull(plan);
+        Assert.Equal(first.AttemptId, plan.AttemptId);
         Assert.Equal(new[] { "/manifest.json" }, requestedPaths);
         Assert.Equal(artifact, await File.ReadAllBytesAsync(plan.ArtifactPath));
     }
@@ -378,7 +384,7 @@ public sealed class AgentUpdateStagerTests
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             AgentUpdateStager.ApplyPlanAsync(planPath, Path.Combine(root, "target.exe"), CancellationToken.None));
-        Assert.Contains("checksum mismatch", ex.Message);
+        Assert.Equal("Direct update application is disabled.", ex.Message);
     }
 
     [Fact]
@@ -399,7 +405,7 @@ public sealed class AgentUpdateStagerTests
                 Path.Combine(root, "target.exe"),
                 CancellationToken.None));
 
-        Assert.Contains("outside trusted staging root", ex.Message);
+        Assert.Equal("Direct update application is disabled.", ex.Message);
     }
 
     [Fact]
@@ -422,7 +428,7 @@ public sealed class AgentUpdateStagerTests
                 Path.Combine(root, "target.exe"),
                 CancellationToken.None));
 
-        Assert.Contains("artifact path is outside", ex.Message);
+        Assert.Equal("Direct update application is disabled.", ex.Message);
     }
 
     [Fact]
@@ -443,7 +449,7 @@ public sealed class AgentUpdateStagerTests
                 Path.Combine(root, "allowed.exe"),
                 CancellationToken.None));
 
-        Assert.Contains("target executable path is not allowed", ex.Message);
+        Assert.Equal("Direct update application is disabled.", ex.Message);
     }
 
     private static HeartbeatResponse UpdateResponse()

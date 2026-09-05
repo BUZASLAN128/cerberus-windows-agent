@@ -10,7 +10,9 @@ public sealed class AgentLocalizationTests
     [InlineData("tr-TR", AgentLocalizer.TurkishCultureName)]
     [InlineData("en", AgentLocalizer.DefaultCultureName)]
     [InlineData("en-US", AgentLocalizer.DefaultCultureName)]
-    [InlineData("de-DE", null)]
+    [InlineData("de-DE", AgentLocalizer.GermanCultureName)]
+    [InlineData("de", AgentLocalizer.GermanCultureName)]
+    [InlineData("fr-FR", null)]
     [InlineData("auto", null)]
     public void NormalizeCulture_AllowsOnlySupportedLocales(string input, string? expected)
     {
@@ -24,6 +26,25 @@ public sealed class AgentLocalizationTests
         Assert.Equal("Cihaz aktif", AgentLocalizer.Get("ReadyToConnect", CultureInfo.GetCultureInfo("tr-TR")));
         Assert.Equal("Running", AgentLocalizer.Get("ServiceRunning", CultureInfo.GetCultureInfo("en-US")));
         Assert.Equal("Çalışıyor", AgentLocalizer.Get("ServiceRunning", CultureInfo.GetCultureInfo("tr-TR")));
+    }
+
+    [Fact]
+    public void UpdateStateLabels_HaveGermanResourcesRatherThanEnglishFallback()
+    {
+        var german = CultureInfo.GetCultureInfo(AgentLocalizer.GermanCultureName);
+        var english = CultureInfo.GetCultureInfo(AgentLocalizer.DefaultCultureName);
+        foreach (var key in new[]
+        {
+            "UpdateNotChecked", "UpdateChecking", "UpdateCurrent", "UpdateAvailable", "UpdateDownloading",
+            "UpdateReadyToInstall", "UpdateInstalling", "UpdateHealthPending", "UpdatePendingReboot",
+            "UpdateInstallerBusy", "UpdateRecoveryRequired", "UpdateBlocked", "UpdateCheckFailed", "UpdateFoundPrompt",
+        })
+        {
+            var actual = AgentLocalizer.Get(key, german);
+            Assert.False(string.IsNullOrWhiteSpace(actual));
+            Assert.NotEqual(key, actual);
+            Assert.NotEqual(AgentLocalizer.Get(key, english), actual);
+        }
     }
 
     [Fact]

@@ -77,15 +77,17 @@ public static class AgentUpdateManifestValidator
         using var doc = JsonDocument.Parse(json);
         if (doc.RootElement.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException("Update manifest is invalid.");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var property in doc.RootElement.EnumerateObject())
         {
+            if (!names.Add(property.Name))
+                throw new InvalidOperationException("Update manifest has duplicate fields.");
             if (DisallowedKeys.Contains(property.Name))
                 throw new InvalidOperationException($"Update manifest rejects {property.Name}.");
         }
 
         var manifest = JsonSerializer.Deserialize<AgentUpdateManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("Update manifest is empty.");
-        manifest = NormalizeV2Aliases(manifest, doc.RootElement);
         return Validate(
             manifest,
             publicKeyPems,
@@ -123,6 +125,8 @@ public static class AgentUpdateManifestValidator
         bool allowChannelDowngrade = false)
     {
         ArgumentNullException.ThrowIfNull(manifest);
+        if (manifest.SchemaVersion is not (null or "" or AgentUpdateManifest.V1SchemaVersion or AgentUpdateManifest.V2SchemaVersion))
+            throw new InvalidOperationException("Update manifest schema is unsupported.");
         Require(manifest.ArtifactKind, "Update manifest artifact kind missing.");
         Require(manifest.Version, "Update manifest version missing.");
         Require(manifest.Channel, "Update manifest channel missing.");
@@ -149,7 +153,7 @@ public static class AgentUpdateManifestValidator
             !string.Equals(artifactUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest artifact URL invalid.");
         if (allowedArtifactPrefixes.Count > 0 &&
-            !allowedArtifactPrefixes.Any(prefix => manifest.ArtifactUrl.StartsWith(prefix, StringComparison.Ordinal)))
+            !allowedArtifactPrefixes.Any(prefix => IsAllowedArtifactUri(artifactUri, prefix)))
             throw new InvalidOperationException("Update manifest artifact URL denied.");
 
         if (manifest.IsV2)
@@ -159,7 +163,7 @@ public static class AgentUpdateManifestValidator
             if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt) ||
                 expiresAt <= DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("Update manifest has expired.");
-            if (manifest.ArtifactLength is <= 0)
+            if (manifest.ArtifactLength is null or <= 0)
                 throw new InvalidOperationException("Update manifest artifact length is invalid.");
             if (string.IsNullOrWhiteSpace(manifest.EffectiveSignerKeyIdentity))
                 throw new InvalidOperationException("Update manifest signer identity missing.");
@@ -188,6 +192,17 @@ public static class AgentUpdateManifestValidator
         return manifest;
     }
 
+    public static bool IsAllowedArtifactUri(Uri artifact, string prefix)
+    {
+        if (!Uri.TryCreate(prefix, UriKind.Absolute, out var allowed) || allowed.Scheme != Uri.UriSchemeHttps ||
+            artifact.Scheme != Uri.UriSchemeHttps || artifact.Host != allowed.Host || artifact.Port != allowed.Port ||
+            !string.IsNullOrEmpty(artifact.UserInfo) || !string.IsNullOrEmpty(artifact.Fragment) ||
+            !string.IsNullOrEmpty(allowed.Query) || !string.IsNullOrEmpty(allowed.Fragment)) return false;
+        var path = allowed.AbsolutePath;
+        return artifact.AbsolutePath.Equals(path, StringComparison.Ordinal) ||
+            artifact.AbsolutePath.StartsWith(path.EndsWith('/') ? path : path + "/", StringComparison.Ordinal);
+    }
+
     public static string CanonicalPayload(AgentUpdateManifest manifest)
     {
         var payload = new List<string>
@@ -214,6 +229,9 @@ public static class AgentUpdateManifestValidator
 
         return string.Join("\n", payload);
     }
+
+    public static string Digest(AgentUpdateManifest manifest)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(CanonicalPayload(manifest)))).ToLowerInvariant();
 
     private static AgentUpdateManifest NormalizeV2Aliases(AgentUpdateManifest manifest, JsonElement root)
     {
@@ -284,7 +302,7 @@ public static class AgentUpdateManifestValidator
 
     private static void Require(string value, string message)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value) || value.Contains('\n') || value.Contains('\r'))
             throw new InvalidOperationException(message);
     }
 

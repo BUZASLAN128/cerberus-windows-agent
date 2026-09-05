@@ -21,6 +21,7 @@
         DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
     <?endif ?>
     <MediaTemplate EmbedCab="yes" />
+    <Binary Id="CerberusInstallerHelper" SourceFile="$(var.InstallerHelperPath)" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="WIXUI_ACCEPT_LICENSE_AGREEMENT" Secure="yes" />
@@ -104,37 +105,40 @@
         Id="BlockInstallWithoutEula"
         Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
     <CustomAction
+        Id="BlockUpgradeWithoutRollback"
+        Error="Cerberus upgrades require Windows Installer rollback to be enabled." />
+    <CustomAction
+        Id="CaptureCerberusServiceBeforeUpgrade"
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='capture "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
+    <CustomAction
         Id="RepairExistingCerberusServicePath"
-        Directory="APPFOLDER"
-        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;\&quot;[APPFOLDER]Cerberus.Agent.Service.exe\&quot;&quot; start= auto'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='configure "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />
     <CustomAction
         Id="RestoreCerberusServicePathOnRollback"
-        Directory="APPFOLDER"
-        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;&quot;[APPFOLDER]Cerberus.Agent.Service.exe&quot;&quot; start= auto'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='restore "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
         Execute="rollback"
         Impersonate="no"
         Return="check" />
     <CustomAction
-        Id="StartExistingCerberusServiceAfterRepair"
-        Directory="INSTALLFOLDER"
-        ExeCommand='&quot;[SystemFolder]sc.exe&quot; start CerberusAgent'
-        Execute="deferred"
-        Impersonate="no"
-        Return="check" />
-    <CustomAction
         Id="StopCerberusServiceOnRollback"
-        Directory="INSTALLFOLDER"
-        ExeCommand='&quot;[SystemFolder]sc.exe&quot; stop CerberusAgent'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='stop "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
         Execute="rollback"
         Impersonate="no"
         Return="check" />
     <CustomAction
         Id="CheckCerberusServiceHealth"
-        Directory="INSTALLFOLDER"
-        ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /c &quot;&quot;[SystemFolder]sc.exe&quot; query CerberusAgent | &quot;[SystemFolder]findstr.exe&quot; /C:&quot;RUNNING&quot;&quot;'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />
@@ -146,17 +150,18 @@
         Impersonate="yes"
         Return="ignore" />
     <InstallExecuteSequence>
+      <Custom Action="BlockUpgradeWithoutRollback" Before="InstallInitialize" Condition="WIX_UPGRADE_DETECTED AND RollbackDisabled" />
       <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" Condition="NOT REMOVE" />
       <Custom
           Action="BlockInstallWithoutEula"
           Before="InstallValidate"
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
+      <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="StopServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="StartExistingCerberusServiceAfterRepair" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="CheckCerberusServiceHealth" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="RemoveLegacyUserStartupShortcut" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="RestoreCerberusServicePathOnRollback" Before="InstallFinalize" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
-      <Custom Action="StopCerberusServiceOnRollback" Before="RestoreCerberusServicePathOnRollback" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="StopCerberusServiceOnRollback" Before="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="CheckCerberusServiceHealth" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="RemoveLegacyUserStartupShortcut" After="CheckCerberusServiceHealth" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
     </InstallExecuteSequence>
   </Package>
 
@@ -200,6 +205,9 @@
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ProductCode" Type="string" Value="[ProductCode]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="productVersion" Type="string" Value="$(var.ReleaseVersion)" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateChannel" Type="string" Value="[CERBERUS_CHANNEL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateProtocolBaseline" Type="integer" Value="2" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="serviceExeSha256" Type="string" Value="$(var.ServiceExeSha256)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="serviceAssemblySha256" Type="string" Value="$(var.ServiceAssemblySha256)" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="backendUrl" Type="string" Value="[CERBERUS_BACKEND_URL]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoBaseUrl" Type="string" Value="[CERBERUS_SSO_BASE_URL]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="ssoClientId" Type="string" Value="[CERBERUS_SSO_CLIENT_ID]" />

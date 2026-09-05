@@ -14,6 +14,7 @@ public sealed class AgentTokenManager : ITokenManager
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _manualOperation;
+    private readonly Func<CancellationToken, Task>? _quiesce;
     private string? _accessToken;
     private DateTimeOffset _accessTokenExpiresAt;
 
@@ -28,7 +29,8 @@ public sealed class AgentTokenManager : ITokenManager
         TimeSpan? refreshSafetyMargin = null,
         Func<DateTimeOffset>? utcNow = null,
         IAgentLifecycleStateStore? lifecycleState = null,
-        bool manualOperation = false)
+        bool manualOperation = false,
+        Func<CancellationToken, Task>? quiesce = null)
     {
         _http = http;
         _secrets = secrets;
@@ -36,6 +38,7 @@ public sealed class AgentTokenManager : ITokenManager
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _lifecycleState = lifecycleState;
         _manualOperation = manualOperation;
+        _quiesce = quiesce;
     }
 
     public async Task<string> GetAccessTokenAsync(CancellationToken ct)
@@ -72,6 +75,8 @@ public sealed class AgentTokenManager : ITokenManager
 
     private async Task<string> RefreshAndReturnAccessTokenAsync(CancellationToken ct)
     {
+        await EnsureNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var (id, refreshToken, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
 
         var req = new { agent_id = id.AgentId, refresh_token = refreshToken };
@@ -103,12 +108,14 @@ public sealed class AgentTokenManager : ITokenManager
                         Status: null,
                         RequestId: null,
                         RetryAfter: null);
-                await new AgentLifecycleController(_lifecycleState, _secrets)
+                await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
                     .RecordHttpFailureAsync(
                         failureInfo,
                         duringRefresh: true,
                         manualOperation: _manualOperation,
-                        ct)
+                        ct,
+                        expectedGeneration: generation,
+                        authenticatedControlPlane: true)
                     .ConfigureAwait(false);
             }
             throw failure;
@@ -127,20 +134,28 @@ public sealed class AgentTokenManager : ITokenManager
         }
         catch (HttpRequestException ex) when (_lifecycleState is not null && AgentHttpFailure.IsPayloadInvalid(ex))
         {
-            await TransitionInvalidPayloadAsync(ct).ConfigureAwait(false);
+            await TransitionInvalidPayloadAsync(ct, generation).ConfigureAwait(false);
             throw;
         }
 
-        if (payload is null)
-            throw await HandleInvalidPayloadAsync(ct).ConfigureAwait(false);
+        if (payload is null || string.IsNullOrWhiteSpace(payload.AccessToken) || payload.ExpiresIn <= 0)
+            throw await HandleInvalidPayloadAsync(ct, generation).ConfigureAwait(false);
 
-        if (string.IsNullOrWhiteSpace(payload.AccessToken) || payload.ExpiresIn <= 0)
-            throw await HandleInvalidPayloadAsync(ct).ConfigureAwait(false);
+        if (_lifecycleState is not null)
+        {
+            var current = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+            if (current.Generation != generation)
+                throw new AgentLifecycleDormantException(current);
+        }
 
         // Rotation support: backend may return a new refresh token.
         if (!string.IsNullOrWhiteSpace(payload.RefreshToken))
         {
-            await _secrets.SaveAsync(id, payload.RefreshToken!, privateKeyPem, backendUrl, tsLogin, tsAuthkey, ct);
+            if (_lifecycleState is null)
+                await _secrets.SaveAsync(id, payload.RefreshToken!, privateKeyPem, backendUrl, tsLogin, tsAuthkey, ct);
+            else if (!await _lifecycleState.ExecuteIfCurrentAsync(generation!.Value,
+                cancel => _secrets.SaveAsync(id, payload.RefreshToken!, privateKeyPem, backendUrl, tsLogin, tsAuthkey, cancel), ct).ConfigureAwait(false))
+                throw new AgentLifecycleDormantException(await _lifecycleState.LoadAsync(ct).ConfigureAwait(false));
         }
 
         _accessToken = payload.AccessToken;
@@ -148,13 +163,13 @@ public sealed class AgentTokenManager : ITokenManager
         return payload.AccessToken;
     }
 
-    private async Task<Exception> HandleInvalidPayloadAsync(CancellationToken ct)
+    private async Task<Exception> HandleInvalidPayloadAsync(CancellationToken ct, long? generation)
     {
-        await TransitionInvalidPayloadAsync(ct).ConfigureAwait(false);
+        await TransitionInvalidPayloadAsync(ct, generation).ConfigureAwait(false);
         return new InvalidOperationException("Token refresh payload missing or invalid.");
     }
 
-    private Task TransitionInvalidPayloadAsync(CancellationToken ct)
+    private Task TransitionInvalidPayloadAsync(CancellationToken ct, long? generation)
         => _lifecycleState is null
             ? Task.CompletedTask
             : _lifecycleState.TransitionAsync(
@@ -163,7 +178,7 @@ public sealed class AgentTokenManager : ITokenManager
                 requestId: null,
                 nextAttemptUtc: null,
                 genericAuthFailureCount: null,
-                ct);
+                ct, expectedGeneration: generation);
 
     private async Task EnsureNetworkAllowedAsync(CancellationToken ct)
     {
@@ -173,8 +188,8 @@ public sealed class AgentTokenManager : ITokenManager
         if (_manualOperation)
         {
             var manualSnapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
-            if (manualSnapshot.State == AgentLifecycleState.Retired)
-                throw new AgentRetiredException(manualSnapshot);
+            if (manualSnapshot.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment || !manualSnapshot.QuiescenceComplete)
+                throw new AgentLifecycleDormantException(manualSnapshot);
             return;
         }
 

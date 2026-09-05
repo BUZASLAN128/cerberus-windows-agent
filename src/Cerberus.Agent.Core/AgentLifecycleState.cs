@@ -39,12 +39,19 @@ public sealed record AgentLifecycleSnapshot(
     DateTimeOffset? UpdatedAtUtc = null)
 {
     public DateTimeOffset EffectiveUpdatedAtUtc => UpdatedAtUtc ?? DateTimeOffset.UtcNow;
+    public long Generation { get; init; }
+    public long Revision { get; init; }
+    public bool QuiescenceComplete { get; init; } = true;
+    public int TransientFailureCount { get; init; }
+    public string? LastEnrollmentNonce { get; init; }
 }
 
 public interface IAgentLifecycleStateStore
 {
     Task<AgentLifecycleSnapshot> LoadAsync(CancellationToken ct);
     Task SaveAsync(AgentLifecycleSnapshot snapshot, CancellationToken ct);
+    Task<AgentLifecycleSnapshot?> TrySaveAsync(AgentLifecycleSnapshot snapshot, long expectedRevision, CancellationToken ct);
+    Task<bool> ExecuteIfCurrentAsync(long expectedGeneration, Func<CancellationToken, Task> action, CancellationToken ct);
 }
 
 /// <summary>
@@ -77,23 +84,57 @@ public sealed class InMemoryAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     public async Task SaveAsync(AgentLifecycleSnapshot snapshot, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
+        if (await TrySaveAsync(snapshot, snapshot.Revision, ct).ConfigureAwait(false) is null)
+            throw new InvalidOperationException("Lifecycle generation changed.");
+    }
+
+    public async Task<AgentLifecycleSnapshot?> TrySaveAsync(AgentLifecycleSnapshot snapshot, long expectedRevision, CancellationToken ct)
+    {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _snapshot = AgentLifecycleStatePolicy.Normalize(snapshot);
+            if (_snapshot.Revision != expectedRevision)
+                return null;
+            _snapshot = AgentLifecycleStatePolicy.ForCommit(_snapshot, snapshot);
+            return _snapshot;
         }
         finally
         {
             _gate.Release();
         }
     }
+
+    public async Task<bool> ExecuteIfCurrentAsync(long expectedGeneration, Func<CancellationToken, Task> action, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_snapshot.Generation != expectedGeneration)
+                return false;
+            await action(ct).ConfigureAwait(false);
+            return true;
+        }
+        finally { _gate.Release(); }
+    }
 }
 
 public static class AgentLifecycleStatePolicy
 {
+    public static AgentLifecycleSnapshot ForCommit(AgentLifecycleSnapshot current, AgentLifecycleSnapshot next)
+    {
+        var boundaryChanged = current.State != next.State &&
+            (AgentLifecycleStates.IsDormant(current.State) || AgentLifecycleStates.IsDormant(next.State));
+        return Normalize(next with
+        {
+            Revision = checked(current.Revision + 1),
+            Generation = next.Generation > current.Generation ? checked(current.Generation + 1) :
+                boundaryChanged ? checked(current.Generation + 1) : current.Generation,
+        });
+    }
+
     public const string AgentDeactivatedCode = "agent_deactivated";
     public const string AgentRevokedCode = "agent_revoked";
+    public const string AgentReenrollRequiredCode = "agent_reenroll_required";
 
     public static bool IsTerminalCode(string? code)
         => string.Equals(code, AgentDeactivatedCode, StringComparison.Ordinal) ||
@@ -127,6 +168,7 @@ public static class AgentLifecycleStatePolicy
             LastRequestId = requestId,
             NextAttemptUtc = nextAttempt,
             GenericAuthFailureCount = count,
+            TransientFailureCount = Math.Clamp(snapshot.TransientFailureCount, 0, 30),
             UpdatedAtUtc = snapshot.EffectiveUpdatedAtUtc.ToUniversalTime(),
         };
     }
@@ -137,8 +179,11 @@ public static class AgentLifecycleStatePolicy
         bool manualOperation,
         int priorGenericAuthFailures)
     {
-        if (IsTerminalCode(failure.Code))
+        if (failure.StatusCode == HttpStatusCode.Unauthorized && IsTerminalCode(failure.Code))
             return AgentLifecycleState.Retired;
+
+        if (failure.StatusCode == HttpStatusCode.Unauthorized && failure.Code == AgentReenrollRequiredCode)
+            return AgentLifecycleState.NeedsReenrollment;
 
         if (IsProtocolOrConfigCode(failure.Code) ||
             failure.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
@@ -233,20 +278,29 @@ public static class AgentLifecycleStateStoreExtensions
         string? requestId,
         DateTimeOffset? nextAttemptUtc,
         int? genericAuthFailureCount,
-        CancellationToken ct)
+        CancellationToken ct,
+        long? expectedGeneration = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         var current = await store.LoadAsync(ct).ConfigureAwait(false);
-        var next = new AgentLifecycleSnapshot(
-            State: state,
-            ReasonCode: reasonCode,
-            LastRequestId: requestId,
-            NextAttemptUtc: nextAttemptUtc,
-            GenericAuthFailureCount: genericAuthFailureCount ?? current.GenericAuthFailureCount,
-            UpdatedAtUtc: DateTimeOffset.UtcNow);
+        if (expectedGeneration is not null && current.Generation != expectedGeneration)
+            return current;
+        if (current.State == AgentLifecycleState.Retired ||
+            (AgentLifecycleStates.IsDormant(current.State) && AgentLifecycleStates.AllowsAutomaticNetwork(state)))
+            return current;
+        var next = current with
+        {
+            State = state,
+            ReasonCode = reasonCode,
+            LastRequestId = requestId,
+            NextAttemptUtc = nextAttemptUtc,
+            GenericAuthFailureCount = genericAuthFailureCount ?? current.GenericAuthFailureCount,
+            QuiescenceComplete = AgentLifecycleStates.IsDormant(state) ? false : current.QuiescenceComplete,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
         next = AgentLifecycleStatePolicy.Normalize(next);
-        await store.SaveAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false)
+            ?? await store.LoadAsync(ct).ConfigureAwait(false);
     }
 }
 
@@ -260,28 +314,43 @@ public sealed class AgentLifecycleController
     private readonly IAgentLifecycleStateStore _store;
     private readonly ISecretStore? _secrets;
     private readonly IAgentLogger _log;
+    private readonly Func<CancellationToken, Task>? _quiesce;
 
     public AgentLifecycleController(
         IAgentLifecycleStateStore store,
         ISecretStore? secrets = null,
-        IAgentLogger? log = null)
+        IAgentLogger? log = null,
+        Func<CancellationToken, Task>? quiesce = null)
     {
         _store = store;
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
+        _quiesce = quiesce;
     }
 
     public Task<AgentLifecycleSnapshot> LoadAsync(CancellationToken ct)
         => _store.LoadAsync(ct);
 
-    public async Task<AgentLifecycleSnapshot> RecordHttpFailureAsync(
+    public Task<AgentLifecycleSnapshot> RecordHttpFailureAsync(
         AgentHttpFailureInfo failure,
         bool duringRefresh,
         bool manualOperation,
-        CancellationToken ct)
+        CancellationToken ct,
+        long? expectedGeneration = null,
+        bool authenticatedControlPlane = false)
+        => RecordHttpFailureCoreAsync(failure, duringRefresh, manualOperation, ct, expectedGeneration, authenticatedControlPlane, 8);
+
+    private async Task<AgentLifecycleSnapshot> RecordHttpFailureCoreAsync(AgentHttpFailureInfo failure,
+        bool duringRefresh, bool manualOperation, CancellationToken ct, long? expectedGeneration,
+        bool authenticatedControlPlane, int remainingCasAttempts)
     {
         var current = AgentLifecycleStatePolicy.Normalize(
             await _store.LoadAsync(ct).ConfigureAwait(false));
+        if (expectedGeneration is not null && expectedGeneration != current.Generation)
+            return current;
+        if ((!authenticatedControlPlane || failure.StatusCode != HttpStatusCode.Unauthorized) &&
+            (AgentLifecycleStatePolicy.IsTerminalCode(failure.Code) || failure.Code == AgentLifecycleStatePolicy.AgentReenrollRequiredCode))
+            failure = failure with { DetailCode = null, TransportCode = null };
         var nextState = AgentLifecycleStatePolicy.ClassifyHttpFailure(
             failure,
             duringRefresh,
@@ -292,6 +361,8 @@ public sealed class AgentLifecycleController
         // never make a retired agent active or degraded again.
         if (current.State == AgentLifecycleState.Retired)
             throw new AgentRetiredException(current);
+        if (AgentLifecycleStates.IsDormant(current.State) && !manualOperation && nextState != AgentLifecycleState.Retired)
+            return current;
 
         // A manual request made while a dormant state is already persisted may
         // observe a temporary outage, but that outage must not reopen automatic
@@ -306,28 +377,37 @@ public sealed class AgentLifecycleController
             return current;
 
         var authFailures = current.GenericAuthFailureCount;
-        if (failure.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden &&
-            !AgentLifecycleStatePolicy.IsTerminalCode(failure.Code))
+        if (manualOperation && failure.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden &&
+            !AgentLifecycleStatePolicy.IsTerminalCode(failure.Code) && failure.Code != AgentLifecycleStatePolicy.AgentReenrollRequiredCode)
         {
             authFailures = Math.Min(2, authFailures + 1);
         }
 
-        var next = new AgentLifecycleSnapshot(
-            State: nextState,
-            ReasonCode: failure.Code ?? ReasonForStatus(failure.StatusCode, nextState),
-            LastRequestId: failure.RequestId ?? current.LastRequestId,
-            NextAttemptUtc: null,
-            GenericAuthFailureCount: authFailures,
-            UpdatedAtUtc: DateTimeOffset.UtcNow);
+        var next = current with
+        {
+            State = nextState,
+            ReasonCode = failure.Code ?? ReasonForStatus(failure.StatusCode, nextState),
+            LastRequestId = failure.RequestId ?? current.LastRequestId,
+            NextAttemptUtc = current.NextAttemptUtc,
+            GenericAuthFailureCount = authFailures,
+            QuiescenceComplete = AgentLifecycleStates.IsDormant(nextState) ? false : current.QuiescenceComplete,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
         next = AgentLifecycleStatePolicy.Normalize(next);
 
         // Persist first so a crash between the state transition and secret
         // clear cannot restart the service with automatic network enabled.
-        await _store.SaveAsync(next, ct).ConfigureAwait(false);
+        var saved = await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false);
+        if (saved is null)
+        {
+            if (remainingCasAttempts <= 0)
+                throw new InvalidOperationException("Lifecycle deny could not be committed.");
+            return await RecordHttpFailureCoreAsync(failure, duringRefresh, manualOperation, ct,
+                expectedGeneration, authenticatedControlPlane, remainingCasAttempts - 1).ConfigureAwait(false);
+        }
+        next = await CompletePendingQuiescenceAsync(ct).ConfigureAwait(false);
         if (nextState == AgentLifecycleState.Retired)
         {
-            if (_secrets is not null)
-                await _secrets.ClearAsync(ct).ConfigureAwait(false);
             _log.Warn($"Agent lifecycle retired by confirmed server code={next.ReasonCode}.");
             throw new AgentRetiredException(next);
         }
@@ -353,14 +433,15 @@ public sealed class AgentLifecycleController
             NextAttemptUtc = null,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
         });
-        await _store.SaveAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false)
+            ?? await _store.LoadAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<AgentLifecycleSnapshot> RecordTerminalResponseAsync(
         string code,
         string? requestId,
-        CancellationToken ct)
+        CancellationToken ct,
+        long? expectedGeneration = null)
     {
         var failure = new AgentHttpFailureInfo(
             HttpStatusCode.Unauthorized,
@@ -373,7 +454,9 @@ public sealed class AgentLifecycleController
             failure,
             duringRefresh: false,
             manualOperation: false,
-            ct).ConfigureAwait(false);
+            ct,
+            expectedGeneration: expectedGeneration,
+            authenticatedControlPlane: true).ConfigureAwait(false);
     }
 
     public async Task<AgentLifecycleSnapshot> RetireAsync(
@@ -384,63 +467,18 @@ public sealed class AgentLifecycleController
         if (!AgentLifecycleStatePolicy.IsTerminalCode(code))
             throw new ArgumentException("Only approved terminal lifecycle codes may retire an agent.", nameof(code));
 
-        var current = AgentLifecycleStatePolicy.Normalize(
-            await _store.LoadAsync(ct).ConfigureAwait(false));
-        if (current.State == AgentLifecycleState.Retired &&
-            string.Equals(current.ReasonCode, AgentLifecycleStatePolicy.AgentRevokedCode, StringComparison.Ordinal))
-        {
-            throw new AgentRetiredException(current);
-        }
-
-        var next = current with
-        {
-            State = AgentLifecycleState.Retired,
-            ReasonCode = code,
-            LastRequestId = requestId,
-            NextAttemptUtc = null,
-            UpdatedAtUtc = DateTimeOffset.UtcNow,
-        };
-        await _store.SaveAsync(AgentLifecycleStatePolicy.Normalize(next), ct).ConfigureAwait(false);
-        if (_secrets is not null)
-            await _secrets.ClearAsync(ct).ConfigureAwait(false);
-
-        throw new AgentRetiredException(AgentLifecycleStatePolicy.Normalize(next));
+        return await RecordTerminalResponseAsync(code, requestId, ct).ConfigureAwait(false);
     }
 
-    public async Task<AgentLifecycleSnapshot> MarkActiveAsync(CancellationToken ct)
+    public async Task<AgentLifecycleSnapshot> MarkActiveAsync(CancellationToken ct, long? expectedGeneration = null)
     {
         var current = AgentLifecycleStatePolicy.Normalize(
             await _store.LoadAsync(ct).ConfigureAwait(false));
-        if (current.State == AgentLifecycleState.Retired &&
-            !string.Equals(
-                current.ReasonCode,
-                AgentLifecycleStatePolicy.AgentDeactivatedCode,
-                StringComparison.Ordinal))
-        {
-            throw new AgentRetiredException(current);
-        }
-        if (!AgentLifecycleStates.AllowsAutomaticNetwork(current.State))
-        {
-            // Explicit re-enrollment may recover a soft deactivation after new
-            // credentials have been provisioned; all other dormant states stay
-            // dormant until their dedicated operator action succeeds.
-            if (current.State == AgentLifecycleState.Retired)
-            {
-                var reenrolled = AgentLifecycleStatePolicy.Normalize(current with
-                {
-                    State = AgentLifecycleState.Active,
-                    ReasonCode = null,
-                    LastRequestId = null,
-                    NextAttemptUtc = null,
-                    GenericAuthFailureCount = 0,
-                    UpdatedAtUtc = DateTimeOffset.UtcNow,
-                });
-                await _store.SaveAsync(reenrolled, ct).ConfigureAwait(false);
-                return reenrolled;
-            }
-
+        if (expectedGeneration is not null && expectedGeneration != current.Generation)
+            throw new AgentLifecycleDormantException(current);
+        if (
+            !AgentLifecycleStates.AllowsAutomaticNetwork(current.State) || !current.QuiescenceComplete)
             return current;
-        }
 
         // Preserve bounded diagnostic metadata across recovery; only the
         // retry schedule and consecutive generic-auth count are cleared.
@@ -449,10 +487,15 @@ public sealed class AgentLifecycleController
             State = AgentLifecycleState.Active,
             NextAttemptUtc = null,
             GenericAuthFailureCount = 0,
+            TransientFailureCount = 0,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
         });
-        await _store.SaveAsync(next, ct).ConfigureAwait(false);
-        return next;
+        if (next == current)
+            return current;
+        var saved = await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false);
+        if (saved is null && expectedGeneration is not null)
+            throw new AgentLifecycleDormantException(await _store.LoadAsync(ct).ConfigureAwait(false));
+        return saved ?? await _store.LoadAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<AgentLifecycleSnapshot> SetNextAttemptAsync(
@@ -460,22 +503,90 @@ public sealed class AgentLifecycleController
         CancellationToken ct)
     {
         var current = await _store.LoadAsync(ct).ConfigureAwait(false);
+        if (AgentLifecycleStates.IsDormant(current.State))
+            return current;
         var next = AgentLifecycleStatePolicy.Normalize(current with
         {
             NextAttemptUtc = nextAttemptUtc,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
         });
-        await _store.SaveAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false)
+            ?? await _store.LoadAsync(ct).ConfigureAwait(false);
     }
 
     public async Task EnsureAutomaticNetworkAllowedAsync(CancellationToken ct)
     {
         var snapshot = await _store.LoadAsync(ct).ConfigureAwait(false);
-        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State))
+        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) || !snapshot.QuiescenceComplete)
             throw snapshot.State == AgentLifecycleState.Retired
                 ? new AgentRetiredException(snapshot)
                 : new AgentLifecycleDormantException(snapshot);
+    }
+
+    /// <summary>Local-only cleanup after a durable deny, including crash recovery. No cleanup callback means pending, never completed.</summary>
+    public async Task<AgentLifecycleSnapshot> CompletePendingQuiescenceAsync(CancellationToken ct)
+    {
+        var current = await _store.LoadAsync(ct).ConfigureAwait(false);
+        if (current.QuiescenceComplete || AgentLifecycleStates.AllowsAutomaticNetwork(current.State) || _quiesce is null)
+            return current;
+        await _quiesce(ct).ConfigureAwait(false);
+        // Only retire clears credentials; reenrollment-required preserves them.
+        if (current.State == AgentLifecycleState.Retired && _secrets is not null)
+        {
+            if (!await _store.ExecuteIfCurrentAsync(current.Generation, _secrets.ClearAsync, ct).ConfigureAwait(false))
+                return await _store.LoadAsync(ct).ConfigureAwait(false);
+        }
+        return await _store.TrySaveAsync(current with
+        {
+            QuiescenceComplete = true,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        }, current.Revision, ct).ConfigureAwait(false) ?? await _store.LoadAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Called only by the service after an explicit authenticated recovery attempt succeeds.</summary>
+    public async Task<AgentLifecycleSnapshot> CompleteManualRecoveryAsync(long expectedGeneration, CancellationToken ct)
+    {
+        var current = await _store.LoadAsync(ct).ConfigureAwait(false);
+        if (current.Generation != expectedGeneration || !current.QuiescenceComplete ||
+            current.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment)
+            return current;
+        return await _store.TrySaveAsync(current with
+        {
+            State = AgentLifecycleState.Active,
+            ReasonCode = null,
+            NextAttemptUtc = null,
+            GenericAuthFailureCount = 0,
+            TransientFailureCount = 0,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        }, current.Revision, ct).ConfigureAwait(false) ?? await _store.LoadAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Service-only completion after the protected promotion marker and backend identity have been verified.</summary>
+    public async Task<AgentLifecycleSnapshot> CompleteEnrollmentAsync(long expectedGeneration, string nonce, CancellationToken ct)
+    {
+        if (!Guid.TryParseExact(nonce, "N", out _))
+            throw new ArgumentException("Invalid enrollment nonce.", nameof(nonce));
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var current = await _store.LoadAsync(ct).ConfigureAwait(false);
+            if (current.Generation != expectedGeneration || !current.QuiescenceComplete ||
+                current.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode || current.LastEnrollmentNonce == nonce)
+                throw new AgentLifecycleDormantException(current);
+            var next = current with
+            {
+                State = AgentLifecycleState.Active,
+                Generation = checked(current.Generation + 1),
+                ReasonCode = null,
+                NextAttemptUtc = null,
+                GenericAuthFailureCount = 0,
+                TransientFailureCount = 0,
+                LastEnrollmentNonce = nonce,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            var saved = await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false);
+            if (saved is not null) return saved;
+        }
+        throw new InvalidOperationException("Enrollment lifecycle changed concurrently.");
     }
 
     private static string ReasonForStatus(

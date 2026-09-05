@@ -139,4 +139,10 @@
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.</value></data>
   <data name="LegalTerms" xml:space="preserve"><value>legal terms</value></data>
+  <data name="UpdateServiceUnavailable" xml:space="preserve"><value>The local agent service is unavailable.</value></data>
+  <data name="UpdateHealthPending" xml:space="preserve"><value>Verifying the installed update</value></data>
+  <data name="UpdatePendingReboot" xml:space="preserve"><value>Restart required to finish the update</value></data>
+  <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer is busy; retry pending</value></data>
+  <data name="UpdateRecoveryRequired" xml:space="preserve"><value>The update requires recovery</value></data>
+  <data name="UpdateBlocked" xml:space="preserve"><value>The update is paused. Check again to continue.</value></data>
 </root>

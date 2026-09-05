@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Runtime.CompilerServices;
 
 namespace Cerberus.Agent.Core;
 
@@ -22,6 +23,9 @@ public sealed class AgentApiClient
     private readonly IRequestSigner _signer;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _manualOperation;
+    private readonly Func<CancellationToken, Task>? _quiesce;
+    private static readonly HttpRequestOptionsKey<long> LifecycleGenerationKey = new("CerberusLifecycleGeneration");
+    private static readonly ConditionalWeakTable<HeartbeatResponse, ResponseGeneration> ResponseGenerations = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentApiClient"/> class.
@@ -36,7 +40,8 @@ public sealed class AgentApiClient
         ITokenManager tokens,
         IRequestSigner signer,
         IAgentLifecycleStateStore? lifecycleState = null,
-        bool manualOperation = false)
+        bool manualOperation = false,
+        Func<CancellationToken, Task>? quiesce = null)
     {
         _http = http;
         _secrets = secrets;
@@ -44,6 +49,7 @@ public sealed class AgentApiClient
         _signer = signer;
         _lifecycleState = lifecycleState;
         _manualOperation = manualOperation;
+        _quiesce = quiesce;
     }
 
     /// <summary>
@@ -89,7 +95,7 @@ public sealed class AgentApiClient
                 requestId: null,
                 nextAttemptUtc: null,
                 genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
+                ct, expectedGeneration: RequestGeneration(resp)).ConfigureAwait(false);
             throw;
         }
         if (payload is null ||
@@ -105,20 +111,16 @@ public sealed class AgentApiClient
                     requestId: null,
                     nextAttemptUtc: null,
                     genericAuthFailureCount: null,
-                    ct).ConfigureAwait(false);
+                    ct, expectedGeneration: RequestGeneration(resp)).ConfigureAwait(false);
             }
             throw new InvalidOperationException("Heartbeat response missing or invalid.");
         }
 
         if (_lifecycleState is not null)
         {
-            var lifecycle = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
-            if (lifecycle.State != AgentLifecycleState.Retired)
-            {
-                await new AgentLifecycleController(_lifecycleState)
-                    .MarkActiveAsync(ct)
-                    .ConfigureAwait(false);
-            }
+            var lifecycle = await new AgentLifecycleController(_lifecycleState)
+                .MarkActiveAsync(ct, RequestGeneration(resp)).ConfigureAwait(false);
+            ResponseGenerations.Add(payload, new ResponseGeneration(lifecycle.Generation));
         }
         return payload;
     }
@@ -357,16 +359,19 @@ public sealed class AgentApiClient
                 ct,
                 deadlineCt).ConfigureAwait(false);
             if (accessFailure is AgentHttpException typed &&
-                AgentLifecycleStatePolicy.IsTerminalCode(typed.Code))
+                (AgentLifecycleStatePolicy.IsTerminalCode(typed.Code) || typed.Code == AgentLifecycleStatePolicy.AgentReenrollRequiredCode))
             {
                 response.Dispose();
-                await new AgentLifecycleController(_lifecycleState, _secrets)
+                await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
                     .RecordHttpFailureAsync(
                         typed.Failure,
                         duringRefresh: false,
                         manualOperation: _manualOperation,
-                        ct)
+                        ct,
+                        expectedGeneration: RequestGeneration(response),
+                        authenticatedControlPlane: true)
                     .ConfigureAwait(false);
+                throw accessFailure;
             }
         }
 
@@ -402,12 +407,14 @@ public sealed class AgentApiClient
                     Status: null,
                     RequestId: null,
                     RetryAfter: null);
-            await new AgentLifecycleController(_lifecycleState, _secrets)
+            await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
                 .RecordHttpFailureAsync(
                     retryInfo,
                     duringRefresh: false,
                     manualOperation: _manualOperation,
-                    ct)
+                    ct,
+                    expectedGeneration: RequestGeneration(retried),
+                    authenticatedControlPlane: true)
                 .ConfigureAwait(false);
             throw retryFailure;
         }
@@ -441,12 +448,14 @@ public sealed class AgentApiClient
                     Status: null,
                     RequestId: null,
                     RetryAfter: null);
-            await new AgentLifecycleController(_lifecycleState, _secrets)
+            await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
                 .RecordHttpFailureAsync(
                     failureInfo,
                     duringRefresh: false,
                     manualOperation: _manualOperation,
-                    ct)
+                    ct,
+                    expectedGeneration: RequestGeneration(response),
+                    authenticatedControlPlane: true)
                 .ConfigureAwait(false);
         }
         throw failure;
@@ -460,8 +469,8 @@ public sealed class AgentApiClient
         if (_manualOperation)
         {
             var manualSnapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
-            if (manualSnapshot.State == AgentLifecycleState.Retired)
-                throw new AgentRetiredException(manualSnapshot);
+            if (manualSnapshot.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment || !manualSnapshot.QuiescenceComplete)
+                throw new AgentLifecycleDormantException(manualSnapshot);
             return;
         }
 
@@ -484,6 +493,8 @@ public sealed class AgentApiClient
 
     private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
 
         var bodyBytes = Encoding.UTF8.GetBytes(json);
@@ -498,6 +509,16 @@ public sealed class AgentApiClient
         {
             Content = new ByteArrayContent(bodyBytes),
         };
+        if (generation is not null)
+        {
+            var current = await _lifecycleState!.LoadAsync(ct).ConfigureAwait(false);
+            if (current.Generation != generation)
+            {
+                req.Dispose();
+                throw new AgentLifecycleDormantException(current);
+            }
+            req.Options.Set(LifecycleGenerationKey, generation.Value);
+        }
         req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -510,6 +531,14 @@ public sealed class AgentApiClient
 
         return req;
     }
+
+    private static long? RequestGeneration(HttpResponseMessage response)
+        => response.RequestMessage?.Options.TryGetValue(LifecycleGenerationKey, out var value) == true ? value : null;
+
+    internal static long? GenerationOf(HeartbeatResponse response)
+        => ResponseGenerations.TryGetValue(response, out var value) ? value.Value : null;
+
+    private sealed record ResponseGeneration(long Value);
 
     private sealed record TailscalePreauthResponse(
         [property: JsonPropertyName("tailscale_login_server")] string TailscaleLoginServer,

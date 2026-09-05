@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
-    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.json</AgentUpdateManifestUrl>
+    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.v2.json</AgentUpdateManifestUrl>
     <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
     <AgentReleaseChannel Condition="'$(AgentReleaseChannel)' == ''">dev</AgentReleaseChannel>
     <AgentUpdateAllowedSignerKeyIdentity Condition="'$(AgentUpdateAllowedSignerKeyIdentity)' == ''"></AgentUpdateAllowedSignerKeyIdentity>
@@ -55,12 +55,8 @@
     <Compile Include="..\Cerberus.Agent.App\ProcessInstanceGuard.cs" Link="ProcessInstanceGuard.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateCoordinator.cs" Link="Updates\AgentUpdateCoordinator.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateDefaults.cs" Link="Updates\AgentUpdateDefaults.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateLaunchGate.cs" Link="Updates\AgentUpdateLaunchGate.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateRequestCommandHandler.cs" Link="Updates\AgentUpdateRequestCommandHandler.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateTrustFactory.cs" Link="Updates\AgentUpdateTrustFactory.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\UpdateCommandMode.cs" Link="Updates\UpdateCommandMode.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Updates\**\*.cs" LinkBase="Updates" />
+    <Compile Include="..\Cerberus.Agent.App\Control\**\*.cs" LinkBase="Control" />
     <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />
     <Compile Include="..\Cerberus.Agent.App\WindowsServiceHost.cs" Link="WindowsServiceHost.cs" />
     <Compile Include="..\Cerberus.Agent.App\Telemetry\**\*.cs" LinkBase="Telemetry" />
@@ -69,6 +65,7 @@
   <ItemGroup>
     <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.resx" Link="Localization\AgentStrings.resx" />
     <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.tr-TR.resx" Link="Localization\AgentStrings.tr-TR.resx" />
+    <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.de-DE.resx" Link="Localization\AgentStrings.de-DE.resx" />
   </ItemGroup>
 
   <ItemGroup>

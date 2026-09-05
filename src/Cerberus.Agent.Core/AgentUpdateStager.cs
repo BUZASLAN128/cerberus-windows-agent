@@ -42,7 +42,8 @@ public sealed record AgentUpdatePlan(
     string? SignerKeyIdentity = null,
     bool Required = false,
     bool RollbackAllowed = false,
-    int RetryCount = 0);
+    int RetryCount = 0,
+    string? ManifestDigest = null);
 
 public sealed record AgentUpdateCheckResult(
     bool Available,
@@ -106,6 +107,8 @@ public sealed class AgentUpdateStager
 
     public async Task<AgentUpdateCheckResult> CheckAsync(AgentUpdateSignal signal, CancellationToken ct)
     {
+        if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
+            throw new InvalidOperationException("Only the installed agent service may check updates.");
         if (!signal.Required && !signal.Recommended)
             return AgentUpdateCheckResult.None;
 
@@ -153,18 +156,24 @@ public sealed class AgentUpdateStager
             return null;
         }
 
-        using var operationLock = AgentUpdateSecurity.AcquireGlobalLock(_stagingRoot);
         var existing = FindExistingAttempt(manifest);
         if (existing is not null)
             return existing;
-
-        if (manifest.IsV2 && AgentUpdateSequenceStore.HasAcceptedSequence(_stagingRoot, manifest.Sequence))
-            throw new InvalidOperationException("Update manifest sequence was already accepted.");
 
         var attemptId = Guid.NewGuid().ToString("N");
         var attemptDir = AgentUpdateSecurity.CreateExclusiveAttemptDirectory(_stagingRoot, attemptId);
         var artifactPath = Path.Combine(attemptDir, AgentUpdateSecurity.ArtifactFileName);
         var partialPath = artifactPath + ".part";
+        var journal = new AgentUpdateJournalStore(_stagingRoot);
+        journal.Change(before => before.HasUnfinishedAttempt
+            ? throw new InvalidOperationException("Another update attempt is active.")
+            : before with
+            {
+                AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
+                RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
+                InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
+                InstallationBootId = null,
+            });
         try
         {
             await DownloadWithHashCheckAsync(manifest, partialPath, ct).ConfigureAwait(false);
@@ -198,16 +207,16 @@ public sealed class AgentUpdateStager
                 ManifestPath: manifestPath,
                 SignerKeyIdentity: manifest.EffectiveSignerKeyIdentity,
                 Required: signal.Required,
-                RollbackAllowed: manifest.RollbackAllowed);
+                RollbackAllowed: manifest.RollbackAllowed,
+                ManifestDigest: AgentUpdateManifestValidator.Digest(manifest));
             await WriteAtomicAsync(planPath, JsonSerializer.Serialize(plan, JsonOptions), ct).ConfigureAwait(false);
-
-            if (manifest.IsV2)
-                AgentUpdateSequenceStore.Advance(_stagingRoot, manifest.Sequence);
+            journal.ChangeAttempt(attemptId, before => before with { Phase = AgentUpdateStates.Staged });
             return plan;
         }
         catch
         {
-            TryDeleteDirectory(attemptDir);
+            // Keep the protected attempt and BITS receipt for crash/retirement reconciliation.
+            journal.ChangeAttempt(attemptId, before => before with { Phase = AgentUpdateStates.Failed });
             throw;
         }
     }
@@ -231,9 +240,25 @@ public sealed class AgentUpdateStager
         string manifestJson;
         try
         {
-            using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             manifestResponse.EnsureSuccessStatusCode();
-            manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (manifestResponse.RequestMessage?.RequestUri?.Scheme != Uri.UriSchemeHttps ||
+                manifestResponse.Content.Headers.ContentLength > AgentUpdateDurableFile.MaxBytes)
+                throw new InvalidOperationException("Update manifest response is not trusted or exceeds size limit.");
+            await using var stream = await manifestResponse.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            using var content = new MemoryStream();
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var count = await stream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
+                if (count == 0) break;
+                if (content.Length + count > AgentUpdateDurableFile.MaxBytes)
+                    throw new InvalidOperationException("Update manifest exceeds size limit.");
+                content.Write(buffer, 0, count);
+            }
+            manifestJson = System.Text.Encoding.UTF8.GetString(content.ToArray());
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
@@ -253,6 +278,8 @@ public sealed class AgentUpdateStager
         if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(_stagingRoot) > 0)
             throw new InvalidOperationException("Legacy update manifest fallback is disabled after v2 trust was accepted.");
         ValidateSignerIdentity(manifest);
+        if (manifest.IsV2)
+            AgentUpdateSequenceStore.Accept(_stagingRoot, manifest.Sequence, AgentUpdateManifestValidator.Digest(manifest));
         return (manifest, manifestJson);
     }
 
@@ -267,7 +294,8 @@ public sealed class AgentUpdateStager
             return;
         }
 
-        if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
+        if (!expected.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(actual, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest signer identity does not match this build.");
     }
 
@@ -284,35 +312,14 @@ public sealed class AgentUpdateStager
 
     private AgentUpdatePlan? FindExistingAttempt(AgentUpdateManifest manifest)
     {
-        var attemptsRoot = Path.Combine(_stagingRoot, "attempts");
-        if (!Directory.Exists(attemptsRoot))
+        var active = new AgentUpdateJournalStore(_stagingRoot).Read();
+        if (!active.HasUnfinishedAttempt)
             return null;
-
-        foreach (var directory in Directory.EnumerateDirectories(attemptsRoot, AgentUpdateSecurity.AttemptDirectoryPrefix + "*"))
-        {
-            try
-            {
-                AgentUpdateSecurity.ValidateTrustedPath(directory, attemptsRoot, allowMissing: false);
-                var planPath = Path.Combine(directory, AgentUpdateSecurity.PlanFileName);
-                if (!File.Exists(planPath))
-                    continue;
-                var plan = JsonSerializer.Deserialize<AgentUpdatePlan>(File.ReadAllText(planPath), JsonOptions);
-                if (plan is not null &&
-                    string.Equals(plan.Version, manifest.Version, StringComparison.Ordinal) &&
-                    string.Equals(plan.Channel, manifest.Channel, StringComparison.Ordinal) &&
-                    string.Equals(plan.Sha256, manifest.Sha256, StringComparison.OrdinalIgnoreCase) &&
-                    plan.Sequence == manifest.Sequence &&
-                    string.Equals(plan.ExpiresAtUtc, manifest.ExpiresAtUtc, StringComparison.Ordinal) &&
-                    string.Equals(plan.SignerKeyIdentity, manifest.EffectiveSignerKeyIdentity, StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(plan.AttemptId))
-                    return plan;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-            }
-        }
-
-        return null;
+        var directory = AgentUpdateSecurity.ResolveAttemptDirectory(_stagingRoot, active.AttemptId!);
+        var plan = AgentUpdateDurableFile.Read<AgentUpdatePlan>(Path.Combine(directory, AgentUpdateSecurity.PlanFileName), directory);
+        if (plan is null || plan.Sequence != manifest.Sequence || plan.ManifestDigest != AgentUpdateManifestValidator.Digest(manifest))
+            throw new InvalidOperationException("Another update attempt is active or requires recovery.");
+        return plan;
     }
 
     private async Task DownloadWithHashCheckAsync(
@@ -328,7 +335,8 @@ public sealed class AgentUpdateStager
                     new Uri(manifest.ArtifactUrl, UriKind.Absolute),
                     artifactPath,
                     _trust.MaxArtifactBytes,
-                    ct)
+                    ct,
+                    expectedBytes: manifest.ArtifactLength)
                 .ConfigureAwait(false);
             return;
         }
@@ -434,7 +442,11 @@ public sealed class AgentUpdateStager
         try
         {
             AgentUpdateSecurity.ValidateTrustedPath(tempPath, _stagingRoot, allowMissing: true);
-            await File.WriteAllTextAsync(tempPath, contents, ct).ConfigureAwait(false);
+            await using (var output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                await output.WriteAsync(System.Text.Encoding.UTF8.GetBytes(contents), ct).ConfigureAwait(false);
+                output.Flush(flushToDisk: true);
+            }
             File.Move(tempPath, path, overwrite: false);
         }
         finally

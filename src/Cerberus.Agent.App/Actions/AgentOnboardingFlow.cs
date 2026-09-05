@@ -2,6 +2,7 @@ using System.Net.Http;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
+using Cerberus.Agent.App.Control;
 
 namespace Cerberus.Agent.App.Actions;
 
@@ -24,12 +25,25 @@ internal sealed class AgentOnboardingFlow
         RuntimeUiConfig cfg,
         IAgentLogger log,
         Action<string>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool replaceExistingRegistration = false)
     {
         AgentLegalConsent.RequireCurrentUserConsent();
 
         if (!IsConfigReady(cfg))
             throw new InvalidOperationException("Device onboarding is not configured.");
+
+        var replaceExisting = replaceExistingRegistration;
+        if (AgentStatus.GetService().Installed)
+        {
+            var status = await AgentLocalControlClient.SendAsync(new("status"), ct).ConfigureAwait(false);
+            if (!status.Success)
+                throw new InvalidOperationException("Agent service status is unavailable; existing registration was preserved.");
+            if (status.Code == AgentLifecycleStatePolicy.AgentRevokedCode)
+                throw new InvalidOperationException("This registration was revoked. Contact your administrator.");
+            replaceExisting = status.LifecycleState == nameof(AgentLifecycleState.NeedsReenrollment) ||
+                (status.LifecycleState == nameof(AgentLifecycleState.Retired) && status.Code == AgentLifecycleStatePolicy.AgentDeactivatedCode);
+        }
 
         var ssoBase = new Uri(cfg.CasdoorEndpoint.Trim().TrimEnd('/'));
         var bootstrap = await BootstrapResolver.ResolveAsync(cfg, ssoBase, ct).ConfigureAwait(false);
@@ -49,7 +63,7 @@ internal sealed class AgentOnboardingFlow
             Timeout = TimeSpan.FromSeconds(30),
         };
         var secrets = new DpapiSecretStore(SecretStoreScope.User);
-        var lifecycleState = new DurableAgentLifecycleStateStore();
+        var lifecycleState = new InMemoryAgentLifecycleStateStore();
         var registrar = new AgentRegistrar(
             http,
             secrets,
@@ -64,7 +78,8 @@ internal sealed class AgentOnboardingFlow
             agentVersion: WindowsDeviceInfo.GetAgentVersion(),
             buildId: WindowsDeviceInfo.GetBuildId(),
             buildChannel: WindowsDeviceInfo.GetBuildChannel(),
-            ct: ct).ConfigureAwait(false);
+            ct: ct,
+            replaceExisting: replaceExisting).ConfigureAwait(false);
 
         var export = await VpnCommandExportService
             .ExportAsync(bootstrap.Backend, progress, ct)

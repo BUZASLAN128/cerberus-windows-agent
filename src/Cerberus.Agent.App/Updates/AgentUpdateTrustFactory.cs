@@ -45,8 +45,8 @@ internal static class AgentUpdateTrustFactory
             AgentUpdateDefaults.ManifestPublicKeysB64,
             allowDevelopmentOverrides ? Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_PEM") : null,
             allowDevelopmentOverrides ? Environment.GetEnvironmentVariable("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64") : null,
-            registryConfig.GetValueOrDefault("updateManifestPublicKeyPem"),
-            registryConfig.GetValueOrDefault("updateManifestPublicKeyB64"),
+            allowDevelopmentOverrides ? registryConfig.GetValueOrDefault("updateManifestPublicKeyPem") : null,
+            allowDevelopmentOverrides ? registryConfig.GetValueOrDefault("updateManifestPublicKeyB64") : null,
             log);
         if (publicKeys.Count == 0)
             throw new InvalidOperationException("Update manifest public key is not configured.");
@@ -62,10 +62,10 @@ internal static class AgentUpdateTrustFactory
             !string.Equals(configuredUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest URL must use HTTPS.");
 
-        var prefixSource = registryConfig.GetValueOrDefault("updateAllowedArtifactPrefixes");
-        if (string.IsNullOrWhiteSpace(prefixSource) || allowDevelopmentOverrides)
-            prefixSource = AgentUpdateDefaults.AllowedArtifactPrefixes;
+        var prefixSource = AgentUpdateDefaults.AllowedArtifactPrefixes;
         var prefixes = SplitCsv(prefixSource);
+        if (prefixes.Count == 0)
+            throw new InvalidOperationException("Update artifact trust is not configured.");
         var allowUnsignedDevBuild = allowDevelopmentOverrides && AgentUpdateDefaults.AllowUnsignedDevBuild;
         return new AgentUpdateTrust(
             ManifestPublicKeyPems: publicKeys,
@@ -75,9 +75,10 @@ internal static class AgentUpdateTrustFactory
             AllowRollbackManifest: false,
             AllowChannelDowngrade: false,
             ConfiguredManifestUrl: configuredUrl,
-            AllowedSignerKeyIdentity: AgentUpdateDefaults.AllowedSignerKeyIdentity,
+            AllowedSignerKeyIdentity: allowUnsignedDevBuild && string.IsNullOrWhiteSpace(AgentUpdateDefaults.AllowedSignerKeyIdentity)
+                ? "unsigned-dev" : AgentUpdateDefaults.AllowedSignerKeyIdentity,
             AllowUnsignedDevBuild: allowUnsignedDevBuild,
-            RequireManifestV2: !string.Equals(expectedChannel, "dev", StringComparison.Ordinal),
+            RequireManifestV2: true,
             RequireBitsDownloader: true,
             RequireSystemAuthority: true);
     }

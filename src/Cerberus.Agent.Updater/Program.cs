@@ -1,19 +1,14 @@
 using System.Diagnostics;
-using System.Security.Principal;
-using System.Text.Json;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Microsoft.Win32;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Updater;
 
 internal static class Program
 {
-    private const int MsiBusyExitCode = 1618;
-    private const int MaxMsiBusyRetries = 3;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
     public static int Main(string[] args)
     {
         var log = UpdaterLog.Create();
@@ -30,66 +25,66 @@ internal static class Program
             return 2;
         }
 
-        ClosedApplications closedApplications = new(false, []);
         AgentUpdatePlan? plan = null;
+        var root = AgentUpdateStager.DefaultStagingRoot;
+        var journalStore = new AgentUpdateJournalStore(root);
+        var ownsAttempt = false;
         try
         {
-            var root = AgentUpdateStager.DefaultStagingRoot;
-            using var operationLock = AgentUpdateSecurity.AcquireGlobalLock(root);
             var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(root, attemptId);
+            using var executionLock = new FileStream(Path.Combine(attemptDirectory, "execution.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            var active = journalStore.Read();
+            if (active.AttemptId != attemptId || active.Phase != "launch_requested")
+                throw new InvalidOperationException("Update attempt is not authorized for installation.");
+            ownsAttempt = true;
+            var runnerDirectory = Path.Combine(attemptDirectory, AgentUpdateRunnerFiles.RunnerDirectoryName);
+            if (!string.Equals(Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), runnerDirectory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Updater must execute from the protected attempt copy.");
+            AgentUpdateRunnerFiles.Validate(runnerDirectory, attemptDirectory);
             plan = LoadAndValidateAttempt(attemptId, attemptDirectory, log);
             var trust = AgentUpdateTrustFactory.BuildTrust();
             var manifest = LoadAndValidateManifest(plan, attemptDirectory, trust);
             ValidateAttemptArtifact(plan, manifest, attemptDirectory, root, trust);
             ValidateCanonicalServiceLayout();
 
-            StopServiceChecked();
-            closedApplications = CloseAgentUiApplications();
-
             var msiLogPath = log.CreateSiblingLogPath("msiexec");
-            var installerRun = RunMsiexecWithBusyRetry(plan, msiLogPath, log);
-            var exitCode = installerRun.ExitCode;
+            // Never tie the installer lifetime to the service or a cancellation token.
+            // A crash after the flushed launch fence requires reconciliation, not another launch.
+            var exitCode = RunMsiexec(plan, msiLogPath, log);
             var installerResult = AgentUpdateInstallerResult.FromMsiExitCode(
                 exitCode,
                 exitCode == 0 || exitCode == 3010 ? null : "msiexec failed.",
                 msiLogPath) with
             {
                 AttemptId = plan.AttemptId,
-                RetryCount = installerRun.RetryCount,
+                RetryCount = active.RetryCount,
             };
-            if (!string.Equals(installerResult.State, AgentUpdateStates.Applied, StringComparison.Ordinal))
+            journalStore.ChangeAttempt(attemptId, before => before with
             {
-                var failedResult = installerResult with { Quarantined = true };
-                WriteInstallerResult(failedResult, log);
-                QuarantineAttempt(plan, log);
-                TryStartService(log);
-                TryRestartAgentUi(closedApplications, log);
-                return exitCode == 0 ? 1 : exitCode;
-            }
-
+                Phase = installerResult.State,
+                InstallerResult = installerResult,
+            });
             WriteInstallerResult(installerResult, log);
-            ValidateCanonicalServiceLayout();
-            StartServiceChecked();
-            WaitForLocalHealthGate(TimeSpan.FromSeconds(60));
-            WriteCurrentStateFromPlan(plan, installerResult, log);
-            TryRestartAgentUi(closedApplications, log);
             log.Write("Cerberus Agent updater completed.");
-            return 0;
+            return exitCode;
         }
         catch (Exception ex)
         {
-            var safeMessage = AgentUpdateState.SanitizeMessage(ex.Message);
-            log.Write($"Updater failed: {ex.GetType().Name}: {safeMessage}");
-            var result = AgentUpdateInstallerResult.Failure(new InvalidOperationException(safeMessage)) with
+            log.Write($"Updater failed: {ex.GetType().Name}.");
+            var result = AgentUpdateInstallerResult.Failure(new InvalidOperationException("Updater requires recovery.")) with
             {
                 AttemptId = plan?.AttemptId ?? attemptId,
-                Quarantined = plan is not null,
             };
-            WriteInstallerResult(result, log);
-            if (plan is not null)
-                QuarantineAttempt(plan, log);
-            TryStartService(log);
-            TryRestartAgentUi(closedApplications, log);
+            try
+            {
+                if (ownsAttempt) journalStore.ChangeAttempt(attemptId, before => before.Phase is AgentUpdateStates.Blocked or AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Quarantined
+                    ? before : before with
+                {
+                    Phase = before.MayHaveStartedInstallation ? AgentUpdateStates.RecoveryRequired : AgentUpdateStates.Failed,
+                    InstallerResult = before.InstallerResult ?? result,
+                });
+            }
+            catch (Exception failure) { log.Write($"Updater result persistence failed: {failure.GetType().Name}."); }
             return 1;
         }
     }
@@ -109,8 +104,7 @@ internal static class Program
     {
         var planPath = Path.Combine(attemptDirectory, AgentUpdateSecurity.PlanFileName);
         AgentUpdateSecurity.ValidateTrustedPath(planPath, AgentUpdateStager.DefaultStagingRoot, allowMissing: false);
-        var raw = File.ReadAllText(planPath);
-        var plan = JsonSerializer.Deserialize<AgentUpdatePlan>(raw, JsonOptions)
+        var plan = AgentUpdateDurableFile.Read<AgentUpdatePlan>(planPath, attemptDirectory)
             ?? throw new InvalidOperationException("Update plan is invalid.");
         if (!string.Equals(plan.SchemaVersion, "agent.update.plan.v2", StringComparison.Ordinal) ||
             !string.Equals(plan.AttemptId, attemptId, StringComparison.Ordinal) ||
@@ -131,6 +125,8 @@ internal static class Program
     {
         var manifestPath = Path.Combine(attemptDirectory, AgentUpdateSecurity.ManifestFileName);
         AgentUpdateSecurity.ValidateTrustedPath(manifestPath, AgentUpdateStager.DefaultStagingRoot, allowMissing: false);
+        if (new FileInfo(manifestPath).Length > AgentUpdateDurableFile.MaxBytes)
+            throw new InvalidOperationException("Update manifest exceeds size limit.");
         var manifestJson = File.ReadAllText(manifestPath);
         var manifest = AgentUpdateManifestValidator.ParseAndValidateJson(
             manifestJson,
@@ -156,8 +152,10 @@ internal static class Program
             throw new InvalidOperationException("Update plan does not match the manifest.");
         if (manifest.ArtifactLength is not null && plan.ArtifactLength != manifest.ArtifactLength)
             throw new InvalidOperationException("Update plan length does not match the manifest.");
-        if (manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(AgentUpdateStager.DefaultStagingRoot) < manifest.Sequence)
-            throw new InvalidOperationException("Update manifest sequence state is not committed.");
+        var digest = AgentUpdateManifestValidator.Digest(manifest);
+        if (plan.ManifestDigest != digest)
+            throw new InvalidOperationException("Update plan manifest digest mismatch.");
+        AgentUpdateSequenceStore.RequireAccepted(AgentUpdateStager.DefaultStagingRoot, manifest.Sequence, digest);
         if (AgentVersionComparer.CompareReleaseCore(manifest.Version, trust.CurrentVersion) is <= 0)
             throw new InvalidOperationException("Post-commit downgrade or replay was denied.");
         return manifest;
@@ -174,7 +172,7 @@ internal static class Program
             return;
         }
 
-        if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
+        if (!expected.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Contains(actual, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest signer identity does not match this build.");
     }
 
@@ -198,94 +196,18 @@ internal static class Program
         if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update artifact checksum mismatch.");
 
-        AuthenticodeVerifier.Verify(
+        AgentUpdateAuthenticode.Verify(
             artifactPath,
             trust.ExpectedChannel,
             trust.AllowedSignerKeyIdentity,
             trust.AllowUnsignedDevBuild);
     }
 
-    private static (int ExitCode, int RetryCount) RunMsiexecWithBusyRetry(AgentUpdatePlan plan, string msiLogPath, UpdaterLog log)
-    {
-        var retries = ReadDurableRetryCount(plan, log);
-        var retryAfter = ReadDurableRetryAfter(plan, log);
-        if (retryAfter > DateTimeOffset.UtcNow)
-            Thread.Sleep(retryAfter - DateTimeOffset.UtcNow);
-
-        if (retries >= MaxMsiBusyRetries)
-            return (MsiBusyExitCode, retries);
-
-        while (true)
-        {
-            var exitCode = RunMsiexec(plan, msiLogPath, log);
-            if (exitCode != MsiBusyExitCode || retries >= MaxMsiBusyRetries - 1)
-                return (exitCode, retries);
-
-            retries++;
-            var delay = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, retries) * 2));
-            var retryAt = DateTimeOffset.UtcNow.Add(delay);
-            var retryResult = AgentUpdateInstallerResult.FromMsiExitCode(
-                exitCode,
-                "Windows Installer is busy; retry scheduled.",
-                null) with
-            {
-                AttemptId = plan.AttemptId,
-                RetryCount = retries,
-                RetryAfterUtc = retryAt.ToString("O"),
-            };
-            WriteInstallerResult(retryResult, log);
-            Thread.Sleep(delay);
-        }
-    }
-
-    private static int ReadDurableRetryCount(AgentUpdatePlan plan, UpdaterLog log)
-    {
-        try
-        {
-            var result = AgentUpdateStateStore.CreateDefault()
-                .ReadInstallerResultAsync(CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
-            return result is not null &&
-                   string.Equals(result.AttemptId, plan.AttemptId, StringComparison.Ordinal) &&
-                   string.Equals(result.ErrorCode, AgentUpdateErrorCodes.InstallerBusy, StringComparison.Ordinal)
-                ? Math.Max(0, result.RetryCount)
-                : 0;
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Durable installer retry state could not be read: {ex.GetType().Name}.");
-            return 0;
-        }
-    }
-
-    private static DateTimeOffset ReadDurableRetryAfter(AgentUpdatePlan plan, UpdaterLog log)
-    {
-        try
-        {
-            var result = AgentUpdateStateStore.CreateDefault()
-                .ReadInstallerResultAsync(CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
-            return result is not null &&
-                   string.Equals(result.AttemptId, plan.AttemptId, StringComparison.Ordinal) &&
-                   string.Equals(result.ErrorCode, AgentUpdateErrorCodes.InstallerBusy, StringComparison.Ordinal) &&
-                   DateTimeOffset.TryParse(result.RetryAfterUtc, out var retryAfter)
-                ? retryAfter.ToUniversalTime()
-                : DateTimeOffset.MinValue;
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Durable installer retry schedule could not be read: {ex.GetType().Name}.");
-            return DateTimeOffset.MinValue;
-        }
-    }
-
     private static int RunMsiexec(AgentUpdatePlan plan, string msiLogPath, UpdaterLog log)
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "msiexec.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe"),
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -299,7 +221,29 @@ internal static class Program
         psi.ArgumentList.Add("/l*v");
         psi.ArgumentList.Add(msiLogPath);
 
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Windows Installer could not be started.");
+        Process process;
+        using (AgentUpdateLaunchFence.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult())
+        {
+            var journalStore = new AgentUpdateJournalStore(AgentUpdateStager.DefaultStagingRoot);
+            var active = journalStore.Read();
+            var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(CancellationToken.None).GetAwaiter().GetResult();
+            if (active.AttemptId != plan.AttemptId || active.Phase != "launch_requested" ||
+                lifecycle.Generation != active.LifecycleGeneration ||
+                (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
+                throw new InvalidOperationException("Update attempt authorization changed.");
+            journalStore.ChangeAttempt(plan.AttemptId!, before => before with
+            {
+                Phase = "install_may_have_started", InstallationBootId = AgentUpdateBootIdentity.Read(),
+            });
+            process = Process.Start(psi) ?? throw new InvalidOperationException("Windows Installer could not be started.");
+            journalStore.ChangeAttempt(plan.AttemptId!, before => before with
+            {
+                Phase = AgentUpdateStates.Installing,
+                InstallerProcessId = process.Id,
+                InstallerStartedUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()),
+            });
+        }
+        using var ownedProcess = process;
         log.Write("Windows Installer started.");
         process.WaitForExit();
         _ = process.StandardOutput.ReadToEnd();
@@ -321,60 +265,6 @@ internal static class Program
         catch (Exception ex)
         {
             log.Write($"Updater result write failed: {ex.GetType().Name}.");
-        }
-    }
-
-    private static void WriteCurrentStateFromPlan(AgentUpdatePlan plan, AgentUpdateInstallerResult result, UpdaterLog log)
-    {
-        try
-        {
-            AgentUpdateStateStore.CreateDefault()
-                .WriteTransitionAsync(
-                    AgentUpdateStates.Current,
-                    plan.Version,
-                    CancellationToken.None,
-                    targetVersion: plan.Version,
-                    channel: plan.Channel,
-                    artifactSha256: plan.Sha256,
-                    msiExitCode: result.MsiExitCode,
-                    requiresReboot: result.RequiresReboot,
-                    markChecked: true,
-                    installerResultId: result.ResultId,
-                    attemptId: plan.AttemptId,
-                    sequence: plan.Sequence,
-                    retryCount: result.RetryCount).GetAwaiter().GetResult();
-            log.Write("Updater current state written.");
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Updater current state write failed: {ex.GetType().Name}.");
-        }
-    }
-
-    private static void StopServiceChecked()
-    {
-        try
-        {
-            ServiceInstaller.StopOrThrow();
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("not installed", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Installed service is required for update authority.", ex);
-        }
-    }
-
-    private static void StartServiceChecked()
-        => ServiceInstaller.StartOrThrow();
-
-    private static void TryStartService(UpdaterLog log)
-    {
-        try
-        {
-            StartServiceChecked();
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Service restart failed: {ex.GetType().Name}.");
         }
     }
 
@@ -418,110 +308,6 @@ internal static class Program
         return resolvedRuntimeRoot;
     }
 
-    private static void WaitForLocalHealthGate(TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow.Add(timeout);
-        using var controller = new System.ServiceProcess.ServiceController(ServiceInstaller.ServiceName);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            controller.Refresh();
-            if (controller.Status == System.ServiceProcess.ServiceControllerStatus.Running)
-                return;
-            Thread.Sleep(250);
-        }
-
-        throw new InvalidOperationException("Agent service local health gate failed.");
-    }
-
-    private static void QuarantineAttempt(AgentUpdatePlan plan, UpdaterLog log)
-    {
-        try
-        {
-            var root = AgentUpdateStager.DefaultStagingRoot;
-            var attempt = AgentUpdateSecurity.ResolveAttemptDirectory(root, plan.AttemptId ?? "");
-            var quarantine = Path.Combine(Path.GetDirectoryName(attempt) ?? root, "quarantine-" + plan.AttemptId);
-            Directory.Move(attempt, quarantine);
-            log.Write("Update attempt quarantined.");
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Update attempt quarantine failed: {ex.GetType().Name}.");
-        }
-    }
-
-    private static ClosedApplications CloseAgentUiApplications()
-    {
-        var uiSessions = new HashSet<int>();
-        var uiWasRunning = false;
-        foreach (var name in new[] { "Cerberus.Agent", "Cerberus.Agent.Tray", "Cerberus.Agent.Setup", "Cerberus.Agent.App" })
-        {
-            foreach (var process in Process.GetProcessesByName(name))
-            {
-                try
-                {
-                    if (name is "Cerberus.Agent" or "Cerberus.Agent.Tray" or "Cerberus.Agent.Setup")
-                    {
-                        uiWasRunning = true;
-                        if (process.SessionId > 0)
-                            uiSessions.Add(process.SessionId);
-                    }
-
-                    if (!process.CloseMainWindow())
-                        process.Kill(entireProcessTree: true);
-                }
-                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-                {
-                }
-                finally
-                {
-                    process.Dispose();
-                }
-            }
-        }
-
-        return new ClosedApplications(uiWasRunning, uiSessions.ToArray());
-    }
-
-    private static void TryRestartAgentUi(ClosedApplications closedApplications, UpdaterLog log)
-    {
-        if (!closedApplications.UiWasRunning)
-            return;
-
-        string runtimeRoot;
-        try
-        {
-            runtimeRoot = ResolveRuntimeRoot();
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Agent UI restart skipped: {ex.GetType().Name}.");
-            return;
-        }
-
-        var agentUiPath = Path.Combine(runtimeRoot, "Cerberus.Agent.exe");
-        try
-        {
-            AgentUpdateSecurity.ValidateTrustedPath(agentUiPath, runtimeRoot, allowMissing: false);
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Agent UI restart skipped: {ex.GetType().Name}.");
-            return;
-        }
-        if (!File.Exists(agentUiPath))
-            return;
-        var sessionIds = closedApplications.UiSessionIds.Count > 0
-            ? closedApplications.UiSessionIds
-            : ActiveSessionProcessLauncher.GetActiveConsoleSessionIds();
-        var started = 0;
-        foreach (var sessionId in sessionIds.Distinct().Where(id => id > 0))
-        {
-            if (ActiveSessionProcessLauncher.TryLaunch(agentUiPath, sessionId, log))
-                started++;
-        }
-        log.Write($"Agent UI restart requested for {started} session(s).");
-    }
-
     private static string? ReadRegistryString(string subKey, string valueName)
     {
         using var key = Registry.LocalMachine.OpenSubKey(subKey, writable: false);
@@ -560,99 +346,5 @@ internal static class Program
         }
     }
 
-    private sealed record ClosedApplications(bool UiWasRunning, IReadOnlyCollection<int> UiSessionIds);
 
-    private static class ActiveSessionProcessLauncher
-    {
-        private const uint CreateUnicodeEnvironment = 0x00000400;
-        private const uint InvalidSessionId = 0xFFFFFFFF;
-
-        public static IReadOnlyCollection<int> GetActiveConsoleSessionIds()
-        {
-            var sessionId = WTSGetActiveConsoleSessionId();
-            return sessionId == InvalidSessionId || sessionId == 0 ? Array.Empty<int>() : new[] { checked((int)sessionId) };
-        }
-
-        public static bool TryLaunch(string agentUiPath, int sessionId, UpdaterLog log)
-        {
-            if (sessionId <= 0)
-                return false;
-            IntPtr token = IntPtr.Zero;
-            IntPtr environment = IntPtr.Zero;
-            PROCESS_INFORMATION processInfo = default;
-            try
-            {
-                if (!WTSQueryUserToken((uint)sessionId, out token) || !CreateEnvironmentBlock(out environment, token, false))
-                    return false;
-                var startupInfo = new STARTUPINFO
-                {
-                    cb = System.Runtime.InteropServices.Marshal.SizeOf<STARTUPINFO>(),
-                    lpDesktop = @"winsta0\default",
-                    dwFlags = 1,
-                    wShowWindow = 1,
-                };
-                var commandLine = new System.Text.StringBuilder($"\"{agentUiPath}\"");
-                if (!CreateProcessAsUser(token, null, commandLine, IntPtr.Zero, IntPtr.Zero, false, CreateUnicodeEnvironment, environment, Path.GetDirectoryName(agentUiPath), ref startupInfo, out processInfo))
-                    return false;
-                return true;
-            }
-            catch (Exception ex)
-            {
-                log.Write($"Agent UI restart failed: {ex.GetType().Name}.");
-                return false;
-            }
-            finally
-            {
-                if (processInfo.hThread != IntPtr.Zero) CloseHandle(processInfo.hThread);
-                if (processInfo.hProcess != IntPtr.Zero) CloseHandle(processInfo.hProcess);
-                if (environment != IntPtr.Zero) DestroyEnvironmentBlock(environment);
-                if (token != IntPtr.Zero) CloseHandle(token);
-            }
-        }
-
-        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-        private static extern uint WTSGetActiveConsoleSessionId();
-        [System.Runtime.InteropServices.DllImport("wtsapi32.dll", SetLastError = true)]
-        private static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
-        [System.Runtime.InteropServices.DllImport("userenv.dll", SetLastError = true)]
-        private static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
-        [System.Runtime.InteropServices.DllImport("userenv.dll", SetLastError = true)]
-        private static extern bool DestroyEnvironmentBlock(IntPtr environment);
-        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-        private static extern bool CreateProcessAsUser(IntPtr token, string? applicationName, System.Text.StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment, string? currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
-        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool CloseHandle(IntPtr handle);
-
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-        private struct STARTUPINFO
-        {
-            public int cb;
-            public string? lpReserved;
-            public string? lpDesktop;
-            public string? lpTitle;
-            public int dwX;
-            public int dwY;
-            public int dwXSize;
-            public int dwYSize;
-            public int dwXCountChars;
-            public int dwYCountChars;
-            public int dwFillAttribute;
-            public int dwFlags;
-            public short wShowWindow;
-            public short cbReserved2;
-            public IntPtr lpReserved2;
-            public IntPtr hStdInput;
-            public IntPtr hStdOutput;
-            public IntPtr hStdError;
-        }
-
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        private struct PROCESS_INFORMATION
-        {
-            public IntPtr hProcess;
-            public IntPtr hThread;
-            public int dwProcessId;
-            public int dwThreadId;
-        }
-    }
 }

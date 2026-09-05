@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="UpdateServiceUnavailable" xml:space="preserve"><value>Der lokale Agent-Dienst ist nicht erreichbar.</value></data>
+  <data name="UpdateHealthPending" xml:space="preserve"><value>Das installierte Update wird geprüft</value></data>
+  <data name="UpdatePendingReboot" xml:space="preserve"><value>Neustart zum Abschluss des Updates erforderlich</value></data>
+  <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer ist beschäftigt; Wiederholung ausstehend</value></data>
+  <data name="UpdateRecoveryRequired" xml:space="preserve"><value>Das Update muss wiederhergestellt werden</value></data>
+  <data name="UpdateBlocked" xml:space="preserve"><value>Das Update ist pausiert. Prüfen Sie erneut, um fortzufahren.</value></data>
+  <data name="UpdateStatus" xml:space="preserve"><value>Updates: {0}</value></data>
+  <data name="CheckUpdates" xml:space="preserve"><value>Nach Updates suchen</value></data>
+  <data name="UpdateNow" xml:space="preserve"><value>Jetzt aktualisieren</value></data>
+  <data name="UpdateNotChecked" xml:space="preserve"><value>Nicht geprüft</value></data>
+  <data name="UpdateChecking" xml:space="preserve"><value>Updates werden geprüft</value></data>
+  <data name="UpdateCurrent" xml:space="preserve"><value>Auf dem neuesten Stand</value></data>
+  <data name="UpdateAvailable" xml:space="preserve"><value>{0} verfügbar</value></data>
+  <data name="UpdateDownloading" xml:space="preserve"><value>Update wird heruntergeladen</value></data>
+  <data name="UpdateReadyToInstall" xml:space="preserve"><value>Zur Installation bereit; Zustimmung ausstehend</value></data>
+  <data name="UpdateInstalling" xml:space="preserve"><value>Update wird installiert</value></data>
+  <data name="UpdateCheckFailed" xml:space="preserve"><value>Update fehlgeschlagen</value></data>
+  <data name="UpdateFoundTitle" xml:space="preserve"><value>Update verfügbar</value></data>
+  <data name="UpdateFoundPrompt" xml:space="preserve"><value>Version {0} ist verfügbar. Möchten Sie sie jetzt installieren?</value></data>
+  <data name="UpdateNotFoundTitle" xml:space="preserve"><value>Kein Update gefunden</value></data>
+  <data name="UpdateNotFoundDetail" xml:space="preserve"><value>Cerberus Agent ist auf dem neuesten Stand.</value></data>
+  <data name="UpdateCheckFailedDetail" xml:space="preserve"><value>Das Update konnte nicht geprüft werden. Versuchen Sie es später erneut.</value></data>
+  <data name="UpdateServiceRequested" xml:space="preserve"><value>Installation angefordert</value></data>
+  <data name="UpdateServiceRequestedDetail" xml:space="preserve"><value>Der Cerberus-Dienst verarbeitet die Update-Anforderung im Hintergrund.</value></data>
+  <data name="UpdateInstallFailed" xml:space="preserve"><value>Installation fehlgeschlagen</value></data>
+  <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Das Update konnte nicht gestartet werden: {0}</value></data>
+</root>

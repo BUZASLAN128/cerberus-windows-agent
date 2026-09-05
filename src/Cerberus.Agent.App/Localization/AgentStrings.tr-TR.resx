@@ -139,4 +139,10 @@
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent bu bilgisayardan kaldırılacak. Portal erişilebilirse bu cihazın raporlaması da durdurulur.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Kurulum kaydı bulunamadı. Servis durdurulmaya çalışıldı; kalan dosyalar için Windows Uygulamalar ayarlarını kullanın.</value></data>
   <data name="LegalTerms" xml:space="preserve"><value>yasal koşullar</value></data>
+  <data name="UpdateServiceUnavailable" xml:space="preserve"><value>Yerel agent servisine ulaşılamıyor.</value></data>
+  <data name="UpdateHealthPending" xml:space="preserve"><value>Kurulan güncelleme doğrulanıyor</value></data>
+  <data name="UpdatePendingReboot" xml:space="preserve"><value>Güncellemeyi tamamlamak için yeniden başlatma gerekiyor</value></data>
+  <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer meşgul; yeniden deneme bekleniyor</value></data>
+  <data name="UpdateRecoveryRequired" xml:space="preserve"><value>Güncelleme kurtarma işlemi gerektiriyor</value></data>
+  <data name="UpdateBlocked" xml:space="preserve"><value>Güncelleme duraklatıldı. Devam etmek için yeniden denetleyin.</value></data>
 </root>

@@ -30,16 +30,14 @@ public sealed class AgentUpdateStateStoreTests
     }
 
     [Fact]
-    public async Task ReadAsync_RecoversFromCorruptJsonAsNotChecked()
+    public async Task ReadAsync_RejectsCorruptJsonWithoutResettingState()
     {
         var root = NewRoot();
         Directory.CreateDirectory(root);
         await File.WriteAllTextAsync(Path.Combine(root, "update-state.json"), "{not-json");
 
-        var state = await NewStore(root).ReadAsync("0.1.0", CancellationToken.None);
-
-        Assert.Equal(AgentUpdateStates.NotChecked, state.State);
-        Assert.Equal("0.1.0", state.CurrentVersion);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => NewStore(root).ReadAsync("0.1.0", CancellationToken.None));
+        Assert.Equal("{not-json", await File.ReadAllTextAsync(Path.Combine(root, "update-state.json")));
     }
 
     [Fact]
@@ -87,7 +85,7 @@ public sealed class AgentUpdateStateStoreTests
         var reconciled = await store.ReconcileInstallerResultAsync("0.2.0", CancellationToken.None);
         var heartbeat = reconciled.ToHeartbeatStatus();
 
-        Assert.Equal(AgentUpdateStates.Applied, reconciled.State);
+        Assert.Equal(AgentUpdateStates.PendingReboot, reconciled.State);
         Assert.True(reconciled.RequiresReboot);
         Assert.Equal(3010, reconciled.MsiExitCode);
         Assert.DoesNotContain("msi_log_path", heartbeat.Keys);

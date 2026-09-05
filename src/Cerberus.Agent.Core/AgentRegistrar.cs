@@ -59,7 +59,8 @@ public sealed class AgentRegistrar
         string agentVersion,
         string? buildId,
         string? buildChannel,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool replaceExisting = false)
     {
         if (string.IsNullOrWhiteSpace(oauthToken))
             throw new ArgumentException("oauthToken is required.", nameof(oauthToken));
@@ -70,7 +71,7 @@ public sealed class AgentRegistrar
         if (string.IsNullOrWhiteSpace(agentVersion))
             throw new ArgumentException("agentVersion is required.", nameof(agentVersion));
 
-        var existingIdentity = await TryLoadExistingRegistrationAsync(ct).ConfigureAwait(false);
+        var existingIdentity = replaceExisting ? null : await TryLoadExistingRegistrationAsync(ct).ConfigureAwait(false);
         if (existingIdentity is not null)
         {
             _log.Info("Existing agent registration found; register skipped.");
@@ -124,7 +125,8 @@ public sealed class AgentRegistrar
             ct,
             deadline.Token).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<AgentRegisterResponse>(body, JsonOpts);
-        if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId))
+        if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId) ||
+            string.IsNullOrWhiteSpace(parsed.AgentRefreshToken))
             throw new InvalidOperationException("Register response missing agent_id/tenant_id.");
 
         var identity = new AgentIdentity(parsed.AgentId, parsed.TenantId);

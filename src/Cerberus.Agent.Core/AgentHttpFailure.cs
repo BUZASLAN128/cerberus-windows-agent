@@ -293,8 +293,11 @@ public static class AgentHttpFailure
             string? transportCode = null;
             string? detailCode = null;
             string? status = null;
+            var seenProperties = new HashSet<string>(StringComparer.Ordinal);
             foreach (var property in document.RootElement.EnumerateObject())
             {
+                if (!seenProperties.Add(property.Name))
+                    return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
                 if (string.Equals(property.Name, "error_code", StringComparison.Ordinal))
                 {
                     if (transportCode is not null || property.Value.ValueKind != JsonValueKind.String)
@@ -317,8 +320,11 @@ public static class AgentHttpFailure
                     continue;
                 }
 
+                var seenDetailProperties = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var detailProperty in property.Value.EnumerateObject())
                 {
+                    if (!seenDetailProperties.Add(detailProperty.Name))
+                        return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
                     if (!string.Equals(detailProperty.Name, "code", StringComparison.Ordinal))
                         continue;
                     if (detailCode is not null || detailProperty.Value.ValueKind != JsonValueKind.String)
@@ -329,7 +335,6 @@ public static class AgentHttpFailure
 
             if (transportCode is not null &&
                 !KnownTransportCodes.Contains(transportCode) &&
-                !AgentLifecycleStatePolicy.IsTerminalCode(transportCode) &&
                 !AgentLifecycleStatePolicy.IsProtocolOrConfigCode(transportCode))
             {
                 transportCode = null;
@@ -344,11 +349,17 @@ public static class AgentHttpFailure
             if (transportCode is not null &&
                 ErrorCodeByStatus.TryGetValue((int)statusCode, out var expectedCode) &&
                 !string.Equals(transportCode, expectedCode, StringComparison.Ordinal) &&
-                !AgentLifecycleStatePolicy.IsTerminalCode(transportCode) &&
                 !AgentLifecycleStatePolicy.IsProtocolOrConfigCode(transportCode))
             {
                 transportCode = null;
             }
+
+            // Lifecycle authority is the canonical 401 envelope only. A code
+            // echoed by a proxy, HTML/error response or wrong status is not a revoke.
+            if ((AgentLifecycleStatePolicy.IsTerminalCode(detailCode) ||
+                 detailCode == AgentLifecycleStatePolicy.AgentReenrollRequiredCode) &&
+                (statusCode != HttpStatusCode.Unauthorized || transportCode != "AUTH_UNAUTHORIZED"))
+                detailCode = null;
 
             return new AgentHttpFailureInfo(statusCode, transportCode, detailCode, status, requestId, retryAfter);
         }
@@ -390,20 +401,21 @@ public static class AgentHttpFailure
                 return null;
 
             using var enumerator = values.GetEnumerator();
-            if (!enumerator.MoveNext() || enumerator.MoveNext())
+            if (!enumerator.MoveNext())
                 return null;
-
             var raw = enumerator.Current?.Trim();
+            if (enumerator.MoveNext())
+                return null;
             if (string.IsNullOrWhiteSpace(raw) || raw.Length > 64)
                 return null;
 
             if (int.TryParse(raw, out var seconds) && seconds >= 0)
-                return TimeSpan.FromSeconds(Math.Clamp(seconds, 0, 3600));
+                return TimeSpan.FromSeconds(Math.Clamp(seconds, 5, 3600));
 
             if (DateTimeOffset.TryParse(raw, out var retryAt))
             {
                 var delay = retryAt - DateTimeOffset.UtcNow;
-                return TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 0, 3600));
+                return TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 5, 3600));
             }
         }
         catch

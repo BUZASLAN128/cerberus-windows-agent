@@ -62,11 +62,12 @@ public sealed class AgentUpdateLaunchGateTests
         var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-dev-1.2.3.msi");
         File.WriteAllText(updaterPath, "updater");
         File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.dll"), "dll");
+        File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Core.dll"), "core");
         File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.deps.json"), "{}");
         File.WriteAllText(Path.Combine(installDir, "ignore.txt"), "ignore");
         File.WriteAllText(artifactPath, "msi");
 
-        var runnerPath = AgentUpdateCoordinator.PrepareUpdaterRunner(updaterPath, artifactPath);
+        var runnerPath = AgentUpdateRunnerFiles.Prepare(installDir, stageDir);
 
         Assert.True(File.Exists(runnerPath));
         Assert.StartsWith(stageDir, runnerPath, StringComparison.OrdinalIgnoreCase);
@@ -74,6 +75,9 @@ public sealed class AgentUpdateLaunchGateTests
         Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.dll")));
         Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.deps.json")));
         Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "ignore.txt")));
+        AgentUpdateRunnerFiles.Validate(Path.GetDirectoryName(runnerPath)!, stageDir);
+        File.AppendAllText(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Core.dll"), "tampered");
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateRunnerFiles.Validate(Path.GetDirectoryName(runnerPath)!, stageDir));
     }
 
     private static AgentUpdateCheckResult Check(string version)

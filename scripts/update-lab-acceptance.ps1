@@ -1,7 +1,9 @@
 param(
   [string]$SummaryPath = "out\update-lab\state\summary.json",
   [string]$ArtifactRoot = "out\update-lab\acceptance",
-  [switch]$NoElevate
+  [switch]$UsePreparedBaseline,
+  [Parameter(Mandatory = $true)]
+  [switch]$DisposableMachineConfirmed
 )
 
 $ErrorActionPreference = "Stop"
@@ -128,71 +130,41 @@ New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
 $mainLog = Join-Path $artifactRoot "update-lab-acceptance.log"
 Set-Content -LiteralPath $mainLog -Value "update-lab acceptance started $(Get-Date -Format O)"
 
-if (-not (Test-IsAdmin)) {
-  if ($NoElevate) {
-    throw "Administrator privileges are required for MSI install/update acceptance."
-  }
-
-  Write-Step "Relaunching elevated"
-  $scriptPath = $PSCommandPath
-  $fullSummary = Resolve-RepoPath $SummaryPath
-  $fullArtifactRoot = Resolve-RepoPath $ArtifactRoot
-  $argList = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", "`"$scriptPath`"",
-    "-SummaryPath", "`"$fullSummary`"",
-    "-ArtifactRoot", "`"$fullArtifactRoot`"",
-    "-NoElevate"
-  )
-  $child = Start-Process -FilePath "pwsh" -ArgumentList $argList -Verb RunAs -Wait -PassThru
-  Add-Content -LiteralPath $mainLog -Value "elevated_exit_code=$($child.ExitCode)"
-  exit $child.ExitCode
-}
+if (-not $DisposableMachineConfirmed -or -not (Test-IsAdmin)) { throw "Explicit disposable-machine confirmation and an already approved elevated test shell are required. This harness never self-elevates." }
 
 $summaryPath = Resolve-RepoPath $SummaryPath
 $summary = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json
-$oldMsi = Join-Path $repoRoot "out\update-lab\www\BUZASLAN128\cerberus-windows-agent\releases\download\v$($summary.old_version)\Cerberus.Agent-dev-$($summary.old_version).msi"
+$oldMsi = [string]$summary.old_msi_path
 $targetVersion = [string]$summary.target_version
-$agentEnv = Get-Content -Raw -LiteralPath $summary.agent_env
-. $summary.agent_env
+$manifestUri = [Uri]$summary.manifest_url
+if ($manifestUri.Scheme -ne "https") { throw "Trusted HTTPS lab endpoint is required." }
 
 Write-JsonArtifact "before-service.json" (Get-ServiceSnapshot "before")
 Write-JsonArtifact "before-binaries.json" (Get-InstalledBinaryVersions)
 
 $registryPath = "HKLM:\Software\Cerberus\WindowsAgent"
-$existingProductCode = $null
-if (Test-Path -LiteralPath $registryPath) {
-  $existingProductCode = (Get-ItemProperty -LiteralPath $registryPath).ProductCode
-}
-if (-not [string]::IsNullOrWhiteSpace($existingProductCode)) {
-  Write-Step "Uninstalling existing Cerberus Agent product $existingProductCode"
-  Invoke-ProcessChecked `
-    -FilePath "msiexec.exe" `
-    -Arguments "/x $existingProductCode /qn /norestart /l*v `"$artifactRoot\uninstall-existing-msi.log`"" `
-    -Name "uninstall-existing" `
-    -AllowedExitCodes @(0, 1605, 1614, 3010) | Out-Null
+$updateRoot = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) "CerberusAgent\Privileged\Updates"
+if (-not $UsePreparedBaseline -and ((Test-Path -LiteralPath $registryPath) -or (Get-Service CerberusAgent -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath $updateRoot))) {
+  throw "Use a clean disposable VM snapshot. Existing installation, lifecycle and accepted update records are preserved; this harness never uninstalls or clears them."
 }
 
-Write-Step "Clearing generated update state artifacts"
-$updateRoot = "C:\ProgramData\CerberusAgent\updates"
-if (Test-Path -LiteralPath $updateRoot) {
-  Remove-Item -LiteralPath (Join-Path $updateRoot "update-state.json") -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath (Join-Path $updateRoot "update-result.json") -Force -ErrorAction SilentlyContinue
-}
-
-Write-Step "Installing old MSI $($summary.old_version)"
-$props = @(
-  "CERBERUS_EULA_ACCEPTED=1",
-  "CERBERUS_AGENT_UPDATE_MANIFEST_URL=`"$env:CERBERUS_AGENT_UPDATE_MANIFEST_URL`"",
-  "CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64=`"$env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64`"",
-  "CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES=`"$env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES`""
-) -join " "
+if (-not $UsePreparedBaseline) {
+Write-Step "Installing old MSI $($summary.old_version); this is bootstrap, not an update smoke"
+$props = "CERBERUS_EULA_ACCEPTED=1"
 Invoke-ProcessChecked `
   -FilePath "msiexec.exe" `
   -Arguments "/i `"$oldMsi`" /qn /norestart $props /l*v `"$artifactRoot\install-old-msi.log`"" `
   -Name "install-old" `
-  -AllowedExitCodes @(0, 3010) | Out-Null
+  -AllowedExitCodes @(0) | Out-Null
+}
+
+if (-not (Get-Service CerberusAgent -ErrorAction SilentlyContinue)) {
+  throw "Initial bootstrap MSI is installed. Complete the documented approved enrollment/claim and --install-service step separately, then rerun with -UsePreparedBaseline. This is not update acceptance."
+}
+$baseline = Get-ItemProperty -LiteralPath $registryPath
+if ([int]$baseline.updateProtocolBaseline -lt 2) { throw "First v2 baseline requires manual/MDM deployment." }
+$baselineVersions = Get-InstalledBinaryVersions
+if ($baselineVersions.Count -eq 0 -or @($baselineVersions | Where-Object { $_.product_version -notlike "$($summary.old_version)*" }).Count -gt 0) { throw "Prepared baseline does not match the declared old version." }
 
 $agentExe = Get-InstalledAgentExe
 Write-JsonArtifact "after-old-install-service.json" (Get-ServiceSnapshot "after-old-install")
@@ -204,7 +176,17 @@ Invoke-ProcessChecked `
   -Arguments "--update-check-once" `
   -Name "update-check-once" | Out-Null
 
-Write-Step "Running headless update apply"
+$statePath = Join-Path $updateRoot "update-state.json"
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(5)
+do {
+  $state = if (Test-Path -LiteralPath $statePath) { Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json } else { $null }
+  if ($state.state -in @("failed", "blocked", "quarantined", "recovery_required")) { throw "Staging failed: $($state.state)." }
+  if ($state.state -eq "awaiting_consent") { break }
+  Start-Sleep -Milliseconds 500
+} while ([DateTimeOffset]::UtcNow -lt $deadline)
+if ($state.state -ne "awaiting_consent" -or $state.target_version -ne $targetVersion -or [string]::IsNullOrWhiteSpace($state.attempt_id)) { throw "Expected concrete attempt is not ready for manual consent." }
+$consentedAttempt = $state.attempt_id
+Write-Step "Running headless update apply for consented attempt"
 Invoke-ProcessChecked `
   -FilePath $agentExe `
   -Arguments "--update-apply-once" `
@@ -213,12 +195,14 @@ Invoke-ProcessChecked `
 Write-Step "Waiting for target version $targetVersion"
 $finalVersions = Wait-ForTargetVersion -TargetVersion $targetVersion -TimeoutSeconds 240
 
-Write-Step "Reconciling installer result with updated agent"
-Invoke-ProcessChecked `
-  -FilePath $agentExe `
-  -Arguments "--update-check-once" `
-  -Name "post-current-check" | Out-Null
-
+$deadline = [DateTimeOffset]::UtcNow.AddMinutes(5)
+do {
+  $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+  if ($state.attempt_id -ne $consentedAttempt) { throw "Attempt changed after consent." }
+  if ($state.state -in @("installed", "pending_reboot", "failed", "blocked", "quarantined", "recovery_required")) { break }
+  Start-Sleep -Seconds 1
+} while ([DateTimeOffset]::UtcNow -lt $deadline)
+# Service reconciliation, not a second check or executable version alone, proves healthy installation.
 Write-JsonArtifact "after-update-service.json" (Get-ServiceSnapshot "after-update")
 Write-JsonArtifact "after-update-binaries.json" $finalVersions
 
@@ -231,10 +215,13 @@ if (Test-Path -LiteralPath $resultPath) {
   Copy-Item -LiteralPath $resultPath -Destination (Join-Path $artifactRoot "update-result.json") -Force
 }
 
-$success = $finalVersions.Count -gt 0 -and
+$success = $state.state -eq "installed" -and $state.health_state -eq "healthy" -and $finalVersions.Count -gt 0 -and
   (($finalVersions | Where-Object { $_.product_version -like "$targetVersion*" }).Count -eq $finalVersions.Count)
 $summaryOut = [PSCustomObject]@{
   success = $success
+  update_state = $state.state
+  attempt_id = $consentedAttempt
+  missing = if ($state.state -eq "pending_reboot") { "Real reboot plus exact-build service health; no reboot or downgrade performed." } else { $null }
   old_version = [string]$summary.old_version
   target_version = $targetVersion
   manifest_url = [string]$summary.manifest_url
@@ -244,7 +231,7 @@ $summaryOut = [PSCustomObject]@{
 }
 Write-JsonArtifact "summary.json" $summaryOut
 if (-not $success) {
-  throw "Target version was not installed on all agent binaries. See $artifactRoot"
+  throw "Installed-service acceptance incomplete: $($state.state). See $artifactRoot; protected transaction state is preserved."
 }
 
 Write-Step "Update lab acceptance completed"

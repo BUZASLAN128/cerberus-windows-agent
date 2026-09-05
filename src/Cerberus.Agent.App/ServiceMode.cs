@@ -2,6 +2,7 @@ using Cerberus.Agent.Core;
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.App.Telemetry;
+using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
@@ -16,9 +17,96 @@ internal static class ServiceMode
     public static async Task RunAsync(CancellationToken ct)
     {
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
+        var lifecycle = new DurableAgentLifecycleStateStore();
+        // Load deny intent before even attempting credential decryption.
+        _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        CancellationTokenSource? automatic = null;
+        Task? worker = null;
+        long? workerGeneration = null;
+        var nextCleanupUtc = DateTimeOffset.MinValue;
+        var cleanupDelaySeconds = 10;
+        async Task QuiesceAsync(CancellationToken _)
+        {
+            automatic?.Cancel();
+            await AgentUpdateLocalService.QuiesceAsync(lifetime.Token).ConfigureAwait(false);
+        }
+        var controller = new AgentLifecycleController(lifecycle,
+            new DpapiSecretStore(SecretStoreScope.Machine), log, QuiesceAsync);
+        var control = new AgentLocalControlService(lifecycle, QuiesceAsync);
+        var pipeTask = new AgentLocalControlServer(control.HandleAsync).RunAsync(lifetime.Token);
+        Task? schedulerTask = null;
+        try
+        {
+            await AgentUpdateLocalService.ReconcileOnServiceStartAsync(lifetime.Token).ConfigureAwait(false);
+            schedulerTask = AgentUpdateLocalService.RunScheduledAsync(lifetime.Token);
+            while (!ct.IsCancellationRequested)
+            {
+                if (pipeTask.IsCompleted)
+                    throw new InvalidOperationException("Local control listener stopped.", pipeTask.Exception);
+                if (schedulerTask.IsFaulted)
+                    throw new InvalidOperationException("Update scheduler stopped.", schedulerTask.Exception);
+                var snapshot = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+                if (worker is not null && workerGeneration != snapshot.Generation)
+                    automatic?.Cancel();
+                if (!snapshot.QuiescenceComplete && DateTimeOffset.UtcNow >= nextCleanupUtc)
+                {
+                    try { snapshot = await controller.CompletePendingQuiescenceAsync(lifetime.Token).ConfigureAwait(false); }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        log.Warn($"Lifecycle cleanup remains pending ({ex.GetType().Name}).");
+                    }
+                    nextCleanupUtc = DateTimeOffset.UtcNow.AddSeconds(cleanupDelaySeconds);
+                    cleanupDelaySeconds = Math.Min(60, cleanupDelaySeconds * 2);
+                }
+                if (snapshot.QuiescenceComplete)
+                    cleanupDelaySeconds = 10;
+                if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete)
+                {
+                    if (worker is null || worker.IsCompleted)
+                    {
+                        if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
+                            await worker.ConfigureAwait(false);
+                        automatic?.Dispose();
+                        automatic = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                        workerGeneration = snapshot.Generation;
+                        worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync);
+                    }
+                }
+                else
+                {
+                    automatic?.Cancel();
+                    if (worker is not null && worker.IsCompleted)
+                    {
+                        if (worker.IsFaulted && worker.Exception?.GetBaseException() is not OperationCanceledException)
+                            await worker.ConfigureAwait(false);
+                        worker = null;
+                    }
+                }
+                await Task.Delay(TimeSpan.FromSeconds(2), lifetime.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        finally
+        {
+            lifetime.Cancel();
+            automatic?.Cancel();
+            foreach (var task in new[] { worker, schedulerTask, pipeTask })
+            {
+                if (task is null) continue;
+                try { await task.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+            }
+            automatic?.Dispose();
+        }
+    }
+
+    private static async Task RunAutomaticAsync(CancellationToken ct, IAgentLifecycleStateStore lifecycleState,
+        Func<CancellationToken, Task> quiesce)
+    {
+        using var log = AgentFileLogger.CreateService(alsoConsole: true);
         log.Info("Service mode starting.");
 
-        var lifecycleState = new DurableAgentLifecycleStateStore();
         var persistedLifecycle = await lifecycleState.LoadAsync(ct).ConfigureAwait(false);
         if (!AgentLifecycleStates.AllowsAutomaticNetwork(persistedLifecycle.State))
         {
@@ -144,8 +232,8 @@ internal static class ServiceMode
         };
 
         var signer = new RequestSigner(privateKeyPem);
-        var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState);
-        var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState);
+        var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce);
+        var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce);
         var agentVersion = WindowsDeviceInfo.GetAgentVersion();
         var buildId = WindowsDeviceInfo.GetBuildId();
         var buildChannel = WindowsDeviceInfo.GetBuildChannel();
@@ -209,7 +297,8 @@ internal static class ServiceMode
                 updateCoordinator,
                 updateFailureReporter: (response, exception, cancel) =>
                     ReportUpdateFailureAsync(api, metadata, response, exception, cancel),
-                lifecycleState: lifecycleState),
+                lifecycleState: lifecycleState,
+                quiesce: quiesce),
             telemetryProvider: new WindowsTelemetryCollector(),
             telemetryBuffer: telemetryBuffer,
             log: log,

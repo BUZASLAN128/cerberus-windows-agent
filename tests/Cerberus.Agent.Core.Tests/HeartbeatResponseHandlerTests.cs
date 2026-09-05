@@ -20,7 +20,7 @@ public sealed class HeartbeatResponseHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_ClearsSecrets_WhenRevokedWithExplicitConfirmation()
+    public async Task HandleAsync_PreservesSecrets_WhenConfirmationHasNoTerminalCode()
     {
         var secrets = new CaptureSecretStore();
         var handler = new HeartbeatResponseHandler(secrets, NullAgentLogger.Instance);
@@ -31,8 +31,8 @@ public sealed class HeartbeatResponseHandlerTests
                 """{"revoked":true,"clear_local_credentials":true,"clear_local_credentials_confirmation":"cerberus-agent-clear-local-credentials-v1"}"""),
             CancellationToken.None);
 
-        Assert.Equal(HeartbeatControlAction.Stop, action);
-        Assert.True(secrets.Cleared);
+        Assert.Equal(HeartbeatControlAction.Continue, action);
+        Assert.False(secrets.Cleared);
     }
 
     [Fact]
@@ -47,6 +47,37 @@ public sealed class HeartbeatResponseHandlerTests
 
         Assert.Equal(HeartbeatControlAction.SkipCommands, action);
         Assert.False(secrets.Cleared);
+    }
+
+    [Fact]
+    public async Task HandleAsync_KnownConfirmedRevocationClearsOnlyAfterQuiescence()
+    {
+        var secrets = new CaptureSecretStore();
+        var state = new InMemoryAgentLifecycleStateStore();
+        var quiesced = false;
+        var handler = new HeartbeatResponseHandler(secrets, lifecycleState: state, quiesce: _ =>
+        {
+            Assert.False(secrets.Cleared);
+            quiesced = true;
+            return Task.CompletedTask;
+        });
+        var action = await handler.HandleAsync(Response(revoke:
+            """{"revoked":true,"clear_local_credentials":true,"reason_code":"agent_revoked","clear_local_credentials_confirmation":"cerberus-agent-clear-local-credentials-v1"}"""), default);
+        Assert.Equal(HeartbeatControlAction.Stop, action);
+        Assert.True(quiesced);
+        Assert.True(secrets.Cleared);
+    }
+
+    [Fact]
+    public async Task HandleAsync_DormantNeverStagesUpgrade()
+    {
+        var state = new InMemoryAgentLifecycleStateStore();
+        var current = await state.LoadAsync(default);
+        await state.TrySaveAsync(current with { State = AgentLifecycleState.AuthSuspect }, current.Revision, default);
+        var updates = new CaptureUpdateCoordinator();
+        var handler = new HeartbeatResponseHandler(new CaptureSecretStore(), updates: updates, lifecycleState: state);
+        Assert.Equal(HeartbeatControlAction.Stop, await handler.HandleAsync(Response(lifecycle: "upgrading"), default));
+        Assert.False(updates.Called);
     }
 
     [Fact]

@@ -22,10 +22,12 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly bool _production;
 
     public DurableAgentLifecycleStateStore(string? path = null)
     {
         _path = string.IsNullOrWhiteSpace(path) ? GetDefaultPath() : System.IO.Path.GetFullPath(path);
+        _production = string.Equals(_path, GetDefaultPath(), StringComparison.OrdinalIgnoreCase);
         EnsureProtectedPath();
     }
 
@@ -55,7 +57,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
                     return CorruptState();
                 var raw = await File.ReadAllTextAsync(_path, ct).ConfigureAwait(false);
                 var payload = JsonSerializer.Deserialize<LifecyclePayload>(raw, JsonOpts);
-                if (payload is null || !string.Equals(payload.SchemaVersion, SchemaVersion, StringComparison.Ordinal))
+                if (payload is null || payload.Generation < 0 || payload.Revision < 0 || !string.Equals(payload.SchemaVersion, SchemaVersion, StringComparison.Ordinal))
                     return CorruptState();
 
                 if (!Enum.TryParse<AgentLifecycleState>(payload.State, ignoreCase: true, out var state) ||
@@ -68,7 +70,14 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
                     payload.LastRequestId,
                     payload.NextAttemptUtc,
                     payload.GenericAuthFailureCount,
-                    payload.UpdatedAtUtc));
+                    payload.UpdatedAtUtc)
+                {
+                    Generation = payload.Generation,
+                    Revision = payload.Revision,
+                    QuiescenceComplete = payload.QuiescenceComplete ?? AgentLifecycleStates.AllowsAutomaticNetwork(state),
+                    TransientFailureCount = payload.TransientFailureCount,
+                    LastEnrollmentNonce = payload.LastEnrollmentNonce,
+                });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -89,8 +98,25 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     public async Task SaveAsync(AgentLifecycleSnapshot snapshot, CancellationToken ct)
     {
+        if (await TrySaveAsync(snapshot, snapshot.Revision, ct).ConfigureAwait(false) is null)
+            throw new InvalidOperationException("Lifecycle generation changed.");
+    }
+
+    public async Task<AgentLifecycleSnapshot?> TrySaveAsync(AgentLifecycleSnapshot snapshot, long expectedRevision, CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var normalized = AgentLifecycleStatePolicy.Normalize(snapshot);
+        if (_production && (!OperatingSystem.IsWindows() || !WindowsIdentity.GetCurrent().IsSystem))
+            throw new UnauthorizedAccessException("Only the agent service can change machine lifecycle state.");
+        // The launch fence must precede the lifecycle lock. Release both before
+        // invoking updater cleanup; the runner holds this only through Process.Start.
+        using var launchFence = AgentLifecycleStates.IsDormant(snapshot.State)
+            ? await AgentUpdateLaunchFence.AcquireAsync(ct, _production ? null : System.IO.Path.GetDirectoryName(_path)).ConfigureAwait(false)
+            : null;
+        await using var processLock = await AcquireProcessLockAsync(ct).ConfigureAwait(false);
+        var current = await LoadAsync(ct).ConfigureAwait(false);
+        if (current.Revision != expectedRevision)
+            return null;
+        var normalized = AgentLifecycleStatePolicy.ForCommit(current, snapshot);
         var payload = new LifecyclePayload(
             SchemaVersion,
             normalized.State.ToString(),
@@ -98,7 +124,12 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             normalized.LastRequestId,
             normalized.NextAttemptUtc,
             normalized.GenericAuthFailureCount,
-            normalized.EffectiveUpdatedAtUtc);
+            normalized.EffectiveUpdatedAtUtc,
+            normalized.Generation,
+            normalized.QuiescenceComplete,
+            normalized.TransientFailureCount,
+            normalized.Revision,
+            normalized.LastEnrollmentNonce);
         var json = JsonSerializer.Serialize(payload, JsonOpts);
 
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -109,12 +140,18 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             var tempPath = $"{_path}.{Guid.NewGuid():N}.tmp";
             try
             {
-                await File.WriteAllTextAsync(tempPath, json, System.Text.Encoding.UTF8, ct).ConfigureAwait(false);
+                await using (var output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+                    FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+                {
+                    await output.WriteAsync(System.Text.Encoding.UTF8.GetBytes(json), ct).ConfigureAwait(false);
+                    output.Flush(flushToDisk: true);
+                }
                 if (OperatingSystem.IsWindows())
                     ProtectFile(tempPath);
                 File.Move(tempPath, _path, overwrite: true);
                 if (OperatingSystem.IsWindows())
                     ProtectFile(_path);
+                return normalized;
             }
             finally
             {
@@ -136,6 +173,38 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         }
     }
 
+    private async Task<FileStream> AcquireProcessLockAsync(CancellationToken ct)
+    {
+        EnsureProtectedPath();
+        var lockPath = _path + ".lock";
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(lockPath) && File.GetAttributes(lockPath).HasFlag(FileAttributes.ReparsePoint))
+                    throw ProtectionFailure();
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(25, ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    public async Task<bool> ExecuteIfCurrentAsync(long expectedGeneration, Func<CancellationToken, Task> action, CancellationToken ct)
+    {
+        if (_production && (!OperatingSystem.IsWindows() || !WindowsIdentity.GetCurrent().IsSystem))
+            throw new UnauthorizedAccessException("Only the agent service can change machine credentials.");
+        await using var processLock = await AcquireProcessLockAsync(ct).ConfigureAwait(false);
+        if ((await LoadAsync(ct).ConfigureAwait(false)).Generation != expectedGeneration)
+            return false;
+        await action(ct).ConfigureAwait(false);
+        return true;
+    }
+
     private static AgentLifecycleSnapshot CorruptState()
         => new(
             State: AgentLifecycleState.BlockedConfig,
@@ -143,7 +212,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             LastRequestId: null,
             NextAttemptUtc: null,
             GenericAuthFailureCount: 0,
-            UpdatedAtUtc: DateTimeOffset.UtcNow);
+            UpdatedAtUtc: DateTimeOffset.UtcNow) { QuiescenceComplete = false };
 
     private void EnsureProtectedPath()
     {
@@ -155,6 +224,16 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         {
             if (OperatingSystem.IsWindows())
                 EnsureNoReparsePoints(directory);
+
+            if (_production && OperatingSystem.IsWindows() && !WindowsIdentity.GetCurrent().IsSystem)
+            {
+                // Readers never repair ACLs or create machine authority.
+                if (!Directory.Exists(directory))
+                    throw ProtectionFailure();
+                if (File.Exists(_path) && File.GetAttributes(_path).HasFlag(FileAttributes.ReparsePoint))
+                    throw ProtectionFailure();
+                return;
+            }
 
             Directory.CreateDirectory(directory);
 
@@ -199,12 +278,12 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         }
     }
 
-    private static void ProtectDirectory(string directoryPath)
+    private void ProtectDirectory(string directoryPath)
     {
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var security = new DirectorySecurity();
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.SetOwner(system);
+        security.SetOwner(_production ? system : WindowsIdentity.GetCurrent().User!);
         security.AddAccessRule(new FileSystemAccessRule(
             system,
             FileSystemRights.FullControl,
@@ -212,7 +291,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             PropagationFlags.None,
             AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            _production ? new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) : WindowsIdentity.GetCurrent().User!,
             FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
@@ -220,19 +299,19 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         new DirectoryInfo(directoryPath).SetAccessControl(security);
     }
 
-    private static void ProtectFile(string filePath)
+    private void ProtectFile(string filePath)
     {
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var security = new FileSecurity();
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        security.SetOwner(system);
+        security.SetOwner(_production ? system : WindowsIdentity.GetCurrent().User!);
         security.AddAccessRule(new FileSystemAccessRule(
             system,
             FileSystemRights.FullControl,
             AccessControlType.Allow));
         security.AddAccessRule(new FileSystemAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-            FileSystemRights.FullControl,
+            _production ? new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) : WindowsIdentity.GetCurrent().User!,
+            _production ? FileSystemRights.ReadAndExecute : FileSystemRights.FullControl,
             AccessControlType.Allow));
         new FileInfo(filePath).SetAccessControl(security);
     }
@@ -269,5 +348,10 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         [property: JsonPropertyName("last_request_id")] string? LastRequestId,
         [property: JsonPropertyName("next_attempt_utc")] DateTimeOffset? NextAttemptUtc,
         [property: JsonPropertyName("generic_auth_failure_count")] int GenericAuthFailureCount,
-        [property: JsonPropertyName("updated_at_utc")] DateTimeOffset UpdatedAtUtc);
+        [property: JsonPropertyName("updated_at_utc")] DateTimeOffset UpdatedAtUtc,
+        [property: JsonPropertyName("generation")] long Generation = 0,
+        [property: JsonPropertyName("quiescence_complete")] bool? QuiescenceComplete = null,
+        [property: JsonPropertyName("transient_failure_count")] int TransientFailureCount = 0,
+        [property: JsonPropertyName("revision")] long Revision = 0,
+        [property: JsonPropertyName("last_enrollment_nonce")] string? LastEnrollmentNonce = null);
 }

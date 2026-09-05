@@ -2,9 +2,9 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
-namespace Cerberus.Agent.Updater;
+namespace Cerberus.Agent.Core;
 
-internal static class AuthenticodeVerifier
+public static class AgentUpdateAuthenticode
 {
     private static readonly Guid WinTrustActionGenericVerifyV2 = new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
 
@@ -18,28 +18,43 @@ internal static class AuthenticodeVerifier
         var status = WinVerifyTrustFile(path);
         if (status != 0)
         {
-            if (isDev && allowUnsignedDevBuild && string.IsNullOrWhiteSpace(allowedSignerKeyIdentity))
+            // A broken, revoked or untrusted signature is never an unsigned development build.
+            if (isDev && allowUnsignedDevBuild && status == unchecked((int)0x800B0100) &&
+                allowedSignerKeyIdentity == "unsigned-dev" && IsActuallyUnsigned(path))
                 return;
             throw new InvalidOperationException("Update Authenticode signature verification failed.");
         }
 
         if (string.IsNullOrWhiteSpace(allowedSignerKeyIdentity))
-        {
-            if (!isDev || !allowUnsignedDevBuild)
-                throw new InvalidOperationException("Update signer identity is not configured.");
-            return;
-        }
+            throw new InvalidOperationException("Update signer identity is not configured.");
 
         try
         {
             using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
-            var actual = certificate.GetCertHashString(HashAlgorithmName.SHA256);
-            if (!NormalizeIdentity(actual).Equals(NormalizeIdentity(allowedSignerKeyIdentity), StringComparison.OrdinalIgnoreCase))
+            var actual = PublisherSpkiSha256(certificate);
+            if (!allowedSignerKeyIdentity.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Any(identity => NormalizeIdentity(actual).Equals(NormalizeIdentity(identity), StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("Update signer identity is not trusted.");
         }
         catch (CryptographicException ex)
         {
             throw new InvalidOperationException("Update signer identity could not be read.", ex);
+        }
+    }
+
+    public static string PublisherSpkiSha256(X509Certificate2 certificate)
+        => "sha256:" + Convert.ToHexString(SHA256.HashData(certificate.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
+
+    private static bool IsActuallyUnsigned(string path)
+    {
+        try
+        {
+            using var certificate = X509Certificate.CreateFromSignedFile(path);
+            return false;
+        }
+        catch (CryptographicException)
+        {
+            return true;
         }
     }
 
@@ -60,7 +75,8 @@ internal static class AuthenticodeVerifier
             FileInfo = fileInfoPtr,
             StateAction = 0,
             UrlReference = IntPtr.Zero,
-            ProvFlags = 0x00000010,
+            // Verification must not create background certificate traffic in a dormant lifecycle.
+            ProvFlags = 0x00001080,
         };
         var dataPtr = Marshal.AllocHGlobal(data.StructSize);
         try
@@ -81,7 +97,7 @@ internal static class AuthenticodeVerifier
     }
 
     private static string NormalizeIdentity(string value)
-        => new string(value.Where(char.IsAsciiLetterOrDigit).ToArray()).ToUpperInvariant();
+        => value.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) ? value[7..].ToUpperInvariant() : value.ToUpperInvariant();
 
     [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = true)]
     private static extern int WinVerifyTrust(

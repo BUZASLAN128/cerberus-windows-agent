@@ -1,6 +1,7 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Security;
+using Cerberus.Agent.App.Control;
 using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
@@ -41,9 +42,15 @@ internal static class AgentServiceCredentialBridge
             throw new InvalidOperationException("User-scope agent registration is incomplete.");
         }
 
-        await machineStore
-            .SaveAsync(identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey, ct)
-            .ConfigureAwait(false);
+        AgentEnrollmentProbeStore? previous = null;
+        try { previous = new AgentEnrollmentProbeStore(await machineStore.LoadAsync(ct).ConfigureAwait(false)); }
+        catch (FileNotFoundException) { }
+        catch (DirectoryNotFoundException) { }
+        try
+        {
+            await machineStore
+                .SaveAsync(identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey, ct)
+                .ConfigureAwait(false);
 
         var (verifiedIdentity, verifiedRefreshToken, verifiedPrivateKeyPem, verifiedBackendUrl, verifiedTailscaleLoginServer, verifiedTailscaleAuthkey) =
             await machineStore.LoadAsync(ct).ConfigureAwait(false);
@@ -63,7 +70,17 @@ internal static class AgentServiceCredentialBridge
             throw new InvalidOperationException("Machine-scope agent registration verification failed.");
         }
 
-        return new AgentServiceCredentialPromotionResult(identity.AgentId, identity.TenantId);
+            return new AgentServiceCredentialPromotionResult(identity.AgentId, identity.TenantId);
+        }
+        catch
+        {
+            if (previous is not null)
+            {
+                using var rollback = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await previous.PublishAsync(machineStore, rollback.Token).ConfigureAwait(false);
+            }
+            throw;
+        }
     }
 
     private static string CredentialFingerprint(
@@ -181,8 +198,24 @@ internal static class AgentServiceProvisioning
     internal static async Task<InstallRegistrationState> EnsureMachineRegistrationForInstallAsync(
         ISecretStore userStore,
         ISecretStore machineStore,
-        CancellationToken ct)
+        CancellationToken ct,
+        AgentLifecycleSnapshot? lifecycle = null)
     {
+        if (lifecycle is not null &&
+            (!lifecycle.QuiescenceComplete || lifecycle.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode))
+            throw new InvalidOperationException("Service lifecycle does not allow enrollment promotion.");
+        if (lifecycle is not null && AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) &&
+            await HasCompleteRegistrationAsync(machineStore, ct).ConfigureAwait(false))
+        {
+            if (await HasCompleteRegistrationAsync(userStore, ct).ConfigureAwait(false))
+            {
+                var user = await userStore.LoadAsync(ct).ConfigureAwait(false);
+                var machine = await machineStore.LoadAsync(ct).ConfigureAwait(false);
+                if (user.Identity != machine.Identity || user.PrivateKeyPem != machine.PrivateKeyPem)
+                    throw new InvalidOperationException("An active machine registration cannot be replaced by service setup.");
+            }
+            return new InstallRegistrationState(PromotedFromUserScope: false);
+        }
         if (await HasCompleteRegistrationAsync(userStore, ct).ConfigureAwait(false))
         {
             await AgentServiceCredentialBridge.PromoteAsync(userStore, machineStore, ct).ConfigureAwait(false);
@@ -254,7 +287,7 @@ internal static class AgentServiceProvisioning
         if (!Elevation.IsAdministrator())
             throw new InvalidOperationException("Administrator privileges are required for service install/uninstall.");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
         var machineStore = new DpapiSecretStore(SecretStoreScope.Machine);
 
@@ -265,9 +298,30 @@ internal static class AgentServiceProvisioning
         if (userRegistrationAvailable)
             AgentClaimGate.RequireClaimedForServiceInstall(userStore, cts.Token);
 
-        var registrationState = EnsureMachineRegistrationForInstallAsync(userStore, machineStore, cts.Token)
-            .GetAwaiter()
-            .GetResult();
+        InstallRegistrationState registrationState;
+        using (AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(cts.Token).GetAwaiter().GetResult())
+        {
+            var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(cts.Token).GetAwaiter().GetResult();
+            AgentEnrollmentProbeStore? previous = null;
+            try { previous = new AgentEnrollmentProbeStore(machineStore.LoadAsync(cts.Token).GetAwaiter().GetResult()); }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+            registrationState = EnsureMachineRegistrationForInstallAsync(userStore, machineStore, cts.Token, lifecycle)
+                .GetAwaiter().GetResult();
+            if (registrationState.PromotedFromUserScope)
+            {
+                try { AgentEnrollmentPromotion.WriteAsync(lifecycle.Generation, machineStore, cts.Token).GetAwaiter().GetResult(); }
+                catch
+                {
+                    if (previous is not null)
+                    {
+                        using var rollback = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        previous.PublishAsync(machineStore, rollback.Token).GetAwaiter().GetResult();
+                    }
+                    throw;
+                }
+            }
+        }
         try
         {
             if (!userRegistrationAvailable)
@@ -275,12 +329,18 @@ internal static class AgentServiceProvisioning
             AgentLegalConsent.EnsureMachineConsentForInstall();
             ServiceInstaller.InstallOrThrow();
             if (registrationState.PromotedFromUserScope)
+            {
+                var adopted = AgentLocalControlClient.SendAsync(new("enrollment-adopt"), cts.Token).GetAwaiter().GetResult();
+                if (!adopted.Success)
+                    throw new InvalidOperationException($"Service enrollment requires attention ({adopted.Code}).");
+            }
+            if (userRegistrationAvailable)
                 userStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
         }
         catch
         {
-            if (registrationState.PromotedFromUserScope)
-                machineStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
+            // Keep both registrations for an explicit retry. An install/SCM
+            // failure is never authority to erase the machine identity.
             throw;
         }
     }
@@ -307,23 +367,28 @@ internal static class AgentServiceProvisioning
         if (Elevation.IsAdministrator())
         {
             var state = AgentStatus.GetService();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var adminMachineStore = new DpapiSecretStore(SecretStoreScope.Machine);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             var adminUserStore = new DpapiSecretStore(SecretStoreScope.User);
-            var adminDeactivated = DeactivateAndClearRegistrationAsync(
-                adminMachineStore,
-                SelfDeactivate,
-                cts.Token).GetAwaiter().GetResult();
-            if (!adminDeactivated)
+            if (state.Installed)
             {
-                adminDeactivated = DeactivateAndClearRegistrationAsync(
+                var retired = AgentLocalControlClient.SendAsync(new("unregister"), cts.Token).GetAwaiter().GetResult();
+                if (!retired.Success)
+                    throw new InvalidOperationException($"Service unregister did not complete ({retired.Code}); registration was preserved.");
+                ServiceInstaller.UninstallOrThrow();
+            }
+            else if (File.Exists(DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine)))
+            {
+                throw new InvalidOperationException("Restore the service before unregistering its machine identity.");
+            }
+            else
+            {
+                var adminDeactivated = DeactivateAndClearRegistrationAsync(
                     adminUserStore,
                     SelfDeactivate,
                     cts.Token).GetAwaiter().GetResult();
+                if (!adminDeactivated)
+                    throw new InvalidOperationException("No registration could be deactivated.");
             }
-
-            if (state.Installed)
-                ServiceInstaller.UninstallOrThrow();
 
             AgentServiceLocalState.ClearMachineStateAsync(cts.Token).GetAwaiter().GetResult();
             adminUserStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
@@ -340,6 +405,6 @@ internal static class AgentServiceProvisioning
             SelfDeactivate,
             userCts.Token).GetAwaiter().GetResult();
         if (!userDeactivated)
-            userStore.ClearAsync(userCts.Token).GetAwaiter().GetResult();
+            throw new InvalidOperationException("No registration could be deactivated; local state was preserved.");
     }
 }

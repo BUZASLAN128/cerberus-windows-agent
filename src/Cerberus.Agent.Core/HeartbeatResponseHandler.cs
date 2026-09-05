@@ -16,13 +16,15 @@ public sealed class HeartbeatResponseHandler
     private readonly IAgentUpdateCoordinator? _updates;
     private readonly Func<HeartbeatResponse, Exception, CancellationToken, Task>? _updateFailureReporter;
     private readonly IAgentLifecycleStateStore _lifecycleState;
+    private readonly Func<CancellationToken, Task>? _quiesce;
 
     public HeartbeatResponseHandler(
         ISecretStore secrets,
         IAgentLogger? log = null,
         IAgentUpdateCoordinator? updates = null,
         Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null,
-        IAgentLifecycleStateStore? lifecycleState = null)
+        IAgentLifecycleStateStore? lifecycleState = null,
+        Func<CancellationToken, Task>? quiesce = null)
     {
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
@@ -32,10 +34,15 @@ public sealed class HeartbeatResponseHandler
         // in-memory fallback keeps legacy/support callers on the same
         // terminal-code gate without allowing a raw response to clear secrets.
         _lifecycleState = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
+        _quiesce = quiesce;
     }
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
     {
+        var generation = AgentApiClient.GenerationOf(response);
+        var current = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (generation is not null && current.Generation != generation)
+            return HeartbeatControlAction.Stop;
         await PersistUiContextAsync(response, ct).ConfigureAwait(false);
 
         if (response.Revoke is not null &&
@@ -52,15 +59,15 @@ public sealed class HeartbeatResponseHandler
                 }
                 try
                 {
-                    await new AgentLifecycleController(_lifecycleState, _secrets)
-                        .RecordTerminalResponseAsync(reasonCode, requestId: null, ct)
+                    await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
+                        .RecordTerminalResponseAsync(reasonCode, requestId: null, ct, expectedGeneration: generation)
                         .ConfigureAwait(false);
                 }
                 catch (AgentRetiredException)
                 {
                     // Retired state is the expected terminal outcome.
                 }
-                _log.Warn("Agent revoked by server policy; local credentials cleared after explicit confirmation.");
+                _log.Warn("Agent terminal intent recorded; automatic network is paused.");
             }
             else
             {
@@ -70,6 +77,9 @@ public sealed class HeartbeatResponseHandler
             }
             return HeartbeatControlAction.Stop;
         }
+
+        if (AgentLifecycleStates.IsDormant(current.State) || !current.QuiescenceComplete)
+            return HeartbeatControlAction.Stop;
 
         if (response.Quarantine is not null && IsTrue(response.Quarantine, "active"))
         {
@@ -164,9 +174,6 @@ public sealed class HeartbeatResponseHandler
             return AgentLifecycleStatePolicy.IsTerminalCode(code) ? code : null;
         }
 
-        // The explicit clear confirmation is the legacy terminal proof when
-        // older servers omit reason_code; it is treated as revoked, never as
-        // a generic status-based credential clear.
-        return AgentLifecycleStatePolicy.AgentRevokedCode;
+        return null;
     }
 }

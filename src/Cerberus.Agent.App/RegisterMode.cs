@@ -71,7 +71,7 @@ internal static class RegisterMode
                 secrets,
                 keyPairs: null,
                 log: log,
-                lifecycleState: new DurableAgentLifecycleStateStore());
+                lifecycleState: new InMemoryAgentLifecycleStateStore());
             var fingerprint = WindowsDeviceInfo.ComputeDeviceFingerprint();
             var version = WindowsDeviceInfo.GetAgentVersion();
             var buildId = WindowsDeviceInfo.GetBuildId();

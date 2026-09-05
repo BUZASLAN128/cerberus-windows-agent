@@ -80,7 +80,7 @@ public sealed class HeartbeatLoop
         _initialSnapshotDelay = initialSnapshotDelay is null || initialSnapshotDelay.Value < TimeSpan.Zero
             ? TimeSpan.FromSeconds(60)
             : initialSnapshotDelay.Value;
-        _backoffResetRequested = backoffResetRequested;
+        _backoffResetRequested = lifecycleState is null ? backoffResetRequested : null;
         _lifecycleState = lifecycleState;
         _automaticNetwork = automaticNetwork;
     }
@@ -89,7 +89,8 @@ public sealed class HeartbeatLoop
     {
         var degraded = false;
         var startedEventSent = false;
-        var consecutiveHeartbeatErrors = 0;
+        var consecutiveHeartbeatErrors = _lifecycleState is null ? 0 :
+            (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).TransientFailureCount;
         var nextSnapshotAt = DateTimeOffset.UtcNow.Add(_initialSnapshotDelay);
         while (!ct.IsCancellationRequested)
         {
@@ -107,7 +108,7 @@ public sealed class HeartbeatLoop
                     }
                     catch (Exception ex)
                     {
-                        _log.Warn($"Status provider error: {ex.GetType().Name}: {ex.Message}");
+                        _log.Warn($"Status provider error: {ex.GetType().Name}.");
                     }
                 }
 
@@ -212,7 +213,7 @@ public sealed class HeartbeatLoop
 
                 var retryDelay = CalculateRetryDelay(ex, consecutiveHeartbeatErrors);
                 await PersistRetryAsync(retryDelay, ct).ConfigureAwait(false);
-                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}: {ex.Message}. Next retry in {FormatDelay(retryDelay)}.");
+                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}. Next retry in {FormatDelay(retryDelay)}.");
                 bool resetRequested;
                 try
                 {
@@ -253,10 +254,9 @@ public sealed class HeartbeatLoop
             return true;
 
         var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
-        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State))
+        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) || !snapshot.QuiescenceComplete)
         {
             _log.Warn($"Heartbeat network paused by lifecycle state={snapshot.State}.");
-            await WaitUntilCancellationAsync(ct).ConfigureAwait(false);
             return false;
         }
 
@@ -289,13 +289,14 @@ public sealed class HeartbeatLoop
         var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
         if (snapshot.NextAttemptUtc is not null)
         {
-            await _lifecycleState.SaveAsync(
+            await _lifecycleState.TrySaveAsync(
                 AgentLifecycleStatePolicy.Normalize(snapshot with
                 {
                     NextAttemptUtc = null,
+                    TransientFailureCount = 0,
                     UpdatedAtUtc = DateTimeOffset.UtcNow,
                 }),
-                ct).ConfigureAwait(false);
+                snapshot.Revision, ct).ConfigureAwait(false);
         }
     }
 
@@ -308,13 +309,14 @@ public sealed class HeartbeatLoop
         if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State))
             return;
 
-        await _lifecycleState.SaveAsync(
+        await _lifecycleState.TrySaveAsync(
             AgentLifecycleStatePolicy.Normalize(snapshot with
             {
                 NextAttemptUtc = DateTimeOffset.UtcNow.Add(delay),
+                TransientFailureCount = Math.Min(30, snapshot.TransientFailureCount + 1),
                 UpdatedAtUtc = DateTimeOffset.UtcNow,
             }),
-                ct).ConfigureAwait(false);
+                snapshot.Revision, ct).ConfigureAwait(false);
     }
 
     private async Task RecordTransientLifecycleFailureAsync(Exception exception, CancellationToken ct)
@@ -388,7 +390,8 @@ public sealed class HeartbeatLoop
 
     private TimeSpan CalculateRetryDelay(Exception exception, int consecutiveFailures)
     {
-        if (exception is AgentHttpException { Failure.StatusCode: System.Net.HttpStatusCode.TooManyRequests } rateLimit)
+        if (exception is AgentHttpException rateLimit &&
+            (rateLimit.RetryAfter is not null || rateLimit.Failure.StatusCode == System.Net.HttpStatusCode.TooManyRequests))
         {
             var retryAfter = rateLimit.RetryAfter ?? TimeSpan.FromSeconds(5);
             retryAfter = TimeSpan.FromSeconds(Math.Clamp(retryAfter.TotalSeconds, 5, 3600));

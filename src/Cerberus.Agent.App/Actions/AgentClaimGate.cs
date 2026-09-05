@@ -34,7 +34,6 @@ internal static class AgentClaimGate
             }
             catch (AgentRetiredException ex)
             {
-                await store.ClearAsync(ct).ConfigureAwait(false);
                 throw new AgentRegistrationInactiveException(
                     ex.ReasonCode ?? AgentLifecycleStatePolicy.AgentRevokedCode,
                     canReenroll: string.Equals(
@@ -62,21 +61,6 @@ internal static class AgentClaimGate
 
             if (state is "rejected" or "deactivated" or "revoked")
             {
-                if (state is "deactivated" or "revoked")
-                {
-                    try
-                    {
-                        await RetireForRegistrationStateAsync(
-                            store,
-                            state,
-                            lifecycleState,
-                            ct).ConfigureAwait(false);
-                    }
-                    catch (AgentRetiredException)
-                    {
-                        // Convert to the setup-facing inactive result below.
-                    }
-                }
                 throw new AgentRegistrationInactiveException(
                     state,
                     canReenroll: string.Equals(state, "deactivated", StringComparison.Ordinal));
@@ -111,7 +95,6 @@ internal static class AgentClaimGate
         }
         catch (AgentRetiredException ex)
         {
-            store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
             throw new AgentRegistrationInactiveException(
                 ex.ReasonCode ?? AgentLifecycleStatePolicy.AgentRevokedCode,
                 canReenroll: string.Equals(
@@ -128,21 +111,6 @@ internal static class AgentClaimGate
             var state = NormalizeState(response.RegistrationState);
             if (state is "rejected" or "deactivated" or "revoked")
             {
-                if (state is "deactivated" or "revoked")
-                {
-                    try
-                    {
-                        RetireForRegistrationStateAsync(
-                            store,
-                            state,
-                            lifecycleState,
-                            timeout.Token).GetAwaiter().GetResult();
-                    }
-                    catch (AgentRetiredException)
-                    {
-                        // Convert to the setup-facing inactive result below.
-                    }
-                }
                 throw new AgentRegistrationInactiveException(
                     state,
                     canReenroll: string.Equals(state, "deactivated", StringComparison.Ordinal));
@@ -166,8 +134,7 @@ internal static class AgentClaimGate
         }
         catch (AgentRetiredException)
         {
-            await store.ClearAsync(timeout.Token).ConfigureAwait(false);
-            return true;
+            return false;
         }
         catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
         {
@@ -182,22 +149,8 @@ internal static class AgentClaimGate
         if (state is not ("deactivated" or "revoked"))
             return false;
 
-        if (state is "deactivated" or "revoked")
-        {
-            try
-            {
-                await RetireForRegistrationStateAsync(
-                    store,
-                    state,
-                    lifecycleState,
-                    timeout.Token).ConfigureAwait(false);
-            }
-            catch (AgentRetiredException)
-            {
-                return true;
-            }
-        }
-        return true;
+        // Setup projection state is not authority to clear either identity.
+        return false;
     }
 
     internal static bool IsClaimed(HeartbeatResponse response)
@@ -218,7 +171,7 @@ internal static class AgentClaimGate
             BaseAddress = new Uri(backendUrl.TrimEnd('/')),
             Timeout = ClaimCheckTimeout,
         };
-        var lifecycle = lifecycleState ?? new DurableAgentLifecycleStateStore();
+        var lifecycle = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
         var api = new AgentApiClient(
             http,
             store,
@@ -247,21 +200,6 @@ internal static class AgentClaimGate
                 capabilities = Array.Empty<string>(),
             },
             ct).ConfigureAwait(false);
-    }
-
-    private static async Task RetireForRegistrationStateAsync(
-        ISecretStore store,
-        string state,
-        IAgentLifecycleStateStore? lifecycleState,
-        CancellationToken ct)
-    {
-        var lifecycle = lifecycleState ?? new DurableAgentLifecycleStateStore();
-        var code = string.Equals(state, "deactivated", StringComparison.Ordinal)
-            ? AgentLifecycleStatePolicy.AgentDeactivatedCode
-            : AgentLifecycleStatePolicy.AgentRevokedCode;
-        await new AgentLifecycleController(lifecycle, store)
-            .RetireAsync(code, requestId: null, ct)
-            .ConfigureAwait(false);
     }
 
     private static string NormalizeState(string? state)
