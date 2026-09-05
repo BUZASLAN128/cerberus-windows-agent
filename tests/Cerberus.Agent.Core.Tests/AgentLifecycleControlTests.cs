@@ -1,4 +1,6 @@
 using System.Net;
+using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Core;
@@ -220,6 +222,89 @@ public sealed class AgentLifecycleControlTests
         stream.Position = 0;
         await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(stream, default));
         Assert.Equal(0, (int)(AgentLocalControlPipe.ClientRights & System.IO.Pipes.PipeAccessRights.CreateNewInstance));
+    }
+
+    [Theory]
+    [InlineData(TokenImpersonationLevel.None, true)]
+    [InlineData(TokenImpersonationLevel.Anonymous, false)]
+    public async Task PipeAuthenticatesTheReadRequestBeforeDispatch(TokenImpersonationLevel impersonation, bool allowed)
+    {
+        // Real local Windows pipe evidence; this does not replace installed SYSTEM/SCM acceptance.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var name = "cerberus-control-test-" + Guid.NewGuid().ToString("N");
+        await using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+        await using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous, impersonation);
+        var accepted = pipe.WaitForConnectionAsync(timeout.Token);
+        await client.ConnectAsync(timeout.Token);
+        await accepted;
+        var expected = new AgentLocalControlResponse(true, "health_response", CurrentVersion: "1.2.3");
+        var dispatched = false;
+        var server = new AgentLocalControlServer((request, _) =>
+        {
+            Assert.Equal("status", request.Operation);
+            dispatched = true;
+            return Task.FromResult(expected);
+        });
+        // Start the real server handler before any client bytes exist: this is the MSI connection ordering.
+        var handling = server.HandleConnectionAsync(pipe, timeout.Token);
+        if (allowed)
+        {
+            await AgentLocalControlProtocol.WriteAsync(client, new AgentLocalControlRequest("status"), timeout.Token);
+            var response = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(client, timeout.Token);
+            Assert.Equal(expected, response);
+        }
+        else
+        {
+            await Assert.ThrowsAnyAsync<IOException>(async () =>
+            {
+                await AgentLocalControlProtocol.WriteAsync(client, new AgentLocalControlRequest("status"), timeout.Token);
+                await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(client, timeout.Token);
+            });
+        }
+        await handling;
+        Assert.Equal(allowed, dispatched);
+        if (!allowed)
+        {
+            // A rejected identity must not fault this server's next connection.
+            await using var nextPipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+            await using var nextClient = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+            var nextAccepted = nextPipe.WaitForConnectionAsync(timeout.Token);
+            await nextClient.ConnectAsync(timeout.Token);
+            await nextAccepted;
+            var nextHandling = server.HandleConnectionAsync(nextPipe, timeout.Token);
+            await AgentLocalControlProtocol.WriteAsync(nextClient, new AgentLocalControlRequest("status"), timeout.Token);
+            Assert.Equal(expected, await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(nextClient, timeout.Token));
+            await nextHandling;
+            Assert.True(dispatched);
+        }
+    }
+
+    [Fact]
+    public async Task PipeConnectionWithoutAFrameCancelsWithoutDispatch()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var stopped = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var name = "cerberus-control-test-" + Guid.NewGuid().ToString("N");
+        await using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+        await using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var accepted = pipe.WaitForConnectionAsync(timeout.Token);
+        await client.ConnectAsync(timeout.Token);
+        await accepted;
+        var dispatched = false;
+        var server = new AgentLocalControlServer((_, _) =>
+        {
+            dispatched = true;
+            return Task.FromResult(new AgentLocalControlResponse(true, "unexpected"));
+        });
+        var handling = server.HandleConnectionAsync(pipe, stopped.Token);
+        stopped.Cancel();
+        await handling.WaitAsync(timeout.Token);
+        Assert.False(dispatched);
+        await Assert.ThrowsAnyAsync<IOException>(() =>
+            AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(client, timeout.Token));
     }
 
     private static AgentHttpFailureInfo Terminal() => new(HttpStatusCode.Unauthorized, "AUTH_UNAUTHORIZED", "agent_revoked", null, null, null);

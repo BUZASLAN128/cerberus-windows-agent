@@ -73,7 +73,7 @@ internal sealed class AgentLocalControlServer
         }
     }
 
-    private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken serviceCt)
+    internal async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken serviceCt)
     {
         await using (pipe)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(serviceCt))
@@ -81,16 +81,19 @@ internal sealed class AgentLocalControlServer
             timeout.CancelAfter(TimeSpan.FromSeconds(40));
             try
             {
+                // Windows impersonates the context of the last message read. Read only the bounded frame
+                // before verifying identity; no request is authorized or dispatched until that succeeds.
+                var request = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(pipe, timeout.Token).ConfigureAwait(false);
                 var (allowed, privileged) = AgentLocalControlPipe.ClientAuthority(pipe);
                 if (!allowed)
                     return;
-                var request = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(pipe, timeout.Token).ConfigureAwait(false);
                 var response = AgentLocalControlProtocol.IsAllowed(request, privileged)
                     ? await _handle(request, timeout.Token).ConfigureAwait(false)
                     : new AgentLocalControlResponse(false, "invalid_request");
                 await AgentLocalControlProtocol.WriteAsync(pipe, response, timeout.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException or UnauthorizedAccessException or System.Text.Json.JsonException or Win32Exception)
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or UnauthorizedAccessException or
+                System.Security.SecurityException or System.Text.Json.JsonException or Win32Exception)
             {
                 // Untrusted clients get bounded failure with no identity, raw
                 // request, exception details or secrets written to logs.
