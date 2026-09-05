@@ -20,6 +20,8 @@ public sealed class AgentApiClient
     private readonly ISecretStore _secrets;
     private readonly ITokenManager _tokens;
     private readonly IRequestSigner _signer;
+    private readonly IAgentLifecycleStateStore? _lifecycleState;
+    private readonly bool _manualOperation;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentApiClient"/> class.
@@ -28,12 +30,20 @@ public sealed class AgentApiClient
     /// <param name="secrets">Secret store for agent credentials.</param>
     /// <param name="tokens">Token manager for access token refresh.</param>
     /// <param name="signer">Request signer for cryptographic signatures.</param>
-    public AgentApiClient(HttpClient http, ISecretStore secrets, ITokenManager tokens, IRequestSigner signer)
+    public AgentApiClient(
+        HttpClient http,
+        ISecretStore secrets,
+        ITokenManager tokens,
+        IRequestSigner signer,
+        IAgentLifecycleStateStore? lifecycleState = null,
+        bool manualOperation = false)
     {
         _http = http;
         _secrets = secrets;
         _tokens = tokens;
         _signer = signer;
+        _lifecycleState = lifecycleState;
+        _manualOperation = manualOperation;
     }
 
     /// <summary>
@@ -46,17 +56,71 @@ public sealed class AgentApiClient
     /// <exception cref="InvalidOperationException">Thrown when the response is invalid.</exception>
     public async Task<HeartbeatResponse> HeartbeatAsync(object body, CancellationToken ct)
     {
-        return await RetryHelper.WithRetryAsync(async () =>
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{id.AgentId}/heartbeat";
+
+        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
+        using var resp = await SendSignedRequestAsync(
+            HttpMethod.Post,
+            path,
+            body,
+            ct,
+            HttpCompletionOption.ResponseHeadersRead,
+            deadline.Token).ConfigureAwait(false);
+        await EnsureSuccessAsync("Heartbeat", resp, ct, deadline.Token).ConfigureAwait(false);
+
+        HeartbeatResponse? payload;
+        try
         {
-            var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
-            var path = $"/api/v1/agents/{id.AgentId}/heartbeat";
+            payload = await AgentHttpFailure.ReadJsonAsync<HeartbeatResponse>(
+                "Heartbeat",
+                resp,
+                _http,
+                JsonOpts,
+                ct,
+                deadline.Token).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (_lifecycleState is not null && AgentHttpFailure.IsPayloadInvalid(ex))
+        {
+            await _lifecycleState.TransitionAsync(
+                AgentLifecycleState.BlockedConfig,
+                reasonCode: "heartbeat_response_invalid",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            throw;
+        }
+        if (payload is null ||
+            payload.PendingCommands is null ||
+            payload.NextPollSeconds <= 0 ||
+            payload.NextSnapshotSeconds < 0)
+        {
+            if (_lifecycleState is not null)
+            {
+                await _lifecycleState.TransitionAsync(
+                    AgentLifecycleState.BlockedConfig,
+                    reasonCode: "heartbeat_response_invalid",
+                    requestId: null,
+                    nextAttemptUtc: null,
+                    genericAuthFailureCount: null,
+                    ct).ConfigureAwait(false);
+            }
+            throw new InvalidOperationException("Heartbeat response missing or invalid.");
+        }
 
-            using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
-
-            var payload = await resp.Content.ReadFromJsonAsync<HeartbeatResponse>(JsonOpts, ct).ConfigureAwait(false);
-            return payload ?? throw new InvalidOperationException("Heartbeat response missing.");
-        }, ct: ct).ConfigureAwait(false);
+        if (_lifecycleState is not null)
+        {
+            var lifecycle = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+            if (lifecycle.State != AgentLifecycleState.Retired)
+            {
+                await new AgentLifecycleController(_lifecycleState)
+                    .MarkActiveAsync(ct)
+                    .ConfigureAwait(false);
+            }
+        }
+        return payload;
     }
 
     /// <summary>
@@ -68,11 +132,17 @@ public sealed class AgentApiClient
     /// <exception cref="HttpRequestException">Thrown when the API request fails.</exception>
     public async Task SubmitCommandResultAsync(string commandId, object body, CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/commands/{commandId}/result";
 
-        using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        using var resp = await SendSignedRequestAsync(
+            HttpMethod.Post,
+            path,
+            body,
+            ct,
+            HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        await EnsureSuccessAsync("Command result", resp, ct).ConfigureAwait(false);
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
@@ -88,22 +158,36 @@ public sealed class AgentApiClient
         AgentDiagnosticBundleRequest body,
         CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var json = JsonSerializer.Serialize(body, JsonOpts);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/diagnostic-bundles";
 
-        return await RetryHelper.WithRetryAsync(async () =>
+        async Task<AgentDiagnosticBundleAckResponse> SubmitOnceAsync()
         {
-            using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
+            using var resp = await SendSignedJsonRequestAsync(
+                HttpMethod.Post,
+                path,
+                json,
+                ct,
+                HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            await EnsureSuccessAsync("Agent diagnostic bundle", resp, ct).ConfigureAwait(false);
 
-            var payload = await resp.Content.ReadFromJsonAsync<AgentDiagnosticBundleAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+            var payload = await AgentHttpFailure.ReadJsonAsync<AgentDiagnosticBundleAckResponse>(
+                "Agent diagnostic bundle",
+                resp,
+                _http,
+                JsonOpts,
+                ct).ConfigureAwait(false);
             return payload ?? throw new InvalidOperationException("Agent diagnostic bundle response missing.");
-        }, maxRetries: 1, ct: ct).ConfigureAwait(false);
+        }
+
+        return await RetryHelper.WithRetryAsync(SubmitOnceAsync, maxRetries: 1, ct: ct).ConfigureAwait(false);
     }
 
     public async Task<AgentIngestAckResponse> SubmitOfflineTelemetryAsync(OfflineTelemetryRecord record, CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var endpoint = record.Kind switch
         {
             OfflineTelemetryKinds.Snapshot => "snapshot",
@@ -129,6 +213,7 @@ public sealed class AgentApiClient
     /// <exception cref="InvalidOperationException">Thrown when the response is invalid.</exception>
     public async Task<(string LoginServer, string AuthKey)> GetTailscalePreauthAsync(CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/tailscale/preauth";
 
@@ -165,13 +250,24 @@ public sealed class AgentApiClient
 
     public async Task<AgentSelfDeactivateResponse> SelfDeactivateAsync(AgentSelfDeactivateRequest body, CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/deactivate";
 
-        using var resp = await SendSignedRequestAsync(HttpMethod.Post, path, body, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
+        using var resp = await SendSignedRequestAsync(
+            HttpMethod.Post,
+            path,
+            body,
+            ct,
+            HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        await EnsureSuccessAsync("Agent self-deactivate", resp, ct).ConfigureAwait(false);
 
-        var payload = await resp.Content.ReadFromJsonAsync<AgentSelfDeactivateResponse>(JsonOpts, ct).ConfigureAwait(false);
+        var payload = await AgentHttpFailure.ReadJsonAsync<AgentSelfDeactivateResponse>(
+            "Agent self-deactivate",
+            resp,
+            _http,
+            JsonOpts,
+            ct).ConfigureAwait(false);
         return payload ?? throw new InvalidOperationException("Agent self-deactivate response missing.");
     }
 
@@ -191,15 +287,26 @@ public sealed class AgentApiClient
         bool retryTransient,
         CancellationToken ct)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
 
         async Task<AgentIngestAckResponse> SubmitOnceAsync()
         {
-            using var resp = await SendSignedJsonRequestAsync(HttpMethod.Post, path, json, ct).ConfigureAwait(false);
-            resp.EnsureSuccessStatusCode();
+            using var resp = await SendSignedJsonRequestAsync(
+                HttpMethod.Post,
+                path,
+                json,
+                ct,
+                HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            await EnsureSuccessAsync($"Agent {endpoint}", resp, ct).ConfigureAwait(false);
 
-            var payload = await resp.Content.ReadFromJsonAsync<AgentIngestAckResponse>(JsonOpts, ct).ConfigureAwait(false);
+            var payload = await AgentHttpFailure.ReadJsonAsync<AgentIngestAckResponse>(
+                $"Agent {endpoint}",
+                resp,
+                _http,
+                JsonOpts,
+                ct).ConfigureAwait(false);
             return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
         }
 
@@ -228,6 +335,7 @@ public sealed class AgentApiClient
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
         CancellationToken? deadlineCt = null)
     {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var response = await SendSignedJsonRequestOnceAsync(
             method,
             path,
@@ -240,15 +348,126 @@ public sealed class AgentApiClient
             return response;
         }
 
+        if (_lifecycleState is not null)
+        {
+            var accessFailure = await AgentHttpFailure.CreateAsync(
+                "Agent request",
+                response,
+                _http,
+                ct,
+                deadlineCt).ConfigureAwait(false);
+            if (accessFailure is AgentHttpException typed &&
+                AgentLifecycleStatePolicy.IsTerminalCode(typed.Code))
+            {
+                response.Dispose();
+                await new AgentLifecycleController(_lifecycleState, _secrets)
+                    .RecordHttpFailureAsync(
+                        typed.Failure,
+                        duringRefresh: false,
+                        manualOperation: _manualOperation,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+        }
+
         response.Dispose();
         await _tokens.RefreshAsync(ct).ConfigureAwait(false);
-        return await SendSignedJsonRequestOnceAsync(
+        var retried = await SendSignedJsonRequestOnceAsync(
             method,
             path,
             json,
             ct,
             completionOption,
             deadlineCt).ConfigureAwait(false);
+
+        if (_lifecycleState is not null &&
+            retried.StatusCode is HttpStatusCode.Unauthorized or
+                HttpStatusCode.Forbidden or
+                HttpStatusCode.NotFound or
+                HttpStatusCode.Conflict)
+        {
+            var retryFailure = await AgentHttpFailure.CreateAsync(
+                "Agent request",
+                retried,
+                _http,
+                ct,
+                deadlineCt).ConfigureAwait(false);
+            retried.Dispose();
+            var retryInfo = retryFailure is AgentHttpException typed
+                ? typed.Failure
+                : new AgentHttpFailureInfo(
+                    retryFailure.StatusCode ?? retried.StatusCode,
+                    TransportCode: null,
+                    DetailCode: null,
+                    Status: null,
+                    RequestId: null,
+                    RetryAfter: null);
+            await new AgentLifecycleController(_lifecycleState, _secrets)
+                .RecordHttpFailureAsync(
+                    retryInfo,
+                    duringRefresh: false,
+                    manualOperation: _manualOperation,
+                    ct)
+                .ConfigureAwait(false);
+            throw retryFailure;
+        }
+
+        return retried;
+    }
+
+    private async Task EnsureSuccessAsync(
+        string operation,
+        HttpResponseMessage response,
+        CancellationToken ct,
+        CancellationToken? deadlineCt = null)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+
+        var failure = await AgentHttpFailure.CreateAsync(
+            operation,
+            response,
+            _http,
+            ct,
+            deadlineCt).ConfigureAwait(false);
+        if (_lifecycleState is not null)
+        {
+            var failureInfo = failure is AgentHttpException typed
+                ? typed.Failure
+                : new AgentHttpFailureInfo(
+                    failure.StatusCode ?? response.StatusCode,
+                    TransportCode: null,
+                    DetailCode: null,
+                    Status: null,
+                    RequestId: null,
+                    RetryAfter: null);
+            await new AgentLifecycleController(_lifecycleState, _secrets)
+                .RecordHttpFailureAsync(
+                    failureInfo,
+                    duringRefresh: false,
+                    manualOperation: _manualOperation,
+                    ct)
+                .ConfigureAwait(false);
+        }
+        throw failure;
+    }
+
+    private async Task EnsureAutomaticNetworkAllowedAsync(CancellationToken ct)
+    {
+        if (_lifecycleState is null)
+            return;
+
+        if (_manualOperation)
+        {
+            var manualSnapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+            if (manualSnapshot.State == AgentLifecycleState.Retired)
+                throw new AgentRetiredException(manualSnapshot);
+            return;
+        }
+
+        await new AgentLifecycleController(_lifecycleState, _secrets)
+            .EnsureAutomaticNetworkAllowedAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedJsonRequestOnceAsync(

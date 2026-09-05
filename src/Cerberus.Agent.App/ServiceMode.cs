@@ -18,11 +18,124 @@ internal static class ServiceMode
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         log.Info("Service mode starting.");
 
+        var lifecycleState = new DurableAgentLifecycleStateStore();
+        var persistedLifecycle = await lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (!AgentLifecycleStates.AllowsAutomaticNetwork(persistedLifecycle.State))
+        {
+            log.Warn($"Service starting dormant; lifecycle state={persistedLifecycle.State}.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         var secrets = new DpapiSecretStore(SecretStoreScope.Machine);
-        var (_, _, privateKeyPem, storedBackendUrl, _, _) = await secrets.LoadAsync(ct);
+        (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey) loadedSecrets;
+        try
+        {
+            loadedSecrets = await secrets.LoadAsync(ct).ConfigureAwait(false);
+        }
+        catch (FileNotFoundException)
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_missing",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials are not enrolled.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_missing",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials are not enrolled.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_unavailable",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials are unavailable.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        catch (InvalidOperationException)
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_invalid",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials could not be decoded.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_invalid",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials are malformed.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(loadedSecrets.Identity.AgentId) ||
+            string.IsNullOrWhiteSpace(loadedSecrets.Identity.TenantId) ||
+            string.IsNullOrWhiteSpace(loadedSecrets.RefreshToken) ||
+            string.IsNullOrWhiteSpace(loadedSecrets.PrivateKeyPem) ||
+            string.IsNullOrWhiteSpace(loadedSecrets.BackendUrl))
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.NeedsReenrollment,
+                reasonCode: "credentials_invalid",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; machine credentials are incomplete.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
+        var privateKeyPem = loadedSecrets.PrivateKeyPem;
+        var storedBackendUrl = loadedSecrets.BackendUrl;
         var backendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl;
 
-        var baseAddress = new Uri(backendUrl.TrimEnd('/'));
+        if (!Uri.TryCreate(backendUrl.Trim().TrimEnd('/'), UriKind.Absolute, out var baseAddress) ||
+            (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.BlockedConfig,
+                reasonCode: "backend_url_invalid",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; configured backend URL is invalid.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
         using var updateHttp = new HttpClient
         {
@@ -31,8 +144,8 @@ internal static class ServiceMode
         };
 
         var signer = new RequestSigner(privateKeyPem);
-        var tokens = new AgentTokenManager(http, secrets);
-        var api = new AgentApiClient(http, secrets, tokens, signer);
+        var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState);
+        var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState);
         var agentVersion = WindowsDeviceInfo.GetAgentVersion();
         var buildId = WindowsDeviceInfo.GetBuildId();
         var buildChannel = WindowsDeviceInfo.GetBuildChannel();
@@ -95,13 +208,15 @@ internal static class ServiceMode
                 log,
                 updateCoordinator,
                 updateFailureReporter: (response, exception, cancel) =>
-                    ReportUpdateFailureAsync(api, metadata, response, exception, cancel)),
+                    ReportUpdateFailureAsync(api, metadata, response, exception, cancel),
+                lifecycleState: lifecycleState),
             telemetryProvider: new WindowsTelemetryCollector(),
             telemetryBuffer: telemetryBuffer,
             log: log,
             commandTimeout: TimeSpan.FromSeconds(120),
             backoffResetRequested: HeartbeatBackoffResetSignal.ConsumeDefaultAsync,
-            metadata: metadata);
+            metadata: metadata,
+            lifecycleState: lifecycleState);
 
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var diagnosticScheduler = new DiagnosticBundleScheduler(diagnosticUploader, log);
@@ -166,6 +281,18 @@ internal static class ServiceMode
             return defaultValue;
 
         return TimeSpan.FromSeconds(seconds);
+    }
+
+    private static async Task RunDormantAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Dormant service remains healthy until SCM requests stop.
+        }
     }
 
     private static async Task ReportUpdateFailureAsync(

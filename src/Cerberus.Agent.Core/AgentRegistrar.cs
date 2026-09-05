@@ -17,6 +17,7 @@ public sealed class AgentRegistrar
     private readonly ISecretStore _secrets;
     private readonly IKeyPairGenerator _keyPairs;
     private readonly IAgentLogger _log;
+    private readonly IAgentLifecycleStateStore? _lifecycleState;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentRegistrar"/> class.
@@ -29,12 +30,14 @@ public sealed class AgentRegistrar
         HttpClient http,
         ISecretStore secrets,
         IKeyPairGenerator? keyPairs = null,
-        IAgentLogger? log = null)
+        IAgentLogger? log = null,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         _http = http;
         _secrets = secrets;
         _keyPairs = keyPairs ?? RsaKeyPairGenerator.Instance;
         _log = log ?? NullAgentLogger.Instance;
+        _lifecycleState = lifecycleState;
     }
 
     /// <summary>
@@ -99,7 +102,20 @@ public sealed class AgentRegistrar
             HttpCompletionOption.ResponseHeadersRead,
             deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw await AgentHttpFailure.CreateAsync("Register", resp, _http, ct, deadline.Token).ConfigureAwait(false);
+        {
+            var failure = await AgentHttpFailure.CreateAsync(
+                "Register",
+                resp,
+                _http,
+                ct,
+                deadline.Token).ConfigureAwait(false);
+            // Registration predates lifecycle-aware callers and exposes the
+            // established plain HttpRequestException contract. The bounded
+            // message is retained; raw response content is never propagated.
+            throw failure is AgentHttpException
+                ? new HttpRequestException(failure.Message, inner: null, statusCode: failure.StatusCode)
+                : failure;
+        }
 
         var body = await AgentHttpFailure.ReadBodyAsStringAsync(
             "Register",
@@ -125,6 +141,13 @@ public sealed class AgentRegistrar
             parsed.TenantName,
             accountLabel: null,
             ct).ConfigureAwait(false);
+
+        if (_lifecycleState is not null)
+        {
+            await new AgentLifecycleController(_lifecycleState)
+                .MarkActiveAsync(ct)
+                .ConfigureAwait(false);
+        }
 
         await WriteTailscaleProofFileAsync(identity, parsed.TailscaleLoginServer, parsed.TailscaleAuthkey, ct).ConfigureAwait(false);
 

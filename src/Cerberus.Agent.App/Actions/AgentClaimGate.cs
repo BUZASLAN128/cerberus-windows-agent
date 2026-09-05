@@ -15,7 +15,8 @@ internal static class AgentClaimGate
     public static async Task<HeartbeatResponse> WaitForClaimedAsync(
         ISecretStore store,
         Action<string>? progress,
-        CancellationToken ct)
+        CancellationToken ct,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         var deadline = DateTimeOffset.UtcNow.Add(ClaimWaitTimeout);
         var lastState = "";
@@ -29,11 +30,20 @@ internal static class AgentClaimGate
             HeartbeatResponse response;
             try
             {
-                response = await CheckAsync(store, ct).ConfigureAwait(false);
+                response = await CheckAsync(store, ct, lifecycleState).ConfigureAwait(false);
+            }
+            catch (AgentRetiredException ex)
+            {
+                await store.ClearAsync(ct).ConfigureAwait(false);
+                throw new AgentRegistrationInactiveException(
+                    ex.ReasonCode ?? AgentLifecycleStatePolicy.AgentRevokedCode,
+                    canReenroll: string.Equals(
+                        ex.ReasonCode,
+                        AgentLifecycleStatePolicy.AgentDeactivatedCode,
+                        StringComparison.Ordinal));
             }
             catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
             {
-                await store.ClearAsync(ct).ConfigureAwait(false);
                 throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
             }
             catch (HttpRequestException ex) when (IsTransientClaimPollStatus(ex.StatusCode))
@@ -52,8 +62,24 @@ internal static class AgentClaimGate
 
             if (state is "rejected" or "deactivated" or "revoked")
             {
-                await store.ClearAsync(ct).ConfigureAwait(false);
-                throw new AgentRegistrationInactiveException(state);
+                if (state is "deactivated" or "revoked")
+                {
+                    try
+                    {
+                        await RetireForRegistrationStateAsync(
+                            store,
+                            state,
+                            lifecycleState,
+                            ct).ConfigureAwait(false);
+                    }
+                    catch (AgentRetiredException)
+                    {
+                        // Convert to the setup-facing inactive result below.
+                    }
+                }
+                throw new AgentRegistrationInactiveException(
+                    state,
+                    canReenroll: string.Equals(state, "deactivated", StringComparison.Ordinal));
             }
 
             var now = DateTimeOffset.UtcNow;
@@ -70,7 +96,10 @@ internal static class AgentClaimGate
         throw new InvalidOperationException("Device was not claimed in the portal before the setup timeout.");
     }
 
-    public static void RequireClaimedForServiceInstall(ISecretStore store, CancellationToken ct)
+    public static void RequireClaimedForServiceInstall(
+        ISecretStore store,
+        CancellationToken ct,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ClaimCheckTimeout);
@@ -78,11 +107,20 @@ internal static class AgentClaimGate
         HeartbeatResponse response;
         try
         {
-            response = CheckAsync(store, timeout.Token).GetAwaiter().GetResult();
+            response = CheckAsync(store, timeout.Token, lifecycleState).GetAwaiter().GetResult();
+        }
+        catch (AgentRetiredException ex)
+        {
+            store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
+            throw new AgentRegistrationInactiveException(
+                ex.ReasonCode ?? AgentLifecycleStatePolicy.AgentRevokedCode,
+                canReenroll: string.Equals(
+                    ex.ReasonCode,
+                    AgentLifecycleStatePolicy.AgentDeactivatedCode,
+                    StringComparison.Ordinal));
         }
         catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
         {
-            store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
             throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
         }
         if (!IsClaimed(response))
@@ -90,14 +128,33 @@ internal static class AgentClaimGate
             var state = NormalizeState(response.RegistrationState);
             if (state is "rejected" or "deactivated" or "revoked")
             {
-                store.ClearAsync(timeout.Token).GetAwaiter().GetResult();
-                throw new AgentRegistrationInactiveException(state);
+                if (state is "deactivated" or "revoked")
+                {
+                    try
+                    {
+                        RetireForRegistrationStateAsync(
+                            store,
+                            state,
+                            lifecycleState,
+                            timeout.Token).GetAwaiter().GetResult();
+                    }
+                    catch (AgentRetiredException)
+                    {
+                        // Convert to the setup-facing inactive result below.
+                    }
+                }
+                throw new AgentRegistrationInactiveException(
+                    state,
+                    canReenroll: string.Equals(state, "deactivated", StringComparison.Ordinal));
             }
             throw new InvalidOperationException($"Claim this device in the portal before installing the service (state={state}).");
         }
     }
 
-    public static async Task<bool> ClearInactiveLocalRegistrationAsync(ISecretStore store, CancellationToken ct)
+    public static async Task<bool> ClearInactiveLocalRegistrationAsync(
+        ISecretStore store,
+        CancellationToken ct,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ClaimCheckTimeout);
@@ -105,12 +162,16 @@ internal static class AgentClaimGate
         HeartbeatResponse response;
         try
         {
-            response = await CheckAsync(store, timeout.Token).ConfigureAwait(false);
+            response = await CheckAsync(store, timeout.Token, lifecycleState).ConfigureAwait(false);
         }
-        catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
+        catch (AgentRetiredException)
         {
             await store.ClearAsync(timeout.Token).ConfigureAwait(false);
             return true;
+        }
+        catch (HttpRequestException ex) when (IsInactiveRegistrationStatus(ex.StatusCode))
+        {
+            return false;
         }
         catch
         {
@@ -118,10 +179,24 @@ internal static class AgentClaimGate
         }
 
         var state = NormalizeState(response.RegistrationState);
-        if (state is not ("rejected" or "deactivated" or "revoked"))
+        if (state is not ("deactivated" or "revoked"))
             return false;
 
-        await store.ClearAsync(timeout.Token).ConfigureAwait(false);
+        if (state is "deactivated" or "revoked")
+        {
+            try
+            {
+                await RetireForRegistrationStateAsync(
+                    store,
+                    state,
+                    lifecycleState,
+                    timeout.Token).ConfigureAwait(false);
+            }
+            catch (AgentRetiredException)
+            {
+                return true;
+            }
+        }
         return true;
     }
 
@@ -129,7 +204,10 @@ internal static class AgentClaimGate
         => string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
            && !response.ClaimRequired;
 
-    private static async Task<HeartbeatResponse> CheckAsync(ISecretStore store, CancellationToken ct)
+    private static async Task<HeartbeatResponse> CheckAsync(
+        ISecretStore store,
+        CancellationToken ct,
+        IAgentLifecycleStateStore? lifecycleState)
     {
         var (_, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(privateKeyPem) || string.IsNullOrWhiteSpace(backendUrl))
@@ -140,11 +218,20 @@ internal static class AgentClaimGate
             BaseAddress = new Uri(backendUrl.TrimEnd('/')),
             Timeout = ClaimCheckTimeout,
         };
+        var lifecycle = lifecycleState ?? new DurableAgentLifecycleStateStore();
         var api = new AgentApiClient(
             http,
             store,
-            new AgentTokenManager(http, store),
-            new RequestSigner(privateKeyPem));
+            new AgentTokenManager(
+                http,
+                store,
+                refreshSafetyMargin: null,
+                utcNow: null,
+                lifecycleState: lifecycle,
+                manualOperation: true),
+            new RequestSigner(privateKeyPem),
+            lifecycle,
+            manualOperation: true);
 
         return await api.HeartbeatAsync(
             new
@@ -160,6 +247,21 @@ internal static class AgentClaimGate
                 capabilities = Array.Empty<string>(),
             },
             ct).ConfigureAwait(false);
+    }
+
+    private static async Task RetireForRegistrationStateAsync(
+        ISecretStore store,
+        string state,
+        IAgentLifecycleStateStore? lifecycleState,
+        CancellationToken ct)
+    {
+        var lifecycle = lifecycleState ?? new DurableAgentLifecycleStateStore();
+        var code = string.Equals(state, "deactivated", StringComparison.Ordinal)
+            ? AgentLifecycleStatePolicy.AgentDeactivatedCode
+            : AgentLifecycleStatePolicy.AgentRevokedCode;
+        await new AgentLifecycleController(lifecycle, store)
+            .RetireAsync(code, requestId: null, ct)
+            .ConfigureAwait(false);
     }
 
     private static string NormalizeState(string? state)
@@ -181,11 +283,13 @@ internal static class AgentClaimGate
 
 internal sealed class AgentRegistrationInactiveException : InvalidOperationException
 {
-    public AgentRegistrationInactiveException(string state)
+    public AgentRegistrationInactiveException(string state, bool canReenroll = false)
         : base($"Device registration is no longer claimable (state={state}).")
     {
         State = state;
+        CanReenroll = canReenroll;
     }
 
     public string State { get; }
+    public bool CanReenroll { get; }
 }

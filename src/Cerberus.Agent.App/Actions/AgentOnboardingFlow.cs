@@ -49,7 +49,13 @@ internal sealed class AgentOnboardingFlow
             Timeout = TimeSpan.FromSeconds(30),
         };
         var secrets = new DpapiSecretStore(SecretStoreScope.User);
-        var registrar = new AgentRegistrar(http, secrets, keyPairs: null, log: log);
+        var lifecycleState = new DurableAgentLifecycleStateStore();
+        var registrar = new AgentRegistrar(
+            http,
+            secrets,
+            keyPairs: null,
+            log: log,
+            lifecycleState: lifecycleState);
 
         var identity = await registrar.RegisterAsync(
             token.AccessToken,

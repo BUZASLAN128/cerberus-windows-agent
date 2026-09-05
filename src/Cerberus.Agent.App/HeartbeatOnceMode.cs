@@ -14,6 +14,7 @@ internal static class HeartbeatOnceMode
         try
         {
             var secrets = new DpapiSecretStore(SecretStoreScope.User);
+            var lifecycleState = new DurableAgentLifecycleStateStore();
             var (_, _, privateKeyPem, storedBackendUrl, _, _) = await secrets.LoadAsync(ct);
             var backendUrl = (Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl).Trim().TrimEnd('/');
             if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
@@ -23,8 +24,16 @@ internal static class HeartbeatOnceMode
             var api = new AgentApiClient(
                 http,
                 secrets,
-                new AgentTokenManager(http, secrets),
-                new RequestSigner(privateKeyPem));
+                new AgentTokenManager(
+                    http,
+                    secrets,
+                    refreshSafetyMargin: null,
+                    utcNow: null,
+                    lifecycleState: lifecycleState,
+                    manualOperation: true),
+                new RequestSigner(privateKeyPem),
+                lifecycleState,
+                manualOperation: true);
 
             var metadata = new AgentBuildMetadata(
                 AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
@@ -46,7 +55,10 @@ internal static class HeartbeatOnceMode
                 capabilities = Array.Empty<string>(),
             }, ct);
 
-            var control = await new HeartbeatResponseHandler(secrets, log).HandleAsync(heartbeat, ct);
+            var control = await new HeartbeatResponseHandler(
+                secrets,
+                log,
+                lifecycleState: lifecycleState).HandleAsync(heartbeat, ct);
             if (control == HeartbeatControlAction.Stop)
                 return 0;
 

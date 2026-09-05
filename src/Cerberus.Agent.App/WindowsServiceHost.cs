@@ -10,6 +10,7 @@ internal sealed class WindowsServiceHost : ServiceBase
     private CancellationTokenSource? _cts;
     private Task? _runTask;
     private int _applyUpdateRunning;
+    private int _stopping;
 
     public WindowsServiceHost()
     {
@@ -21,25 +22,36 @@ internal sealed class WindowsServiceHost : ServiceBase
 
     protected override void OnStart(string[] args)
     {
+        Interlocked.Exchange(ref _stopping, 0);
         _cts = new CancellationTokenSource();
         _runTask = Task.Run(async () =>
         {
-            try
-            {
-                await ServiceMode.RunAsync(_cts.Token);
-            }
-            catch
-            {
-                // Let the service crash; SCM will apply recovery options.
-                throw;
-            }
+            await ServiceMode.RunAsync(_cts.Token).ConfigureAwait(false);
         });
+        _ = _runTask.ContinueWith(
+            completed =>
+            {
+                if (Volatile.Read(ref _stopping) == 1 || !completed.IsFaulted)
+                    return;
+
+                // A faulted worker must terminate the process so SCM records a
+                // failed service and applies configured recovery. Dormant
+                // lifecycle states keep ServiceMode alive and never reach this
+                // path.
+                var failure = completed.Exception?.GetBaseException();
+                Environment.FailFast(
+                    $"Cerberus agent worker failed ({failure?.GetType().Name ?? "unknown"}).");
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     protected override void OnStop()
     {
         try
         {
+            Interlocked.Exchange(ref _stopping, 1);
             _cts?.Cancel();
             if (_runTask != null && !_runTask.Wait(TimeSpan.FromSeconds(15)))
             {

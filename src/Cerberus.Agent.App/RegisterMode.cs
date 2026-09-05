@@ -66,7 +66,12 @@ internal static class RegisterMode
                 Timeout = TimeSpan.FromSeconds(30),
             };
 
-            var registrar = new AgentRegistrar(http, secrets, keyPairs: null, log: log);
+            var registrar = new AgentRegistrar(
+                http,
+                secrets,
+                keyPairs: null,
+                log: log,
+                lifecycleState: new DurableAgentLifecycleStateStore());
             var fingerprint = WindowsDeviceInfo.ComputeDeviceFingerprint();
             var version = WindowsDeviceInfo.GetAgentVersion();
             var buildId = WindowsDeviceInfo.GetBuildId();

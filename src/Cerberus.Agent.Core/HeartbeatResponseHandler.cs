@@ -15,17 +15,23 @@ public sealed class HeartbeatResponseHandler
     private readonly IAgentLogger _log;
     private readonly IAgentUpdateCoordinator? _updates;
     private readonly Func<HeartbeatResponse, Exception, CancellationToken, Task>? _updateFailureReporter;
+    private readonly IAgentLifecycleStateStore _lifecycleState;
 
     public HeartbeatResponseHandler(
         ISecretStore secrets,
         IAgentLogger? log = null,
         IAgentUpdateCoordinator? updates = null,
-        Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null)
+        Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
         _updates = updates;
         _updateFailureReporter = updateFailureReporter;
+        // Production service callers pass the protected durable store. The
+        // in-memory fallback keeps legacy/support callers on the same
+        // terminal-code gate without allowing a raw response to clear secrets.
+        _lifecycleState = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
     }
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
@@ -38,7 +44,22 @@ public sealed class HeartbeatResponseHandler
         {
             if (HasClearConfirmation(response.Revoke))
             {
-                await _secrets.ClearAsync(ct).ConfigureAwait(false);
+                var reasonCode = TerminalReasonCode(response.Revoke);
+                if (reasonCode is null)
+                {
+                    _log.Warn("remote_clear_ignored_requires_terminal_code: revoke reason code is not approved.");
+                    return HeartbeatControlAction.Continue;
+                }
+                try
+                {
+                    await new AgentLifecycleController(_lifecycleState, _secrets)
+                        .RecordTerminalResponseAsync(reasonCode, requestId: null, ct)
+                        .ConfigureAwait(false);
+                }
+                catch (AgentRetiredException)
+                {
+                    // Retired state is the expected terminal outcome.
+                }
                 _log.Warn("Agent revoked by server policy; local credentials cleared after explicit confirmation.");
             }
             else
@@ -132,4 +153,20 @@ public sealed class HeartbeatResponseHandler
                element.GetString(),
                "cerberus-agent-clear-local-credentials-v1",
                StringComparison.Ordinal);
+
+    private static string? TerminalReasonCode(IReadOnlyDictionary<string, JsonElement> values)
+    {
+        if (values.TryGetValue("reason_code", out var element))
+        {
+            if (element.ValueKind != JsonValueKind.String)
+                return null;
+            var code = element.GetString()?.Trim();
+            return AgentLifecycleStatePolicy.IsTerminalCode(code) ? code : null;
+        }
+
+        // The explicit clear confirmation is the legacy terminal proof when
+        // older servers omit reason_code; it is treated as revoked, never as
+        // a generic status-based credential clear.
+        return AgentLifecycleStatePolicy.AgentRevokedCode;
+    }
 }

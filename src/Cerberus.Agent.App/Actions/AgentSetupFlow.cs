@@ -31,6 +31,7 @@ internal sealed class AgentSetupFlow
         var registeredBefore = AgentStatus.IsRegistered();
         var registeredNow = false;
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
+        var lifecycleState = new DurableAgentLifecycleStateStore();
         if (!registeredBefore)
         {
             var onboarding = await new AgentOnboardingFlow()
@@ -52,10 +53,10 @@ internal sealed class AgentSetupFlow
             try
             {
                 await AgentClaimGate
-                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .WaitForClaimedAsync(userStore, progress, ct, lifecycleState)
                     .ConfigureAwait(false);
             }
-            catch (AgentRegistrationInactiveException) when (registeredBefore)
+            catch (AgentRegistrationInactiveException ex) when (registeredBefore && ex.CanReenroll)
             {
                 progress?.Invoke("Stored device registration is inactive. Signing in again...");
                 var onboarding = await new AgentOnboardingFlow()
@@ -67,7 +68,7 @@ internal sealed class AgentSetupFlow
                     progress?.Invoke($"Wrote private mesh command: {onboarding.TailscaleCommandPath}");
 
                 await AgentClaimGate
-                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .WaitForClaimedAsync(userStore, progress, ct, lifecycleState)
                     .ConfigureAwait(false);
             }
         }
