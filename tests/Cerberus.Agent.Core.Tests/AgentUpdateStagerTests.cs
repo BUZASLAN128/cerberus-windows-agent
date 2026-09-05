@@ -25,7 +25,7 @@ public sealed class AgentUpdateStagerTests
             return new ByteArrayContent(artifact);
         }));
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
+        AgentUpdateSecurity.EnsureProtectedRoot(root);
         Directory.CreateDirectory(Path.Combine(root, "0.9.0"));
         Directory.CreateDirectory(Path.Combine(root, "1.0.0"));
         Directory.CreateDirectory(Path.Combine(root, "1.0.1"));
@@ -258,6 +258,7 @@ public sealed class AgentUpdateStagerTests
             return new ByteArrayContent(artifact);
         }));
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-reuse-test-" + Guid.NewGuid().ToString("N"));
+        AgentUpdateSecurity.EnsureProtectedRoot(root);
         var stageDir = Path.Combine(root, "1.2.0");
         Directory.CreateDirectory(stageDir);
         await File.WriteAllBytesAsync(
@@ -302,6 +303,7 @@ public sealed class AgentUpdateStagerTests
             return new ByteArrayContent(corruptDownload);
         }));
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-preserve-test-" + Guid.NewGuid().ToString("N"));
+        AgentUpdateSecurity.EnsureProtectedRoot(root);
         var stageDir = Path.Combine(root, "1.2.0");
         Directory.CreateDirectory(stageDir);
         var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-stable-1.2.0.msi");
