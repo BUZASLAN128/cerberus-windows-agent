@@ -13,12 +13,6 @@ internal sealed record AgentServiceCredentialPromotionResult(string AgentId, str
 
 internal static class AgentServiceCredentialBridge
 {
-    public static Task<AgentServiceCredentialPromotionResult> PromoteUserSecretsToMachineAsync(CancellationToken ct)
-        => PromoteAndClearSourceAsync(
-            new DpapiSecretStore(SecretStoreScope.User),
-            new DpapiSecretStore(SecretStoreScope.Machine),
-            ct);
-
     public static Task<AgentServiceCredentialPromotionResult> SyncMachineSecretsToUserAsync(CancellationToken ct)
         => PromoteAsync(
             new DpapiSecretStore(SecretStoreScope.Machine),
@@ -180,7 +174,7 @@ internal static class AgentBackendLifecycle
 
 internal static class AgentServiceProvisioning
 {
-    internal sealed record InstallRegistrationState(bool PromotedFromUserScope);
+    internal sealed record InstallRegistrationState(bool StagedFromUserScope);
 
     internal static async Task<bool> PreserveMachineRegistrationForUserAsync(
         ISecretStore machineStore,
@@ -195,9 +189,10 @@ internal static class AgentServiceProvisioning
         return true;
     }
 
-    internal static async Task<InstallRegistrationState> EnsureMachineRegistrationForInstallAsync(
+    internal static async Task<InstallRegistrationState> PrepareRegistrationForInstallAsync(
         ISecretStore userStore,
         ISecretStore machineStore,
+        ISecretStore pendingStore,
         CancellationToken ct,
         AgentLifecycleSnapshot? lifecycle = null)
     {
@@ -214,16 +209,26 @@ internal static class AgentServiceProvisioning
                 if (user.Identity != machine.Identity || user.PrivateKeyPem != machine.PrivateKeyPem)
                     throw new InvalidOperationException("An active machine registration cannot be replaced by service setup.");
             }
-            return new InstallRegistrationState(PromotedFromUserScope: false);
+            return new InstallRegistrationState(StagedFromUserScope: false);
         }
         if (await HasCompleteRegistrationAsync(userStore, ct).ConfigureAwait(false))
         {
-            await AgentServiceCredentialBridge.PromoteAsync(userStore, machineStore, ct).ConfigureAwait(false);
-            return new InstallRegistrationState(PromotedFromUserScope: true);
+            // Never write the authoritative store during elevated setup. Keep a
+            // rotated pending token on retry when it belongs to the same proof.
+            var user = await userStore.LoadAsync(ct).ConfigureAwait(false);
+            var reusePending = false;
+            if (await HasCompleteRegistrationAsync(pendingStore, ct).ConfigureAwait(false))
+            {
+                var pending = await pendingStore.LoadAsync(ct).ConfigureAwait(false);
+                reusePending = pending.Identity == user.Identity && pending.PrivateKeyPem == user.PrivateKeyPem && pending.BackendUrl == user.BackendUrl;
+            }
+            if (!reusePending)
+                await AgentServiceCredentialBridge.PromoteAsync(userStore, pendingStore, ct).ConfigureAwait(false);
+            return new InstallRegistrationState(StagedFromUserScope: true);
         }
 
         if (await HasCompleteRegistrationAsync(machineStore, ct).ConfigureAwait(false))
-            return new InstallRegistrationState(PromotedFromUserScope: false);
+            return new InstallRegistrationState(StagedFromUserScope: false);
 
         throw new InvalidOperationException("No complete agent registration was found. Sign in and register the agent before installing the service.");
     }
@@ -295,54 +300,48 @@ internal static class AgentServiceProvisioning
         var userRegistrationAvailable = HasCompleteRegistrationAsync(userStore, cts.Token)
             .GetAwaiter()
             .GetResult();
-        if (userRegistrationAvailable)
-            AgentClaimGate.RequireClaimedForServiceInstall(userStore, cts.Token);
-
         InstallRegistrationState registrationState;
         using (AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(cts.Token).GetAwaiter().GetResult())
         {
             var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(cts.Token).GetAwaiter().GetResult();
-            AgentEnrollmentProbeStore? previous = null;
-            try { previous = new AgentEnrollmentProbeStore(machineStore.LoadAsync(cts.Token).GetAwaiter().GetResult()); }
-            catch (FileNotFoundException) { }
-            catch (DirectoryNotFoundException) { }
-            registrationState = EnsureMachineRegistrationForInstallAsync(userStore, machineStore, cts.Token, lifecycle)
+            AgentCredentialPublication.RequireNoUnresolvedPublication();
+            var pendingStore = AgentEnrollmentPromotion.OpenPendingStore();
+            registrationState = PrepareRegistrationForInstallAsync(userStore, machineStore, pendingStore, cts.Token, lifecycle)
                 .GetAwaiter().GetResult();
-            if (registrationState.PromotedFromUserScope)
-            {
-                try { AgentEnrollmentPromotion.WriteAsync(lifecycle.Generation, machineStore, cts.Token).GetAwaiter().GetResult(); }
-                catch
-                {
-                    if (previous is not null)
-                    {
-                        using var rollback = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                        previous.PublishAsync(machineStore, rollback.Token).GetAwaiter().GetResult();
-                    }
-                    throw;
-                }
-            }
+            if (registrationState.StagedFromUserScope)
+                AgentEnrollmentPromotion.WriteAsync(lifecycle.Generation, pendingStore, cts.Token).GetAwaiter().GetResult();
         }
         try
         {
             if (!userRegistrationAvailable)
                 AgentClaimGate.RequireClaimedForServiceInstall(machineStore, cts.Token);
             AgentLegalConsent.EnsureMachineConsentForInstall();
-            ServiceInstaller.InstallOrThrow();
-            if (registrationState.PromotedFromUserScope)
-            {
-                var adopted = AgentLocalControlClient.SendAsync(new("enrollment-adopt"), cts.Token).GetAwaiter().GetResult();
-                if (!adopted.Success)
-                    throw new InvalidOperationException($"Service enrollment requires attention ({adopted.Code}).");
-            }
-            if (userRegistrationAvailable)
-                userStore.ClearAsync(cts.Token).GetAwaiter().GetResult();
+            InstallPreparedRegistrationAsync(registrationState, userStore, userRegistrationAvailable,
+                () => { ServiceInstaller.InstallOrThrow(); return Task.CompletedTask; },
+                cancel => AgentLocalControlClient.SendAsync(new("enrollment-adopt"), cancel), cts.Token).GetAwaiter().GetResult();
         }
         catch
         {
-            // Keep both registrations for an explicit retry. An install/SCM
-            // failure is never authority to erase the machine identity.
+            // SCM/probe failures leave the old authoritative encrypted bytes
+            // untouched; the pending registration remains available to retry.
             throw;
         }
+    }
+
+    internal static async Task InstallPreparedRegistrationAsync(InstallRegistrationState registration,
+        ISecretStore userStore, bool clearUserAfterSuccess, Func<Task> installService,
+        Func<CancellationToken, Task<AgentLocalControlResponse>> adopt, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await installService().ConfigureAwait(false);
+        if (registration.StagedFromUserScope)
+        {
+            var result = await adopt(ct).ConfigureAwait(false);
+            if (!result.Success)
+                throw new InvalidOperationException($"Service enrollment requires attention ({result.Code}).");
+        }
+        if (clearUserAfterSuccess)
+            await userStore.ClearAsync(ct).ConfigureAwait(false);
     }
 
     public static void UninstallOrThrow()

@@ -18,6 +18,7 @@ internal static class ServiceMode
     {
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         var lifecycle = new DurableAgentLifecycleStateStore();
+        await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
         // Load deny intent before even attempting credential decryption.
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -46,6 +47,8 @@ internal static class ServiceMode
                     throw new InvalidOperationException("Local control listener stopped.", pipeTask.Exception);
                 if (schedulerTask.IsFaulted)
                     throw new InvalidOperationException("Update scheduler stopped.", schedulerTask.Exception);
+                if (AgentCredentialPublication.RecoveryRequired)
+                    await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
                 var snapshot = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
                 if (worker is not null && workerGeneration != snapshot.Generation)
                     automatic?.Cancel();
@@ -61,7 +64,9 @@ internal static class ServiceMode
                 }
                 if (snapshot.QuiescenceComplete)
                     cleanupDelaySeconds = 10;
-                if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete)
+                var promotion = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
+                var awaitingAdoption = AgentEnrollmentPromotion.IsAwaitingAdoption(promotion, snapshot);
+                if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete && !awaitingAdoption)
                 {
                     if (worker is null || worker.IsCompleted)
                     {

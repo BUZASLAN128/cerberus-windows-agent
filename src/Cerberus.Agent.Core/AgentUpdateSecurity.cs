@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Principal;
 
 namespace Cerberus.Agent.Core;
@@ -49,40 +51,93 @@ public static class AgentUpdateSecurity
             : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
+    /// <summary>Creates missing authority atomically. Existing objects must already have trusted provenance; none are repaired into trust.</summary>
     public static void EnsureProtectedRoot(string root)
     {
         var fullRoot = NormalizeRoot(root);
         ValidateExistingAncestors(fullRoot);
-
         if (!OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(fullRoot);
             return;
         }
 
-        var protectionTargets = GetProtectionTargets(fullRoot).ToArray();
-        var productRoot = Path.Combine(
-            NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)), "CerberusAgent");
-        var productRootWasMissing = !Directory.Exists(productRoot);
-        foreach (var directory in protectionTargets)
+        // Validate before even enabling the ownership privilege. Parent ACL changes cannot bless preseeded children.
+        var targets = GetProtectionTargets(fullRoot).ToArray();
+        foreach (var directory in targets)
         {
-            ValidateExistingAncestors(directory);
-            var existed = Directory.Exists(directory);
-            Directory.CreateDirectory(directory);
-            ValidateNoReparsePoint(directory, "Privileged update directory");
-            // Shared ancestors also contain lifecycle/provisioning state. Their
-            // owner sets their policy; an update record write must not reset it.
-            if (existed && !string.Equals(directory, fullRoot, StringComparison.OrdinalIgnoreCase))
-                continue;
-            // Keep the product root restrictive while its privileged children
-            // are being created, then restore its narrow signal-file grants.
-            ApplyProtectedAcl(directory, isProductRoot: false);
+            if (Directory.Exists(directory))
+                ValidateDirectoryAuthority(directory, isProductRoot: IsProductRoot(directory));
         }
+        var namespaceRoot = IsUnderDirectory(fullRoot, DefaultPrivilegedNamespaceRoot) ? DefaultPrivilegedNamespaceRoot : fullRoot;
+        if (Directory.Exists(namespaceRoot))
+            ValidateProtectedTree(namespaceRoot);
 
-        if (productRootWasMissing && protectionTargets.Contains(productRoot, StringComparer.OrdinalIgnoreCase))
-            ApplyProtectedAcl(productRoot, isProductRoot: true);
+        var missing = targets.Where(directory => !Directory.Exists(directory)).ToArray();
+        if (missing.Length == 0) return;
+        AgentUpdateStoragePrivilege.Run(() =>
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+            foreach (var directory in targets)
+            {
+                ValidateExistingAncestors(directory);
+                if (!Directory.Exists(directory))
+                    CreateProtectedDirectory(directory, IsProductRoot(directory));
+                // CreateDirectory may lose a race to an existing object. Never adopt it on name alone.
+                ValidateDirectoryAuthority(directory, IsProductRoot(directory));
+            }
+        });
+        ValidateProtectedTree(namespaceRoot);
+    }
 
-        ValidateNoReparsePoint(fullRoot, "Privileged update root");
+    /// <summary>Read-only provenance gate for a protected directory or record. Stronger SYSTEM-only lifecycle ACLs are accepted.</summary>
+    public static void ValidateProtectedPath(string path, string trustedRoot, bool allowMissing)
+    {
+        ValidatePathShape(path, trustedRoot, allowMissing);
+        if (!OperatingSystem.IsWindows()) return;
+        var fullRoot = NormalizeRoot(trustedRoot);
+        var fullPath = Path.GetFullPath(path);
+        var anchor = IsUnderDirectory(fullRoot, DefaultPrivilegedNamespaceRoot) ? DefaultPrivilegedNamespaceRoot : fullRoot;
+        if (IsUnderDirectory(fullRoot, DefaultPrivilegedNamespaceRoot))
+        {
+            if (Directory.Exists(DefaultProductRoot)) ValidateDirectoryAuthority(DefaultProductRoot, isProductRoot: true);
+        }
+        ValidateProtectedComponents(anchor, fullPath, allowMissing, allowTrustedInstaller: false);
+    }
+
+    /// <summary>Refuses every preexisting unsafe descendant without modifying or deleting it.</summary>
+    public static void ValidateProtectedTree(string root)
+    {
+        ValidateProtectedPath(root, root, allowMissing: false);
+        if (!OperatingSystem.IsWindows()) return;
+        var pending = new Stack<string>();
+        pending.Push(NormalizeRoot(root));
+        var count = 0;
+        while (pending.TryPop(out var directory))
+        {
+            foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+            {
+                if (++count > 65536) throw new InvalidOperationException("Protected update inventory exceeds validation bounds.");
+                ValidateNoReparsePoint(path, "Protected update descendant");
+                ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false);
+                if (Directory.Exists(path)) pending.Push(path);
+            }
+        }
+    }
+
+    internal static void ValidateInstalledSource(string path, string runtimeDirectory)
+    {
+        ValidatePathShape(path, runtimeDirectory, allowMissing: false);
+        if (!OperatingSystem.IsWindows()) return;
+        // The installed source, not a colocated inventory, establishes runner code provenance.
+        ValidateProtectedComponents(NormalizeRoot(runtimeDirectory), Path.GetFullPath(path), allowMissing: false, allowTrustedInstaller: true);
+        var parent = Directory.GetParent(NormalizeRoot(runtimeDirectory));
+        while (parent is not null)
+        {
+            ValidateNoReparsePoint(parent.FullName, "Installed update source ancestor");
+            ValidateObjectAuthority(parent.FullName, allowTrustedInstaller: true, isProductRoot: true);
+            parent = parent.Parent;
+        }
     }
 
     public static FileStream AcquireGlobalLock(string root)
@@ -149,22 +204,22 @@ public static class AgentUpdateSecurity
 
     public static void ValidateTrustedPath(string path, string trustedRoot, bool allowMissing)
     {
+        ValidatePathShape(path, trustedRoot, allowMissing);
+        // Non-machine roots are retained for pure serializer/support tests. All production machine records
+        // are fenced here regardless of which nested directory a caller supplies as trustedRoot.
+        if (IsUnderDirectory(Path.GetFullPath(path), DefaultPrivilegedNamespaceRoot))
+            ValidateProtectedPath(path, trustedRoot, allowMissing);
+    }
+
+    private static void ValidatePathShape(string path, string trustedRoot, bool allowMissing)
+    {
         var fullRoot = NormalizeRoot(trustedRoot);
         var fullPath = Path.GetFullPath(path);
         if (!IsUnderDirectory(fullPath, fullRoot))
             throw new InvalidOperationException("Update path is outside protected storage.");
-
         ValidateExistingAncestors(fullPath);
         if (!allowMissing && !File.Exists(fullPath) && !Directory.Exists(fullPath))
             throw new FileNotFoundException("Protected update item was not found.");
-
-        try
-        {
-            ValidateNoReparsePoint(fullPath, "Protected update item");
-        }
-        catch (Exception ex) when (allowMissing && (ex is FileNotFoundException or DirectoryNotFoundException))
-        {
-        }
     }
 
     public static bool IsUnderDirectory(string path, string directory)
@@ -175,70 +230,115 @@ public static class AgentUpdateSecurity
                fullPath.StartsWith(Path.EndsInDirectorySeparator(fullDirectory) ? fullDirectory : fullDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static string DefaultProductRoot => Path.Combine(
+        NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)), "CerberusAgent");
+    private static string DefaultPrivilegedNamespaceRoot => Path.Combine(DefaultProductRoot, PrivilegedDirectoryName);
+    private static bool IsProductRoot(string path) => string.Equals(NormalizeRoot(path), DefaultProductRoot, StringComparison.OrdinalIgnoreCase);
+
     private static IEnumerable<string> GetProtectionTargets(string fullRoot)
     {
-        var defaultRoot = NormalizeRoot(DefaultPrivilegedRoot);
-        if (!string.Equals(fullRoot, defaultRoot, StringComparison.OrdinalIgnoreCase))
-            return new[] { fullRoot };
-
-        var commonData = NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
-        var productRoot = Path.Combine(commonData, "CerberusAgent");
-        var privilegedRoot = Path.Combine(productRoot, PrivilegedDirectoryName);
-        return new[] { productRoot, privilegedRoot, fullRoot };
+        if (!IsUnderDirectory(fullRoot, DefaultPrivilegedNamespaceRoot)) return new[] { fullRoot };
+        var targets = new List<string> { DefaultProductRoot, DefaultPrivilegedNamespaceRoot };
+        var relative = Path.GetRelativePath(DefaultPrivilegedNamespaceRoot, fullRoot);
+        var current = DefaultPrivilegedNamespaceRoot;
+        if (relative != ".")
+            foreach (var component in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                current = Path.Combine(current, component);
+                targets.Add(current);
+            }
+        return targets;
     }
 
-    private static void ApplyProtectedAcl(string directory, bool isProductRoot)
+    [SupportedOSPlatform("windows")]
+    private static void ValidateProtectedComponents(string root, string path, bool allowMissing, bool allowTrustedInstaller)
     {
-        // O:SYG:SYD:P makes SYSTEM the owner and removes inherited grants.  The
-        // explicit ACEs leave administrators in control while standard users can
-        // inspect state but cannot create, replace, rename, or delete update data.
-        const string protectedDirectorySddl =
-            "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)";
-        // CerberusAgent also contains non-privileged service signals. Keep that
-        // product root writable only for files while denying standard-user
-        // deletion of the Privileged child; the Privileged and Updates ACLs
-        // below remain SYSTEM/Admin-only.
-        const string productRootSddl =
-            "O:SYG:SYD:P(D;;DC;;;BU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;GRGWGX;;;BU)(A;OI;GRGWGX;;;BU)";
-        var securityDescriptorSddl = isProductRoot ? productRootSddl : protectedDirectorySddl;
-
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
-                securityDescriptorSddl,
-                SecurityDescriptorRevision,
-                out var securityDescriptor,
-                out _))
+        var current = NormalizeRoot(root);
+        var components = Path.GetRelativePath(current, path);
+        var paths = new List<string> { current };
+        if (components != ".")
+            foreach (var component in components.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                current = Path.Combine(current, component);
+                paths.Add(current);
+            }
+        foreach (var candidate in paths)
         {
-            throw new InvalidOperationException(
-                "Privileged update storage protection could not be established.",
-                new Win32Exception(Marshal.GetLastWin32Error()));
+            if (!File.Exists(candidate) && !Directory.Exists(candidate))
+            {
+                if (allowMissing) return;
+                throw new FileNotFoundException("Protected update item was not found.");
+            }
+            ValidateNoReparsePoint(candidate, "Protected update item");
+            // The canonical product container also hosts guarded active-machine ciphertext outside Privileged.
+            // Its namespace-only grants are not permissions for any child record or arbitrary ancestor.
+            ValidateObjectAuthority(candidate, allowTrustedInstaller, isProductRoot: IsProductRoot(candidate));
         }
+    }
 
+    [SupportedOSPlatform("windows")]
+    private static void ValidateDirectoryAuthority(string directory, bool isProductRoot)
+    {
+        ValidateNoReparsePoint(directory, "Protected update directory");
+        ValidateObjectAuthority(directory, allowTrustedInstaller: false, isProductRoot);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void ValidateObjectAuthority(string path, bool allowTrustedInstaller, bool isProductRoot)
+    {
+        var result = GetNamedSecurityInfo(path, SeObjectTypeFile, OwnerSecurityInformation | DaclSecurityInformation,
+            out _, out _, out _, out _, out var descriptor);
+        if (result != ErrorSuccess) throw new InvalidOperationException("Protected update provenance is unavailable.", new Win32Exception((int)result));
         try
         {
-            if (!GetSecurityDescriptorOwner(securityDescriptor, out var owner, out _) ||
-                !GetSecurityDescriptorDacl(securityDescriptor, out var daclPresent, out var dacl, out _) ||
-                !daclPresent)
-            {
-                throw new InvalidOperationException("Privileged update storage protection could not be established.");
-            }
+            var length = GetSecurityDescriptorLength(descriptor);
+            if (length is 0 or > 65536) throw new InvalidOperationException("Protected update provenance is invalid.");
+            var bytes = new byte[length];
+            Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+            ValidateDescriptor(new RawSecurityDescriptor(bytes, 0), allowTrustedInstaller, isProductRoot);
+        }
+        finally { _ = LocalFree(descriptor); }
+    }
 
-            var result = SetNamedSecurityInfo(
-                directory,
-                SeObjectTypeFile,
-                OwnerSecurityInformation | DaclSecurityInformation | ProtectedDaclSecurityInformation,
-                owner,
-                IntPtr.Zero,
-                dacl,
-                IntPtr.Zero);
-            if (result != ErrorSuccess)
-                throw new InvalidOperationException(
-                    "Privileged update storage protection could not be established.",
-                    new Win32Exception((int)result));
-        }
-        finally
+    [SupportedOSPlatform("windows")]
+    internal static void ValidateDescriptor(RawSecurityDescriptor descriptor, bool allowTrustedInstaller = false, bool isProductRoot = false)
+    {
+        static bool Trusted(SecurityIdentifier? sid, bool allowInstaller) => sid?.Value is "S-1-5-18" or "S-1-5-32-544" ||
+            (allowInstaller && sid?.Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+        if (!Trusted(descriptor.Owner, allowTrustedInstaller) || descriptor.DiscretionaryAcl is null ||
+            (descriptor.ControlFlags & ControlFlags.DiscretionaryAclPresent) == 0)
+            throw new InvalidOperationException("Protected update object has untrusted ownership or permissions.");
+        // Parent namespaces may allow unrelated file creation, but never replacement/rename of protected children.
+        var forbidden = isProductRoot ? 0x100D0040u : 0x500D0156u;
+        foreach (GenericAce ace in descriptor.DiscretionaryAcl)
         {
-            _ = LocalFree(securityDescriptor);
+            if (ace is not QualifiedAce qualified)
+                throw new InvalidOperationException("Protected update object has unsupported permissions.");
+            if (qualified.AceQualifier == AceQualifier.AccessDenied) continue;
+            if ((qualified.AceFlags & AceFlags.InheritOnly) != 0 &&
+                (isProductRoot || qualified.SecurityIdentifier.Value == "S-1-3-0")) continue;
+            if (qualified.AceQualifier != AceQualifier.AccessAllowed || qualified.IsCallback)
+                throw new InvalidOperationException("Protected update object has unsupported permissions.");
+            if (!Trusted(qualified.SecurityIdentifier, allowTrustedInstaller) && (unchecked((uint)qualified.AccessMask) & forbidden) != 0)
+                throw new InvalidOperationException("Protected update object permits an untrusted writer.");
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateProtectedDirectory(string directory, bool isProductRoot)
+    {
+        const string protectedSddl = "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)";
+        const string productSddl = "O:SYG:SYD:P(D;;DC;;;BU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;GRGWGX;;;BU)(A;OI;GRGWGX;;;BU)";
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(isProductRoot ? productSddl : protectedSddl,
+                SecurityDescriptorRevision, out var descriptor, out _))
+            throw new InvalidOperationException("Protected update storage descriptor is unavailable.", new Win32Exception(Marshal.GetLastWin32Error()));
+        try
+        {
+            var attributes = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Descriptor = descriptor };
+            if (!CreateDirectory(directory, ref attributes) && Marshal.GetLastWin32Error() != 183)
+                throw new InvalidOperationException("Protected update storage could not be created.", new Win32Exception(Marshal.GetLastWin32Error()));
+        }
+        finally { _ = LocalFree(descriptor); }
     }
 
     private static void ValidateExistingAncestors(string path)
@@ -271,7 +371,6 @@ public static class AgentUpdateSecurity
     private const uint SecurityDescriptorRevision = 1;
     private const uint OwnerSecurityInformation = 0x00000001;
     private const uint DaclSecurityInformation = 0x00000004;
-    private const uint ProtectedDaclSecurityInformation = 0x80000000;
     private const uint SeObjectTypeFile = 1;
     private const uint ErrorSuccess = 0;
 
@@ -282,28 +381,19 @@ public static class AgentUpdateSecurity
         out IntPtr securityDescriptor,
         out uint securityDescriptorSize);
 
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool GetSecurityDescriptorOwner(
-        IntPtr securityDescriptor,
-        out IntPtr owner,
-        out bool ownerDefaulted);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetNamedSecurityInfo(string path, uint type, uint information,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
 
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool GetSecurityDescriptorDacl(
-        IntPtr securityDescriptor,
-        out bool daclPresent,
-        out IntPtr dacl,
-        out bool daclDefaulted);
+    [DllImport("advapi32.dll")]
+    private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
 
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern uint SetNamedSecurityInfo(
-        string objectName,
-        uint objectType,
-        uint securityInfo,
-        IntPtr owner,
-        IntPtr group,
-        IntPtr dacl,
-        IntPtr sacl);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int InheritHandle; }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateDirectory(string path, ref SecurityAttributes attributes);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr LocalFree(IntPtr handle);

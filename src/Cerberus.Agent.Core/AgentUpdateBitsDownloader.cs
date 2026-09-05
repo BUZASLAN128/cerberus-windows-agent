@@ -337,8 +337,9 @@ public sealed class AgentUpdateBitsDownloader
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IBackgroundCopyJob
     {
-        [PreserveSig] int AddFile([MarshalAs(UnmanagedType.LPWStr)] string remoteUrl, [MarshalAs(UnmanagedType.LPWStr)] string localName);
+        // COM vtable order is the Bits.h ABI, not alphabetical order. AddFileSet is slot 3; AddFile is slot 4.
         [PreserveSig] int AddFileSet(uint fileCount, IntPtr fileSet);
+        [PreserveSig] int AddFile([MarshalAs(UnmanagedType.LPWStr)] string remoteUrl, [MarshalAs(UnmanagedType.LPWStr)] string localName);
         [PreserveSig] int EnumFiles([MarshalAs(UnmanagedType.Interface)] out object files);
         [PreserveSig] int Suspend();
         [PreserveSig] int Resume();
@@ -359,8 +360,8 @@ public sealed class AgentUpdateBitsDownloader
         [PreserveSig] int GetPriority(out uint priority);
         [PreserveSig] int SetNotifyFlags(uint flags);
         [PreserveSig] int GetNotifyFlags(out uint flags);
-        [PreserveSig] int SetNotifyInterface([MarshalAs(UnmanagedType.Interface)] object callback);
-        [PreserveSig] int GetNotifyInterface([MarshalAs(UnmanagedType.Interface)] out object callback);
+        [PreserveSig] int SetNotifyInterface([MarshalAs(UnmanagedType.IUnknown)] object callback);
+        [PreserveSig] int GetNotifyInterface([MarshalAs(UnmanagedType.IUnknown)] out object callback);
         [PreserveSig] int SetMinimumRetryDelay(uint seconds);
         [PreserveSig] int GetMinimumRetryDelay(out uint seconds);
         [PreserveSig] int SetNoProgressTimeout(uint seconds);

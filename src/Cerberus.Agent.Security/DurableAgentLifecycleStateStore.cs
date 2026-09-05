@@ -117,6 +117,29 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         if (current.Revision != expectedRevision)
             return null;
         var normalized = AgentLifecycleStatePolicy.ForCommit(current, snapshot);
+        return await WriteLockedAsync(normalized, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Caller owns the launch fence. Hold the lifecycle CAS lock and then the
+    /// credential publication lease through the nonce commit. Lease disposal
+    /// reconciles byte-exact rollback/commit without reentering either lock.
+    /// </summary>
+    public async Task<AgentLifecycleSnapshot> CommitEnrollmentAsync(long expectedGeneration, string nonce,
+        Func<CancellationToken, Task<IAsyncDisposable>> beginPublication, CancellationToken ct)
+    {
+        if (_production && !AgentUpdateSecurity.IsLocalSystem())
+            throw new UnauthorizedAccessException("Only the agent service can adopt machine credentials.");
+        await using var processLock = await AcquireProcessLockAsync(ct).ConfigureAwait(false);
+        var current = await LoadAsync(ct).ConfigureAwait(false);
+        var next = AgentLifecycleStatePolicy.ForCommit(current,
+            AgentLifecycleStatePolicy.ForEnrollment(current, expectedGeneration, nonce));
+        await using var publication = await beginPublication(ct).ConfigureAwait(false);
+        return await WriteLockedAsync(next, ct).ConfigureAwait(false);
+    }
+
+    private async Task<AgentLifecycleSnapshot> WriteLockedAsync(AgentLifecycleSnapshot normalized, CancellationToken ct)
+    {
         var payload = new LifecyclePayload(
             SchemaVersion,
             normalized.State.ToString(),
@@ -140,17 +163,17 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             var tempPath = $"{_path}.{Guid.NewGuid():N}.tmp";
             try
             {
-                await using (var output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
-                    FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+                await using (var output = OperatingSystem.IsWindows()
+                    ? new FileInfo(tempPath).Create(FileMode.CreateNew, FileSystemRights.FullControl,
+                        FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough, FileSecurityForLifecycle())
+                    : new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096,
+                        FileOptions.Asynchronous | FileOptions.WriteThrough))
                 {
                     await output.WriteAsync(System.Text.Encoding.UTF8.GetBytes(json), ct).ConfigureAwait(false);
                     output.Flush(flushToDisk: true);
                 }
-                if (OperatingSystem.IsWindows())
-                    ProtectFile(tempPath);
+                ct.ThrowIfCancellationRequested();
                 File.Move(tempPath, _path, overwrite: true);
-                if (OperatingSystem.IsWindows())
-                    ProtectFile(_path);
                 return normalized;
             }
             finally
@@ -177,6 +200,8 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
     {
         EnsureProtectedPath();
         var lockPath = _path + ".lock";
+        if (_production)
+            AgentUpdateSecurity.ValidateProtectedPath(lockPath, System.IO.Path.GetDirectoryName(_path)!, allowMissing: true);
         var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
         while (true)
         {
@@ -222,18 +247,23 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
         try
         {
-            if (OperatingSystem.IsWindows())
-                EnsureNoReparsePoints(directory);
-
-            if (_production && OperatingSystem.IsWindows() && !WindowsIdentity.GetCurrent().IsSystem)
+            if (_production)
             {
-                // Readers never repair ACLs or create machine authority.
+                // Existing bytes are authority only when their original owner
+                // and ACL are trusted; never sanitize a preseeded record first.
+                AgentUpdateSecurity.ValidateProtectedPath(directory, directory, allowMissing: true);
+                AgentUpdateSecurity.ValidateProtectedPath(_path, directory, allowMissing: true);
                 if (!Directory.Exists(directory))
-                    throw ProtectionFailure();
-                if (File.Exists(_path) && File.GetAttributes(_path).HasFlag(FileAttributes.ReparsePoint))
-                    throw ProtectionFailure();
+                {
+                    if (!AgentUpdateSecurity.IsLocalSystem()) throw ProtectionFailure();
+                    AgentUpdateSecurity.EnsureProtectedRoot(directory);
+                }
+                if (File.Exists(_path))
+                    ValidateLifecycleFile();
                 return;
             }
+            if (OperatingSystem.IsWindows())
+                EnsureNoReparsePoints(directory);
 
             Directory.CreateDirectory(directory);
 
@@ -253,6 +283,20 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             // ACL/reparse failures are security failures, not corrupt state.
             // The caller must observe the error and keep the worker stopped.
             throw ProtectionFailure();
+        }
+    }
+
+    private void ValidateLifecycleFile()
+    {
+        var rules = new FileInfo(_path).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier));
+        foreach (FileSystemAccessRule rule in rules)
+        {
+            if (rule.AccessControlType != AccessControlType.Allow) continue;
+            var sid = (SecurityIdentifier)rule.IdentityReference;
+            if (sid.IsWellKnown(WellKnownSidType.LocalSystemSid)) continue;
+            if (!sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) ||
+                (rule.FileSystemRights & ~(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize)) != 0)
+                throw ProtectionFailure();
         }
     }
 
@@ -300,6 +344,9 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
     }
 
     private void ProtectFile(string filePath)
+        => new FileInfo(filePath).SetAccessControl(FileSecurityForLifecycle());
+
+    private FileSecurity FileSecurityForLifecycle()
     {
         var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         var security = new FileSecurity();
@@ -313,7 +360,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             _production ? new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) : WindowsIdentity.GetCurrent().User!,
             _production ? FileSystemRights.ReadAndExecute : FileSystemRights.FullControl,
             AccessControlType.Allow));
-        new FileInfo(filePath).SetAccessControl(security);
+        return security;
     }
 
     private static void EnsureNoReparsePoints(string directoryPath)

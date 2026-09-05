@@ -282,6 +282,7 @@ internal static class AgentUpdateLocalService
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
+            AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
             {
                 Phase = "launch_requested", LifecycleGeneration = lifecycle.Generation, Automatic = automatic,

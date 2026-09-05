@@ -120,6 +120,26 @@ public sealed class InMemoryAgentLifecycleStateStore : IAgentLifecycleStateStore
 
 public static class AgentLifecycleStatePolicy
 {
+    public static AgentLifecycleSnapshot ForEnrollment(AgentLifecycleSnapshot current, long expectedGeneration, string nonce)
+    {
+        if (!Guid.TryParseExact(nonce, "N", out _))
+            throw new ArgumentException("Invalid enrollment nonce.", nameof(nonce));
+        if (current.Generation != expectedGeneration || !current.QuiescenceComplete ||
+            current.ReasonCode == AgentRevokedCode || current.LastEnrollmentNonce == nonce)
+            throw new AgentLifecycleDormantException(current);
+        return current with
+        {
+            State = AgentLifecycleState.Active,
+            Generation = checked(current.Generation + 1),
+            ReasonCode = null,
+            NextAttemptUtc = null,
+            GenericAuthFailureCount = 0,
+            TransientFailureCount = 0,
+            LastEnrollmentNonce = nonce,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        };
+    }
+
     public static AgentLifecycleSnapshot ForCommit(AgentLifecycleSnapshot current, AgentLifecycleSnapshot next)
     {
         var boundaryChanged = current.State != next.State &&
@@ -569,20 +589,7 @@ public sealed class AgentLifecycleController
         for (var attempt = 0; attempt < 8; attempt++)
         {
             var current = await _store.LoadAsync(ct).ConfigureAwait(false);
-            if (current.Generation != expectedGeneration || !current.QuiescenceComplete ||
-                current.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode || current.LastEnrollmentNonce == nonce)
-                throw new AgentLifecycleDormantException(current);
-            var next = current with
-            {
-                State = AgentLifecycleState.Active,
-                Generation = checked(current.Generation + 1),
-                ReasonCode = null,
-                NextAttemptUtc = null,
-                GenericAuthFailureCount = 0,
-                TransientFailureCount = 0,
-                LastEnrollmentNonce = nonce,
-                UpdatedAtUtc = DateTimeOffset.UtcNow,
-            };
+            var next = AgentLifecycleStatePolicy.ForEnrollment(current, expectedGeneration, nonce);
             var saved = await _store.TrySaveAsync(next, current.Revision, ct).ConfigureAwait(false);
             if (saved is not null) return saved;
         }

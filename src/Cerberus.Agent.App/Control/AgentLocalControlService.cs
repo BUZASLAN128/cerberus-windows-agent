@@ -21,12 +21,15 @@ internal sealed class AgentLocalControlService
         {
             var response = await AgentUpdateLocalService.HandleAsync(request, ct).ConfigureAwait(false);
             var snapshot = await _lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var awaitingAdoption = request.Operation == "status" && AgentEnrollmentPromotion.IsAwaitingAdoption(
+                await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false), snapshot);
             return response with
             {
+                Success = response.Success && !awaitingAdoption,
                 LifecycleState = snapshot.State.ToString(),
                 LifecycleGeneration = snapshot.Generation,
                 Code = request.Operation == "status" ?
-                    (!snapshot.QuiescenceComplete ? "cleanup_pending" : snapshot.ReasonCode ?? response.Code) : response.Code,
+                    (!snapshot.QuiescenceComplete ? "cleanup_pending" : awaitingAdoption ? "enrollment_proof_required" : snapshot.ReasonCode ?? response.Code) : response.Code,
             };
         }
         if (!await _manual.WaitAsync(0, ct).ConfigureAwait(false))
@@ -103,14 +106,13 @@ internal sealed class AgentLocalControlService
         var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
         if (marker is null || marker.ExpectedGeneration != snapshot.Generation || marker.Nonce == snapshot.LastEnrollmentNonce)
             return StateResponse(false, "enrollment_proof_required", snapshot);
-        var machine = new DpapiSecretStore(SecretStoreScope.Machine);
-        if (!await AgentEnrollmentPromotion.MatchesAsync(marker, machine, ct).ConfigureAwait(false))
+        var pending = AgentEnrollmentPromotion.OpenProbeStore(marker);
+        if (!await AgentEnrollmentPromotion.MatchesAsync(marker, pending, ct).ConfigureAwait(false))
             return StateResponse(false, "enrollment_identity_mismatch", snapshot);
-        var staged = new AgentEnrollmentProbeStore(await machine.LoadAsync(ct).ConfigureAwait(false));
         // This is one explicit enrollment validation, never an automatic retry
         // through the dormant gate. Failed validation cannot rewrite machine state.
         var probeState = new InMemoryAgentLifecycleStateStore();
-        var response = await ProbeAsync(staged, probeState, quiesce: null, ct).ConfigureAwait(false);
+        var response = await ProbeAsync(pending, probeState, quiesce: null, ct).ConfigureAwait(false);
         if (!Claimed(response) || AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State))
             return StateResponse(false, "enrollment_validation_failed", snapshot);
 
@@ -119,15 +121,12 @@ internal sealed class AgentLocalControlService
         var current = await _lifecycle.LoadAsync(ct).ConfigureAwait(false);
         if (currentMarker != marker || current.Generation != snapshot.Generation || !current.QuiescenceComplete ||
             current.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode ||
-            !await AgentEnrollmentPromotion.MatchesAsync(marker, machine, ct).ConfigureAwait(false))
+            !await AgentEnrollmentPromotion.MatchesAsync(marker, AgentEnrollmentPromotion.OpenPendingStore(), ct).ConfigureAwait(false))
             return StateResponse(false, "enrollment_proof_stale", current);
-        if (!await _lifecycle.ExecuteIfCurrentAsync(current.Generation, cancel => staged.PublishAsync(machine, cancel), ct).ConfigureAwait(false))
-            return StateResponse(false, "enrollment_proof_stale", await _lifecycle.LoadAsync(ct).ConfigureAwait(false));
-        var adopted = await new AgentLifecycleController(_lifecycle)
-            .CompleteEnrollmentAsync(current.Generation, marker.Nonce, ct).ConfigureAwait(false);
-        // The nonce is consumed in the same atomic lifecycle commit as the new
-        // generation. A crash before file deletion cannot replay the marker.
-        AgentEnrollmentPromotion.RemoveConsumed();
+        if (_lifecycle is not DurableAgentLifecycleStateStore durable)
+            throw new InvalidOperationException("Machine enrollment requires the durable lifecycle authority.");
+        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
+            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
         return StateResponse(true, "enrollment_adopted", adopted);
     }
 
@@ -142,20 +141,23 @@ internal sealed class AgentLocalControlService
         var api = new AgentApiClient(http, store,
             new AgentTokenManager(http, store, lifecycleState: lifecycle, manualOperation: true, quiesce: quiesce),
             new RequestSigner(key), lifecycle, manualOperation: true, quiesce: quiesce);
-        var response = await api.HeartbeatAsync(new
+        var response = await api.HeartbeatAsync(CreateManualHeartbeat(), ct).ConfigureAwait(false);
+        await new HeartbeatResponseHandler(store, lifecycleState: lifecycle, quiesce: quiesce)
+            .HandleAsync(response, ct).ConfigureAwait(false);
+        return response;
+    }
+
+    // Manual recovery is still a service heartbeat on the canonical backend wire contract.
+    internal static object CreateManualHeartbeat() => new
         {
             status = "connected",
             agent_version = WindowsDeviceInfo.GetAgentVersion(),
             build_id = WindowsDeviceInfo.GetBuildId(),
             build_channel = WindowsDeviceInfo.GetBuildChannel(),
-            runtime_mode = "service_manual_recovery",
+            runtime_mode = "service",
             supported_schema_versions = AgentSchemaVersions.All,
             capabilities = Array.Empty<string>(),
-        }, ct).ConfigureAwait(false);
-        await new HeartbeatResponseHandler(store, lifecycleState: lifecycle, quiesce: quiesce)
-            .HandleAsync(response, ct).ConfigureAwait(false);
-        return response;
-    }
+        };
 
     private static bool Claimed(HeartbeatResponse response)
         => response.RegistrationState == "claimed" && !response.ClaimRequired &&

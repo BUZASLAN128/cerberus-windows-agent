@@ -1,5 +1,4 @@
 using System.IO;
-using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json;
@@ -21,29 +20,29 @@ internal static class AgentEnrollmentPromotion
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         MaxDepth = 4,
     };
-    internal static string DirectoryPath => Path.Combine(Path.GetDirectoryName(DurableAgentLifecycleStateStore.GetDefaultPath())!, "Provisioning");
-    private static string MarkerPath => Path.Combine(DirectoryPath, "enrollment-adoption.json");
+    private static string MarkerPath => AgentCredentialPublication.MarkerPath;
+
+    internal static ISecretStore OpenPendingStore()
+    {
+        AgentCredentialPublication.EnsurePendingDirectory();
+        return new DpapiSecretStore(SecretStoreScope.Machine, AgentCredentialPublication.PendingDirectory);
+    }
+
+    internal static ISecretStore OpenProbeStore(AgentEnrollmentMarker marker) => new PendingProbeStore(marker);
+
+    internal static bool IsAwaitingAdoption(AgentEnrollmentMarker? marker, AgentLifecycleSnapshot state)
+        => marker is not null && marker.ExpectedGeneration == state.Generation && marker.Nonce != state.LastEnrollmentNonce;
 
     internal static async Task WriteAsync(long generation, ISecretStore promoted, CancellationToken ct)
     {
         RequireElevated();
         EnsureDirectory();
+        AgentCredentialPublication.RequireNoUnresolvedPublication();
+        AgentCredentialPublication.ValidateProtectedItem(MarkerPath, allowMissing: true);
         var (identity, _, key, _, _, _) = await promoted.LoadAsync(ct).ConfigureAwait(false);
         var marker = new AgentEnrollmentMarker(Schema, generation, identity.AgentId, identity.TenantId,
             PublicKeyDigest(key), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow.AddMinutes(5));
-        var temp = MarkerPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            await using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
-            {
-                await stream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(marker, Options), ct).ConfigureAwait(false);
-                stream.Flush(true);
-            }
-            ct.ThrowIfCancellationRequested();
-            File.Move(temp, MarkerPath, true);
-        }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        await AgentCredentialPublication.PublishPromotionMarkerAsync(JsonSerializer.SerializeToUtf8Bytes(marker, Options), ct).ConfigureAwait(false);
     }
 
     internal static async Task<AgentEnrollmentMarker?> ReadAsync(CancellationToken ct)
@@ -76,13 +75,6 @@ internal static class AgentEnrollmentPromotion
             marker.PublicKeyDigest == PublicKeyDigest(key);
     }
 
-    internal static void RemoveConsumed()
-    {
-        if (!File.Exists(MarkerPath)) return;
-        RequireSafeFile();
-        File.Delete(MarkerPath);
-    }
-
     private static string PublicKeyDigest(string privateKey)
     {
         using var rsa = RSA.Create();
@@ -91,33 +83,11 @@ internal static class AgentEnrollmentPromotion
     }
 
     private static void RequireSafeFile()
-    {
-        if (File.GetAttributes(MarkerPath).HasFlag(FileAttributes.ReparsePoint))
-            throw new UnauthorizedAccessException("Enrollment marker path is untrusted.");
-        var rules = new FileInfo(MarkerPath).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier));
-        foreach (FileSystemAccessRule rule in rules)
-        {
-            if (rule.AccessControlType != AccessControlType.Allow) continue;
-            var sid = (SecurityIdentifier)rule.IdentityReference;
-            if (!sid.IsWellKnown(WellKnownSidType.LocalSystemSid) && !sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid))
-                throw new UnauthorizedAccessException("Enrollment marker ACL is untrusted.");
-        }
-    }
+        => AgentCredentialPublication.ValidateProtectedItem(MarkerPath);
 
     private static void EnsureDirectory()
     {
-        RequireElevated();
-        for (var current = new DirectoryInfo(DirectoryPath); current is not null; current = current.Parent)
-            if (current.Exists && current.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                throw new UnauthorizedAccessException("Enrollment directory is untrusted.");
-        Directory.CreateDirectory(DirectoryPath);
-        var security = new DirectorySecurity();
-        security.SetAccessRuleProtection(true, false);
-        security.SetOwner(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
-        foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
-            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null), FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-        new DirectoryInfo(DirectoryPath).SetAccessControl(security);
+        AgentCredentialPublication.EnsureProvisioningDirectory();
     }
 
     private static void RequireElevated()
@@ -126,9 +96,44 @@ internal static class AgentEnrollmentPromotion
         if (!identity.IsSystem && !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
             throw new UnauthorizedAccessException("Enrollment promotion requires elevated authority.");
     }
+
+    private sealed class PendingProbeStore(AgentEnrollmentMarker marker) : ISecretStore
+    {
+        public async Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
+        {
+            using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
+            await RequireCurrentAsync(ct).ConfigureAwait(false);
+            var store = OpenPendingStore();
+            if (!await MatchesAsync(marker, store, ct).ConfigureAwait(false))
+                throw new InvalidDataException("Pending enrollment identity changed.");
+            return await store.LoadAsync(ct).ConfigureAwait(false);
+        }
+
+        public async Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl,
+            string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
+        {
+            using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
+            await RequireCurrentAsync(ct).ConfigureAwait(false);
+            if (identity.AgentId != marker.AgentId || identity.TenantId != marker.TenantId || PublicKeyDigest(privateKeyPem) != marker.PublicKeyDigest)
+                throw new InvalidDataException("Pending enrollment identity changed.");
+            // Preserve refresh rotation even when the subsequent heartbeat is
+            // rejected, without publishing anything to the active machine file.
+            await OpenPendingStore().SaveAsync(identity, refreshToken, privateKeyPem, backendUrl,
+                tailscaleLoginServer, tailscaleAuthkey, ct).ConfigureAwait(false);
+        }
+
+        public Task ClearAsync(CancellationToken ct) => throw new InvalidOperationException("Enrollment probe cannot clear credentials.");
+
+        private async Task RequireCurrentAsync(CancellationToken ct)
+        {
+            AgentCredentialPublication.RequireNoUnresolvedPublication();
+            if (await ReadAsync(ct).ConfigureAwait(false) != marker)
+                throw new InvalidDataException("Pending enrollment proof changed.");
+        }
+    }
 }
 
-/// <summary>Refresh rotation is staged in memory during adoption and published only after the generation and marker checks.</summary>
+/// <summary>In-memory rollback snapshot for a failed non-authoritative credential copy.</summary>
 internal sealed class AgentEnrollmentProbeStore : ISecretStore
 {
     private (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey) _value;
