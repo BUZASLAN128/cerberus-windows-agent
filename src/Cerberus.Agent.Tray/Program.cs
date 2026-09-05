@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.ServiceProcess;
 using System.Windows.Forms;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Diagnostics;
@@ -376,20 +377,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-            using var updateHttp = CreateUpdateHttpClient();
-            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance, _updateStateStore)
-                               ?? throw new InvalidOperationException("Update trust is not configured.");
-            var launched = await coordinator
-                .StageAndLaunchUpdateAsync(_lastCheckedUpdateSignal, requireElevation: true, ct: cts.Token)
-                .ConfigureAwait(true);
-            if (!launched)
-            {
-                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
-                return;
-            }
-
-            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
+            using var controller = new ServiceController(ServiceInstaller.ServiceName);
+            controller.ExecuteCommand(WindowsServiceHost.ApplyUpdateCommand);
+            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateServiceRequested"));
             _lastCheckedUpdateSignal = null;
             _lastUpdateCheck = null;
         }

@@ -109,14 +109,35 @@
         ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;\&quot;[APPFOLDER]Cerberus.Agent.Service.exe\&quot;&quot; start= auto'
         Execute="deferred"
         Impersonate="no"
-        Return="ignore" />
+        Return="check" />
+    <CustomAction
+        Id="RestoreCerberusServicePathOnRollback"
+        Directory="APPFOLDER"
+        ExeCommand='&quot;[SystemFolder]sc.exe&quot; config CerberusAgent binPath= &quot;&quot;[APPFOLDER]Cerberus.Agent.Service.exe&quot;&quot; start= auto'
+        Execute="rollback"
+        Impersonate="no"
+        Return="check" />
     <CustomAction
         Id="StartExistingCerberusServiceAfterRepair"
         Directory="INSTALLFOLDER"
         ExeCommand='&quot;[SystemFolder]sc.exe&quot; start CerberusAgent'
         Execute="deferred"
         Impersonate="no"
-        Return="ignore" />
+        Return="check" />
+    <CustomAction
+        Id="StopCerberusServiceOnRollback"
+        Directory="INSTALLFOLDER"
+        ExeCommand='&quot;[SystemFolder]sc.exe&quot; stop CerberusAgent'
+        Execute="rollback"
+        Impersonate="no"
+        Return="check" />
+    <CustomAction
+        Id="CheckCerberusServiceHealth"
+        Directory="INSTALLFOLDER"
+        ExeCommand='&quot;[SystemFolder]cmd.exe&quot; /c &quot;&quot;[SystemFolder]sc.exe&quot; query CerberusAgent | &quot;[SystemFolder]findstr.exe&quot; /C:&quot;RUNNING&quot;&quot;'
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
     <CustomAction
         Id="RemoveLegacyUserStartupShortcut"
         Directory="INSTALLFOLDER"
@@ -132,7 +153,10 @@
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="StartExistingCerberusServiceAfterRepair" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="CheckCerberusServiceHealth" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RemoveLegacyUserStartupShortcut" After="StartExistingCerberusServiceAfterRepair" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="RestoreCerberusServicePathOnRollback" Before="InstallFinalize" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="StopCerberusServiceOnRollback" Before="RestoreCerberusServicePathOnRollback" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
     </InstallExecuteSequence>
   </Package>
 

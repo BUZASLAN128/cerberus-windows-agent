@@ -151,17 +151,15 @@ internal static class ServiceInstaller
 
     internal static string ResolveServiceExecutablePath(string currentProcessPath)
     {
-        var overridePath = Environment.GetEnvironmentVariable("CERBERUS_AGENT_SERVICE_EXE");
-        if (!string.IsNullOrWhiteSpace(overridePath))
-            return Path.GetFullPath(overridePath.Trim());
-
         var current = Path.GetFullPath(currentProcessPath);
         var dir = Path.GetDirectoryName(current);
         if (string.IsNullOrWhiteSpace(dir))
             return current;
 
-        var serviceExe = Path.Combine(dir, "Cerberus.Agent.Service.exe");
-        return File.Exists(serviceExe) ? serviceExe : current;
+        // The MSI's canonical layout places all protected runtime binaries in
+        // the app directory. Never accept a user/environment-selected service
+        // path or silently register the UI binary as the service.
+        return Path.Combine(dir, "Cerberus.Agent.Service.exe");
     }
 
     private static string? GetInstalledExecutablePath()

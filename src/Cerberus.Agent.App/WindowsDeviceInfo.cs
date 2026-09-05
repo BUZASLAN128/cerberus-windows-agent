@@ -39,8 +39,11 @@ internal static class WindowsDeviceInfo
 
     public static string GetBuildChannel()
     {
-        var raw = Environment.GetEnvironmentVariable("CERBERUS_AGENT_BUILD_CHANNEL");
-        return string.IsNullOrWhiteSpace(raw) ? "dev" : raw.Trim();
+        var channel = GetProductAssembly()
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => string.Equals(attribute.Key, "AgentReleaseChannel", StringComparison.Ordinal))
+            ?.Value;
+        return string.IsNullOrWhiteSpace(channel) ? "dev" : channel.Trim().ToLowerInvariant();
     }
 
     public static string ComputeDeviceFingerprint()

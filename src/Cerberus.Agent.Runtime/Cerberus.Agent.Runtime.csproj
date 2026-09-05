@@ -7,6 +7,9 @@
     <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
     <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.json</AgentUpdateManifestUrl>
     <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
+    <AgentReleaseChannel Condition="'$(AgentReleaseChannel)' == ''">dev</AgentReleaseChannel>
+    <AgentUpdateAllowedSignerKeyIdentity Condition="'$(AgentUpdateAllowedSignerKeyIdentity)' == ''"></AgentUpdateAllowedSignerKeyIdentity>
+    <AllowUnsignedDevBuild Condition="'$(AllowUnsignedDevBuild)' == ''">false</AllowUnsignedDevBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +24,18 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentUpdateAllowedArtifactPrefixes</_Parameter1>
       <_Parameter2>$(AgentUpdateAllowedArtifactPrefixes)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentReleaseChannel</_Parameter1>
+      <_Parameter2>$(AgentReleaseChannel)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedSignerKeyIdentity</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedSignerKeyIdentity)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AllowUnsignedDevBuild</_Parameter1>
+      <_Parameter2>$(AllowUnsignedDevBuild)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 
@@ -45,7 +60,6 @@
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateLaunchGate.cs" Link="Updates\AgentUpdateLaunchGate.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateRequestCommandHandler.cs" Link="Updates\AgentUpdateRequestCommandHandler.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\AgentUpdateTrustFactory.cs" Link="Updates\AgentUpdateTrustFactory.cs" />
-    <Compile Include="..\Cerberus.Agent.App\Updates\UpdateApplyMode.cs" Link="Updates\UpdateApplyMode.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\UpdateCommandMode.cs" Link="Updates\UpdateCommandMode.cs" />
     <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />
     <Compile Include="..\Cerberus.Agent.App\WindowsServiceHost.cs" Link="WindowsServiceHost.cs" />

@@ -18,6 +18,7 @@ param(
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
   [int]$DefaultOAuthRedirectPort = 0,
+  [long]$ManifestSequence = 0,
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild,
   [switch]$AllowEphemeralManifestKey
@@ -226,6 +227,28 @@ if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
   throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
 }
 
+$signerKeyIdentity = ""
+$allowUnsignedBuildMetadata = ($Channel -eq "dev" -and $AllowUnsignedDevBuild)
+$certBase64ForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
+$certPasswordForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
+if (-not [string]::IsNullOrWhiteSpace($certBase64ForMetadata)) {
+  try {
+    $certificateForMetadata = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+      [Convert]::FromBase64String($certBase64ForMetadata),
+      $certPasswordForMetadata,
+      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+    $signerKeyIdentity = $certificateForMetadata.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+  } catch {
+    throw "Windows signing certificate identity could not be read."
+  }
+}
+if ($ManifestSequence -le 0) {
+  $ManifestSequence = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+}
+if ($ManifestSequence -le 0) {
+  throw "Manifest sequence must be positive."
+}
+
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
   dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
@@ -245,6 +268,9 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
     "-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64",
     "-p:AgentUpdateManifestUrl=$UpdateManifestUrl",
     "-p:AgentUpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes",
+    "-p:AgentReleaseChannel=$Channel",
+    "-p:AgentUpdateAllowedSignerKeyIdentity=$signerKeyIdentity",
+    "-p:AllowUnsignedDevBuild=$($allowUnsignedBuildMetadata.ToString().ToLowerInvariant())",
     "-o", $runtimePublishDir
   )
   if ($WithSetupConfig) {
@@ -393,6 +419,8 @@ if ($secretHits.Count -gt 0) {
 
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
+$expiresAt = (Get-Date).ToUniversalTime().AddDays(30).ToString("O")
+$artifactLength = (Get-Item -LiteralPath $msi).Length
 $canonical = @(
   "msi",
   $Version,
@@ -402,10 +430,16 @@ $canonical = @(
   "Cerberus Agent Release",
   $releasedAt,
   "agent.heartbeat.v1",
-  "false"
+  "false",
+  "agent.update.manifest.v2",
+  $ManifestSequence.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+  $expiresAt,
+  $artifactLength.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+  $signerKeyIdentity
 ) -join "`n"
 $manifestSignature = Sign-ManifestPayload -CanonicalPayload $canonical -PrivateKeyPem $manifestPrivateKey
 $manifest = [ordered]@{
+  schema_version = "agent.update.manifest.v2"
   artifact_kind = "msi"
   version = $Version
   channel = $Channel
@@ -415,6 +449,10 @@ $manifest = [ordered]@{
   released_at_utc = $releasedAt
   minimum_protocol_version = "agent.heartbeat.v1"
   rollback_allowed = $false
+  sequence = $ManifestSequence
+  expires_at_utc = $expiresAt
+  artifact_length = $artifactLength
+  signer_key_identity = $signerKeyIdentity
   signature = $manifestSignature
 }
 $manifestPath = Join-Path $publishDir "$assetBase.update-manifest.json"
@@ -423,6 +461,11 @@ $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -En
 $gate = [ordered]@{
   schema = "cerberus.agent.release_gate.v1"
   channel = $Channel
+  manifest_schema = "agent.update.manifest.v2"
+  manifest_sequence = $ManifestSequence
+  manifest_expires_at_utc = $expiresAt
+  signer_key_identity = $signerKeyIdentity
+  unsigned_dev_build_allowed = $allowUnsignedBuildMetadata
   authenticode_signature_present = $signed
   checksum_sha256 = $msiHash
   installer = [ordered]@{

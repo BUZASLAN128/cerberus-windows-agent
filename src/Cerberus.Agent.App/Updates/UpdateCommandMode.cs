@@ -89,8 +89,8 @@ internal static class UpdateCommandMode
                 return 0;
             }
 
-            if (!Elevation.IsAdministrator())
-                throw new InvalidOperationException("Administrator privileges are required to run a silent agent update.");
+            if (!AgentUpdateSecurity.IsLocalSystem())
+                throw new InvalidOperationException("Only the installed agent service may apply updates.");
 
             var launched = await coordinator
                 .StageAndLaunchUpdateAsync(signal, requireElevation: false, ct)

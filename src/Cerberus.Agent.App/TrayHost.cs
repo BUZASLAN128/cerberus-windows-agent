@@ -477,24 +477,7 @@ internal sealed class TrayHost : IDisposable
             if (await TryRequestServiceUpdateApplyAsync().ConfigureAwait(true))
                 return;
 
-            ShowUpdateWarning(AgentLocalizer.Get("UpdateRequiresElevationDetail"));
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-            using var updateHttp = CreateUpdateHttpClient();
-            var coordinator = AgentUpdateTrustFactory.BuildCoordinator(updateHttp, NullAgentLogger.Instance, _updateStateStore)
-                               ?? throw new InvalidOperationException("Update trust is not configured.");
-            var launched = await coordinator
-                .StageAndLaunchUpdateAsync(_lastCheckedUpdateSignal, requireElevation: true, ct: cts.Token)
-                .ConfigureAwait(true);
-            if (!launched)
-            {
-                ClearCheckedUpdate(AgentLocalizer.Get("UpdateCurrent"));
-                return;
-            }
-
-            _updateStatus.Text = AgentLocalizer.Format("UpdateStatus", AgentLocalizer.Get("UpdateInstallerStarted"));
-            _lastCheckedUpdateSignal = null;
-            _lastUpdateCheck = null;
+            throw new InvalidOperationException("The Cerberus service is not ready to apply updates.");
         }
         catch (Exception ex)
         {
