@@ -53,6 +53,25 @@ public static class AgentUpdateSecurity
             : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
+    /// <summary>Resolves the registered directory layout; callers must still validate filesystem provenance and service identity.</summary>
+    public static string ResolveRegisteredRuntimeRoot(string? runtimeRoot, string? installRoot)
+    {
+        if (string.IsNullOrWhiteSpace(runtimeRoot) && string.IsNullOrWhiteSpace(installRoot))
+            throw new InvalidOperationException("Canonical agent runtime root is not registered.");
+
+        // MSI directory properties include a trailing separator; compare directories, not their spelling.
+        var resolvedRuntimeRoot = !string.IsNullOrWhiteSpace(runtimeRoot)
+            ? NormalizeRoot(runtimeRoot)
+            : Path.Combine(NormalizeRoot(installRoot!), "app");
+        if (!string.IsNullOrWhiteSpace(runtimeRoot) && !string.IsNullOrWhiteSpace(installRoot))
+        {
+            var expectedRuntimeRoot = Path.Combine(NormalizeRoot(installRoot), "app");
+            if (!string.Equals(resolvedRuntimeRoot, expectedRuntimeRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Registered agent runtime layout is inconsistent.");
+        }
+        return resolvedRuntimeRoot;
+    }
+
     /// <summary>Creates missing authority atomically. Existing objects must already have trusted provenance; none are repaired into trust.</summary>
     public static void EnsureProtectedRoot(string root)
     {

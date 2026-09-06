@@ -8,6 +8,39 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUpdateStorageProvenanceTests
 {
+    [Theory]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app\", @"C:\Program Files\Cerberus\Windows Agent\")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app", @"C:\Program Files\Cerberus\Windows Agent")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app\", @"C:\Program Files\Cerberus\Windows Agent")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app", @"C:\Program Files\Cerberus\Windows Agent\")]
+    [InlineData("C:/Program Files/Cerberus/Windows Agent/app/", "C:/Program Files/Cerberus/Windows Agent/")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app\", null)]
+    [InlineData(null, @"C:\Program Files\Cerberus\Windows Agent\")]
+    public void RegisteredRuntimeLayoutAcceptsEquivalentMsiDirectories(string? runtimeRoot, string? installRoot)
+    {
+        Assert.Equal(@"C:\Program Files\Cerberus\Windows Agent\app",
+            AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(runtimeRoot, installRoot));
+    }
+
+    [Theory]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app-other\")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app\..\")]
+    [InlineData(@"C:\Program Files\Cerberus\Windows Agent\..\Other\app\")]
+    [InlineData(@"D:\Program Files\Cerberus\Windows Agent\app\")]
+    public void RegisteredRuntimeLayoutRejectsDifferentOrEscapingDirectories(string runtimeRoot)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(
+            runtimeRoot, @"C:\Program Files\Cerberus\Windows Agent\"));
+        Assert.Equal("Registered agent runtime layout is inconsistent.", error.Message);
+    }
+
+    [Fact]
+    public void RegisteredRuntimeLayoutRejectsMissingRegistration()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(null, " "));
+        Assert.Equal("Canonical agent runtime root is not registered.", error.Message);
+    }
+
     [Fact]
     public void ProductRootDescriptorDeniesFileDeleteChildWithoutDenyingFileCreation()
     {

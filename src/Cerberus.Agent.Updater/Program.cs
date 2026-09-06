@@ -288,18 +288,7 @@ internal static class Program
     {
         var runtimeRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "runtimeRoot");
         var installRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "installRoot");
-        if (string.IsNullOrWhiteSpace(runtimeRoot) && string.IsNullOrWhiteSpace(installRoot))
-            throw new InvalidOperationException("Canonical agent runtime root is not registered.");
-
-        var resolvedRuntimeRoot = !string.IsNullOrWhiteSpace(runtimeRoot)
-            ? Path.GetFullPath(runtimeRoot.Trim())
-            : Path.Combine(Path.GetFullPath(installRoot!.Trim()), "app");
-        if (!string.IsNullOrWhiteSpace(runtimeRoot) && !string.IsNullOrWhiteSpace(installRoot))
-        {
-            var expectedRuntimeRoot = Path.Combine(Path.GetFullPath(installRoot.Trim()), "app");
-            if (!string.Equals(resolvedRuntimeRoot, expectedRuntimeRoot, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Registered agent runtime layout is inconsistent.");
-        }
+        var resolvedRuntimeRoot = AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(runtimeRoot, installRoot);
 
         AgentUpdateSecurity.ValidateTrustedPath(
             resolvedRuntimeRoot,
