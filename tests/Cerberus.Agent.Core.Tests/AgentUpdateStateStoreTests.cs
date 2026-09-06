@@ -5,6 +5,47 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentUpdateStateStoreTests
 {
     [Fact]
+    public async Task MissingDurableStateDoesNotEmitOrderedHeartbeatReportsOrWriteDuringStatusReads()
+    {
+        var root = NewRoot();
+        var store = NewStore(root);
+        foreach (var version in new[] { "0.1.0", "0.1.0", "0.2.0" })
+        {
+            var display = await store.ReadAsync(version, CancellationToken.None);
+            Assert.Equal(AgentUpdateStates.NotChecked, display.State);
+            Assert.Equal(version, display.CurrentVersion);
+            Assert.Null(await store.ReconcileInstallerResultAsync(version, CancellationToken.None));
+            Assert.False(Directory.Exists(root));
+            store = NewStore(root);
+        }
+    }
+
+    [Fact]
+    public async Task ReportPayloadAndSequenceStayBoundAcrossReadsRestartAndRealVersionTransition()
+    {
+        var root = NewRoot();
+        try
+        {
+            var store = NewStore(root);
+            var first = await store.WriteTransitionAsync(AgentUpdateStates.Current, "0.1.0", CancellationToken.None);
+            Assert.True(first.ReportSequence > 0);
+            var bytes = await File.ReadAllBytesAsync(store.StatePath);
+            var repeated = await NewStore(root).ReconcileInstallerResultAsync("0.2.0", CancellationToken.None);
+            Assert.NotNull(repeated);
+            Assert.Equal(first.ToHeartbeatStatus(), repeated.ToHeartbeatStatus());
+            Assert.Equal(bytes, await File.ReadAllBytesAsync(store.StatePath));
+
+            var changed = await store.WriteTransitionAsync(AgentUpdateStates.Current, "0.2.0", CancellationToken.None);
+            Assert.Equal(first.ReportSequence + 1, changed.ReportSequence);
+            Assert.Equal("0.2.0", changed.CurrentVersion);
+            var report = await NewStore(root).ReconcileInstallerResultAsync("0.2.0", CancellationToken.None);
+            Assert.NotNull(report);
+            Assert.Equal(changed.ToCommandResultPayload(), report.ToHeartbeatStatus());
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task WriteTransitionAsync_PersistsStagedStateForRestart()
     {
         var root = NewRoot();
@@ -83,6 +124,7 @@ public sealed class AgentUpdateStateStoreTests
             CancellationToken.None);
 
         var reconciled = await store.ReconcileInstallerResultAsync("0.2.0", CancellationToken.None);
+        Assert.NotNull(reconciled);
         var heartbeat = reconciled.ToHeartbeatStatus();
 
         Assert.Equal(AgentUpdateStates.PendingReboot, reconciled.State);
@@ -90,6 +132,12 @@ public sealed class AgentUpdateStateStoreTests
         Assert.Equal(3010, reconciled.MsiExitCode);
         Assert.DoesNotContain("msi_log_path", heartbeat.Keys);
         Assert.DoesNotContain("last_installer_result_id", heartbeat.Keys);
+        var persisted = await NewStore(root).ReadAsync("0.2.0", CancellationToken.None);
+        Assert.Equal(persisted.ReportSequence, reconciled.ReportSequence);
+        Assert.Equal(persisted.ToHeartbeatStatus(), heartbeat);
+        var repeated = await NewStore(root).ReconcileInstallerResultAsync("0.2.0", CancellationToken.None);
+        Assert.NotNull(repeated);
+        Assert.Equal(heartbeat, repeated.ToHeartbeatStatus());
     }
 
     [Fact]

@@ -309,7 +309,7 @@ internal static class ServiceMode
             updateStatusProvider: async cancel =>
                 (await updateStateStore.ReconcileInstallerResultAsync(
                     WindowsDeviceInfo.GetAgentVersion(),
-                    cancel).ConfigureAwait(false)).ToHeartbeatStatus(),
+                    cancel).ConfigureAwait(false))?.ToHeartbeatStatus(),
             agentVersion: agentVersion,
             buildId: buildId,
             buildChannel: buildChannel,

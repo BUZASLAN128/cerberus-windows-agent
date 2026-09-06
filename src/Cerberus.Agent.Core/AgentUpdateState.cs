@@ -308,12 +308,15 @@ public sealed class AgentUpdateStateStore
             Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-result.json"));
 
     public async Task<AgentUpdateState> ReadAsync(string? currentVersion, CancellationToken ct)
+        => await ReadPersistedAsync(ct).ConfigureAwait(false) ?? AgentUpdateState.NotChecked(currentVersion);
+
+    private async Task<AgentUpdateState?> ReadPersistedAsync(CancellationToken ct)
     {
         try
         {
             ValidateStatePath();
             if (!File.Exists(StatePath))
-                return AgentUpdateState.NotChecked(currentVersion);
+                return null;
             if (new FileInfo(StatePath).Length is <= 0 or > AgentUpdateDurableFile.MaxBytes)
                 throw new InvalidOperationException("Update state length is invalid.");
             var raw = await File.ReadAllTextAsync(StatePath, ct).ConfigureAwait(false);
@@ -490,13 +493,15 @@ public sealed class AgentUpdateStateStore
             quarantined);
     }
 
-    public async Task<AgentUpdateState> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)
+    /// <summary>Returns only a durable ordered report; an untouched agent has no update report yet.</summary>
+    public async Task<AgentUpdateState?> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)
     {
-        var state = await ReadAsync(currentVersion, ct).ConfigureAwait(false);
+        var state = await ReadPersistedAsync(ct).ConfigureAwait(false);
         var result = await ReadInstallerResultAsync(ct).ConfigureAwait(false);
-        if (result is null || string.Equals(result.ResultId, state.LastInstallerResultId, StringComparison.Ordinal))
+        if (result is null || string.Equals(result.ResultId, state?.LastInstallerResultId, StringComparison.Ordinal))
             return state;
 
+        state ??= AgentUpdateState.NotChecked(currentVersion);
         if (state.AttemptId is not null && result.AttemptId != state.AttemptId)
             throw new InvalidOperationException("Installer result does not match the active attempt.");
         var nextState = result.State == AgentUpdateStates.Applied ? AgentUpdateStates.HealthPending : result.State;
@@ -513,7 +518,7 @@ public sealed class AgentUpdateStateStore
             retryAfterUtc: result.RetryAfterUtc,
             quarantined: result.Quarantined);
         await WriteAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await ReadPersistedAsync(ct).ConfigureAwait(false);
     }
 
     public async Task WriteInstallerResultAsync(AgentUpdateInstallerResult result, CancellationToken ct)
