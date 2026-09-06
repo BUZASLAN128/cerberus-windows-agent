@@ -9,6 +9,51 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentUpdateDurabilityTests
 {
     [Fact]
+    public void InstallerHealthDiagnosticPreservesGuardEvidenceWithoutSensitiveErrorData()
+    {
+        var error = new System.ComponentModel.Win32Exception(5, @"secret C:\private\credentials.json https://private.invalid/token");
+        error.Data["raw_response"] = "must-not-be-recorded";
+        foreach (var phase in Enum.GetValues<AgentInstallerHealthPhase>())
+        {
+            var diagnostic = AgentInstallerHealthDiagnostic.Capture(phase, error, "0.2.144", "0.2.143+build", 41, 42, false);
+            var json = JsonSerializer.Serialize(diagnostic, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            using var document = JsonDocument.Parse(json);
+            Assert.Equal(new[] { "errorCategory", "exceptionType", "expectedVersion", "nativeErrorCode", "observedVersion", "operation",
+                "phase", "pipeProcessId", "recordedAtUtc", "responseSuccess", "schemaVersion", "serviceProcessId" },
+                document.RootElement.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+            Assert.Equal("agent.installer.health-diagnostic.v1", diagnostic.SchemaVersion);
+            Assert.Equal("health", diagnostic.Operation);
+            Assert.Equal(JsonNamingPolicy.SnakeCaseLower.ConvertName(phase.ToString()), diagnostic.Phase);
+            Assert.Equal("win32_error", diagnostic.ErrorCategory);
+            Assert.Equal("Win32Exception", diagnostic.ExceptionType);
+            Assert.Equal(5, diagnostic.NativeErrorCode);
+            Assert.Equal("0.2.144", diagnostic.ExpectedVersion);
+            Assert.Equal("0.2.143+build", diagnostic.ObservedVersion);
+            Assert.Equal((uint)41, diagnostic.ServiceProcessId);
+            Assert.Equal((uint)42, diagnostic.PipeProcessId);
+            Assert.False(diagnostic.ResponseSuccess);
+            Assert.DoesNotContain("secret", json);
+            Assert.DoesNotContain("private", json);
+            Assert.DoesNotContain("raw_response", json);
+            Assert.DoesNotContain("must-not-be-recorded", json);
+        }
+    }
+
+    [Fact]
+    public void InstallerHealthDiagnosticBoundsVersionsAndUnknownErrors()
+    {
+        var diagnostic = AgentInstallerHealthDiagnostic.Capture(AgentInstallerHealthPhase.ResponseVersion,
+            new Exception("private error"), @"C:\private\value", new string('a', 97), null, null, null);
+        Assert.Null(diagnostic.ExpectedVersion);
+        Assert.Null(diagnostic.ObservedVersion);
+        Assert.Null(diagnostic.NativeErrorCode);
+        Assert.Equal("unexpected_error", diagnostic.ErrorCategory);
+        Assert.Equal("UnexpectedException", diagnostic.ExceptionType);
+        Assert.Throws<ArgumentOutOfRangeException>(() => AgentInstallerHealthDiagnostic.Capture(
+            (AgentInstallerHealthPhase)int.MaxValue, new Exception(), null, null, null, null, null));
+    }
+
+    [Fact]
     public void PublisherIdentity_BindsSpkiNotCertificateSerialOrRenewal()
     {
         using var key = RSA.Create(2048);
