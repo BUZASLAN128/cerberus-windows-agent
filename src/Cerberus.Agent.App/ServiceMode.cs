@@ -229,6 +229,23 @@ internal static class ServiceMode
             return;
         }
 
+        // Never send registered credentials to an environment selected by a different package or override.
+        if (!AgentBuildConfig.SameEndpoint(backendUrl, storedBackendUrl) ||
+            (!string.IsNullOrWhiteSpace(AgentBuildConfig.BackendUrl) &&
+             !AgentBuildConfig.SameEndpoint(storedBackendUrl, AgentBuildConfig.BackendUrl)))
+        {
+            await lifecycleState.TransitionAsync(
+                AgentLifecycleState.BlockedConfig,
+                reasonCode: "backend_environment_mismatch",
+                requestId: null,
+                nextAttemptUtc: null,
+                genericAuthFailureCount: null,
+                ct).ConfigureAwait(false);
+            log.Warn("Service starting dormant; deployment differs from registered credentials. Use the matching package or explicitly re-enroll. Existing registration was preserved.");
+            await RunDormantAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
         using var updateHttp = new HttpClient
         {

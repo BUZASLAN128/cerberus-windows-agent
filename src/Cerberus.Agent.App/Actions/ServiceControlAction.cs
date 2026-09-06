@@ -29,22 +29,42 @@ internal static class ServiceControlAction
         }
     }
 
+    public static Task<ServiceControlResult> RunAndWaitAsync(ServiceControlCommand command, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return Elevation.IsAdministrator()
+            ? Task.FromResult(Run(command))
+            : RunElevatedAndWaitAsync(command, Elevation.RunElevatedAndWaitAsync, ct);
+    }
+
+    internal static async Task<ServiceControlResult> RunElevatedAndWaitAsync(ServiceControlCommand command,
+        Func<string, CancellationToken, Task<int?>> runElevated, CancellationToken ct)
+    {
+        var exitCode = await runElevated(Arguments(command), ct).ConfigureAwait(false);
+        return exitCode switch
+        {
+            0 => new(true, SuccessMessage(command)),
+            null => new(false, $"Could not request elevation to {DisplayName(command)} service."),
+            _ => new(false, $"{DisplayName(command)} service failed (exit code {exitCode})."),
+        };
+    }
+
     private static ServiceControlResult TryRunElevated(ServiceControlCommand command)
     {
-        var args = command switch
-        {
-            ServiceControlCommand.Install => "--install-service",
-            ServiceControlCommand.Uninstall => "--uninstall-service",
-            ServiceControlCommand.UnregisterDevice => "--unregister-device",
-            ServiceControlCommand.Start => "--start-service",
-            ServiceControlCommand.Stop => "--stop-service",
-            _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),
-        };
-
-        return Elevation.TryRunElevated(args)
+        return Elevation.TryRunElevated(Arguments(command))
             ? new ServiceControlResult(Succeeded: true, $"UAC prompt opened to {DisplayName(command).ToLowerInvariant()} service.")
             : new ServiceControlResult(Succeeded: false, $"Could not request elevation to {DisplayName(command).ToLowerInvariant()} service.");
     }
+
+    private static string Arguments(ServiceControlCommand command) => command switch
+    {
+        ServiceControlCommand.Install => "--install-service",
+        ServiceControlCommand.Uninstall => "--uninstall-service",
+        ServiceControlCommand.UnregisterDevice => "--unregister-device",
+        ServiceControlCommand.Start => "--start-service",
+        ServiceControlCommand.Stop => "--stop-service",
+        _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),
+    };
 
     private static void Execute(ServiceControlCommand command)
     {

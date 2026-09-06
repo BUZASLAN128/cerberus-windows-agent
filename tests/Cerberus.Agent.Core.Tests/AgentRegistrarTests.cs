@@ -3,11 +3,46 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App;
 
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentRegistrarTests
 {
+    [Theory]
+    [InlineData("http://100.101.130.51:8000", false)]
+    [InlineData("http://100.101.130.51:8000", true)]
+    [InlineData("https://foreign.example", false)]
+    [InlineData(null, false)]
+    public async Task RegisterAsync_AdvertisementCannotRebindSelectedDeployment(string? advertisement, bool explicitReenrollment)
+    {
+        const string selected = "http://127.0.0.1:8000";
+        var response = JsonSerializer.Serialize(new {
+            agent_id = "a1", tenant_id = "t1", agent_refresh_token = "rt1",
+            telemetry_base_url = advertisement
+        });
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.OK) {
+            Content = new StringContent(response, Encoding.UTF8, "application/json")
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri(selected) };
+        using var cts = new CancellationTokenSource();
+        // Stop ancillary UI-context writes after observing the persistence boundary.
+        var secrets = new CaptureSecretStore {
+            CancelAfterSave = cts,
+            Existing = explicitReenrollment
+                ? (new AgentIdentity("old-agent", "old-tenant"), "old-refresh", "old-key", "http://100.101.130.51:8000", null, null)
+                : null
+        };
+        var registrar = new AgentRegistrar(http, secrets, new StubKeyPairs("priv", "pub"));
+
+        await registrar.RegisterAsync("oauth", selected, "fp", "1.2.3", "build", "dev", cts.Token,
+            replaceExisting: explicitReenrollment);
+
+        Assert.Equal(selected, secrets.LastSaved!.Value.BackendUrl);
+        Assert.True(AgentBuildConfig.SameEndpoint(selected, secrets.LastSaved.Value.BackendUrl));
+        Assert.False(AgentBuildConfig.SameEndpoint("https://foreign.example", secrets.LastSaved.Value.BackendUrl));
+    }
+
     [Fact]
     public async Task RegisterAsync_WithExistingStoredRegistration_DoesNotCallBackendOrGenerateCredentials()
     {
@@ -152,7 +187,7 @@ public sealed class AgentRegistrarTests
         Assert.Equal("t1", secrets.LastSaved!.Value.Identity.TenantId);
         Assert.Equal("rt1", secrets.LastSaved!.Value.RefreshToken);
         Assert.Equal("priv-pem", secrets.LastSaved!.Value.PrivateKeyPem);
-        Assert.Equal("http://telemetry.test", secrets.LastSaved!.Value.BackendUrl);
+        Assert.Equal("http://backend", secrets.LastSaved!.Value.BackendUrl);
     }
 
     [Fact]
@@ -554,6 +589,7 @@ public sealed class AgentRegistrarTests
 
     private sealed class CaptureSecretStore : ISecretStore
     {
+        public CancellationTokenSource? CancelAfterSave { get; init; }
         public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? Existing { get; init; }
         public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? LastSaved { get; private set; }
 
@@ -567,6 +603,7 @@ public sealed class AgentRegistrarTests
             CancellationToken ct)
         {
             LastSaved = (identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey);
+            CancelAfterSave?.Cancel();
             return Task.CompletedTask;
         }
 

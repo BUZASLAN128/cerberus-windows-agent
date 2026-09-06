@@ -130,11 +130,14 @@ public sealed class AgentRegistrar
             throw new InvalidOperationException("Register response missing agent_id/tenant_id.");
 
         var identity = new AgentIdentity(parsed.AgentId, parsed.TenantId);
+        // telemetry_base_url is the server's advertised APP_BASE_URL, which may be a
+        // browser-facing alias. Keep credentials bound to the selected enrollment
+        // deployment instead of silently changing their destination from a response.
         await _secrets.SaveAsync(
             identity,
             parsed.AgentRefreshToken,
             privPem,
-            string.IsNullOrWhiteSpace(parsed.TelemetryBaseUrl) ? backendUrlForStorage : parsed.TelemetryBaseUrl.TrimEnd('/'),
+            backendUrlForStorage.Trim().TrimEnd('/'),
             parsed.TailscaleLoginServer,
             parsed.TailscaleAuthkey,
             ct).ConfigureAwait(false);

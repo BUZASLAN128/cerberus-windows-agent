@@ -8,6 +8,71 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUpdateStorageProvenanceTests
 {
+    [Fact]
+    public void ProductRootDescriptorDeniesFileDeleteChildWithoutDenyingFileCreation()
+    {
+        var descriptor = new RawSecurityDescriptor(AgentUpdateSecurity.ProductDirectorySddl);
+        var deny = Assert.Single(descriptor.DiscretionaryAcl!.OfType<QualifiedAce>(), ace =>
+            ace.AceQualifier == AceQualifier.AccessDenied && ace.SecurityIdentifier.Value == "S-1-5-32-545");
+        Assert.Equal((int)FileSystemRights.DeleteSubdirectoriesAndFiles, deny.AccessMask);
+        Assert.Equal(0, deny.AccessMask & (int)FileSystemRights.WriteData);
+        Assert.Equal(AceFlags.None, deny.AceFlags);
+        AgentUpdateSecurity.ValidateDescriptor(descriptor, isProductRoot: true);
+    }
+
+    [Fact]
+    public void ProductRootDaclAllowsRuntimeFileCreationButDoesNotBypassProtectedChildDeletion()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User!;
+        Assert.True(new WindowsPrincipal(identity).IsInRole(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null)));
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-product-dacl-test-" + Guid.NewGuid().ToString("N"));
+        var child = Path.Combine(root, "protected-record.txt");
+        // Exercise the actual production DACL with local fixture ownership; this is not SYSTEM provenance acceptance.
+        var descriptor = new RawSecurityDescriptor(AgentUpdateSecurity.ProductDirectorySddl)
+        {
+            Owner = user,
+            Group = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+        };
+        var binary = new byte[descriptor.BinaryLength];
+        descriptor.GetBinaryForm(binary, 0);
+        var rootAcl = new DirectorySecurity();
+        rootAcl.SetSecurityDescriptorBinaryForm(binary);
+        try
+        {
+            new DirectoryInfo(root).Create(rootAcl);
+            File.WriteAllText(child, "must survive denied deletion");
+            var childAcl = new FileSecurity();
+            childAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            childAcl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), FileSystemRights.FullControl, AccessControlType.Allow));
+            childAcl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Read, AccessControlType.Allow));
+            new FileInfo(child).SetAccessControl(childAcl);
+            Assert.Throws<UnauthorizedAccessException>(() => File.Delete(child));
+            Assert.Equal("must survive denied deletion", File.ReadAllText(child));
+        }
+        finally
+        {
+            // Restore only this test-owned record/directory for nonrecursive cleanup.
+            if (File.Exists(child))
+            {
+                var cleanupFileAcl = new FileSecurity();
+                cleanupFileAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                cleanupFileAcl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+                new FileInfo(child).SetAccessControl(cleanupFileAcl);
+                File.Delete(child);
+            }
+            if (Directory.Exists(root))
+            {
+                var cleanupRootAcl = new DirectorySecurity();
+                cleanupRootAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                cleanupRootAcl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+                new DirectoryInfo(root).SetAccessControl(cleanupRootAcl);
+                Directory.Delete(root, recursive: false);
+            }
+        }
+    }
+
     [Theory]
     [InlineData("O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;GRGX;;;BA)", true)]
     [InlineData("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)", true)]

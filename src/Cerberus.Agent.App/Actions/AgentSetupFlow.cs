@@ -37,8 +37,7 @@ internal sealed class AgentSetupFlow
             var status = await AgentLocalControlClient.SendAsync(new("status"), ct).ConfigureAwait(false);
             if (status.Code == AgentLifecycleStatePolicy.AgentRevokedCode)
                 throw new InvalidOperationException("This registration was revoked. Contact your administrator.");
-            requiresEnrollment = status.LifecycleState == nameof(AgentLifecycleState.NeedsReenrollment) ||
-                (status.LifecycleState == nameof(AgentLifecycleState.Retired) && status.Code == AgentLifecycleStatePolicy.AgentDeactivatedCode);
+            requiresEnrollment = AgentOnboardingFlow.RequiresEnrollment(status.LifecycleState, status.Code);
         }
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
         var lifecycleState = new InMemoryAgentLifecycleStateStore();
@@ -83,7 +82,19 @@ internal sealed class AgentSetupFlow
             }
         }
 
-        var serviceChanged = EnsureServiceInstallOrStart(progress, registeredNow);
+        bool serviceChanged;
+        using (var provisioning = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            provisioning.CancelAfter(ServiceReadyTimeout);
+            try
+            {
+                serviceChanged = await EnsureServiceInstallOrStartAsync(progress, registeredNow, provisioning.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new InvalidOperationException("Service provisioning did not finish in time. The elevated operation may still be running; wait for it before retrying setup.");
+            }
+        }
         var service = await WaitForServiceRunningAsync(ServiceReadyTimeout, progress, ct).ConfigureAwait(false);
         if (!service.Installed)
         {
@@ -109,13 +120,13 @@ internal sealed class AgentSetupFlow
             "Agent setup completed. The service is running.");
     }
 
-    private static bool EnsureServiceInstallOrStart(Action<string>? progress, bool promoteRegistration)
+    private static async Task<bool> EnsureServiceInstallOrStartAsync(Action<string>? progress, bool promoteRegistration, CancellationToken ct)
     {
         var service = AgentStatus.GetService();
         if (!service.Installed || promoteRegistration)
         {
             progress?.Invoke("Installing Windows service (UAC may prompt)...");
-            var result = ServiceControlAction.Run(ServiceControlCommand.Install);
+            var result = await ServiceControlAction.RunAndWaitAsync(ServiceControlCommand.Install, ct).ConfigureAwait(false);
             progress?.Invoke(result.Message);
             if (!result.Succeeded)
                 throw new InvalidOperationException(result.Message);
@@ -125,7 +136,7 @@ internal sealed class AgentSetupFlow
         if (service.CanStart)
         {
             progress?.Invoke("Starting Windows service...");
-            var result = ServiceControlAction.Run(ServiceControlCommand.Start);
+            var result = await ServiceControlAction.RunAndWaitAsync(ServiceControlCommand.Start, ct).ConfigureAwait(false);
             progress?.Invoke(result.Message);
             if (!result.Succeeded)
                 throw new InvalidOperationException(result.Message);

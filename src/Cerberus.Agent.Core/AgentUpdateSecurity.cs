@@ -18,6 +18,8 @@ public static class AgentUpdateSecurity
     public const string ManifestFileName = "manifest.json";
     public const string ArtifactFileName = "agent.msi";
     public const string GlobalLockFileName = "update.lock";
+    // SDDL "DC" is the directory-services bit 0x2 (FILE_ADD_FILE on a filesystem), not FILE_DELETE_CHILD.
+    internal const string ProductDirectorySddl = "O:SYG:SYD:P(D;;0x40;;;BU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;GRGWGX;;;BU)(A;OI;GRGWGX;;;BU)";
 
     public static string DefaultPrivilegedRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
@@ -328,8 +330,7 @@ public static class AgentUpdateSecurity
     private static void CreateProtectedDirectory(string directory, bool isProductRoot)
     {
         const string protectedSddl = "O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)";
-        const string productSddl = "O:SYG:SYD:P(D;;DC;;;BU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;GRGWGX;;;BU)(A;OI;GRGWGX;;;BU)";
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(isProductRoot ? productSddl : protectedSddl,
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(isProductRoot ? ProductDirectorySddl : protectedSddl,
                 SecurityDescriptorRevision, out var descriptor, out _))
             throw new InvalidOperationException("Protected update storage descriptor is unavailable.", new Win32Exception(Marshal.GetLastWin32Error()));
         try

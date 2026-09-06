@@ -73,14 +73,8 @@ jobs:
             }
           } else {
             $shortSha = "${{ github.sha }}".Substring(0, 12)
-            if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64) -and
-                -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)) {
-              $channel = "preview"
-              $notes = "Automated signed preview release from ${{ github.ref_name }}@$shortSha."
-            } else {
-              $channel = "dev"
-              $notes = "Automated unsigned dev release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
-            }
+            $channel = "dev"
+            $notes = "Automated local-development release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
             $tagRefs = git ls-remote --tags origin "refs/tags/v0.2.*-$channel.*"
             $maxPatch = 0
             foreach ($line in $tagRefs) {
@@ -97,6 +91,10 @@ jobs:
           }
           if ($channel -notin @("dev", "preview", "stable")) {
             throw "Unsupported release channel: $channel"
+          }
+          if (("${{ github.ref_name }}" -in @("dev", "develop") -and $channel -ne "dev") -or
+              ("${{ github.ref_name }}" -eq "main" -and $channel -ne "stable")) {
+            throw "Branch/channel mismatch: dev/develop requires dev; main requires stable."
           }
 
           $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }

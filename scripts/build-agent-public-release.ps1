@@ -9,10 +9,10 @@ param(
   [string]$Runtime = "win-x64",
   [string]$OutputRoot = "out/public-release",
   [string]$TimestampUrl = "http://timestamp.digicert.com",
-  [string]$DefaultBackendUrl = $env:CERBERUS_BACKEND_URL,
-  [string]$DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL,
-  [string]$DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID,
-  [string]$DefaultSsoScope = $env:CERBERUS_SSO_SCOPE,
+  [string]$DefaultBackendUrl = "",
+  [string]$DefaultSsoBaseUrl = "",
+  [string]$DefaultSsoClientId = "",
+  [string]$DefaultSsoScope = "",
   [string]$UpdateManifestUrl = $env:CERBERUS_AGENT_UPDATE_MANIFEST_URL,
   [string]$AgentUpdateManifestPublicKeysB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64,
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
@@ -187,9 +187,34 @@ if ($DefaultOAuthRedirectPort -le 0) {
 if ($Channel -eq "dev") {
   if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = "http://127.0.0.1:8000" }
   if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = "http://localhost:18000" }
-  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = "1ad45750a9cc2eaed763" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = "610f03b77494869da4ef" }
   if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
   if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
+}
+else {
+  if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = $env:CERBERUS_BACKEND_URL }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = $env:CERBERUS_SSO_SCOPE }
+  if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = "https://app.cerberusd.com" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = "https://auth.cerberusd.com" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { throw "A deployment-specific public SSO client ID is required for preview/stable builds." }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
+  if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
+}
+foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
+  $uri = $null
+  if (-not [Uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or
+      $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
+    throw "Build routing requires absolute backend/SSO URLs without credentials, query or fragment."
+  }
+  if ($Channel -eq "dev") {
+    if (-not $uri.IsLoopback -or $uri.Scheme -notin @("http", "https")) {
+      throw "Dev builds require loopback backend and SSO endpoints."
+    }
+  } elseif ($uri.IsLoopback -or $uri.Scheme -ne "https") {
+    throw "Preview/stable builds require non-loopback HTTPS backend and SSO endpoints."
+  }
 }
 
 $manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
@@ -256,7 +281,7 @@ if (-not $SkipTests) {
   if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
 }
 
-function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
+function Publish-AgentProject([string]$Project) {
   $args = @(
     "publish",
     (Join-Path $repoRoot $Project),
@@ -275,24 +300,24 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
     "-p:AllowUnsignedDevBuild=$($allowUnsignedBuildMetadata.ToString().ToLowerInvariant())",
     "-o", $runtimePublishDir
   )
-  if ($WithSetupConfig) {
-    $args += @(
+  # Every publish must pass the same routing metadata to the shared runtime project.
+  # Otherwise later service/updater publishes overwrite it with an unconfigured runtime.
+  $args += @(
       "-p:AgentDefaultBackendUrlBase64=$(ConvertTo-Base64Utf8 $DefaultBackendUrl)",
       "-p:AgentDefaultSsoBaseUrlBase64=$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)",
       "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
       "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
       "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
-    )
-  }
+  )
   dotnet @args
   if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
 }
 
 Write-Step "Publishing split agent runtime"
-Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" $true
-Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" $false
-Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" $false
-Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" $false
+Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj"
 
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
 $installerBase = "Cerberus.Agent-$Channel-$Version"

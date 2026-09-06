@@ -36,5 +36,33 @@ internal static class Elevation
             return false;
         }
     }
+
+    public static async Task<int?> RunElevatedAndWaitAsync(string arguments, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.IsNullOrWhiteSpace(exePath))
+            return null;
+
+        try
+        {
+            using var child = Process.Start(new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = arguments,
+                UseShellExecute = true,
+                Verb = "runas",
+            });
+            return child is null ? null : await WaitForCompletionAsync(child, ct).ConfigureAwait(false);
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { return null; }
+    }
+
+    internal static async Task<int> WaitForCompletionAsync(Process child, CancellationToken ct)
+    {
+        // Cancelling the wait must not kill a privileged provisioning transaction mid-commit.
+        await child.WaitForExitAsync(ct).ConfigureAwait(false);
+        return child.ExitCode;
+    }
 }
 

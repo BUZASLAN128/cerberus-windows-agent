@@ -12,11 +12,19 @@ internal sealed record AgentOnboardingResult(
 
 internal sealed class AgentOnboardingFlow
 {
+    // Eligibility is consumed only by explicit setup/SSO, never service startup.
+    internal static bool RequiresEnrollment(string? state, string? code)
+        => code != AgentLifecycleStatePolicy.AgentRevokedCode &&
+           (state == nameof(AgentLifecycleState.NeedsReenrollment) ||
+            (state == nameof(AgentLifecycleState.Retired) && code == AgentLifecycleStatePolicy.AgentDeactivatedCode) ||
+            (state == nameof(AgentLifecycleState.BlockedConfig) && code == "backend_environment_mismatch"));
+
     public static bool IsConfigReady(RuntimeUiConfig cfg)
     {
         var ssoBase = (cfg.CasdoorEndpoint ?? "").Trim().TrimEnd('/');
         var backend = (cfg.BackendUrl ?? "").Trim().TrimEnd('/');
-        return Uri.TryCreate(ssoBase, UriKind.Absolute, out _) &&
+        return UiConfigStore.MatchesBuildRouting(cfg) &&
+               Uri.TryCreate(ssoBase, UriKind.Absolute, out _) &&
                Uri.TryCreate(backend, UriKind.Absolute, out _) &&
                !string.IsNullOrWhiteSpace(cfg.CasdoorClientId);
     }
@@ -41,8 +49,7 @@ internal sealed class AgentOnboardingFlow
                 throw new InvalidOperationException("Agent service status is unavailable; existing registration was preserved.");
             if (status.Code == AgentLifecycleStatePolicy.AgentRevokedCode)
                 throw new InvalidOperationException("This registration was revoked. Contact your administrator.");
-            replaceExisting = status.LifecycleState == nameof(AgentLifecycleState.NeedsReenrollment) ||
-                (status.LifecycleState == nameof(AgentLifecycleState.Retired) && status.Code == AgentLifecycleStatePolicy.AgentDeactivatedCode);
+            replaceExisting = RequiresEnrollment(status.LifecycleState, status.Code);
         }
 
         var ssoBase = new Uri(cfg.CasdoorEndpoint.Trim().TrimEnd('/'));

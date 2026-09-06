@@ -18,6 +18,9 @@ internal static class BootstrapResolver
 
     internal static BootstrapResolution? ResolveConfiguredBackend(RuntimeUiConfig uiConfig)
     {
+        if (!UiConfigStore.MatchesBuildRouting(uiConfig))
+            throw new InvalidOperationException("Configured deployment differs from this agent package. Use the matching package and explicitly re-enroll to change deployment; existing registration was preserved.");
+
         var backendUrl = (uiConfig.BackendUrl ?? "").Trim().TrimEnd('/');
         if (!Uri.TryCreate(backendUrl, UriKind.Absolute, out var backend))
             return null;
