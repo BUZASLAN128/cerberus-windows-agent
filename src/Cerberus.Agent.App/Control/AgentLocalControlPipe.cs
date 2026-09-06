@@ -79,24 +79,44 @@ internal sealed class AgentLocalControlServer
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(serviceCt))
         {
             timeout.CancelAfter(TimeSpan.FromSeconds(40));
+            AgentLocalControlRequest request;
+            bool privileged;
             try
             {
                 // Windows impersonates the context of the last message read. Read only the bounded frame
                 // before verifying identity; no request is authorized or dispatched until that succeeds.
-                var request = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(pipe, timeout.Token).ConfigureAwait(false);
-                var (allowed, privileged) = AgentLocalControlPipe.ClientAuthority(pipe);
+                request = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(pipe, timeout.Token).ConfigureAwait(false);
+                var authority = AgentLocalControlPipe.ClientAuthority(pipe);
+                var allowed = authority.Allowed;
+                privileged = authority.Privileged;
                 if (!allowed)
                     return;
-                var response = AgentLocalControlProtocol.IsAllowed(request, privileged)
-                    ? await _handle(request, timeout.Token).ConfigureAwait(false)
-                    : new AgentLocalControlResponse(false, "invalid_request");
-                await AgentLocalControlProtocol.WriteAsync(pipe, response, timeout.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException or UnauthorizedAccessException or
+            catch (Exception ex) when (ex is InvalidDataException or IOException or OperationCanceledException or UnauthorizedAccessException or
                 System.Security.SecurityException or System.Text.Json.JsonException or Win32Exception)
             {
-                // Untrusted clients get bounded failure with no identity, raw
-                // request, exception details or secrets written to logs.
+                // Framing, parsing and identity rejection are connection-local. InvalidDataException
+                // is not an IOException. Never log untrusted request or identity details.
+                return;
+            }
+
+            AgentLocalControlResponse response;
+            try
+            {
+                // Handler defects are not malformed client input and must remain observable.
+                response = AgentLocalControlProtocol.IsAllowed(request, privileged)
+                    ? await _handle(request, timeout.Token).ConfigureAwait(false)
+                    : new AgentLocalControlResponse(false, "invalid_request");
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { return; }
+
+            try
+            {
+                await AgentLocalControlProtocol.WriteAsync(pipe, response, timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                // The authenticated peer may disconnect or exceed this connection's deadline.
             }
         }
     }

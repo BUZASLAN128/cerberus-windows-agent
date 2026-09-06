@@ -307,6 +307,118 @@ public sealed class AgentLifecycleControlTests
             AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(client, timeout.Token));
     }
 
+    [Theory]
+    [InlineData("zero-length")]
+    [InlineData("negative-length")]
+    [InlineData("oversized-length")]
+    [InlineData("nonobject")]
+    [InlineData("null")]
+    [InlineData("duplicate-field")]
+    [InlineData("malformed-json")]
+    [InlineData("unknown-field")]
+    [InlineData("wrong-field-type")]
+    [InlineData("excessive-depth")]
+    [InlineData("truncated-header")]
+    [InlineData("truncated-body")]
+    [InlineData("anonymous")]
+    [InlineData("cancelled")]
+    public async Task PipeRepeatedRejectedConnectionsCompleteWithoutDispatchAndNextRequestSucceeds(string rejectedInput)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var name = "cerberus-control-test-" + Guid.NewGuid().ToString("N");
+        var dispatched = 0;
+        var expected = new AgentLocalControlResponse(true, "healthy");
+        var server = new AgentLocalControlServer((_, _) =>
+        {
+            dispatched++;
+            return Task.FromResult(expected);
+        });
+        var valid = Frame("{\"operation\":\"status\"}");
+        var rejected = rejectedInput switch
+        {
+            "zero-length" => BitConverter.GetBytes(0),
+            "negative-length" => BitConverter.GetBytes(-1),
+            "oversized-length" => BitConverter.GetBytes(AgentLocalControlProtocol.MaxFrameBytes + 1),
+            "nonobject" => Frame("[]"),
+            "null" => Frame("null"),
+            "duplicate-field" => Frame("{\"operation\":\"status\",\"operation\":\"status\"}"),
+            "malformed-json" => Frame("{broken"),
+            "unknown-field" => Frame("{\"operation\":\"status\",\"unknown\":true}"),
+            "wrong-field-type" => Frame("{\"operation\":1}"),
+            "excessive-depth" => Frame("{\"operation\":[[[[[]]]]]}"),
+            "truncated-header" => new byte[] { 1, 0 },
+            "truncated-body" => valid[..^1],
+            "anonymous" or "cancelled" => valid,
+            _ => throw new ArgumentOutOfRangeException(nameof(rejectedInput))
+        };
+
+        // Four faulted tasks previously exhausted RunAsync's active-connection budget.
+        var rejectedTasks = new List<Task>();
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            using var stopped = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+            await using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+            await using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous,
+                rejectedInput == "anonymous" ? TokenImpersonationLevel.Anonymous : TokenImpersonationLevel.None);
+            var accepted = pipe.WaitForConnectionAsync(timeout.Token);
+            await client.ConnectAsync(timeout.Token);
+            await accepted;
+            var handling = server.HandleConnectionAsync(pipe, stopped.Token);
+            rejectedTasks.Add(handling);
+            if (rejectedInput == "cancelled")
+                stopped.Cancel();
+            else
+                await client.WriteAsync(rejected, timeout.Token);
+            if (rejectedInput.StartsWith("truncated-", StringComparison.Ordinal))
+                await client.DisposeAsync();
+            else
+                Assert.Equal(0, await client.ReadAsync(new byte[1], timeout.Token));
+            await handling.WaitAsync(timeout.Token);
+            Assert.True(handling.IsCompletedSuccessfully);
+            Assert.Equal(0, dispatched);
+        }
+        // Exercise the listener's completed-task await boundary, not just client disconnects.
+        await await Task.WhenAny(rejectedTasks);
+        await Task.WhenAll(rejectedTasks);
+
+        await using var nextPipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+        await using var nextClient = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var nextAccepted = nextPipe.WaitForConnectionAsync(timeout.Token);
+        await nextClient.ConnectAsync(timeout.Token);
+        await nextAccepted;
+        var nextHandling = server.HandleConnectionAsync(nextPipe, timeout.Token);
+        await nextClient.WriteAsync(valid, timeout.Token);
+        Assert.Equal(expected, await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(nextClient, timeout.Token));
+        await nextHandling.WaitAsync(timeout.Token);
+        Assert.Equal(1, dispatched);
+
+        static byte[] Frame(string json)
+        {
+            var payload = Encoding.UTF8.GetBytes(json);
+            return [.. BitConverter.GetBytes(payload.Length), .. payload];
+        }
+    }
+
+    [Fact]
+    public async Task PipeDoesNotTreatAuthorizedHandlerFailureAsMalformedInput()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var name = "cerberus-control-test-" + Guid.NewGuid().ToString("N");
+        await using var pipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, 4096, 4096);
+        await using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        var accepted = pipe.WaitForConnectionAsync(timeout.Token);
+        await client.ConnectAsync(timeout.Token);
+        await accepted;
+        var failure = new InvalidDataException("Trusted handler failure must remain observable.");
+        var server = new AgentLocalControlServer((_, _) => Task.FromException<AgentLocalControlResponse>(failure));
+        var handling = server.HandleConnectionAsync(pipe, timeout.Token);
+        await AgentLocalControlProtocol.WriteAsync(client, new AgentLocalControlRequest("status"), timeout.Token);
+        Assert.Same(failure, await Assert.ThrowsAsync<InvalidDataException>(() => handling.WaitAsync(timeout.Token)));
+    }
+
     private static AgentHttpFailureInfo Terminal() => new(HttpStatusCode.Unauthorized, "AUTH_UNAUTHORIZED", "agent_revoked", null, null, null);
     [Theory]
     [InlineData(false)]
