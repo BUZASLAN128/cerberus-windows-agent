@@ -32,6 +32,54 @@ public sealed class AgentLifecycleControlTests
         Assert.False(secrets.Cleared);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task ResourceOperationStatusDoesNotBlockOrQuiesce(HttpStatusCode status)
+    {
+        var state = new InMemoryAgentLifecycleStateStore();
+        var quiesceCalls = 0;
+        var controller = new AgentLifecycleController(state, quiesce: _ =>
+        {
+            quiesceCalls++;
+            return Task.CompletedTask;
+        });
+
+        var result = await controller.RecordHttpFailureAsync(
+            new AgentHttpFailureInfo(status, null, null, null, null, null),
+            duringRefresh: false,
+            manualOperation: false,
+            default,
+            resourceOperation: true);
+
+        Assert.Equal(AgentLifecycleState.Active, result.State);
+        Assert.Equal(AgentLifecycleState.Active, (await state.LoadAsync(default)).State);
+        Assert.Equal(0, quiesceCalls);
+    }
+
+    [Fact]
+    public async Task ResourceOperationWithExplicitConfigCodeStillBlocksAndQuiesces()
+    {
+        var state = new InMemoryAgentLifecycleStateStore();
+        var quiesceCalls = 0;
+        var controller = new AgentLifecycleController(state, quiesce: _ =>
+        {
+            quiesceCalls++;
+            return Task.CompletedTask;
+        });
+
+        var result = await controller.RecordHttpFailureAsync(
+            new AgentHttpFailureInfo(HttpStatusCode.NotFound, null, "agent_config_mismatch", null, null, null),
+            duringRefresh: false,
+            manualOperation: false,
+            default,
+            resourceOperation: true);
+
+        Assert.Equal(AgentLifecycleState.BlockedConfig, result.State);
+        Assert.Equal(AgentLifecycleState.BlockedConfig, (await state.LoadAsync(default)).State);
+        Assert.Equal(1, quiesceCalls);
+    }
+
     [Fact]
     public async Task CanonicalTerminalRequiresExpectedAuthenticatedOperation()
     {

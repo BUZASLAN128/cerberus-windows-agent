@@ -13,7 +13,15 @@ namespace Cerberus.Agent.Installer.Helper;
 internal static class Program
 {
     private const string ServiceName = "CerberusAgent";
-    private sealed record Snapshot(string ImagePath, uint StartType, uint State, bool DelayedAutoStart, DateTimeOffset CapturedUtc, bool Completed = false);
+    // OpenService reports an optional service absence only with this exact SCM code.
+    // Access denied and every other SCM error must remain a hard installer failure.
+    private const int ErrorServiceDoesNotExist = 1060; // ERROR_SERVICE_DOES_NOT_EXIST
+    private sealed record Snapshot(string? ImagePath, uint StartType, uint State, bool DelayedAutoStart, DateTimeOffset CapturedUtc, bool Completed = false)
+    {
+        // Older transaction records predate the marker and therefore describe a
+        // captured, present service. New app-only upgrades persist false explicitly.
+        public bool ServicePresent { get; init; } = true;
+    }
 
     public static async Task<int> Main(string[] args)
     {
@@ -34,27 +42,70 @@ internal static class Program
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
             AgentUpdateSecurity.EnsureProtectedRoot(root);
             var snapshotPath = Path.Combine(root, product.ToString("N") + ".json");
+
+            var snapshot = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root);
+            if (operation == "capture")
+            {
+                if (snapshot is not null && !snapshot.Completed)
+                    throw new InvalidOperationException("An unfinished installer transaction requires recovery.");
+            }
+            else
+            {
+                // A durable absent marker owns this transaction's service scope.
+                // Do not reopen SCM here: a service created concurrently (for
+                // example by enrollment) must not be adopted or started by MSI.
+                if (snapshot is not null && !snapshot.ServicePresent)
+                {
+                    if (operation is ("restore" or "health" or "commit"))
+                    {
+                        // No service mutation occurred for an absent snapshot; after
+                        // rollback/health reaches this checkpoint, the transaction
+                        // has no forward state left that could require restoration.
+                        CompleteSnapshot(snapshotPath, root, snapshot);
+                    }
+                    return 0;
+                }
+
+                // Rollback may run before capture was committed. There was no
+                // service mutation to undo, so it must remain a no-op.
+                if (snapshot is null && operation is ("restore" or "stop"))
+                    return 0;
+                if (snapshot is null && operation is ("configure" or "health" or "commit"))
+                    throw new InvalidOperationException("SCM rollback snapshot is missing.");
+                if (snapshot is not null && snapshot.ServicePresent && string.IsNullOrWhiteSpace(snapshot.ImagePath))
+                    throw new InvalidOperationException("SCM rollback snapshot is invalid.");
+            }
+
             using var manager = OpenSCManager(null, null, 1);
             ThrowIfInvalid(manager);
-            using var service = OpenService(manager, ServiceName, 0x77);
-            ThrowIfInvalid(service);
+            using var service = OpenExistingService(manager);
+            if (service is null)
+            {
+                if (operation == "capture" && (snapshot is null || !snapshot.ServicePresent))
+                {
+                    AgentUpdateDurableFile.Write(snapshotPath, root, CreateAbsentSnapshot());
+                    return 0;
+                }
+
+                // A present snapshot losing its service is not equivalent to an
+                // app-only upgrade. Preserve the failure instead of silently
+                // skipping rollback, repair, or health verification.
+                throw new Win32Exception(ErrorServiceDoesNotExist);
+            }
+
             switch (operation)
             {
                 case "capture":
-                    var existing = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root);
-                    if (existing is not null && !existing.Completed)
-                        throw new InvalidOperationException("An unfinished installer transaction requires recovery.");
                     AgentUpdateDurableFile.Write(snapshotPath, root, Capture(service));
                     break;
                 case "stop":
                     Stop(service);
                     break;
                 case "restore":
-                    var before = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root);
-                    // A failure before capture performed no forward mutation.
-                    if (before is null) return 0;
+                    var before = snapshot ?? throw new InvalidOperationException("SCM rollback snapshot is missing.");
+                    var imagePath = before.ImagePath ?? throw new InvalidOperationException("SCM rollback snapshot is invalid.");
                     Stop(service);
-                    Configure(service, before.ImagePath, before.StartType, before.DelayedAutoStart);
+                    Configure(service, imagePath, before.StartType, before.DelayedAutoStart);
                     if (before.State is 4 or 7)
                     {
                         Start(service);
@@ -64,10 +115,10 @@ internal static class Program
                             WaitForState(service, 7);
                         }
                     }
-                    AgentUpdateDurableFile.Write(snapshotPath, root, before with { Completed = true });
+                    CompleteSnapshot(snapshotPath, root, before);
                     break;
                 case "configure":
-                    var captured = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root)
+                    var captured = snapshot
                         ?? throw new InvalidOperationException("SCM rollback snapshot is missing.");
                     var executable = Path.Combine(Path.GetFullPath(args[2]), "Cerberus.Agent.Service.exe");
                     AgentUpdateSecurity.ValidateTrustedPath(executable, Path.GetFullPath(args[2]), allowMissing: false);
@@ -79,9 +130,9 @@ internal static class Program
                         Path.Combine(root, product.ToString("N") + ".health-failure.json"), root).ConfigureAwait(false);
                     break;
                 case "commit":
-                    var committed = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root)
+                    var committed = snapshot
                         ?? throw new InvalidOperationException("SCM rollback snapshot is missing.");
-                    AgentUpdateDurableFile.Write(snapshotPath, root, committed with { Completed = true });
+                    CompleteSnapshot(snapshotPath, root, committed);
                     break;
             }
             return 0;
@@ -92,6 +143,18 @@ internal static class Program
             Console.Error.WriteLine("Cerberus installer action failed: " + ex.GetType().Name);
             return 1603;
         }
+    }
+
+    private static Snapshot CreateAbsentSnapshot()
+        => new(null, 0, 1, false, DateTimeOffset.UtcNow)
+        {
+            ServicePresent = false,
+        };
+
+    private static void CompleteSnapshot(string snapshotPath, string root, Snapshot snapshot)
+    {
+        if (!snapshot.Completed)
+            AgentUpdateDurableFile.Write(snapshotPath, root, snapshot with { Completed = true });
     }
 
     private static Snapshot Capture(ServiceHandle service)
@@ -108,9 +171,25 @@ internal static class Program
             var delayed = new DelayedAutoStart();
             Check(QueryServiceConfig2(service, 3, ref delayed, (uint)Marshal.SizeOf<DelayedAutoStart>(), out _));
             return new Snapshot(Marshal.PtrToStringUni(config.BinaryPath) ?? throw new InvalidOperationException("SCM path is missing."),
-                config.StartType, state, delayed.Enabled != 0, DateTimeOffset.UtcNow);
+                config.StartType, state, delayed.Enabled != 0, DateTimeOffset.UtcNow)
+            {
+                ServicePresent = true,
+            };
         }
         finally { Marshal.FreeHGlobal(memory); }
+    }
+
+    private static ServiceHandle? OpenExistingService(ServiceHandle manager)
+    {
+        var service = OpenService(manager, ServiceName, 0x77);
+        if (!service.IsInvalid)
+            return service;
+
+        var error = Marshal.GetLastWin32Error();
+        service.Dispose();
+        if (error == ErrorServiceDoesNotExist)
+            return null;
+        throw new Win32Exception(error);
     }
 
     private static void Configure(ServiceHandle service, string path, uint startType, bool delayed)

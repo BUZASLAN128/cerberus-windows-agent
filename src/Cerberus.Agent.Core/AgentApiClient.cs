@@ -153,8 +153,10 @@ public sealed class AgentApiClient
         using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
         using var response = await SendSignedRequestAsync(HttpMethod.Post,
             $"/api/v1/agents/{Uri.EscapeDataString(identity.AgentId)}/commands/{Uri.EscapeDataString(command.Id)}/ad-authority",
-            new { lease_id = command.LeaseId }, ct, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
-        await EnsureSuccessAsync("AD command authority", response, ct, deadline.Token).ConfigureAwait(false);
+            new { lease_id = command.LeaseId }, ct, HttpCompletionOption.ResponseHeadersRead, deadline.Token,
+            resourceOperation: true).ConfigureAwait(false);
+        await EnsureSuccessAsync("AD command authority", response, ct, deadline.Token,
+            resourceOperation: true).ConfigureAwait(false);
         var authority = await AgentHttpFailure.ReadJsonAsync<AdCommandAuthority>("AD command authority",
             response, _http, JsonOpts, ct, deadline.Token).ConfigureAwait(false);
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
@@ -186,8 +188,9 @@ public sealed class AgentApiClient
             path,
             body,
             ct,
-            HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-        await EnsureSuccessAsync("Command result", resp, ct).ConfigureAwait(false);
+            HttpCompletionOption.ResponseHeadersRead,
+            resourceOperation: true).ConfigureAwait(false);
+        await EnsureSuccessAsync("Command result", resp, ct, resourceOperation: true).ConfigureAwait(false);
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
@@ -366,10 +369,12 @@ public sealed class AgentApiClient
         object body,
         CancellationToken ct,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
-        CancellationToken? deadlineCt = null)
+        CancellationToken? deadlineCt = null,
+        bool resourceOperation = false)
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);
-        return await SendSignedJsonRequestAsync(method, path, json, ct, completionOption, deadlineCt).ConfigureAwait(false);
+        return await SendSignedJsonRequestAsync(method, path, json, ct, completionOption, deadlineCt,
+            resourceOperation).ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedJsonRequestAsync(
@@ -378,7 +383,8 @@ public sealed class AgentApiClient
         string json,
         CancellationToken ct,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
-        CancellationToken? deadlineCt = null)
+        CancellationToken? deadlineCt = null,
+        bool resourceOperation = false)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var response = await SendSignedJsonRequestOnceAsync(
@@ -429,10 +435,8 @@ public sealed class AgentApiClient
             deadlineCt).ConfigureAwait(false);
 
         if (_lifecycleState is not null &&
-            retried.StatusCode is HttpStatusCode.Unauthorized or
-                HttpStatusCode.Forbidden or
-                HttpStatusCode.NotFound or
-                HttpStatusCode.Conflict)
+            (retried.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ||
+             (!resourceOperation && retried.StatusCode is (HttpStatusCode.NotFound or HttpStatusCode.Conflict))))
         {
             var retryFailure = await AgentHttpFailure.CreateAsync(
                 "Agent request",
@@ -457,7 +461,8 @@ public sealed class AgentApiClient
                     manualOperation: _manualOperation,
                     ct,
                     expectedGeneration: RequestGeneration(retried),
-                    authenticatedControlPlane: true)
+                    authenticatedControlPlane: true,
+                    resourceOperation: resourceOperation)
                 .ConfigureAwait(false);
             throw retryFailure;
         }
@@ -469,7 +474,8 @@ public sealed class AgentApiClient
         string operation,
         HttpResponseMessage response,
         CancellationToken ct,
-        CancellationToken? deadlineCt = null)
+        CancellationToken? deadlineCt = null,
+        bool resourceOperation = false)
     {
         if (response.IsSuccessStatusCode)
             return;
@@ -498,7 +504,8 @@ public sealed class AgentApiClient
                     manualOperation: _manualOperation,
                     ct,
                     expectedGeneration: RequestGeneration(response),
-                    authenticatedControlPlane: true)
+                    authenticatedControlPlane: true,
+                    resourceOperation: resourceOperation)
                 .ConfigureAwait(false);
         }
         throw failure;

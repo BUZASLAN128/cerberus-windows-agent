@@ -163,6 +163,7 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.v2.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update channel latest release
@@ -187,6 +188,7 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
+            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.v2.json `
             "out/public-release/publish/$latestInstallerBase.msi" `
             "out/public-release/publish/$latestAssetBase.zip" `
             "out/public-release/publish/$latestAssetBase.sha256" `
@@ -194,6 +196,7 @@ jobs:
             "out/public-release/publish/$latestAssetBase.provenance.json" `
             "out/public-release/publish/$latestAssetBase.release-gate.json" `
             "out/public-release/publish/$latestAssetBase.update-manifest.json" `
+            "out/public-release/publish/$latestAssetBase.update-manifest.v2.json" `
             --title "Cerberus Windows Agent $latestTag" `
             --notes-file out/release-notes.md `
             --prerelease

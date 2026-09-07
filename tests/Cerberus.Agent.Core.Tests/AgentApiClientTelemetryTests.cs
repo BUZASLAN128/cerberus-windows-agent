@@ -112,6 +112,45 @@ public sealed class AgentApiClientTelemetryTests
         Assert.Single(body.RootElement.EnumerateObject());
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Conflict)]
+    public async Task ResourceOperationFailuresDoNotQuiesceLifecycle(HttpStatusCode status)
+    {
+        var state = new InMemoryAgentLifecycleStateStore();
+        var quiesceCalls = 0;
+        using var http = new HttpClient(new FailureHandler(
+            status,
+            new StringContent("{}", Encoding.UTF8, "application/json")))
+        {
+            BaseAddress = new Uri("http://backend.test")
+        };
+        var client = new AgentApiClient(
+            http,
+            new StaticSecretStore(),
+            new StaticTokenManager(),
+            new StaticSigner(),
+            lifecycleState: state,
+            quiesce: _ =>
+            {
+                quiesceCalls++;
+                return Task.CompletedTask;
+            });
+
+        var command = new AgentCommand(
+            "cmd-ad",
+            "windows.ad_user.disable",
+            "idem-ad",
+            new { username = "resource" },
+            LeaseId: "lease-ad");
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAdCommandAuthorityAsync(command, default));
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SubmitCommandResultAsync(
+            "cmd-result", new { status = "DONE" }, default));
+
+        Assert.Equal(AgentLifecycleState.Active, (await state.LoadAsync(default)).State);
+        Assert.Equal(0, quiesceCalls);
+    }
+
     [Fact]
     public async Task ManagedAccountManifest_UsesSignedAgentScopedGetWithEmptyBody()
     {

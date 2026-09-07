@@ -197,7 +197,8 @@ public static class AgentLifecycleStatePolicy
         AgentHttpFailureInfo failure,
         bool duringRefresh,
         bool manualOperation,
-        int priorGenericAuthFailures)
+        int priorGenericAuthFailures,
+        bool resourceOperation = false)
     {
         if (failure.StatusCode == HttpStatusCode.Unauthorized && IsTerminalCode(failure.Code))
             return AgentLifecycleState.Retired;
@@ -206,7 +207,7 @@ public static class AgentLifecycleStatePolicy
             return AgentLifecycleState.NeedsReenrollment;
 
         if (IsProtocolOrConfigCode(failure.Code) ||
-            failure.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
+            (!resourceOperation && failure.StatusCode is (HttpStatusCode.NotFound or HttpStatusCode.Conflict)))
         {
             return AgentLifecycleState.BlockedConfig;
         }
@@ -357,12 +358,14 @@ public sealed class AgentLifecycleController
         bool manualOperation,
         CancellationToken ct,
         long? expectedGeneration = null,
-        bool authenticatedControlPlane = false)
-        => RecordHttpFailureCoreAsync(failure, duringRefresh, manualOperation, ct, expectedGeneration, authenticatedControlPlane, 8);
+        bool authenticatedControlPlane = false,
+        bool resourceOperation = false)
+        => RecordHttpFailureCoreAsync(failure, duringRefresh, manualOperation, ct, expectedGeneration,
+            authenticatedControlPlane, resourceOperation, 8);
 
     private async Task<AgentLifecycleSnapshot> RecordHttpFailureCoreAsync(AgentHttpFailureInfo failure,
         bool duringRefresh, bool manualOperation, CancellationToken ct, long? expectedGeneration,
-        bool authenticatedControlPlane, int remainingCasAttempts)
+        bool authenticatedControlPlane, bool resourceOperation, int remainingCasAttempts)
     {
         var current = AgentLifecycleStatePolicy.Normalize(
             await _store.LoadAsync(ct).ConfigureAwait(false));
@@ -375,7 +378,8 @@ public sealed class AgentLifecycleController
             failure,
             duringRefresh,
             manualOperation,
-            current.GenericAuthFailureCount);
+            current.GenericAuthFailureCount,
+            resourceOperation);
 
         // Retired is terminal. A late response from an in-flight request must
         // never make a retired agent active or degraded again.
@@ -423,7 +427,7 @@ public sealed class AgentLifecycleController
             if (remainingCasAttempts <= 0)
                 throw new InvalidOperationException("Lifecycle deny could not be committed.");
             return await RecordHttpFailureCoreAsync(failure, duringRefresh, manualOperation, ct,
-                expectedGeneration, authenticatedControlPlane, remainingCasAttempts - 1).ConfigureAwait(false);
+                expectedGeneration, authenticatedControlPlane, resourceOperation, remainingCasAttempts - 1).ConfigureAwait(false);
         }
         next = await CompletePendingQuiescenceAsync(ct).ConfigureAwait(false);
         if (nextState == AgentLifecycleState.Retired)

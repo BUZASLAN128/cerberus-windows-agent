@@ -264,8 +264,22 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
         Assert.Contains("$latestAssetBase", workflow);
         Assert.Contains("$latestInstallerBase", workflow);
+        Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.v2.json", workflow);
         Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
+        Assert.Contains("$latestAssetBase.update-manifest.v2.json", workflow);
         Assert.Contains("$latestInstallerBase.msi", workflow);
+
+        var installerHelper = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Helper",
+            "Program.cs"));
+        Assert.Contains("ErrorServiceDoesNotExist", installerHelper);
+        Assert.Contains("ServicePresent = false", installerHelper);
+        Assert.Contains("if (snapshot is not null && !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("operation == \"capture\" && (snapshot is null || !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("if (service is null)", installerHelper);
 
         var eulaRtf = File.ReadAllText(Path.Combine(
             repoRoot,
