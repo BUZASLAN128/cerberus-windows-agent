@@ -146,9 +146,7 @@ public sealed class AgentApiClient
     public async Task<AdCommandAuthority> GetAdCommandAuthorityAsync(AgentCommand command, CancellationToken ct)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(command.Id) || command.Id.Length > 128 ||
-            string.IsNullOrWhiteSpace(command.LeaseId) || command.LeaseId.Length > 128)
-            throw new InvalidOperationException("AD command lease is required.");
+        ValidateAdCommandLease(command);
         var (identity, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
         using var response = await SendSignedRequestAsync(HttpMethod.Post,
@@ -164,10 +162,42 @@ public sealed class AgentApiClient
             (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation != RequestGeneration(response))
             throw new InvalidOperationException("AD authority enrollment generation changed.");
         if (authority is null || authority.TenantId != identity.TenantId || authority.AgentId != identity.AgentId ||
-            authority.Command is null || authority.ExpiresAt.Offset != TimeSpan.Zero ||
+            authority.Command is null ||
+            authority.Command.Id != command.Id ||
+            authority.Command.Type != command.Type ||
+            authority.Command.IdempotencyKey != command.IdempotencyKey ||
+            authority.Command.LeaseId != command.LeaseId ||
+            authority.ExpiresAt.Offset != TimeSpan.Zero ||
             authority.ExpiresAt <= DateTimeOffset.UtcNow || authority.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
             throw new InvalidOperationException("AD command authority is invalid.");
         return authority;
+    }
+
+    /// <summary>
+    /// Acknowledges an AD command lease before executing it. Non-AD commands keep
+    /// the legacy command flow and do not send an acknowledgement request.
+    /// </summary>
+    public async Task SubmitCommandAckAsync(AgentCommand command, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (!IsAdCommand(command))
+            return;
+
+        ValidateAdCommandLease(command);
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var (identity, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        var path = $"/api/v1/agents/{Uri.EscapeDataString(identity.AgentId)}/commands/" +
+                   $"{Uri.EscapeDataString(command.Id)}/ack";
+
+        using var response = await SendSignedRequestAsync(
+            HttpMethod.Post,
+            path,
+            new { lease_id = command.LeaseId },
+            ct,
+            HttpCompletionOption.ResponseHeadersRead,
+            resourceOperation: true).ConfigureAwait(false);
+        await EnsureSuccessAsync("Command acknowledgement", response, ct, resourceOperation: true)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -181,7 +211,8 @@ public sealed class AgentApiClient
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
-        var path = $"/api/v1/agents/{id.AgentId}/commands/{commandId}/result";
+        var path = $"/api/v1/agents/{Uri.EscapeDataString(id.AgentId)}/commands/" +
+                   $"{Uri.EscapeDataString(commandId)}/result";
 
         using var resp = await SendSignedRequestAsync(
             HttpMethod.Post,
@@ -191,6 +222,39 @@ public sealed class AgentApiClient
             HttpCompletionOption.ResponseHeadersRead,
             resourceOperation: true).ConfigureAwait(false);
         await EnsureSuccessAsync("Command result", resp, ct, resourceOperation: true).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Submits a command result while preserving the delivered AD lease binding.
+    /// Non-AD results retain the legacy result body without a lease field.
+    /// </summary>
+    public Task SubmitCommandResultAsync(AgentCommand command, CommandResult result, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(result);
+
+        var legacyBody = new
+        {
+            status = result.Status,
+            exit_code = result.ExitCode,
+            stdout = result.Stdout,
+            stderr = result.Stderr,
+            post_verify = result.PostVerify,
+        };
+
+        object body = IsAdCommand(command)
+            ? new
+            {
+                status = result.Status,
+                exit_code = result.ExitCode,
+                stdout = result.Stdout,
+                stderr = result.Stderr,
+                post_verify = result.PostVerify,
+                lease_id = ValidateAdCommandLease(command),
+            }
+            : legacyBody;
+
+        return SubmitCommandResultAsync(command.Id, body, ct);
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
@@ -469,6 +533,22 @@ public sealed class AgentApiClient
 
         return retried;
     }
+
+    private static bool IsAdCommand(AgentCommand command)
+        => command.Type?.StartsWith("windows.ad_user.", StringComparison.Ordinal) == true;
+
+    private static string ValidateAdCommandLease(AgentCommand command)
+    {
+        if (!BoundedCommandValue(command.Id) ||
+            !BoundedCommandValue(command.IdempotencyKey) ||
+            !BoundedCommandValue(command.LeaseId))
+            throw new InvalidOperationException("AD command lease is required.");
+
+        return command.LeaseId!;
+    }
+
+    private static bool BoundedCommandValue(string? value)
+        => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 && !value.Any(char.IsControl);
 
     private async Task EnsureSuccessAsync(
         string operation,

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -202,6 +203,81 @@ public sealed class HeartbeatLoopTests
         Assert.Equal(2, handler.CommandResults.Count);
         Assert.Contains(handler.CommandResults, body => body.Contains("\"status\":\"FAILED\""));
         Assert.Contains(handler.CommandResults, body => body.Contains("\"status\":\"DONE\""));
+    }
+
+    [Fact]
+    public async Task RunAsync_AcknowledgesAdLeaseBeforeDispatchAndReportsSameLease()
+    {
+        var trace = new List<string>();
+        var handler = new AdCommandLoopHandler(blockAckResponse: true, trace: trace.Add);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var cachePath = Path.Combine(
+            Path.GetTempPath(),
+            "cerberus-agent-tests",
+            Guid.NewGuid().ToString("N"),
+            "idempotency.json");
+        var dispatcher = new CommandDispatcher(
+            new ICommandHandler[] { new AuthoritativeCommandHandler(() => trace.Add("dispatch")) },
+            new IdempotencyCache(cachePath, maxEntries: 10, ttl: TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            log: NullAgentLogger.Instance);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.AckRequestedTask.WaitAsync(cts.Token);
+        Assert.Equal(new[] { "ack" }, trace);
+        handler.ReleaseAckResponse();
+        await handler.ResultSubmittedTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Equal(new[] { "ack", "dispatch", "result" }, trace);
+        Assert.Equal(new[] { "ack", "result" }, handler.Operations);
+        Assert.Equal("lease-ad", handler.Leases[0]);
+        Assert.Equal("lease-ad", handler.Leases[1]);
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotDispatchOrReportAdCommand_WhenAckIsRejected()
+    {
+        var handler = new AdCommandLoopHandler(HttpStatusCode.Conflict);
+        var dispatches = new List<string>();
+        var failureObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var cachePath = Path.Combine(
+            Path.GetTempPath(),
+            "cerberus-agent-tests",
+            Guid.NewGuid().ToString("N"),
+            "idempotency.json");
+        var dispatcher = new CommandDispatcher(
+            new ICommandHandler[] { new AuthoritativeCommandHandler(() => dispatches.Add("dispatch")) },
+            new IdempotencyCache(cachePath, maxEntries: 10, ttl: TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            log: NullAgentLogger.Instance,
+            backoffResetRequested: _ =>
+            {
+                failureObserved.TrySetResult();
+                return Task.FromResult(false);
+            });
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await failureObserved.Task.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Empty(dispatches);
+        Assert.Equal(new[] { "ack" }, handler.Operations);
+        Assert.Single(handler.Leases);
+        Assert.Equal("lease-ad", handler.Leases[0]);
     }
 
     [Fact]
@@ -553,6 +629,107 @@ public sealed class HeartbeatLoopTests
             };
     }
 
+    private sealed class AdCommandLoopHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _ackStatus;
+        private readonly bool _blockAckResponse;
+        private readonly Action<string>? _trace;
+        private readonly TaskCompletionSource _ackRequested =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _ackResponseRelease =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public AdCommandLoopHandler(
+            HttpStatusCode ackStatus = HttpStatusCode.OK,
+            bool blockAckResponse = false,
+            Action<string>? trace = null)
+        {
+            _ackStatus = ackStatus;
+            _blockAckResponse = blockAckResponse;
+            _trace = trace;
+        }
+
+        public List<string> Operations { get; } = [];
+        public List<string> Leases { get; } = [];
+        public Task ResultSubmittedTask => _resultSubmitted.Task;
+        public Task AckRequestedTask => _ackRequested.Task;
+
+        public void ReleaseAckResponse() => _ackResponseRelease.TrySetResult();
+
+        private readonly TaskCompletionSource _resultSubmitted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "pending_commands": [
+                        {
+                          "id": "cmd-ad",
+                          "type": "windows.ad_user.disable",
+                          "idempotency_key": "idem-ad",
+                          "lease_id": "lease-ad",
+                          "payload": {}
+                        }
+                      ],
+                      "next_poll_seconds": 60,
+                      "server_time": 1,
+                      "server_time_utc": "2026-05-08T00:00:00Z",
+                      "command_batch_size": 1,
+                      "next_snapshot_seconds": 60,
+                      "config_version": "agent-config.v1",
+                      "lifecycle_state": "connected",
+                      "agent_status": "active",
+                      "version_policy": null,
+                      "update": null,
+                      "revoke": null,
+                      "quarantine": null
+                    }
+                    """);
+            }
+
+            if (path.EndsWith("/ack", StringComparison.Ordinal))
+            {
+                Operations.Add("ack");
+                Leases.Add(await ReadLeaseAsync(request, cancellationToken));
+                _trace?.Invoke("ack");
+                _ackRequested.TrySetResult();
+                if (_blockAckResponse)
+                    await _ackResponseRelease.Task.WaitAsync(cancellationToken);
+                return JsonResponse("{}", _ackStatus);
+            }
+
+            if (path.EndsWith("/result", StringComparison.Ordinal))
+            {
+                Operations.Add("result");
+                Leases.Add(await ReadLeaseAsync(request, cancellationToken));
+                _trace?.Invoke("result");
+                _resultSubmitted.TrySetResult();
+                return JsonResponse("{}");
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static async Task<string> ReadLeaseAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+            return body.RootElement.GetProperty("lease_id").GetString()!;
+        }
+
+        private static HttpResponseMessage JsonResponse(string json, HttpStatusCode status = HttpStatusCode.OK)
+            => new(status)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+    }
+
     private sealed class StaticTelemetryProvider : IAgentTelemetryProvider
     {
         public Task<AgentSnapshotRequest> BuildSnapshotAsync(
@@ -570,6 +747,31 @@ public sealed class HeartbeatLoopTests
         public string Type => "test.command";
         public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
             => Task.FromResult(new CommandResult("DONE", 0, null, null, null));
+    }
+
+    private sealed class AuthoritativeCommandHandler : IAuthoritativeCommandExecutionGate
+    {
+        private readonly Action? _onAuthorizedDispatch;
+
+        public AuthoritativeCommandHandler(Action? onAuthorizedDispatch = null)
+            => _onAuthorizedDispatch = onAuthorizedDispatch;
+
+        public string Type => "windows.ad_user.disable";
+
+        public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
+            => Task.FromResult(new CommandResult("FAILED", 1, null, "not authorized", null));
+
+        public Task<CommandResult> ExecuteAuthorizedAsync(
+            AgentCommand command,
+            Func<AgentCommand, CancellationToken, Task<CommandResult>> execute,
+            CancellationToken ct)
+            => execute(command, ct);
+
+        public Task<CommandResult> HandleAuthorizedAsync(AgentCommand command, CancellationToken ct)
+        {
+            _onAuthorizedDispatch?.Invoke();
+            return Task.FromResult(new CommandResult("DONE", 0, null, null, new { code = "ad_disabled" }));
+        }
     }
 
     private sealed class ThrowingCommandHandler : ICommandHandler

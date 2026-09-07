@@ -1,6 +1,6 @@
 # AD and Domain Controller Compatibility
 
-Date: 2026-09-06
+Date: 2026-09-08
 
 This note records the current Cerberus Windows Agent boundary for Active Directory and Windows local account commands.
 
@@ -12,6 +12,13 @@ This note records the current Cerberus Windows Agent boundary for Active Directo
 - Service mode registers `windows.ad_user.create`, `windows.ad_user.disable`, and `windows.ad_user.delete` through the scoped native AD provider. Legacy `ad.user.*` handlers are not registered.
 - AD is disabled unless a protected, identity-bound local policy explicitly enables a scope. It requires LocalSystem on a domain member workstation/server, never a domain controller or standalone host. Local SAM behavior remains separate.
 - Each execution fetches signed backend authority for the current command lease, binds the tenant/agent and lifecycle generation, and expires within 30 seconds. AD never trusts or writes the general idempotency cache.
+
+AD acknowledgments and results echo the exact delivered lease. Execution starts
+only after acknowledgment succeeds; a result from an earlier lease cannot finish
+a newly leased command. Deploy the matching Windows client before enabling the
+backend's required AD lease check. Older clients that omit the lease are rejected
+for AD commands; non-AD command bodies retain their existing contract. This
+compatibility order is deployment guidance, not evidence that a rollout occurred.
 
 ## Explicit opt-in and delegation
 

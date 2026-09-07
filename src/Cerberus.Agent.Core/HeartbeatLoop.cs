@@ -521,16 +521,9 @@ public sealed class HeartbeatLoop
             var timeout = string.Equals(cmd.Type, "agent.update.request", StringComparison.Ordinal)
                 ? Max(_commandTimeout, TimeSpan.FromMinutes(20))
                 : _commandTimeout;
+            await _api.SubmitCommandAckAsync(cmd, ct).ConfigureAwait(false);
             var res = await _dispatcher.DispatchAsync(cmd, timeout, ct).ConfigureAwait(false);
-            var resultBody = new
-            {
-                status = res.Status,
-                exit_code = res.ExitCode,
-                stdout = res.Stdout,
-                stderr = res.Stderr,
-                post_verify = res.PostVerify,
-            };
-            await _api.SubmitCommandResultAsync(cmd.Id, resultBody, ct).ConfigureAwait(false);
+            await _api.SubmitCommandResultAsync(cmd, res, ct).ConfigureAwait(false);
         }
         finally
         {

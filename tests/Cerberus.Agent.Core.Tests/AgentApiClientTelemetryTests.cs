@@ -112,6 +112,76 @@ public sealed class AgentApiClientTelemetryTests
         Assert.Single(body.RootElement.EnumerateObject());
     }
 
+    [Fact]
+    public async Task AdCommandAckAndResult_PostExactDeliveredLeaseWithSignatures()
+    {
+        var command = new AgentCommand(
+            "cmd-ad",
+            "windows.ad_user.disable",
+            "idem-ad",
+            new { username = "canonical" },
+            LeaseId: "lease-ad");
+        var handler = new RequestSequenceHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        await client.SubmitCommandAckAsync(command, default);
+        await client.SubmitCommandResultAsync(
+            command,
+            new CommandResult("FAILED", 1, null, "not completed", new { code = "ad_authority_required" }),
+            default);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(
+            "/api/v1/agents/a1/commands/cmd-ad/ack",
+            handler.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal(
+            "/api/v1/agents/a1/commands/cmd-ad/result",
+            handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal("signature", Assert.Single(request.Headers.GetValues("X-Signature"))));
+
+        using var ack = JsonDocument.Parse(handler.Bodies[0]);
+        Assert.Equal("lease-ad", ack.RootElement.GetProperty("lease_id").GetString());
+        Assert.Single(ack.RootElement.EnumerateObject());
+
+        using var result = JsonDocument.Parse(handler.Bodies[1]);
+        Assert.Equal("lease-ad", result.RootElement.GetProperty("lease_id").GetString());
+        Assert.Equal("FAILED", result.RootElement.GetProperty("status").GetString());
+        Assert.Equal("ad_authority_required", result.RootElement.GetProperty("post_verify").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task NonAdTypedResult_PreservesLegacyBodyAndSkipsAck()
+    {
+        var command = new AgentCommand("cmd", "test.command", "idem", new { });
+        var handler = new RequestSequenceHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        await client.SubmitCommandAckAsync(command, default);
+        await client.SubmitCommandResultAsync(command, new CommandResult("DONE", 0, null, null, null), default);
+
+        Assert.Single(handler.Requests);
+        Assert.EndsWith("/commands/cmd/result", handler.Requests[0].RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        using var result = JsonDocument.Parse(handler.Bodies[0]);
+        Assert.Equal("DONE", result.RootElement.GetProperty("status").GetString());
+        Assert.False(result.RootElement.TryGetProperty("lease_id", out _));
+    }
+
+    [Fact]
+    public async Task AdCommandAuthority_RejectsCanonicalCommandWithDifferentLease()
+    {
+        var delivered = new AgentCommand("cmd-ad", "windows.ad_user.disable", "idem-ad", new { }, LeaseId: "lease-delivered");
+        var canonical = delivered with { LeaseId = "lease-other" };
+        var handler = new CaptureHandler(JsonSerializer.Serialize(
+            new AdCommandAuthority("t1", "a1", DateTimeOffset.UtcNow.AddSeconds(25), canonical)));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetAdCommandAuthorityAsync(delivered, default));
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.Conflict)]
@@ -547,6 +617,26 @@ public sealed class AgentApiClientTelemetryTests
                     _responseBody,
                     Encoding.UTF8,
                     "application/json"),
+            };
+        }
+    }
+
+    private sealed class RequestSequenceHandler : HttpMessageHandler
+    {
+        public List<HttpRequestMessage> Requests { get; } = [];
+        public List<string> Bodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            Bodies.Add(request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json"),
             };
         }
     }
