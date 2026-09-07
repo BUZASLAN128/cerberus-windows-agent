@@ -3,12 +3,18 @@ using Cerberus.Agent.App.Telemetry.Sections;
 
 namespace Cerberus.Agent.App.Telemetry;
 
-public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider
+public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentTelemetrySnapshotTrigger
 {
     private readonly IReadOnlyList<IWindowsTelemetrySectionCollector> _sections;
+    private readonly IAgentTelemetrySnapshotTrigger? _snapshotTrigger;
 
     public WindowsTelemetryCollector()
-        : this(WindowsTelemetrySectionCatalog.CreateDefault())
+        : this(WindowsTelemetrySectionCatalog.CreateDefault(publishServiceObservation: false))
+    {
+    }
+
+    internal WindowsTelemetryCollector(bool publishServiceObservation)
+        : this(WindowsTelemetrySectionCatalog.CreateDefault(publishServiceObservation))
     {
     }
 
@@ -17,7 +23,14 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider
         _sections = sections.Count == 0
             ? throw new ArgumentException("At least one telemetry section is required.", nameof(sections))
             : sections;
+        _snapshotTrigger = sections.OfType<IAgentTelemetrySnapshotTrigger>().FirstOrDefault();
     }
+
+    public bool IsSnapshotRefreshRequired()
+        => _snapshotTrigger?.IsSnapshotRefreshRequired() is true;
+
+    public void MarkSnapshotSubmitted()
+        => _snapshotTrigger?.MarkSnapshotSubmitted();
 
     public async Task<AgentSnapshotRequest> BuildSnapshotAsync(
         AgentBuildMetadata metadata,

@@ -13,7 +13,8 @@ public sealed record AgentCommand(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("idempotency_key")] string IdempotencyKey,
-    [property: JsonPropertyName("payload")] object Payload);
+    [property: JsonPropertyName("payload")] object Payload,
+    [property: JsonPropertyName("lease_id")] string? LeaseId = null);
 
 public sealed record VersionPolicy(
     [property: JsonPropertyName("minimum_supported_version")] string? MinimumSupportedVersion,

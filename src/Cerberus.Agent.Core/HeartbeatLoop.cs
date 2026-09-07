@@ -170,9 +170,34 @@ public sealed class HeartbeatLoop
                 }
 
                 var now = DateTimeOffset.UtcNow;
-                if (_telemetryProvider is not null && now >= nextSnapshotAt)
+                var snapshotTrigger = _telemetryProvider as IAgentTelemetrySnapshotTrigger;
+                var snapshotRefreshRequired = false;
+                if (snapshotTrigger is not null)
                 {
-                    await TrySubmitSnapshotAsync(hb, ct).ConfigureAwait(false);
+                    try
+                    {
+                        snapshotRefreshRequired = snapshotTrigger.IsSnapshotRefreshRequired();
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"Snapshot refresh check failed: {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+
+                if (_telemetryProvider is not null && (now >= nextSnapshotAt || snapshotRefreshRequired))
+                {
+                    var snapshotSubmitted = await TrySubmitSnapshotAsync(hb, ct).ConfigureAwait(false);
+                    if (snapshotSubmitted && snapshotTrigger is not null)
+                    {
+                        try
+                        {
+                            snapshotTrigger.MarkSnapshotSubmitted();
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"Snapshot refresh acknowledgement failed: {ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
                     var snapshotDelay = Math.Max(hb.NextSnapshotSeconds, 60);
                     nextSnapshotAt = now.AddSeconds(snapshotDelay);
                 }
@@ -516,10 +541,10 @@ public sealed class HeartbeatLoop
     private static TimeSpan Max(TimeSpan left, TimeSpan right)
         => left >= right ? left : right;
 
-    private async Task TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
+    private async Task<bool> TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
     {
         if (_telemetryProvider is null)
-            return;
+            return false;
 
         AgentSnapshotRequest snapshot;
         try
@@ -529,18 +554,19 @@ public sealed class HeartbeatLoop
         catch (Exception ex)
         {
             _log.Warn($"Snapshot build failed: {ex.GetType().Name}: {ex.Message}");
-            return;
+            return false;
         }
 
         try
         {
             await _api.SubmitSnapshotAsync(snapshot, ct).ConfigureAwait(false);
+            return true;
         }
         catch (Exception ex)
         {
             _log.Warn($"Snapshot submit failed: {ex.GetType().Name}: {ex.Message}");
             if (_telemetryBuffer is null)
-                return;
+                return false;
             try
             {
                 await _telemetryBuffer.EnqueueAsync(
@@ -554,6 +580,7 @@ public sealed class HeartbeatLoop
             {
                 _log.Warn($"Snapshot offline buffer failed: {bufferEx.GetType().Name}: {bufferEx.Message}");
             }
+            return false;
         }
     }
 

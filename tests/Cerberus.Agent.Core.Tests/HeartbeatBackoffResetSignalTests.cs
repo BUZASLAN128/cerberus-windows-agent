@@ -13,9 +13,14 @@ public sealed class HeartbeatBackoffResetSignalTests
             Guid.NewGuid().ToString("N"),
             "heartbeat-backoff-reset.signal");
 
+        Assert.False(HeartbeatBackoffResetSignal.TryRequest(path, "manual_connect"));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         Assert.True(HeartbeatBackoffResetSignal.TryRequest(path, "manual_connect"));
 
         Assert.True(await HeartbeatBackoffResetSignal.ConsumeAsync(path, CancellationToken.None));
         Assert.False(await HeartbeatBackoffResetSignal.ConsumeAsync(path, CancellationToken.None));
+        Directory.Delete(Path.GetDirectoryName(path)!);
     }
 }

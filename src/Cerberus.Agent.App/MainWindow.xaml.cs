@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private int _refreshing;
     private DateTimeOffset _ignoreDeactivateUntil = DateTimeOffset.MinValue;
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _localPolicyChangedAtUtc = DateTimeOffset.MinValue;
     private RuntimeUiConfig _config;
     private bool _setupComplete;
 
@@ -191,12 +192,14 @@ public partial class MainWindow : Window
             // IMPORTANT: Keep the UI responsive. ServiceController calls can block; run off-thread.
             var svcTask = Task.Run(AgentStatus.GetService);
             var registeredTask = Task.Run(AgentStatus.IsRegistered);
-            var localUserPolicyTask = Task.Run(LocalUserCommandPolicy.FromEnvironmentAndRegistry);
+            var localUserPolicyTask = Task.Run(LocalUserCommandPolicy.ReadConfiguredPolicy);
+            var localUserObservationTask = Task.Run(LocalUserCommandPolicy.ReadServiceObservation);
             var tsTask = AgentStatus.GetTailscaleAsync(CancellationToken.None);
 
             var svc = await svcTask;
             var registered = await registeredTask;
             var localUserPolicy = await localUserPolicyTask;
+            var localUserObservation = await localUserObservationTask;
             var ts = await tsTask;
             if (!Dispatcher.CheckAccess())
             {
@@ -232,9 +235,21 @@ public partial class MainWindow : Window
             SetInfoValueTone(ServiceInfoValue, IsHealthyServiceStatus(svc.Text));
             SetInfoValueTone(ConnectorInfoValue, IsHealthyConnectorStatus(ts.Text));
             SetInfoValueTone(RegisteredInfoValue, registered);
-            LocalUserCreateValue.Text = localUserPolicy.CreateEnabled
-                ? AgentLocalizer.Get("Enabled")
-                : AgentLocalizer.Get("Disabled");
+            LocalUserCreateValue.Text = AgentLocalizer.Get(localUserPolicy.State switch
+            {
+                LocalUserCreatePolicyState.Enabled => "LocalUserCreateSavedEnabled",
+                LocalUserCreatePolicyState.Disabled => "LocalUserCreateSavedDisabled",
+                _ => "LocalUserCreateUnknown",
+            });
+            var serviceConfirmed = svc.Installed &&
+                string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase) &&
+                localUserObservation is not null &&
+                localUserObservation.ObservedAtUtc >= _localPolicyChangedAtUtc &&
+                localUserObservation.ConfirmsConfiguredState(
+                    localUserPolicy, DateTimeOffset.UtcNow, TimeSpan.FromMinutes(2));
+            LocalUserCreateObservation.Text = AgentLocalizer.Get(serviceConfirmed
+                ? "LocalUserCreateServiceConfirmed"
+                : "LocalUserCreateServicePending");
             LocalUserCreateValue.Foreground = localUserPolicy.CreateEnabled
                 ? new SolidColorBrush(MediaColor.FromRgb(20, 83, 45))
                 : new SolidColorBrush(MediaColor.FromRgb(146, 64, 14));
@@ -551,7 +566,7 @@ public partial class MainWindow : Window
         if (_busy)
             return;
 
-        var current = LocalUserCommandPolicy.FromEnvironmentAndRegistry();
+        var current = LocalUserCommandPolicy.ReadConfiguredPolicy();
         var enable = !current.CreateEnabled;
         if (enable)
         {
@@ -569,6 +584,8 @@ public partial class MainWindow : Window
         try
         {
             var result = RunLocalUserCreatePolicyCommand(enable);
+            if (result.Succeeded)
+                _localPolicyChangedAtUtc = DateTimeOffset.UtcNow;
             Log(result.Message);
         }
         finally

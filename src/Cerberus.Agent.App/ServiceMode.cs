@@ -16,6 +16,8 @@ internal static class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
     {
+        // Gate direct service/console startup before the logger can create machine directories.
+        AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         var lifecycle = new DurableAgentLifecycleStateStore();
         await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
@@ -289,8 +291,13 @@ internal static class ServiceMode
             new TailscaleEnsureConnectedHandler(),
             new DiagnosticBundleCollectCommandHandler(diagnosticUploader),
         };
-        var localUserPolicy = LocalUserCommandPolicy.FromEnvironmentAndRegistry();
-        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(localUserPolicy));
+        var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
+            api.GetManagedAccountManifestAsync, LocalUserCommandHandlers.CreateManifestReconciler(log), log);
+        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts));
+        var adUsers = new ScopedAdUserProvider(loadedSecrets.Identity, new ProtectedAdScopePolicy(),
+            new WindowsAdDirectoryBoundary(), new ProtectedAdOwnershipStore());
+        handlers.AddRange(ScopedAdCommandHandlers.CreateDefaultHandlers(loadedSecrets.Identity, lifecycleState,
+            api.GetAdCommandAuthorityAsync, adUsers));
         handlers.Add(new AgentUpdateRequestCommandHandler(
             () => BuildUpdateCoordinator(updateHttp, log, updateStateStore),
             updateStateStore,
@@ -320,8 +327,9 @@ internal static class ServiceMode
                 updateFailureReporter: (response, exception, cancel) =>
                     ReportUpdateFailureAsync(api, metadata, response, exception, cancel),
                 lifecycleState: lifecycleState,
-                quiesce: quiesce),
-            telemetryProvider: new WindowsTelemetryCollector(),
+                quiesce: quiesce,
+                managedAccounts: managedAccounts),
+            telemetryProvider: new WindowsTelemetryCollector(publishServiceObservation: true),
             telemetryBuffer: telemetryBuffer,
             log: log,
             commandTimeout: TimeSpan.FromSeconds(120),

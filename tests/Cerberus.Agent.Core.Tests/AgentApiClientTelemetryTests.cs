@@ -3,11 +3,131 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentApiClientTelemetryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ManifestHeadersStall_DeadlineReconcilesButCallerCancellationPropagates(bool callerCancels)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var transport = new ManifestHeadersStallHandler(now);
+        using var http = new HttpClient(transport)
+        {
+            BaseAddress = new Uri("http://backend.test"),
+            Timeout = callerCancels ? Timeout.InfiniteTimeSpan : TimeSpan.FromMilliseconds(100)
+        };
+        var state = new InMemoryAgentLifecycleStateStore();
+        var secrets = new StaticSecretStore();
+        var client = new AgentApiClient(http, secrets, new StaticTokenManager(), new StaticSigner(), lifecycleState: state);
+        var owned = new ManifestOwnedAccountStore();
+        var policy = new ManagedAccountManifestPolicy(new("a1", "t1"), state, client.GetManagedAccountManifestAsync,
+            LocalUserCommandHandlers.CreateManifestReconciler(store: owned), now: () => now);
+        var responses = new HeartbeatResponseHandler(secrets, lifecycleState: state, managedAccounts: policy);
+        var heartbeat = await client.HeartbeatAsync(new { }, default);
+        Assert.Equal(new[] { "windows.local_user.disable", "windows.local_user.delete" }, heartbeat.PendingCommands.Select(c => c.Type));
+        using var caller = new CancellationTokenSource();
+        var handling = responses.HandleAsync(heartbeat, caller.Token);
+        await transport.ManifestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (callerCancels)
+        {
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handling);
+            Assert.True(owned.Enabled);
+        }
+        else
+        {
+            Assert.Equal(HeartbeatControlAction.Continue, await handling);
+            Assert.False(owned.Enabled);
+            Assert.Equal(HeartbeatControlAction.Continue, await responses.HandleAsync(heartbeat, default));
+        }
+        Assert.Equal(1, transport.ManifestFetches);
+    }
+
+    private sealed class ManifestOwnedAccountStore : IManagedLocalAccountStore
+    {
+        private readonly ManagedLocalOwnership _account = new(new("assignment", "account", "member",
+            "cerb_sennu_k7m2q6x4", "marker", "active"), "a1", "t1", "sid", "sid");
+        public bool Enabled { get; private set; } = true;
+        public IReadOnlyList<ManagedLocalOwnership> ReadAccounts() => [_account];
+        public void Disable(ManagedLocalOwnership ownership)
+        {
+            Assert.Equal(_account, ownership);
+            Enabled = false;
+        }
+    }
+
+    private sealed class ManifestHeadersStallHandler(DateTimeOffset now) : HttpMessageHandler
+    {
+        public TaskCompletionSource ManifestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int ManifestFetches { get; private set; }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/managed-accounts/manifest", StringComparison.Ordinal))
+            {
+                ManifestFetches++;
+                ManifestStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("The simulated manifest headers must never arrive.");
+            }
+            Assert.EndsWith("/heartbeat", request.RequestUri.AbsolutePath);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new
+                {
+                    pending_commands = new[]
+                    {
+                        new { id = "disable", type = "windows.local_user.disable", idempotency_key = "disable", payload = new { } },
+                        new { id = "delete", type = "windows.local_user.delete", idempotency_key = "delete", payload = new { } }
+                    },
+                    next_poll_seconds = 60, next_snapshot_seconds = 60,
+                    manifest_version = "4f53cda18c2baa0c",
+                    managed_account_manifest_hash = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    manifest_fresh_until = now.AddSeconds(300).ToString("O"),
+                    require_manifest_before_unlock = true
+                }), Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    [Fact]
+    public async Task AdCommandAuthority_PostsSignedLeaseAndReadsCanonicalCommand()
+    {
+        var command = new AgentCommand("cmd-ad", "windows.ad_user.disable", "idem-ad", new { username = "canonical" }, LeaseId: "lease-ad");
+        var handler = new CaptureHandler(JsonSerializer.Serialize(new AdCommandAuthority("t1", "a1", DateTimeOffset.UtcNow.AddSeconds(25), command)));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var authority = await client.GetAdCommandAuthorityAsync(command, default);
+        Assert.Equal("lease-ad", authority.Command.LeaseId);
+        Assert.Equal("canonical", ((JsonElement)authority.Command.Payload!).GetProperty("username").GetString());
+        Assert.Equal(HttpMethod.Post, handler.CapturedRequest!.Method);
+        Assert.Equal("/api/v1/agents/a1/commands/cmd-ad/ad-authority", handler.CapturedRequest.RequestUri!.AbsolutePath);
+        Assert.Equal("signature", Assert.Single(handler.CapturedRequest.Headers.GetValues("X-Signature")));
+        using var body = JsonDocument.Parse(handler.CapturedBody!);
+        Assert.Equal("lease-ad", body.RootElement.GetProperty("lease_id").GetString());
+        Assert.Single(body.RootElement.EnumerateObject());
+    }
+
+    [Fact]
+    public async Task ManagedAccountManifest_UsesSignedAgentScopedGetWithEmptyBody()
+    {
+        var handler = new CaptureHandler("""{"version":"v","hash":"h","fresh_until":"2026-09-06T12:05:00Z","require_manifest_before_unlock":true,"accounts":[]}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var manifest = await client.GetManagedAccountManifestAsync(default);
+        Assert.True(manifest.RequireManifestBeforeUnlock);
+        Assert.Empty(manifest.Accounts);
+        Assert.Equal(HttpMethod.Get, handler.CapturedRequest!.Method);
+        Assert.Equal("/api/v1/agents/a1/managed-accounts/manifest", handler.CapturedRequest.RequestUri!.AbsolutePath);
+        Assert.Equal("a1", Assert.Single(handler.CapturedRequest.Headers.GetValues("X-Agent-Id")));
+        Assert.Equal("signature", Assert.Single(handler.CapturedRequest.Headers.GetValues("X-Signature")));
+        Assert.Equal("", handler.CapturedBody);
+    }
+
     [Fact]
     public async Task SubmitSnapshotAsync_PostsSignedSnapshotEndpoint()
     {

@@ -19,7 +19,8 @@ public static partial class LocalUserCommandHandlers
         => Fail(
             "managed_user_collision",
             "A local user with this managed username already exists but is not owned by Cerberus.",
-            payload);
+            payload,
+            executionStage: "before_execution");
 
     private static bool TryReadPayload(
         AgentCommand command,
@@ -27,20 +28,44 @@ public static partial class LocalUserCommandHandlers
         out CommandResult failure)
     {
         payload = new LocalUserPayload("", null, null);
-        failure = Fail("invalid_payload", "Invalid local user command payload.");
+        failure = Fail("invalid_payload", "Invalid local user command payload.", executionStage: "before_execution");
 
         if (!CommandPayload.TryDeserialize<LocalUserPayload>(command.Payload, out var parsed) || parsed is null)
             return false;
 
+        var enableAccountExplicit = false;
+        try
+        {
+            var raw = command.Payload is JsonElement element
+                ? element
+                : JsonSerializer.SerializeToElement(command.Payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            enableAccountExplicit = raw.ValueKind == JsonValueKind.Object &&
+                raw.TryGetProperty("enable_account", out var enableAccount) &&
+                enableAccount.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        }
+        catch (Exception ex) when (ex is ArgumentException or JsonException)
+        {
+            _ = ex;
+        }
+        parsed = parsed with { EnableAccountExplicit = enableAccountExplicit };
+
         if (!IsAllowedUsername(parsed.Username))
         {
-            failure = Fail("invalid_username", "Local usernames must match the Cerberus managed-user format and fit Windows local account limits.");
+            failure = Fail(
+                "invalid_username",
+                "Local usernames must match the Cerberus managed-user format and fit Windows local account limits.",
+                parsed,
+                executionStage: "before_execution");
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(parsed.AuditCorrelationId))
         {
-            failure = Fail("missing_audit_correlation", "Managed local user commands require an audit correlation id.");
+            failure = Fail(
+                "missing_audit_correlation",
+                "Managed local user commands require an audit correlation id.",
+                parsed,
+                executionStage: "before_execution");
             return false;
         }
 
@@ -57,7 +82,8 @@ public static partial class LocalUserCommandHandlers
             failure = Fail(
                 "missing_managed_identity",
                 "Managed local user commands require assignment, account, membership, and marker identity.",
-                parsed);
+                parsed,
+                executionStage: "before_execution");
             return false;
         }
 
@@ -100,7 +126,11 @@ public static partial class LocalUserCommandHandlers
 
     private static CommandResult? EnsureLocalAccountsSupportedForProductType(string? productType, LocalUserPayload payload)
         => IsDomainControllerProductType(productType)
-            ? Fail("local_accounts_unsupported_on_domain_controller", UnsupportedDomainControllerMessage, payload)
+            ? Fail(
+                "local_accounts_unsupported_on_domain_controller",
+                UnsupportedDomainControllerMessage,
+                payload,
+                executionStage: "before_execution")
             : null;
 
     private static bool IsDomainController()
@@ -141,48 +171,30 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private static string GeneratePassword()
-    {
-        Span<char> chars = stackalloc char[28];
-        chars[0] = Pick(PasswordLower);
-        chars[1] = Pick(PasswordUpper);
-        chars[2] = Pick(PasswordDigits);
-        chars[3] = Pick(PasswordSymbols);
-        for (var i = 4; i < chars.Length; i++)
-            chars[i] = Pick(PasswordAll);
-
-        for (var i = chars.Length - 1; i > 0; i--)
-        {
-            var j = RandomNumberGenerator.GetInt32(i + 1);
-            (chars[i], chars[j]) = (chars[j], chars[i]);
-        }
-
-        return new string(chars);
-    }
+    private static string GeneratePassword() => RdpCredentialCodec.GeneratePassword();
 
     private static string ManagedDescription(LocalUserPayload payload)
         => ManagedUserDescription;
 
-    private static void ApplyManagedPasswordPolicy(DirectoryEntry user)
+    private static void ApplyManagedPasswordPolicy(DirectoryEntry user, bool enableAccount = false)
     {
         var flags = Convert.ToInt32(user.Properties["UserFlags"].Value ?? 0);
-        user.Properties["UserFlags"].Value = ApplyManagedPasswordPolicyFlags(flags);
+        user.Properties["UserFlags"].Value = ApplyManagedPasswordPolicyFlags(flags, enableAccount);
     }
 
-    private static int ApplyManagedPasswordPolicyFlags(int flags)
-        => flags | PasswordCannotChangeFlag | PasswordNeverExpiresFlag;
+    private static int ApplyManagedPasswordPolicyFlags(int flags, bool enableAccount)
+        // Only an explicit create intent may restore a disabled account after preparation.
+        // Password rotation and manifest recovery alone preserve the disabled state.
+        => (enableAccount ? flags & ~AccountDisabledFlag : flags) | PasswordCannotChangeFlag | PasswordNeverExpiresFlag;
 
-    private static bool IsManagedByCerberus(DirectoryEntry user, LocalUserPayload payload)
+    private static bool IsManagedByCerberus(DirectoryEntry user, LocalUserPayload payload, bool allowLegacy = false)
     {
         if (!ManagedUsernameRegex().IsMatch(payload.Username))
             return false;
         if (string.IsNullOrWhiteSpace(payload.MarkerId))
             return false;
-        if (RegistryManagedMarkerMatches(payload))
-            return true;
-
-        var description = Convert.ToString(user.Properties["Description"].Value) ?? string.Empty;
-        return DescriptionManagedMarkerMatches(description, payload.MarkerId);
+        return payload.BoundIdentity is not null && RegistryManagedMarkerMatches(payload) &&
+            RegistryOwnershipMatches(user, payload, allowLegacy);
     }
 
     private static string ManagedMarkerToken(string markerId)
@@ -217,10 +229,16 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private static bool TryWriteManagedOwnership(LocalUserPayload payload)
+    private static bool TryWriteManagedOwnership(
+        LocalUserPayload payload,
+        DirectoryEntry user,
+        LocalMutationState? mutation = null)
     {
         try
         {
+            var sid = GetLocalSid(user).Value;
+            if (payload.BoundIdentity is null || string.IsNullOrWhiteSpace(sid)) return false;
+            mutation?.MarkFirstWrite();
             using var key = Registry.LocalMachine.CreateSubKey(ManagedUserRegistryPath(payload.Username));
             if (key is null)
                 return false;
@@ -229,6 +247,9 @@ public static partial class LocalUserCommandHandlers
             key.SetValue("assignment_id", payload.AssignmentId ?? string.Empty, RegistryValueKind.String);
             key.SetValue("managed_account_id", payload.ManagedAccountId ?? string.Empty, RegistryValueKind.String);
             key.SetValue("membership_user_id", payload.MembershipUserId ?? string.Empty, RegistryValueKind.String);
+            key.SetValue("agent_id", payload.BoundIdentity.AgentId, RegistryValueKind.String);
+            key.SetValue("tenant_id", payload.BoundIdentity.TenantId, RegistryValueKind.String);
+            key.SetValue("local_sid", sid, RegistryValueKind.String);
             return true;
         }
         catch (Exception ex) when (ex is SecurityException or UnauthorizedAccessException or IOException)
@@ -273,6 +294,12 @@ public static partial class LocalUserCommandHandlers
             return new("failed", false);
         }
     }
+
+    private static bool ShouldGrantRemoteDesktopMembership(
+        bool existingUser,
+        bool enableAccountExplicit,
+        bool enableAccount)
+        => !existingUser || (enableAccountExplicit && enableAccount);
 
     private static string RemoveRemoteDesktopUserMembership(string username)
     {
@@ -378,78 +405,20 @@ public static partial class LocalUserCommandHandlers
     }
 
     private static Dictionary<string, object?>? BuildRdpCredentialEnvelope(string password, LocalUserPayload payload)
-    {
-        if (string.IsNullOrWhiteSpace(payload.RdpPublicKeyPem))
-            return null;
+        => string.IsNullOrWhiteSpace(payload.RdpPublicKeyPem) ? null :
+            RdpCredentialCodec.Encrypt(password, payload.Username, payload.RdpDomain, RdpMetadata(payload)).AsDictionary();
 
-        if (string.IsNullOrWhiteSpace(payload.RdpCredentialProfileId) ||
-            string.IsNullOrWhiteSpace(payload.RdpTenantKeyId) ||
-            payload.RdpKeyVersion is null ||
-            string.IsNullOrWhiteSpace(payload.RdpAad) ||
-            string.IsNullOrWhiteSpace(payload.RdpAadHash))
-        {
-            throw new InvalidOperationException("RDP credential metadata is incomplete.");
-        }
-
-        using var plaintext = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(plaintext))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("username", payload.Username);
-            writer.WriteString("password", password);
-            if (!string.IsNullOrWhiteSpace(payload.RdpDomain))
-                writer.WriteString("domain", payload.RdpDomain);
-            writer.WriteEndObject();
-        }
-        var aad = Encoding.UTF8.GetBytes(payload.RdpAad);
-        var dek = RandomNumberGenerator.GetBytes(RdpCredentialDekBytes);
-        var nonce = RandomNumberGenerator.GetBytes(RdpCredentialNonceBytes);
-        var plaintextSpan = plaintext.GetBuffer().AsSpan(0, checked((int)plaintext.Length));
-        var ciphertext = new byte[plaintextSpan.Length];
-        var tag = new byte[RdpCredentialTagBytes];
-
-        try
-        {
-            using (var aes = new AesGcm(dek, RdpCredentialTagBytes))
-            {
-                aes.Encrypt(nonce, plaintextSpan, ciphertext, tag, aad);
-            }
-
-            var cipherWithTag = new byte[ciphertext.Length + tag.Length];
-            Buffer.BlockCopy(ciphertext, 0, cipherWithTag, 0, ciphertext.Length);
-            Buffer.BlockCopy(tag, 0, cipherWithTag, ciphertext.Length, tag.Length);
-
-            using var rsa = RSA.Create();
-            rsa.ImportFromPem(payload.RdpPublicKeyPem.AsSpan());
-            var wrappedDek = rsa.Encrypt(dek, RSAEncryptionPadding.OaepSHA256);
-
-            return new Dictionary<string, object?>
-            {
-                ["auth_type"] = "password",
-                ["credential_id"] = payload.RdpCredentialProfileId,
-                ["username_hint"] = payload.Username,
-                ["domain"] = string.IsNullOrWhiteSpace(payload.RdpDomain) ? null : payload.RdpDomain,
-                ["tenant_key_id"] = payload.RdpTenantKeyId,
-                ["key_version"] = payload.RdpKeyVersion,
-                ["cipher_alg"] = RdpCredentialCipherAlg,
-                ["wrapped_dek"] = Convert.ToBase64String(wrappedDek),
-                ["cipher_nonce"] = Convert.ToBase64String(nonce),
-                ["ciphertext"] = Convert.ToBase64String(cipherWithTag),
-                ["aad_hash"] = payload.RdpAadHash,
-            };
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(dek);
-            CryptographicOperations.ZeroMemory(plaintext.GetBuffer().AsSpan(0, checked((int)plaintext.Length)));
-            CryptographicOperations.ZeroMemory(ciphertext);
-            CryptographicOperations.ZeroMemory(tag);
-        }
-    }
+    private static RdpCredentialMetadata RdpMetadata(LocalUserPayload payload) => new(
+        payload.RdpCredentialProfileId, payload.RdpTenantKeyId, payload.RdpKeyVersion, payload.RdpPublicKeyPem,
+        payload.RdpPublicKeyFingerprint, payload.RdpCipherAlg, payload.RdpAad, payload.RdpAadHash);
 
     private static bool ValidateCredentialKey(LocalUserPayload payload, out CommandResult failure)
     {
-        failure = Fail("invalid_credential_public_key", "Credential public key is invalid.", payload);
+        failure = Fail(
+            "invalid_credential_public_key",
+            "Credential public key is invalid.",
+            payload,
+            executionStage: "before_execution");
         if (string.IsNullOrWhiteSpace(payload.CredentialPublicKeyPem))
             return true;
 
@@ -462,7 +431,8 @@ public static partial class LocalUserCommandHandlers
                 failure = Fail(
                     "weak_credential_public_key",
                     "Credential public key must be RSA 2048 bits or stronger.",
-                    payload);
+                    payload,
+                    executionStage: "before_execution");
                 return false;
             }
 
@@ -471,7 +441,8 @@ public static partial class LocalUserCommandHandlers
                 failure = Fail(
                     "missing_credential_public_key_fingerprint",
                     "Credential public key fingerprint is required.",
-                    payload);
+                    payload,
+                    executionStage: "before_execution");
                 return false;
             }
 
@@ -485,7 +456,8 @@ public static partial class LocalUserCommandHandlers
                     failure = Fail(
                         "credential_public_key_fingerprint_mismatch",
                         "Credential public key fingerprint does not match payload metadata.",
-                        payload);
+                        payload,
+                        executionStage: "before_execution");
                     return false;
                 }
             }
@@ -494,80 +466,29 @@ public static partial class LocalUserCommandHandlers
         }
         catch (Exception ex) when (ex is ArgumentException or CryptographicException)
         {
-            failure = Fail("invalid_credential_public_key", "Credential public key could not be parsed.", payload);
+            failure = Fail(
+                "invalid_credential_public_key",
+                "Credential public key could not be parsed.",
+                payload,
+                executionStage: "before_execution");
             return false;
         }
     }
 
     private static bool ValidateRdpCredentialKey(LocalUserPayload payload, out CommandResult failure)
     {
-        failure = Fail("invalid_rdp_public_key", "RDP credential public key is invalid.", payload);
-        if (string.IsNullOrWhiteSpace(payload.RdpPublicKeyPem))
-            return true;
-
-        if (string.IsNullOrWhiteSpace(payload.RdpCredentialProfileId) ||
-            string.IsNullOrWhiteSpace(payload.RdpTenantKeyId) ||
-            payload.RdpKeyVersion is null ||
-            string.IsNullOrWhiteSpace(payload.RdpAad) ||
-            string.IsNullOrWhiteSpace(payload.RdpAadHash))
+        var code = RdpCredentialCodec.ValidationError(RdpMetadata(payload));
+        failure = Fail(code ?? "invalid_rdp_public_key", code switch
         {
-            failure = Fail("missing_rdp_credential_metadata", "RDP credential metadata is incomplete.", payload);
-            return false;
-        }
-
-        if (!string.Equals(payload.RdpCipherAlg, RdpCredentialCipherAlg, StringComparison.Ordinal))
-        {
-            failure = Fail("unsupported_rdp_cipher", "RDP credential cipher is unsupported.", payload);
-            return false;
-        }
-
-        var actualAadHash = Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes(payload.RdpAad)))
-            .ToLowerInvariant();
-        if (!string.Equals(actualAadHash, payload.RdpAadHash, StringComparison.OrdinalIgnoreCase))
-        {
-            failure = Fail("rdp_aad_hash_mismatch", "RDP credential AAD hash does not match payload metadata.", payload);
-            return false;
-        }
-
-        try
-        {
-            using var rsa = RSA.Create();
-            rsa.ImportFromPem(payload.RdpPublicKeyPem.AsSpan());
-            if (rsa.KeySize < MinCredentialKeySizeBits)
-            {
-                failure = Fail(
-                    "weak_rdp_public_key",
-                    "RDP credential public key must be RSA 2048 bits or stronger.",
-                    payload);
-                return false;
-            }
-
-            if (!string.IsNullOrWhiteSpace(payload.RdpPublicKeyFingerprint))
-            {
-                var actual = Convert.ToHexString(
-                    SHA256.HashData(Encoding.ASCII.GetBytes(payload.RdpPublicKeyPem)))
-                    .ToLowerInvariant();
-                if (!string.Equals(actual, payload.RdpPublicKeyFingerprint, StringComparison.OrdinalIgnoreCase))
-                {
-                    failure = Fail(
-                        "rdp_public_key_fingerprint_mismatch",
-                        "RDP credential public key fingerprint does not match payload metadata.",
-                        payload);
-                    return false;
-                }
-            }
-
-            return true;
-        }
-        catch (Exception ex) when (ex is ArgumentException or CryptographicException)
-        {
-            failure = Fail("invalid_rdp_public_key", "RDP credential public key could not be parsed.", payload);
-            return false;
-        }
+            "missing_rdp_credential_metadata" => "RDP credential metadata is incomplete.",
+            "unsupported_rdp_cipher" => "RDP credential cipher is unsupported.",
+            "rdp_aad_hash_mismatch" => "RDP credential AAD hash does not match payload metadata.",
+            "weak_rdp_public_key" => "RDP credential public key must be RSA 2048 bits or stronger.",
+            "rdp_public_key_fingerprint_mismatch" => "RDP credential public key fingerprint does not match payload metadata.",
+            _ => "RDP credential public key could not be parsed."
+        }, payload, executionStage: "before_execution");
+        return code is null;
     }
-
-    private static char Pick(string alphabet) => alphabet[RandomNumberGenerator.GetInt32(alphabet.Length)];
 
     private static CommandResult Success(
         string code,
@@ -629,7 +550,15 @@ public static partial class LocalUserCommandHandlers
         }
     }
 
-    private static CommandResult Fail(string code, string message, LocalUserPayload? payload = null, string? rdpLogonRight = null)
+    private static CommandResult Fail(
+        string code,
+        string message,
+        LocalUserPayload? payload = null,
+        string? rdpLogonRight = null,
+        string executionStage = "unknown",
+        string? mutationResultCode = null,
+        string? mutationResultStatus = null,
+        string? compensationStatus = null)
         => new(
             "FAILED",
             2,
@@ -644,6 +573,10 @@ public static partial class LocalUserCommandHandlers
                 marker_id = payload?.MarkerId,
                 credential_request_id = payload?.CredentialRequestId,
                 rdp_logon_right = rdpLogonRight,
+                execution_stage = executionStage,
+                mutation_result_code = mutationResultCode,
+                mutation_result_status = mutationResultStatus,
+                compensation_status = compensationStatus,
             });
 
     // Managed Windows usernames use one canonical, Windows-safe shape:
@@ -673,7 +606,12 @@ public static partial class LocalUserCommandHandlers
         [property: JsonPropertyName("rdp_cipher_alg")] string? RdpCipherAlg = null,
         [property: JsonPropertyName("rdp_aad")] string? RdpAad = null,
         [property: JsonPropertyName("rdp_aad_hash")] string? RdpAadHash = null,
-        [property: JsonPropertyName("rdp_domain")] string? RdpDomain = null);
+        [property: JsonPropertyName("rdp_domain")] string? RdpDomain = null)
+    {
+        [JsonPropertyName("enable_account")] public bool EnableAccount { get; init; }
+        [JsonIgnore] public bool EnableAccountExplicit { get; init; }
+        [JsonIgnore] public AgentIdentity? BoundIdentity { get; init; }
+    }
 
     private sealed record RdpLogonRightResult(string Status, bool Granted);
     private sealed record SidLookupResult(string? Value, string Status);

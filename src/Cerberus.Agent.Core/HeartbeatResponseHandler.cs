@@ -17,6 +17,7 @@ public sealed class HeartbeatResponseHandler
     private readonly Func<HeartbeatResponse, Exception, CancellationToken, Task>? _updateFailureReporter;
     private readonly IAgentLifecycleStateStore _lifecycleState;
     private readonly Func<CancellationToken, Task>? _quiesce;
+    private readonly ManagedAccountManifestPolicy? _managedAccounts;
 
     public HeartbeatResponseHandler(
         ISecretStore secrets,
@@ -24,7 +25,8 @@ public sealed class HeartbeatResponseHandler
         IAgentUpdateCoordinator? updates = null,
         Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null,
         IAgentLifecycleStateStore? lifecycleState = null,
-        Func<CancellationToken, Task>? quiesce = null)
+        Func<CancellationToken, Task>? quiesce = null,
+        ManagedAccountManifestPolicy? managedAccounts = null)
     {
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
@@ -35,6 +37,7 @@ public sealed class HeartbeatResponseHandler
         // terminal-code gate without allowing a raw response to clear secrets.
         _lifecycleState = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
         _quiesce = quiesce;
+        _managedAccounts = managedAccounts;
     }
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
@@ -94,6 +97,8 @@ public sealed class HeartbeatResponseHandler
             return HeartbeatControlAction.SkipCommands;
         }
 
+        if (_managedAccounts is not null)
+            await _managedAccounts.RefreshAsync(response, ct).ConfigureAwait(false);
         await TryHandleUpdateAsync(response, ct).ConfigureAwait(false);
         return HeartbeatControlAction.Continue;
     }

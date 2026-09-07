@@ -50,6 +50,25 @@ public interface IAgentTelemetryProvider
         CancellationToken ct);
 }
 
+/// <summary>
+/// Optional service-local signal for telemetry that must be refreshed before
+/// the normal snapshot cadence. It does not change the snapshot wire contract.
+/// </summary>
+public interface IAgentTelemetrySnapshotTrigger
+{
+    /// <summary>
+    /// Returns true when provider state differs from the last successfully
+    /// submitted snapshot and a fresh snapshot should be attempted.
+    /// </summary>
+    bool IsSnapshotRefreshRequired();
+
+    /// <summary>
+    /// Confirms that the most recently built snapshot was submitted without
+    /// an exception, allowing the provider to clear its refresh signal.
+    /// </summary>
+    void MarkSnapshotSubmitted();
+}
+
 public interface IAgentUpdateCoordinator
 {
     Task HandleUpdateAsync(HeartbeatResponse response, CancellationToken ct);

@@ -30,4 +30,9 @@
   <data name="UpdateServiceRequestedDetail" xml:space="preserve"><value>Der Cerberus-Dienst verarbeitet die Update-Anforderung im Hintergrund.</value></data>
   <data name="UpdateInstallFailed" xml:space="preserve"><value>Installation fehlgeschlagen</value></data>
   <data name="UpdateInstallFailedDetail" xml:space="preserve"><value>Das Update konnte nicht gestartet werden: {0}</value></data>
+  <data name="LocalUserCreateSavedEnabled" xml:space="preserve"><value>Lokale Freigabe: ein gespeichert</value></data>
+  <data name="LocalUserCreateSavedDisabled" xml:space="preserve"><value>Lokale Freigabe: aus gespeichert</value></data>
+  <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Lokale Freigabe: nicht lesbar, Zugriff gesperrt</value></data>
+  <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>Der laufende Dienst bestätigt diese lokale Einstellung. Die Webfreigabe ist separat.</value></data>
+  <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Dienstbestätigung ausstehend oder eingeschränkt. Die gespeicherte Einstellung allein erlaubt keine Kontoaktionen.</value></data>
 </root>

@@ -114,15 +114,15 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <StackPanel>
-                        <StackPanel Orientation="Horizontal">
+                        <StackPanel Margin="0,0,10,0">
                             <TextBlock Name="LocalUserCreateLabel" Foreground="#FF111827" FontWeight="SemiBold" Text="Account creation" />
-                            <TextBlock Text=": " Foreground="#FF111827" FontWeight="SemiBold" />
-                            <TextBlock Name="LocalUserCreateValue" Foreground="#FF92400E" FontWeight="SemiBold" Text="-" />
+                            <TextBlock Name="LocalUserCreateValue" Margin="0,3,0,0" TextWrapping="Wrap" Foreground="#FF92400E" FontWeight="SemiBold" Text="-" />
                         </StackPanel>
                         <TextBlock Name="LocalUserCreateHint" Margin="0,5,10,0" Foreground="#FF6B7280" FontSize="11"
                                    TextWrapping="Wrap" Text="Disabled by default. Backend policy must also allow account creation." />
+                        <TextBlock Name="LocalUserCreateObservation" Margin="0,5,10,0" Foreground="#FF475569" FontSize="11" TextWrapping="Wrap" />
                     </StackPanel>
-                    <Button Name="LocalUserCreateToggleBtn" Grid.Column="1" Width="58" Height="28" Padding="8,0"
+                    <Button Name="LocalUserCreateToggleBtn" Grid.Column="1" MinWidth="58" Height="28" Padding="8,0"
                             VerticalAlignment="Top" Click="LocalUserCreateToggle_Click"
                             Style="{StaticResource CerberusButtonBase}">Enable</Button>
                 </Grid>

@@ -125,6 +125,49 @@ public sealed class AgentApiClient
         return payload;
     }
 
+    public async Task<ManagedAccountManifest> GetManagedAccountManifestAsync(CancellationToken ct)
+    {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var (identity, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
+        using var response = await SendSignedJsonRequestAsync(HttpMethod.Get,
+            $"/api/v1/agents/{identity.AgentId}/managed-accounts/manifest", "", ct,
+            HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+        await EnsureSuccessAsync("Managed account manifest", response, ct, deadline.Token).ConfigureAwait(false);
+        var manifest = await AgentHttpFailure.ReadJsonAsync<ManagedAccountManifest>("Managed account manifest",
+            response, _http, JsonOpts, ct, deadline.Token).ConfigureAwait(false);
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        if (_lifecycleState is not null &&
+            (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation != RequestGeneration(response))
+            throw new InvalidOperationException("Manifest enrollment generation changed.");
+        return manifest ?? throw new InvalidOperationException("Managed account manifest missing.");
+    }
+
+    public async Task<AdCommandAuthority> GetAdCommandAuthorityAsync(AgentCommand command, CancellationToken ct)
+    {
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(command.Id) || command.Id.Length > 128 ||
+            string.IsNullOrWhiteSpace(command.LeaseId) || command.LeaseId.Length > 128)
+            throw new InvalidOperationException("AD command lease is required.");
+        var (identity, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
+        using var response = await SendSignedRequestAsync(HttpMethod.Post,
+            $"/api/v1/agents/{Uri.EscapeDataString(identity.AgentId)}/commands/{Uri.EscapeDataString(command.Id)}/ad-authority",
+            new { lease_id = command.LeaseId }, ct, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+        await EnsureSuccessAsync("AD command authority", response, ct, deadline.Token).ConfigureAwait(false);
+        var authority = await AgentHttpFailure.ReadJsonAsync<AdCommandAuthority>("AD command authority",
+            response, _http, JsonOpts, ct, deadline.Token).ConfigureAwait(false);
+        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        if (_lifecycleState is not null &&
+            (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation != RequestGeneration(response))
+            throw new InvalidOperationException("AD authority enrollment generation changed.");
+        if (authority is null || authority.TenantId != identity.TenantId || authority.AgentId != identity.AgentId ||
+            authority.Command is null || authority.ExpiresAt.Offset != TimeSpan.Zero ||
+            authority.ExpiresAt <= DateTimeOffset.UtcNow || authority.ExpiresAt > DateTimeOffset.UtcNow.AddSeconds(30))
+            throw new InvalidOperationException("AD command authority is invalid.");
+        return authority;
+    }
+
     /// <summary>
     /// Submits the result of a command execution to the backend.
     /// </summary>

@@ -6,6 +6,26 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentUxStaticTests
 {
     [Fact]
+    public void MachineBootstrapPrecedesServiceLoggingConsentWritesAndInstallerServiceAccess()
+    {
+        var repoRoot = FindRepoRoot();
+        var service = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceMode.cs"));
+        var consent = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Legal", "AgentLegalConsent.cs"));
+        var helper = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Helper", "Program.cs"));
+        const string gate = "AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot)";
+        Assert.True(service.IndexOf(gate, StringComparison.Ordinal) >= 0);
+        Assert.True(service.IndexOf(gate, StringComparison.Ordinal) < service.IndexOf("AgentFileLogger.CreateService", StringComparison.Ordinal));
+        Assert.True(consent.IndexOf(gate, StringComparison.Ordinal) >= 0);
+        Assert.True(consent.IndexOf(gate, StringComparison.Ordinal) < consent.IndexOf("Directory.CreateDirectory", StringComparison.Ordinal));
+        var bootstrapStart = helper.IndexOf("if (operation == \"bootstrap\")", StringComparison.Ordinal);
+        var serviceOpen = helper.IndexOf("using var manager = OpenSCManager", StringComparison.Ordinal);
+        Assert.True(bootstrapStart >= 0 && serviceOpen > bootstrapStart);
+        var bootstrap = helper[bootstrapStart..serviceOpen];
+        Assert.Contains(gate, bootstrap);
+        Assert.Contains("return 0;", bootstrap);
+    }
+
+    [Fact]
     public void TrayMenu_KeepsServiceControlsUnderRepairTools()
     {
         var repoRoot = FindRepoRoot();
@@ -207,13 +227,17 @@ public sealed class AgentUxStaticTests
     }
 
     [Fact]
-    public void ServiceMode_DoesNotRegisterAdUserMutationHandlersByDefault()
+    public void ServiceMode_RegistersScopedAdWithProtectedPolicyAndFreshAuthority()
     {
         var repoRoot = FindRepoRoot();
         var serviceMode = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceMode.cs"));
 
         Assert.DoesNotContain("AdUserCommandHandlers.CreateDefaultHandlers", serviceMode);
-        Assert.Contains("LocalUserCommandHandlers.CreateDefaultHandlers(localUserPolicy)", serviceMode);
+        Assert.Contains("LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts)", serviceMode);
+        Assert.Contains("new ProtectedAdScopePolicy()", serviceMode);
+        Assert.Contains("new WindowsAdDirectoryBoundary(), new ProtectedAdOwnershipStore()", serviceMode);
+        Assert.Contains("ScopedAdCommandHandlers.CreateDefaultHandlers(loadedSecrets.Identity, lifecycleState,", serviceMode);
+        Assert.Contains("api.GetAdCommandAuthorityAsync, adUsers", serviceMode);
     }
 
     [Fact]

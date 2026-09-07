@@ -186,7 +186,14 @@ public sealed class AgentLegalConsentTests
             Assert.Equal("NOT REMOVE AND WIX_UPGRADE_DETECTED", (string?)Scheduled(id).Attribute("Condition"));
         }
         Assert.Equal("CaptureCerberusServiceBeforeUpgrade", (string?)Scheduled("RestoreCerberusServicePathOnRollback").Attribute("Before"));
-        Assert.Equal("StopServices", (string?)Scheduled("CaptureCerberusServiceBeforeUpgrade").Attribute("Before"));
+        Assert.Equal("BootstrapCerberusMachineNamespace", (string?)Scheduled("CaptureCerberusServiceBeforeUpgrade").Attribute("Before"));
+        Assert.Equal("StopServices", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Before"));
+        Assert.Equal("NOT REMOVE", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Condition"));
+        Assert.Equal("CerberusInstallerHelper", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("BinaryRef"));
+        Assert.Equal("deferred", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Execute"));
+        Assert.Equal("no", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Impersonate"));
+        Assert.Equal("check", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Return"));
+        Assert.StartsWith("bootstrap ", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("ExeCommand"));
         Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("StopCerberusServiceOnRollback").Attribute("Before"));
         Assert.Equal("RemoveExistingProducts", (string?)Scheduled("RepairExistingCerberusServicePath").Attribute("After"));
         Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("CheckCerberusServiceHealth").Attribute("After"));

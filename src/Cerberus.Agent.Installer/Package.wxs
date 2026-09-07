@@ -108,6 +108,13 @@
         Id="BlockUpgradeWithoutRollback"
         Error="Cerberus upgrades require Windows Installer rollback to be enabled." />
     <CustomAction
+        Id="BootstrapCerberusMachineNamespace"
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
+    <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
         BinaryRef="CerberusInstallerHelper"
         ExeCommand='capture "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
@@ -156,7 +163,8 @@
           Action="BlockInstallWithoutEula"
           Before="InstallValidate"
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
-      <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="StopServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
+      <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="StopCerberusServiceOnRollback" Before="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />

@@ -22,8 +22,15 @@ internal static class Program
             if (!AgentUpdateSecurity.IsLocalSystem() || args.Length != 6 || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
-            if (operation is not ("capture" or "configure" or "stop" or "restore" or "health" or "commit"))
+            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit"))
                 return 2;
+            if (operation == "bootstrap")
+            {
+                // Fresh MSI installs have no service yet. Establish authority before the UI can write machine data.
+                // Existing namespaces pass the same provenance gate; bootstrap never repairs or resets them.
+                AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+                return 0;
+            }
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
             AgentUpdateSecurity.EnsureProtectedRoot(root);
             var snapshotPath = Path.Combine(root, product.ToString("N") + ".json");

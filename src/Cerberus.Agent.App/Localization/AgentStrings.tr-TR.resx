@@ -145,4 +145,9 @@
   <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer meşgul; yeniden deneme bekleniyor</value></data>
   <data name="UpdateRecoveryRequired" xml:space="preserve"><value>Güncelleme kurtarma işlemi gerektiriyor</value></data>
   <data name="UpdateBlocked" xml:space="preserve"><value>Güncelleme duraklatıldı. Devam etmek için yeniden denetleyin.</value></data>
+  <data name="LocalUserCreateSavedEnabled" xml:space="preserve"><value>Yerel onay: açık kaydedildi</value></data>
+  <data name="LocalUserCreateSavedDisabled" xml:space="preserve"><value>Yerel onay: kapalı kaydedildi</value></data>
+  <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Yerel onay: okunamıyor, izin kapalı</value></data>
+  <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>Çalışan servis bu yerel ayarı doğruladı. Web onayı ayrıdır.</value></data>
+  <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Servis teyidi bekleniyor veya servis kısıtlıyor. Kaydedilmiş ayar tek başına hesap işlemlerine izin vermez.</value></data>
 </root>

@@ -40,6 +40,104 @@ public sealed class HeartbeatLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_SubmitsRefreshSnapshotOnNextHeartbeat_AndKeepsChangeMadeDuringCollectionPending()
+    {
+        var provider = new RefreshableTelemetryProvider();
+        provider.DuringBuild = buildNumber =>
+        {
+            if (buildNumber == 1)
+                provider.RequestRefresh();
+        };
+        var handler = new SchedulingLoopHandler(attempt =>
+        {
+            if (attempt == 1)
+                provider.RequestRefresh();
+        });
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            telemetryProvider: provider,
+            log: NullAgentLogger.Instance,
+            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.SecondSnapshotSubmittedTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Equal(2, handler.SnapshotAttempts);
+        Assert.Equal(2, provider.BuildCount);
+        Assert.Equal(2, provider.SubmittedVersion);
+        Assert.False(provider.IsSnapshotRefreshRequired());
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotSubmitSnapshotForStableTelemetryBeforeNormalCadence()
+    {
+        var provider = new RefreshableTelemetryProvider();
+        var handler = new SchedulingLoopHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            telemetryProvider: provider,
+            log: NullAgentLogger.Instance,
+            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.SecondHeartbeatTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Equal(0, handler.SnapshotAttempts);
+        Assert.Equal(0, provider.BuildCount);
+    }
+
+    [Fact]
+    public async Task RunAsync_RetriesRefreshSnapshotAfterSubmissionFailureWithoutAcknowledgingIt()
+    {
+        var provider = new RefreshableTelemetryProvider();
+        provider.RequestRefresh();
+        var handler = new SchedulingLoopHandler(snapshotFailuresBeforeSuccess: 1);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            telemetryProvider: provider,
+            log: NullAgentLogger.Instance,
+            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await handler.SnapshotSubmittedTask.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        Assert.Equal(2, handler.SnapshotAttempts);
+        Assert.Equal(2, provider.BuildCount);
+        Assert.Equal(1, provider.MarkSubmittedCount);
+        Assert.False(provider.IsSnapshotRefreshRequired());
+    }
+
+    [Fact]
     public async Task RunAsync_IncludesUpdateStatusProviderPayload()
     {
         var handler = new LoopCaptureHandler();
@@ -219,6 +317,139 @@ public sealed class HeartbeatLoopTests
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static HttpResponseMessage JsonResponse(string json)
+            => new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+    }
+
+    private sealed class RefreshableTelemetryProvider : IAgentTelemetryProvider, IAgentTelemetrySnapshotTrigger
+    {
+        private int _currentVersion;
+        private int _submittedVersion;
+        private int _capturedVersion;
+        private int _buildCount;
+        private int _markSubmittedCount;
+
+        public Action<int>? DuringBuild { get; set; }
+        public int BuildCount => Volatile.Read(ref _buildCount);
+        public int SubmittedVersion => Volatile.Read(ref _submittedVersion);
+        public int MarkSubmittedCount => Volatile.Read(ref _markSubmittedCount);
+
+        public void RequestRefresh() => Interlocked.Increment(ref _currentVersion);
+
+        public bool IsSnapshotRefreshRequired()
+            => Volatile.Read(ref _currentVersion) != Volatile.Read(ref _submittedVersion);
+
+        public void MarkSnapshotSubmitted()
+        {
+            Volatile.Write(ref _submittedVersion, Volatile.Read(ref _capturedVersion));
+            Interlocked.Increment(ref _markSubmittedCount);
+        }
+
+        public Task<AgentSnapshotRequest> BuildSnapshotAsync(
+            AgentBuildMetadata metadata,
+            HeartbeatResponse? lastHeartbeat,
+            CancellationToken ct)
+        {
+            var buildNumber = Interlocked.Increment(ref _buildCount);
+            var capturedVersion = Volatile.Read(ref _currentVersion);
+            Volatile.Write(ref _capturedVersion, capturedVersion);
+            DuringBuild?.Invoke(buildNumber);
+            return Task.FromResult(AgentSnapshotFactory.Create(
+                metadata,
+                DateTimeOffset.UtcNow,
+                new Dictionary<string, object?>
+                {
+                    ["identity"] = new { policy_version = capturedVersion },
+                }));
+        }
+    }
+
+    private sealed class SchedulingLoopHandler : HttpMessageHandler
+    {
+        private readonly Action<int>? _onHeartbeat;
+        private readonly int _snapshotFailuresBeforeSuccess;
+        private readonly TaskCompletionSource _secondHeartbeat =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _snapshotSubmitted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _secondSnapshotSubmitted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _heartbeatAttempts;
+        private int _snapshotAttempts;
+
+        public SchedulingLoopHandler(
+            Action<int>? onHeartbeat = null,
+            int snapshotFailuresBeforeSuccess = 0)
+        {
+            _onHeartbeat = onHeartbeat;
+            _snapshotFailuresBeforeSuccess = snapshotFailuresBeforeSuccess;
+        }
+
+        public int SnapshotAttempts => Volatile.Read(ref _snapshotAttempts);
+        public Task SecondHeartbeatTask => _secondHeartbeat.Task;
+        public Task SnapshotSubmittedTask => _snapshotSubmitted.Task;
+        public Task SecondSnapshotSubmittedTask => _secondSnapshotSubmitted.Task;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/heartbeat", StringComparison.Ordinal))
+            {
+                var attempt = Interlocked.Increment(ref _heartbeatAttempts);
+                _onHeartbeat?.Invoke(attempt);
+                if (attempt >= 2)
+                    _secondHeartbeat.TrySetResult();
+                return Task.FromResult(JsonResponse(
+                    """
+                    {
+                      "pending_commands": [],
+                      "next_poll_seconds": 1,
+                      "server_time": 1,
+                      "server_time_utc": "2026-05-08T00:00:00Z",
+                      "command_batch_size": 1,
+                      "next_snapshot_seconds": 300,
+                      "config_version": "agent-config.v1",
+                      "lifecycle_state": "connected",
+                      "agent_status": "active",
+                      "version_policy": null,
+                      "update": null,
+                      "revoke": null,
+                      "quarantine": null
+                    }
+                    """));
+            }
+
+            if (path.EndsWith("/events", StringComparison.Ordinal))
+                return Task.FromResult(JsonResponse("""{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":[]}"""));
+
+            if (path.EndsWith("/snapshot", StringComparison.Ordinal))
+            {
+                var attempt = Interlocked.Increment(ref _snapshotAttempts);
+                if (attempt <= _snapshotFailuresBeforeSuccess)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)
+                    {
+                        Content = new StringContent(
+                            "{\"detail\":\"snapshot_failure\"}",
+                            Encoding.UTF8,
+                            "application/json"),
+                    });
+                }
+
+                _snapshotSubmitted.TrySetResult();
+                if (attempt >= 2)
+                    _secondSnapshotSubmitted.TrySetResult();
+                return Task.FromResult(JsonResponse("""{"status":"accepted","accepted":1,"ignored":0,"reason":null,"changed_sections":["capabilities"]}"""));
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
         }
 
         private static HttpResponseMessage JsonResponse(string json)

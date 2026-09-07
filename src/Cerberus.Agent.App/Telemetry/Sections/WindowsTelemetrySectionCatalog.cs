@@ -1,3 +1,5 @@
+using Cerberus.Agent.Integrations.Ad;
+
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
 internal static class WindowsTelemetrySectionCatalog
@@ -5,11 +7,19 @@ internal static class WindowsTelemetrySectionCatalog
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
-        => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv));
+        => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(string? configured)
+        => CreateDefault(configured, publishServiceObservation: false);
+
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(bool publishServiceObservation)
+        => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation);
+
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(
+        string? configured,
+        bool publishServiceObservation)
     {
-        var sections = CreateAll();
+        var sections = CreateAll(publishServiceObservation);
         if (string.IsNullOrWhiteSpace(configured))
             return sections;
 
@@ -29,7 +39,7 @@ internal static class WindowsTelemetrySectionCatalog
             : filtered;
     }
 
-    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll() => new IWindowsTelemetrySectionCollector[]
+    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation) => new IWindowsTelemetrySectionCollector[]
     {
         new IdentityTelemetrySectionCollector(),
         new OsTelemetrySectionCollector(),
@@ -41,6 +51,10 @@ internal static class WindowsTelemetrySectionCatalog
         new SecurityTelemetrySectionCollector(),
         new ClockTelemetrySectionCollector(),
         new RuntimeTelemetrySectionCollector(),
-        new CapabilitiesTelemetrySectionCollector(),
+        publishServiceObservation
+            ? new CapabilitiesTelemetrySectionCollector(
+                LocalUserCommandPolicy.Resolve,
+                LocalUserCommandPolicy.WriteServiceObservation)
+            : new CapabilitiesTelemetrySectionCollector(),
     };
 }
