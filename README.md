@@ -198,6 +198,7 @@ Release gate output includes:
 - `.provenance.json`
 - `.release-gate.json`
 - `.update-manifest.json`
+- `.update-manifest.v2.json`
 
 Unsigned public releases are denied. Tenant-controlled backend, update URL, signing key, channel, or artifact source is not supported.
 
@@ -328,8 +329,9 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
 
 ### `auto-publish-exe.yml`
 
-- Runs manually with `workflow_dispatch`.
+- Runs automatically for `dev`/`develop` pushes and manually for the permitted ref/channel combinations.
 - Uses provided `release_version`, `channel`, and optional release notes.
+- `release_version` accepts ASCII SemVer with an optional leading `v`; asset names use the normalized numeric form and release tags are `v`-prefixed.
 - Publishes split self-contained runtime files with computed `Version`.
 - Builds the WiX MSI installer:
   - package name: `Cerberus.Agent-<channel>-<version>.msi`
@@ -349,9 +351,11 @@ Preflight runs build + test + publish + self-test (unless skipped via script fla
   - `*.provenance.json`
   - `*.release-gate.json`
   - `*.update-manifest.json`
+  - `*.update-manifest.v2.json`
 - Uploads package files as workflow artifacts.
 - Creates a versioned GitHub release with package assets and notes.
-- For `preview` channel, also refreshes the mutable `preview-latest` release pointer.
+- Refreshes the mutable `<channel>-latest` release pointer for every channel with both v1 and v2 manifests.
+- The `stable-latest` alias is a normal, explicitly non-latest release; the versioned stable release remains GitHub's Latest release.
 
 Manual preview dispatch:
 

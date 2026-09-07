@@ -63,8 +63,13 @@ jobs:
           DISPATCH_RELEASE_NOTES: ${{ github.event.inputs.release_notes }}
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          CERBERUS_EVENT_NAME: ${{ github.event_name }}
+          CERBERUS_REF: ${{ github.ref }}
+          CERBERUS_REF_NAME: ${{ github.ref_name }}
+          CERBERUS_WORKFLOW_SHA: ${{ github.sha }}
+          CERBERUS_RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          if ($env:CERBERUS_EVENT_NAME -ceq "workflow_dispatch") {
             $version = $env:DISPATCH_RELEASE_VERSION
             $channel = $env:DISPATCH_CHANNEL
             $notes = $env:DISPATCH_RELEASE_NOTES
@@ -72,9 +77,9 @@ jobs:
               $notes = "Public Cerberus Windows Agent $channel release."
             }
           } else {
-            $shortSha = "${{ github.sha }}".Substring(0, 12)
+            $shortSha = $env:CERBERUS_WORKFLOW_SHA.Substring(0, 12)
             $channel = "dev"
-            $notes = "Automated local-development release from ${{ github.ref_name }}@$shortSha. Not for customer production use."
+            $notes = "Automated local-development release from $env:CERBERUS_REF_NAME@$shortSha. Not for customer production use."
             $tagRefs = git ls-remote --tags origin "refs/tags/v0.2.*-$channel.*"
             $maxPatch = 0
             foreach ($line in $tagRefs) {
@@ -82,25 +87,48 @@ jobs:
                 $maxPatch = [Math]::Max($maxPatch, [Math]::Max([int]$Matches[1], [int]$Matches[2]))
               }
             }
-            $nextPatch = [Math]::Max([int]"${{ github.run_number }}", $maxPatch + 1)
+            $nextPatch = [Math]::Max([int]$env:CERBERUS_RUN_NUMBER, $maxPatch + 1)
             $version = "0.2.$nextPatch-$channel.$nextPatch"
           }
 
           if ([string]::IsNullOrWhiteSpace($version)) {
             throw "release_version is required."
           }
-          if ($channel -notin @("dev", "preview", "stable")) {
+          if ($channel -cnotin @("dev", "preview", "stable")) {
             throw "Unsupported release channel: $channel"
           }
-          if (("${{ github.ref_name }}" -in @("dev", "develop") -and $channel -ne "dev") -or
-              ("${{ github.ref_name }}" -eq "main" -and $channel -ne "stable")) {
-            throw "Branch/channel mismatch: dev/develop requires dev; main requires stable."
+          $eventName = $env:CERBERUS_EVENT_NAME
+          $ref = $env:CERBERUS_REF
+          $integrationRefs = @("refs/heads/dev", "refs/heads/develop")
+          if ($eventName -ceq "push") {
+            if ($ref -cnotin $integrationRefs -or $channel -cne "dev") {
+              throw "Automatic releases are limited to dev/develop pushes using the dev channel."
+            }
+          } elseif ($eventName -ceq "workflow_dispatch" -and $ref -ceq "refs/heads/main") {
+            if ($channel -cne "stable") {
+              throw "Manual main releases require the stable channel."
+            }
+          } elseif ($eventName -ceq "workflow_dispatch" -and $ref -cin $integrationRefs) {
+            if ($channel -cnotin @("dev", "preview")) {
+              throw "Manual dev/develop releases allow only dev or preview channels."
+            }
+          } else {
+            throw "Unsupported release ref/event. Use workflow_dispatch on main for stable or dev/develop for dev/preview."
           }
 
-          $tag = if ($version.StartsWith("v")) { $version } else { "v$version" }
-          $cleanVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
-          $assetBase = "Cerberus.Agent.Bundle-$channel-$cleanVersion"
-          $installerBase = "Cerberus.Agent-$channel-$cleanVersion"
+          $versionPattern = '\Av?(?<normalized>(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)\z'
+          $versionMatch = [regex]::Match(
+            $version,
+            $versionPattern,
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+          if (-not $versionMatch.Success) {
+            throw "release_version must be an ASCII SemVer value (for example, 1.2.3 or 1.2.3-preview.1)."
+          }
+          # Keep producer asset names numeric while retaining the canonical v-prefixed tag.
+          $version = $versionMatch.Groups["normalized"].Value
+          $tag = "v$version"
+          $assetBase = "Cerberus.Agent.Bundle-$channel-$version"
+          $installerBase = "Cerberus.Agent-$channel-$version"
 
           New-Item -ItemType Directory -Force -Path out | Out-Null
           $notes | Set-Content -Path out/release-notes.md -Encoding utf8
@@ -109,8 +137,8 @@ jobs:
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "asset_base=$assetBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "setup_base=$installerBase" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "make_latest=$(if ($channel -eq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "prerelease=$(if ($channel -eq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "make_latest=$(if ($channel -ceq 'stable') { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "prerelease=$(if ($channel -ceq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build gated release bundle
         shell: pwsh
@@ -127,16 +155,20 @@ jobs:
           CERBERUS_SSO_CLIENT_ID: ${{ vars.CERBERUS_SSO_CLIENT_ID }}
           CERBERUS_SSO_SCOPE: ${{ vars.CERBERUS_SSO_SCOPE }}
           CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
+          CERBERUS_RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          CERBERUS_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          if ("${{ steps.release.outputs.channel }}" -eq "dev") {
+          $channel = $env:CERBERUS_RELEASE_CHANNEL
+          $version = $env:CERBERUS_RELEASE_VERSION
+          if ($channel -ceq "dev") {
             ./scripts/build-agent-public-release.ps1 `
-              -Version "${{ steps.release.outputs.version }}" `
-              -Channel "${{ steps.release.outputs.channel }}" `
+              -Version $version `
+              -Channel $channel `
               -AllowUnsignedDevBuild
           } else {
             ./scripts/build-agent-public-release.ps1 `
-              -Version "${{ steps.release.outputs.version }}" `
-              -Channel "${{ steps.release.outputs.channel }}"
+              -Version $version `
+              -Channel $channel
           }
 
       - name: Upload gated release bundle artifact
@@ -167,28 +199,44 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update channel latest release
-        if: ${{ steps.release.outputs.channel == 'preview' || steps.release.outputs.channel == 'dev' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CERBERUS_RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
+          CERBERUS_RELEASE_SETUP_BASE: ${{ steps.release.outputs.setup_base }}
+          CERBERUS_RELEASE_ASSET_BASE: ${{ steps.release.outputs.asset_base }}
+          CERBERUS_WORKFLOW_SHA: ${{ github.sha }}
         run: |
-          $latestTag = "${{ steps.release.outputs.channel }}-latest"
-          $latestAssetBase = "Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest"
-          $latestInstallerBase = "Cerberus.Agent-${{ steps.release.outputs.channel }}-latest"
+          $channel = $env:CERBERUS_RELEASE_CHANNEL
+          $setupBase = $env:CERBERUS_RELEASE_SETUP_BASE
+          $assetBase = $env:CERBERUS_RELEASE_ASSET_BASE
+          $workflowSha = $env:CERBERUS_WORKFLOW_SHA
+          $latestTag = "$channel-latest"
+          $latestAssetBase = "Cerberus.Agent.Bundle-$channel-latest"
+          $latestInstallerBase = "Cerberus.Agent-$channel-latest"
           gh release delete $latestTag --yes --cleanup-tag 2>$null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "$latestTag was not present or could not be deleted; continuing with create."
             $global:LASTEXITCODE = 0
           }
-          gh release create $latestTag `
-            out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256 `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json `
-            out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.v2.json `
+          $latestReleaseOptions = @(
+            "--title", "Cerberus Windows Agent $latestTag",
+            "--notes-file", "out/release-notes.md",
+            "--latest=false",
+            "--target", $workflowSha
+          )
+          if ($channel -cne "stable") {
+            $latestReleaseOptions += "--prerelease"
+          }
+          & gh release create $latestTag `
+            "out/public-release/publish/$setupBase.msi" `
+            "out/public-release/publish/$assetBase.zip" `
+            "out/public-release/publish/$assetBase.sha256" `
+            "out/public-release/publish/$assetBase.sbom.json" `
+            "out/public-release/publish/$assetBase.provenance.json" `
+            "out/public-release/publish/$assetBase.release-gate.json" `
+            "out/public-release/publish/$assetBase.update-manifest.json" `
+            "out/public-release/publish/$assetBase.update-manifest.v2.json" `
             "out/public-release/publish/$latestInstallerBase.msi" `
             "out/public-release/publish/$latestAssetBase.zip" `
             "out/public-release/publish/$latestAssetBase.sha256" `
@@ -197,6 +245,7 @@ jobs:
             "out/public-release/publish/$latestAssetBase.release-gate.json" `
             "out/public-release/publish/$latestAssetBase.update-manifest.json" `
             "out/public-release/publish/$latestAssetBase.update-manifest.v2.json" `
-            --title "Cerberus Windows Agent $latestTag" `
-            --notes-file out/release-notes.md `
-            --prerelease
+            @latestReleaseOptions
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to publish the $channel-latest release alias."
+          }
