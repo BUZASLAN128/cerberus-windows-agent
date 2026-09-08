@@ -20,6 +20,9 @@ internal static class ServiceMode
         AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         var lifecycle = new DurableAgentLifecycleStateStore();
+        // Legacy installs may have no lifecycle file yet. Materialize the
+        // canonical protected record before recovery, pipe startup or readiness.
+        await lifecycle.EnsureInitializedAsync(ct).ConfigureAwait(false);
         await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
         // Load deny intent before even attempting credential decryption.
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);

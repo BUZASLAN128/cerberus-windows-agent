@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 
 namespace Cerberus.Agent.Core;
 
@@ -12,6 +13,7 @@ public sealed class AgentUpdateBitsDownloader
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
     private const string JobPrefix = "Cerberus.Update.v2:";
     private const string ReceiptFileName = "bits-job.json";
+    private const uint EnumerateAllUsers = 0x0001;
     private sealed record JobReceipt(Guid JobId, string AttemptId);
 
     public async Task DownloadAsync(
@@ -133,8 +135,8 @@ public sealed class AgentUpdateBitsDownloader
         try
         {
             manager = (IBackgroundCopyManager)new BackgroundCopyManager();
-            VisitOwnedJobs(manager, root, job => Check(job.Cancel(), "BITS retirement failed."));
-            VisitOwnedJobs(manager, root, job =>
+            VisitOwnedJobs(manager, root, enumFlags: 0, visit: job => Check(job.Cancel(), "BITS retirement failed."));
+            VisitOwnedJobs(manager, root, enumFlags: 0, visit: job =>
             {
                 Check(job.GetState(out var state), "BITS retirement state is unavailable.");
                 if (state is not (BackgroundCopyJobState.Cancelled or BackgroundCopyJobState.Acknowledged))
@@ -148,10 +150,48 @@ public sealed class AgentUpdateBitsDownloader
         }
     }
 
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static void VisitOwnedJobs(IBackgroundCopyManager manager, string root, Action<IBackgroundCopyJob> visit)
+    /// <summary>
+    /// Cancel only SYSTEM-owned update jobs during an elevated removal. The
+    /// service normally sees its own jobs with EnumJobs(0); removal runs after
+    /// the service is stopped and must explicitly enumerate all users. Every
+    /// candidate still passes the same protected attempt, receipt and
+    /// destination binding checks as normal service reconciliation.
+    /// </summary>
+    public static void QuiesceForRemoval(string root)
     {
-        Check(manager.EnumJobs(0, out var rawJobs), "BITS enumeration failed.");
+        if (!OperatingSystem.IsWindows())
+            throw new InvalidOperationException("BITS removal reconciliation requires Windows.");
+
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!identity.IsSystem && !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            throw new UnauthorizedAccessException("BITS removal reconciliation requires administrator authority.");
+
+        AgentUpdateSecurity.EnsureProtectedRoot(root);
+        IBackgroundCopyManager? manager = null;
+        try
+        {
+            manager = (IBackgroundCopyManager)new BackgroundCopyManager();
+            VisitOwnedJobs(manager, root, enumFlags: EnumerateAllUsers,
+                visit: job => Check(job.Cancel(), "BITS removal failed."));
+            VisitOwnedJobs(manager, root, enumFlags: EnumerateAllUsers, visit: job =>
+            {
+                Check(job.GetState(out var state), "BITS removal state is unavailable.");
+                if (state is not (BackgroundCopyJobState.Cancelled or BackgroundCopyJobState.Acknowledged))
+                    throw new InvalidOperationException("BITS removal is incomplete.");
+            });
+        }
+        finally
+        {
+            if (manager is not null)
+                Marshal.ReleaseComObject(manager);
+        }
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static void VisitOwnedJobs(IBackgroundCopyManager manager, string root, uint enumFlags,
+        Action<IBackgroundCopyJob> visit)
+    {
+        Check(manager.EnumJobs(enumFlags, out var rawJobs), "BITS enumeration failed.");
         var jobs = (IEnumBackgroundCopyJobs)rawJobs;
         try
         {

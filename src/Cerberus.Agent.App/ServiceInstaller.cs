@@ -97,6 +97,31 @@ internal static class ServiceInstaller
         sc.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
     }
 
+    /// <summary>
+    /// Removal cleanup must distinguish an absent service from an SCM failure.
+    /// The latter is ambiguous and therefore blocks protected-state deletion.
+    /// </summary>
+    internal static void RequireStoppedOrAbsent()
+    {
+        try
+        {
+            using var sc = new ServiceController(ServiceName);
+            if (sc.Status != ServiceControllerStatus.Stopped)
+                throw new InvalidOperationException("Agent service must be stopped before local state removal.");
+        }
+        catch (InvalidOperationException ex) when (IsServiceMissing(ex))
+        {
+            // The service was removed already; no service process can create a
+            // new update job during the following all-users BITS reconciliation.
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == 1060)
+        {
+            // ERROR_SERVICE_DOES_NOT_EXIST is the only SCM failure treated as
+            // an absent service. Access, RPC and state-query failures remain
+            // hard failures so cleanup retains its evidence.
+        }
+    }
+
     private static bool ServiceExists()
     {
         try
@@ -109,6 +134,9 @@ internal static class ServiceInstaller
             return false;
         }
     }
+
+    private static bool IsServiceMissing(InvalidOperationException error)
+        => error.InnerException is Win32Exception { NativeErrorCode: 1060 };
 
     internal static string? ExtractExecutablePathFromServiceImagePath(string? imagePath)
     {
