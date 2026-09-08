@@ -15,21 +15,37 @@ public sealed class HeartbeatResponseHandler
     private readonly IAgentLogger _log;
     private readonly IAgentUpdateCoordinator? _updates;
     private readonly Func<HeartbeatResponse, Exception, CancellationToken, Task>? _updateFailureReporter;
+    private readonly IAgentLifecycleStateStore _lifecycleState;
+    private readonly Func<CancellationToken, Task>? _quiesce;
+    private readonly ManagedAccountManifestPolicy? _managedAccounts;
 
     public HeartbeatResponseHandler(
         ISecretStore secrets,
         IAgentLogger? log = null,
         IAgentUpdateCoordinator? updates = null,
-        Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null)
+        Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null,
+        IAgentLifecycleStateStore? lifecycleState = null,
+        Func<CancellationToken, Task>? quiesce = null,
+        ManagedAccountManifestPolicy? managedAccounts = null)
     {
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
         _updates = updates;
         _updateFailureReporter = updateFailureReporter;
+        // Production service callers pass the protected durable store. The
+        // in-memory fallback keeps legacy/support callers on the same
+        // terminal-code gate without allowing a raw response to clear secrets.
+        _lifecycleState = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
+        _quiesce = quiesce;
+        _managedAccounts = managedAccounts;
     }
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
     {
+        var generation = AgentApiClient.GenerationOf(response);
+        var current = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (generation is not null && current.Generation != generation)
+            return HeartbeatControlAction.Stop;
         await PersistUiContextAsync(response, ct).ConfigureAwait(false);
 
         if (response.Revoke is not null &&
@@ -38,8 +54,23 @@ public sealed class HeartbeatResponseHandler
         {
             if (HasClearConfirmation(response.Revoke))
             {
-                await _secrets.ClearAsync(ct).ConfigureAwait(false);
-                _log.Warn("Agent revoked by server policy; local credentials cleared after explicit confirmation.");
+                var reasonCode = TerminalReasonCode(response.Revoke);
+                if (reasonCode is null)
+                {
+                    _log.Warn("remote_clear_ignored_requires_terminal_code: revoke reason code is not approved.");
+                    return HeartbeatControlAction.Continue;
+                }
+                try
+                {
+                    await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
+                        .RecordTerminalResponseAsync(reasonCode, requestId: null, ct, expectedGeneration: generation)
+                        .ConfigureAwait(false);
+                }
+                catch (AgentRetiredException)
+                {
+                    // Retired state is the expected terminal outcome.
+                }
+                _log.Warn("Agent terminal intent recorded; automatic network is paused.");
             }
             else
             {
@@ -49,6 +80,9 @@ public sealed class HeartbeatResponseHandler
             }
             return HeartbeatControlAction.Stop;
         }
+
+        if (AgentLifecycleStates.IsDormant(current.State) || !current.QuiescenceComplete)
+            return HeartbeatControlAction.Stop;
 
         if (response.Quarantine is not null && IsTrue(response.Quarantine, "active"))
         {
@@ -63,6 +97,8 @@ public sealed class HeartbeatResponseHandler
             return HeartbeatControlAction.SkipCommands;
         }
 
+        if (_managedAccounts is not null)
+            await _managedAccounts.RefreshAsync(response, ct).ConfigureAwait(false);
         await TryHandleUpdateAsync(response, ct).ConfigureAwait(false);
         return HeartbeatControlAction.Continue;
     }
@@ -132,4 +168,17 @@ public sealed class HeartbeatResponseHandler
                element.GetString(),
                "cerberus-agent-clear-local-credentials-v1",
                StringComparison.Ordinal);
+
+    private static string? TerminalReasonCode(IReadOnlyDictionary<string, JsonElement> values)
+    {
+        if (values.TryGetValue("reason_code", out var element))
+        {
+            if (element.ValueKind != JsonValueKind.String)
+                return null;
+            var code = element.GetString()?.Trim();
+            return AgentLifecycleStatePolicy.IsTerminalCode(code) ? code : null;
+        }
+
+        return null;
+    }
 }

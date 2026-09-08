@@ -17,6 +17,8 @@ public sealed class DpapiSecretStore : ISecretStore
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
     private readonly string _path;
     private readonly SecretStoreScope _scope;
+    private readonly bool _canonicalMachine;
+    private readonly bool _protectedPending;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DpapiSecretStore"/> class.
@@ -27,8 +29,15 @@ public sealed class DpapiSecretStore : ISecretStore
     {
         _scope = scope;
         baseDir ??= GetDefaultBaseDir(scope);
-        Directory.CreateDirectory(baseDir);
         _path = Path.Combine(baseDir, "secrets.json");
+        _canonicalMachine = scope == SecretStoreScope.Machine &&
+            string.Equals(Path.GetFullPath(_path), GetDefaultSecretsPath(SecretStoreScope.Machine), StringComparison.OrdinalIgnoreCase);
+        _protectedPending = scope == SecretStoreScope.Machine &&
+            string.Equals(Path.GetFullPath(baseDir), AgentCredentialPublication.PendingDirectory, StringComparison.OrdinalIgnoreCase);
+        if (_protectedPending)
+            AgentCredentialPublication.ValidateProtectedItem(baseDir);
+        else if (!_canonicalMachine)
+            Directory.CreateDirectory(baseDir);
     }
 
     public static string GetDefaultBaseDir(SecretStoreScope scope)
@@ -61,6 +70,8 @@ public sealed class DpapiSecretStore : ISecretStore
         string? tailscaleAuthkey,
         CancellationToken ct)
     {
+        using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
+        if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path, allowMissing: true);
         var payload = new SecretPayload(
             "cerberus-agent-secret.v2",
             identity.AgentId,
@@ -76,17 +87,28 @@ public sealed class DpapiSecretStore : ISecretStore
             optionalEntropy: null,
             _scope == SecretStoreScope.User ? DataProtectionScope.CurrentUser : DataProtectionScope.LocalMachine);
 
-        await using var stream = new FileStream(
-            _path,
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 4096,
-            FileOptions.WriteThrough | FileOptions.Asynchronous);
-
-        LockDownAcl(_path, _scope);
-        await stream.WriteAsync(enc.AsMemory(), ct).ConfigureAwait(false);
-        await stream.FlushAsync(ct).ConfigureAwait(false);
+        // Publish complete encrypted payloads atomically. A cancelled/failed
+        // enrollment or refresh must not truncate the previous registration.
+        var temporary = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await using (var stream = _canonicalMachine || _protectedPending
+                ? AgentCredentialPublication.CreateProtectedFile(temporary)
+                : new FileStream(temporary, FileMode.CreateNew,
+                    FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough | FileOptions.Asynchronous))
+            {
+                if (!_canonicalMachine && !_protectedPending) LockDownAcl(temporary, _scope);
+                await stream.WriteAsync(enc.AsMemory(), ct).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
+            }
+            ct.ThrowIfCancellationRequested();
+            File.Move(temporary, _path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary))
+                File.Delete(temporary);
+        }
     }
 
     /// <summary>
@@ -98,6 +120,8 @@ public sealed class DpapiSecretStore : ISecretStore
     public async Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)>
         LoadAsync(CancellationToken ct)
     {
+        using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
+        if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path);
         var enc = await File.ReadAllBytesAsync(_path, ct).ConfigureAwait(false);
         var raw = ProtectedData.Unprotect(
             enc,
@@ -118,6 +142,8 @@ public sealed class DpapiSecretStore : ISecretStore
 
     public async Task ClearAsync(CancellationToken ct)
     {
+        using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
+        if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path, allowMissing: true);
         ct.ThrowIfCancellationRequested();
         if (!File.Exists(_path))
             return;

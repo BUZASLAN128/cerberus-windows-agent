@@ -139,4 +139,16 @@
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent bu bilgisayardan kaldırılacak. Portal erişilebilirse bu cihazın raporlaması da durdurulur.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Kurulum kaydı bulunamadı. Servis durdurulmaya çalışıldı; kalan dosyalar için Windows Uygulamalar ayarlarını kullanın.</value></data>
   <data name="LegalTerms" xml:space="preserve"><value>yasal koşullar</value></data>
+  <data name="UpdateServiceUnavailable" xml:space="preserve"><value>Yerel agent servisine ulaşılamıyor.</value></data>
+  <data name="UpdateHealthPending" xml:space="preserve"><value>Kurulan güncelleme doğrulanıyor</value></data>
+  <data name="UpdatePendingReboot" xml:space="preserve"><value>Güncellemeyi tamamlamak için yeniden başlatma gerekiyor</value></data>
+  <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer meşgul; yeniden deneme bekleniyor</value></data>
+  <data name="UpdateRecoveryRequired" xml:space="preserve"><value>Güncelleme kurtarma işlemi gerektiriyor</value></data>
+  <data name="UpdateBlocked" xml:space="preserve"><value>Güncelleme duraklatıldı. Devam etmek için yeniden denetleyin.</value></data>
+  <data name="LocalUserCreateSavedEnabled" xml:space="preserve"><value>Yerel onay: açık kaydedildi</value></data>
+  <data name="LocalUserCreateSavedDisabled" xml:space="preserve"><value>Yerel onay: kapalı kaydedildi</value></data>
+  <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Yerel onay: okunamıyor, izin kapalı</value></data>
+  <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>Çalışan servis bu yerel ayarı doğruladı. Web onayı ayrıdır.</value></data>
+  <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Servis teyidi bekleniyor veya servis kısıtlıyor. Kaydedilmiş ayar tek başına hesap işlemlerine izin vermez.</value></data>
+  <data name="ReportLifecyclePendingDetail" xml:space="preserve"><value>Arka plan raporlaması doğrulanmadı. Devam etmeden önce cihaz kurulumunu kontrol edin.</value></data>
 </root>

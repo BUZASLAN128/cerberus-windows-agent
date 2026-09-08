@@ -17,6 +17,7 @@ public sealed class AgentRegistrar
     private readonly ISecretStore _secrets;
     private readonly IKeyPairGenerator _keyPairs;
     private readonly IAgentLogger _log;
+    private readonly IAgentLifecycleStateStore? _lifecycleState;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentRegistrar"/> class.
@@ -29,12 +30,14 @@ public sealed class AgentRegistrar
         HttpClient http,
         ISecretStore secrets,
         IKeyPairGenerator? keyPairs = null,
-        IAgentLogger? log = null)
+        IAgentLogger? log = null,
+        IAgentLifecycleStateStore? lifecycleState = null)
     {
         _http = http;
         _secrets = secrets;
         _keyPairs = keyPairs ?? RsaKeyPairGenerator.Instance;
         _log = log ?? NullAgentLogger.Instance;
+        _lifecycleState = lifecycleState;
     }
 
     /// <summary>
@@ -56,7 +59,8 @@ public sealed class AgentRegistrar
         string agentVersion,
         string? buildId,
         string? buildChannel,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool replaceExisting = false)
     {
         if (string.IsNullOrWhiteSpace(oauthToken))
             throw new ArgumentException("oauthToken is required.", nameof(oauthToken));
@@ -67,7 +71,7 @@ public sealed class AgentRegistrar
         if (string.IsNullOrWhiteSpace(agentVersion))
             throw new ArgumentException("agentVersion is required.", nameof(agentVersion));
 
-        var existingIdentity = await TryLoadExistingRegistrationAsync(ct).ConfigureAwait(false);
+        var existingIdentity = replaceExisting ? null : await TryLoadExistingRegistrationAsync(ct).ConfigureAwait(false);
         if (existingIdentity is not null)
         {
             _log.Info("Existing agent registration found; register skipped.");
@@ -99,7 +103,20 @@ public sealed class AgentRegistrar
             HttpCompletionOption.ResponseHeadersRead,
             deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
-            throw await AgentHttpFailure.CreateAsync("Register", resp, _http, ct, deadline.Token).ConfigureAwait(false);
+        {
+            var failure = await AgentHttpFailure.CreateAsync(
+                "Register",
+                resp,
+                _http,
+                ct,
+                deadline.Token).ConfigureAwait(false);
+            // Registration predates lifecycle-aware callers and exposes the
+            // established plain HttpRequestException contract. The bounded
+            // message is retained; raw response content is never propagated.
+            throw failure is AgentHttpException
+                ? new HttpRequestException(failure.Message, inner: null, statusCode: failure.StatusCode)
+                : failure;
+        }
 
         var body = await AgentHttpFailure.ReadBodyAsStringAsync(
             "Register",
@@ -108,15 +125,19 @@ public sealed class AgentRegistrar
             ct,
             deadline.Token).ConfigureAwait(false);
         var parsed = JsonSerializer.Deserialize<AgentRegisterResponse>(body, JsonOpts);
-        if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId))
+        if (parsed is null || string.IsNullOrWhiteSpace(parsed.AgentId) || string.IsNullOrWhiteSpace(parsed.TenantId) ||
+            string.IsNullOrWhiteSpace(parsed.AgentRefreshToken))
             throw new InvalidOperationException("Register response missing agent_id/tenant_id.");
 
         var identity = new AgentIdentity(parsed.AgentId, parsed.TenantId);
+        // telemetry_base_url is the server's advertised APP_BASE_URL, which may be a
+        // browser-facing alias. Keep credentials bound to the selected enrollment
+        // deployment instead of silently changing their destination from a response.
         await _secrets.SaveAsync(
             identity,
             parsed.AgentRefreshToken,
             privPem,
-            string.IsNullOrWhiteSpace(parsed.TelemetryBaseUrl) ? backendUrlForStorage : parsed.TelemetryBaseUrl.TrimEnd('/'),
+            backendUrlForStorage.Trim().TrimEnd('/'),
             parsed.TailscaleLoginServer,
             parsed.TailscaleAuthkey,
             ct).ConfigureAwait(false);
@@ -125,6 +146,13 @@ public sealed class AgentRegistrar
             parsed.TenantName,
             accountLabel: null,
             ct).ConfigureAwait(false);
+
+        if (_lifecycleState is not null)
+        {
+            await new AgentLifecycleController(_lifecycleState)
+                .MarkActiveAsync(ct)
+                .ConfigureAwait(false);
+        }
 
         await WriteTailscaleProofFileAsync(identity, parsed.TailscaleLoginServer, parsed.TailscaleAuthkey, ct).ConfigureAwait(false);
 

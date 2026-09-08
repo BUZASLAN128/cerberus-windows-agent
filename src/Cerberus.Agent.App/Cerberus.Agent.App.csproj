@@ -24,8 +24,11 @@
     <AgentDefaultSsoScopeBase64 Condition="'$(AgentDefaultSsoScopeBase64)' == ''"></AgentDefaultSsoScopeBase64>
     <AgentDefaultOAuthRedirectPort Condition="'$(AgentDefaultOAuthRedirectPort)' == ''">0</AgentDefaultOAuthRedirectPort>
     <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
-    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.json</AgentUpdateManifestUrl>
+    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.v2.json</AgentUpdateManifestUrl>
     <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
+    <AgentReleaseChannel Condition="'$(AgentReleaseChannel)' == ''">dev</AgentReleaseChannel>
+    <AgentUpdateAllowedSignerKeyIdentity Condition="'$(AgentUpdateAllowedSignerKeyIdentity)' == ''"></AgentUpdateAllowedSignerKeyIdentity>
+    <AllowUnsignedDevBuild Condition="'$(AllowUnsignedDevBuild)' == ''">false</AllowUnsignedDevBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -60,6 +63,18 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentUpdateAllowedArtifactPrefixes</_Parameter1>
       <_Parameter2>$(AgentUpdateAllowedArtifactPrefixes)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentReleaseChannel</_Parameter1>
+      <_Parameter2>$(AgentReleaseChannel)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedSignerKeyIdentity</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedSignerKeyIdentity)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AllowUnsignedDevBuild</_Parameter1>
+      <_Parameter2>$(AllowUnsignedDevBuild)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 

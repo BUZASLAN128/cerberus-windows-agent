@@ -139,4 +139,16 @@
   <data name="UninstallPrompt" xml:space="preserve"><value>Cerberus Windows Agent will be removed from this computer. If the portal is reachable, this device will also stop reporting.</value></data>
   <data name="InstallerRegistrationMissing" xml:space="preserve"><value>Installer registration was not found. Service stop was attempted; use Windows Apps settings to remove residual files.</value></data>
   <data name="LegalTerms" xml:space="preserve"><value>legal terms</value></data>
+  <data name="UpdateServiceUnavailable" xml:space="preserve"><value>The local agent service is unavailable.</value></data>
+  <data name="UpdateHealthPending" xml:space="preserve"><value>Verifying the installed update</value></data>
+  <data name="UpdatePendingReboot" xml:space="preserve"><value>Restart required to finish the update</value></data>
+  <data name="UpdateInstallerBusy" xml:space="preserve"><value>Windows Installer is busy; retry pending</value></data>
+  <data name="UpdateRecoveryRequired" xml:space="preserve"><value>The update requires recovery</value></data>
+  <data name="UpdateBlocked" xml:space="preserve"><value>The update is paused. Check again to continue.</value></data>
+  <data name="LocalUserCreateSavedEnabled" xml:space="preserve"><value>Local approval: saved on</value></data>
+  <data name="LocalUserCreateSavedDisabled" xml:space="preserve"><value>Local approval: saved off</value></data>
+  <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Local approval: unreadable, access denied</value></data>
+  <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>The running service confirms this local setting. Web approval is separate.</value></data>
+  <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Service confirmation pending or restricted. The saved setting alone does not permit account operations.</value></data>
+  <data name="ReportLifecyclePendingDetail" xml:space="preserve"><value>Background reporting is not confirmed. Check device setup before continuing.</value></data>
 </root>

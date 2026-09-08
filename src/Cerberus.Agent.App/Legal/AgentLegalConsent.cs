@@ -1,3 +1,4 @@
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
 using Microsoft.Win32;
 using System.IO;
@@ -203,6 +204,12 @@ internal static class AgentLegalConsent
         string? baseDir)
     {
         var path = GetPath(scope, baseDir);
+        if (scope == LegalConsentScope.Machine &&
+            string.Equals(Path.GetFullPath(path), GetPath(scope, baseDir: null), StringComparison.OrdinalIgnoreCase))
+        {
+            // CLI consent can precede service setup; it must not create an untrusted machine namespace.
+            AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
         var record = new AgentLegalConsentRecord(

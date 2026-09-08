@@ -8,7 +8,25 @@
     <AssemblyName>Cerberus.Agent.Tray</AssemblyName>
     <RootNamespace>Cerberus.Agent.Tray</RootNamespace>
     <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
+    <AgentReleaseChannel Condition="'$(AgentReleaseChannel)' == ''">dev</AgentReleaseChannel>
+    <AgentUpdateAllowedSignerKeyIdentity Condition="'$(AgentUpdateAllowedSignerKeyIdentity)' == ''"></AgentUpdateAllowedSignerKeyIdentity>
+    <AllowUnsignedDevBuild Condition="'$(AllowUnsignedDevBuild)' == ''">false</AllowUnsignedDevBuild>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentReleaseChannel</_Parameter1>
+      <_Parameter2>$(AgentReleaseChannel)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedSignerKeyIdentity</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedSignerKeyIdentity)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AllowUnsignedDevBuild</_Parameter1>
+      <_Parameter2>$(AllowUnsignedDevBuild)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj" />

@@ -67,12 +67,17 @@ public sealed class WindowsTelemetryCollectorTests
     {
         var collector = new CapabilitiesTelemetrySectionCollector(LocalUserCommandPolicy.CreateDisabled);
         var section = await collector.CollectAsync(TelemetryContext(), CancellationToken.None);
-        var json = JsonSerializer.Serialize(section);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(section));
+        var json = document.RootElement.GetRawText();
 
         Assert.DoesNotContain("windows.local_user.create", json);
         Assert.DoesNotContain("ad.user.", json);
         Assert.Contains("windows.local_user.disable", json);
         Assert.Contains("windows.local_user.delete", json);
+        Assert.Equal("disabled", document.RootElement.GetProperty("local_user_create_policy").GetProperty("state").GetString());
+        Assert.True(DateTimeOffset.TryParse(
+            document.RootElement.GetProperty("local_user_create_policy").GetProperty("observed_at").GetString(),
+            out _));
     }
 
     [Fact]
@@ -80,9 +85,117 @@ public sealed class WindowsTelemetryCollectorTests
     {
         var collector = new CapabilitiesTelemetrySectionCollector(LocalUserCommandPolicy.CreateEnabledPolicy);
         var section = await collector.CollectAsync(TelemetryContext(), CancellationToken.None);
-        var json = JsonSerializer.Serialize(section);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(section));
+        var json = document.RootElement.GetRawText();
 
         Assert.Contains("windows.local_user.create", json);
+        Assert.Equal("enabled", document.RootElement.GetProperty("local_user_create_policy").GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task CapabilitiesTelemetry_ResolvesLocalPolicyOnEveryCollection()
+    {
+        var current = LocalUserCommandPolicy.CreateDisabled;
+        var collector = new CapabilitiesTelemetrySectionCollector(() => current);
+
+        var disabled = JsonDocument.Parse(JsonSerializer.Serialize(
+            await collector.CollectAsync(TelemetryContext(), CancellationToken.None)));
+        current = LocalUserCommandPolicy.CreateEnabledPolicy;
+        var enabled = JsonDocument.Parse(JsonSerializer.Serialize(
+            await collector.CollectAsync(TelemetryContext(), CancellationToken.None)));
+
+        Assert.Equal("disabled", disabled.RootElement.GetProperty("local_user_create_policy").GetProperty("state").GetString());
+        Assert.Equal("enabled", enabled.RootElement.GetProperty("local_user_create_policy").GetProperty("state").GetString());
+        Assert.DoesNotContain(
+            "windows.local_user.create",
+            disabled.RootElement.GetProperty("mutation").GetRawText());
+        Assert.Contains(
+            "windows.local_user.create",
+            enabled.RootElement.GetProperty("mutation").GetRawText());
+        disabled.Dispose();
+        enabled.Dispose();
+    }
+
+    [Fact]
+    public async Task CapabilitiesTelemetry_ExpectedPolicyReadFailureReportsUnknownAndOmitsCreate()
+    {
+        var collector = new CapabilitiesTelemetrySectionCollector(
+            () => throw new UnauthorizedAccessException("registry denied"));
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(
+            await collector.CollectAsync(TelemetryContext(), CancellationToken.None)));
+
+        Assert.Equal("unknown", document.RootElement
+            .GetProperty("local_user_create_policy").GetProperty("state").GetString());
+        Assert.DoesNotContain(
+            "windows.local_user.create",
+            document.RootElement.GetProperty("mutation").GetRawText());
+    }
+
+    [Fact]
+    public void CapabilitiesTelemetry_UnexpectedPolicyResolverFailurePropagates()
+    {
+        var expected = new InvalidOperationException("resolver contract failed");
+        var calls = 0;
+        var collector = new CapabilitiesTelemetrySectionCollector(() =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                return LocalUserCommandPolicy.CreateDisabled;
+            throw expected;
+        });
+
+        var actual = Assert.Throws<InvalidOperationException>(() => collector.IsSnapshotRefreshRequired());
+
+        Assert.Same(expected, actual);
+    }
+
+    [Fact]
+    public async Task CapabilitiesTelemetry_ServiceWriterReceivesEffectiveObservation()
+    {
+        LocalUserCommandPolicy? observedPolicy = null;
+        DateTimeOffset? observedAt = null;
+        var collector = new CapabilitiesTelemetrySectionCollector(
+            () => LocalUserCommandPolicy.CreateEnabledPolicy,
+            (policy, timestamp) =>
+            {
+                observedPolicy = policy;
+                observedAt = timestamp;
+            });
+
+        await collector.CollectAsync(TelemetryContext(), CancellationToken.None);
+
+        Assert.Same(LocalUserCommandPolicy.CreateEnabledPolicy, observedPolicy);
+        Assert.NotNull(observedAt);
+        Assert.InRange(observedAt!.Value, DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(1));
+    }
+
+    [Fact]
+    public async Task WindowsTelemetryCollector_RefreshTriggerTracksPolicyUntilSnapshotSubmission()
+    {
+        var current = LocalUserCommandPolicy.CreateDisabled;
+        var capabilities = new CapabilitiesTelemetrySectionCollector(() => current);
+        var collector = new WindowsTelemetryCollector(
+            new IWindowsTelemetrySectionCollector[] { capabilities });
+        var trigger = (IAgentTelemetrySnapshotTrigger)collector;
+
+        Assert.False(trigger.IsSnapshotRefreshRequired());
+        current = LocalUserCommandPolicy.CreateEnabledPolicy;
+        Assert.True(trigger.IsSnapshotRefreshRequired());
+
+        await collector.BuildSnapshotAsync(
+            new AgentBuildMetadata(
+                AgentVersion: "1.2.3",
+                BuildId: "build-1",
+                BuildChannel: "dev",
+                BootId: "boot-1",
+                SupportedSchemaVersions: AgentSchemaVersions.All),
+            lastHeartbeat: null,
+            ct: CancellationToken.None);
+        trigger.MarkSnapshotSubmitted();
+
+        Assert.False(trigger.IsSnapshotRefreshRequired());
+        current = LocalUserCommandPolicy.UnknownPolicy;
+        Assert.True(trigger.IsSnapshotRefreshRequired());
     }
 
     [Theory]

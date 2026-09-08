@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace Cerberus.Agent.Core;
 
@@ -16,11 +17,21 @@ public static class AgentUpdateStates
     public const string InstallerStarted = "installer_started";
     public const string Applied = "applied";
     public const string Failed = "failed";
+    public const string AwaitingConsent = "awaiting_consent";
+    public const string Installing = "installing";
+    public const string HealthPending = "health_pending";
+    public const string PendingReboot = "pending_reboot";
+    public const string Installed = "installed";
+    public const string RetryableBusy = "retryable_busy";
+    public const string RecoveryRequired = "recovery_required";
+    public const string Quarantined = "quarantined";
+    public const string Blocked = "blocked";
 
     public static bool CanApply(string? state)
         => string.Equals(state, Available, StringComparison.Ordinal) ||
            string.Equals(state, Staged, StringComparison.Ordinal) ||
-           string.Equals(state, Prompting, StringComparison.Ordinal);
+           string.Equals(state, Prompting, StringComparison.Ordinal) ||
+           string.Equals(state, AwaitingConsent, StringComparison.Ordinal);
 }
 
 public static class AgentUpdateErrorCodes
@@ -83,7 +94,17 @@ public sealed record AgentUpdateState(
     [property: JsonPropertyName("last_error_message")] string? LastErrorMessage,
     [property: JsonPropertyName("msi_exit_code")] int? MsiExitCode,
     [property: JsonPropertyName("requires_reboot")] bool RequiresReboot,
-    [property: JsonPropertyName("last_installer_result_id")] string? LastInstallerResultId)
+    [property: JsonPropertyName("last_installer_result_id")] string? LastInstallerResultId,
+    [property: JsonPropertyName("attempt_id")] string? AttemptId = null,
+    [property: JsonPropertyName("sequence")] long Sequence = 0,
+    [property: JsonPropertyName("retry_count")] int RetryCount = 0,
+    [property: JsonPropertyName("retry_after_utc")] string? RetryAfterUtc = null,
+    [property: JsonPropertyName("quarantined")] bool Quarantined = false,
+    [property: JsonPropertyName("release_id")] string? ReleaseId = null,
+    [property: JsonPropertyName("report_sequence")] long ReportSequence = 0,
+    [property: JsonPropertyName("policy")] string Policy = "recommended",
+    [property: JsonPropertyName("health_state")] string HealthState = "unknown",
+    [property: JsonPropertyName("rollback_state")] string RollbackState = "none")
 {
     public const string CurrentSchemaVersion = "agent.update.state.v1";
 
@@ -120,7 +141,12 @@ public sealed record AgentUpdateState(
         int? msiExitCode = null,
         bool? requiresReboot = null,
         bool markChecked = false,
-        string? installerResultId = null)
+        string? installerResultId = null,
+        string? attemptId = null,
+        long? sequence = null,
+        int? retryCount = null,
+        string? retryAfterUtc = null,
+        bool? quarantined = null)
         => this with
         {
             State = state,
@@ -138,27 +164,40 @@ public sealed record AgentUpdateState(
             MsiExitCode = msiExitCode,
             RequiresReboot = requiresReboot ?? RequiresReboot,
             LastInstallerResultId = NullIfBlank(installerResultId) ?? LastInstallerResultId,
+            AttemptId = NullIfBlank(attemptId) ?? AttemptId,
+            Sequence = sequence ?? Sequence,
+            RetryCount = retryCount ?? RetryCount,
+            RetryAfterUtc = NullIfBlank(retryAfterUtc) ?? RetryAfterUtc,
+            Quarantined = quarantined ?? Quarantined,
         };
 
     public IReadOnlyDictionary<string, object?> ToHeartbeatStatus()
     {
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["schema_version"] = "agent.update.status.v1",
+            ["schema_version"] = "agent.update.status.v2",
             ["state"] = State,
             ["current_version"] = CurrentVersion,
             ["target_version"] = TargetVersion,
             ["channel"] = Channel,
-            ["manifest_url"] = ManifestUrl,
             ["campaign_id"] = CampaignId,
             ["command_id"] = CommandId,
             ["artifact_sha256"] = ArtifactSha256,
             ["last_checked_utc"] = LastCheckedUtc,
             ["last_transition_utc"] = LastTransitionUtc,
             ["last_error_code"] = LastErrorCode,
-            ["last_error_message"] = LastErrorMessage,
             ["msi_exit_code"] = MsiExitCode,
             ["requires_reboot"] = RequiresReboot,
+            ["attempt_id"] = AttemptId,
+            ["sequence"] = Sequence == 0 ? null : Sequence,
+            ["release_id"] = ReleaseId,
+            ["report_sequence"] = ReportSequence,
+            ["policy"] = Policy,
+            ["retry_count"] = RetryCount,
+            ["next_retry_utc"] = RetryAfterUtc,
+            ["health_state"] = HealthState,
+            ["rollback_state"] = RollbackState,
+            ["quarantined"] = Quarantined ? true : null,
         };
         foreach (var key in payload.Where(item => item.Value is null).Select(item => item.Key).ToArray())
             payload.Remove(key);
@@ -166,18 +205,8 @@ public sealed record AgentUpdateState(
     }
 
     public IReadOnlyDictionary<string, object?> ToCommandResultPayload()
-    {
-        var payload = new Dictionary<string, object?>(ToHeartbeatStatus(), StringComparer.Ordinal)
-        {
-            ["schema_version"] = "agent.update.result.v1",
-        };
-        payload.Remove("manifest_url");
-        payload.Remove("command_id");
-        payload.Remove("last_transition_utc");
-        payload.Remove("last_checked_utc");
-        payload.Remove("last_error_message");
-        return payload;
-    }
+        // A report sequence denotes exactly one public payload across both transports.
+        => ToHeartbeatStatus();
 
     private static string? NullIfBlank(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -186,8 +215,16 @@ public sealed record AgentUpdateState(
     {
         if (string.IsNullOrWhiteSpace(value))
             return null;
-        var redacted = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        var redacted = SanitizeMessage(value);
         return redacted.Length <= 300 ? redacted : redacted[..300];
+    }
+
+    public static string SanitizeMessage(string value)
+    {
+        var redacted = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        redacted = Regex.Replace(redacted, "(?i)(?:[a-z]:\\\\|\\\\\\\\)[^<>\\\"\\r\\n]*", "<path>");
+        redacted = Regex.Replace(redacted, @"https?://[^\s]+", "<url>");
+        return redacted;
     }
 
     private static string Now()
@@ -203,7 +240,11 @@ public sealed record AgentUpdateInstallerResult(
     [property: JsonPropertyName("requires_reboot")] bool RequiresReboot,
     [property: JsonPropertyName("error_code")] string? ErrorCode,
     [property: JsonPropertyName("error_message")] string? ErrorMessage,
-    [property: JsonPropertyName("msi_log_path")] string? MsiLogPath)
+    [property: JsonPropertyName("msi_log_path")] string? MsiLogPath,
+    [property: JsonPropertyName("attempt_id")] string? AttemptId = null,
+    [property: JsonPropertyName("retry_count")] int RetryCount = 0,
+    [property: JsonPropertyName("retry_after_utc")] string? RetryAfterUtc = null,
+    [property: JsonPropertyName("quarantined")] bool Quarantined = false)
 {
     public const string CurrentSchemaVersion = "agent.update.installer_result.v1";
 
@@ -214,9 +255,9 @@ public sealed record AgentUpdateInstallerResult(
     {
         var (state, errorCode, requiresReboot) = exitCode switch
         {
-            0 => (AgentUpdateStates.Applied, (string?)null, false),
-            3010 => (AgentUpdateStates.Applied, AgentUpdateErrorCodes.RebootRequired, true),
-            1618 => (AgentUpdateStates.Failed, AgentUpdateErrorCodes.InstallerBusy, false),
+            0 => (AgentUpdateStates.HealthPending, (string?)null, false),
+            3010 => (AgentUpdateStates.PendingReboot, AgentUpdateErrorCodes.RebootRequired, true),
+            1618 => (AgentUpdateStates.RetryableBusy, AgentUpdateErrorCodes.InstallerBusy, false),
             1602 => (AgentUpdateStates.Failed, AgentUpdateErrorCodes.UacCancelled, false),
             _ => (AgentUpdateStates.Failed, AgentUpdateErrorCodes.MsiFailed, false),
         };
@@ -241,7 +282,7 @@ public sealed record AgentUpdateInstallerResult(
             null,
             false,
             AgentUpdateErrorCodes.Unknown,
-            ex.Message,
+            AgentUpdateState.SanitizeMessage(ex.Message),
             null);
 }
 
@@ -267,20 +308,26 @@ public sealed class AgentUpdateStateStore
             Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-result.json"));
 
     public async Task<AgentUpdateState> ReadAsync(string? currentVersion, CancellationToken ct)
+        => await ReadPersistedAsync(ct).ConfigureAwait(false) ?? AgentUpdateState.NotChecked(currentVersion);
+
+    private async Task<AgentUpdateState?> ReadPersistedAsync(CancellationToken ct)
     {
         try
         {
+            ValidateStatePath();
             if (!File.Exists(StatePath))
-                return AgentUpdateState.NotChecked(currentVersion);
+                return null;
+            if (new FileInfo(StatePath).Length is <= 0 or > AgentUpdateDurableFile.MaxBytes)
+                throw new InvalidOperationException("Update state length is invalid.");
             var raw = await File.ReadAllTextAsync(StatePath, ct).ConfigureAwait(false);
             var state = JsonSerializer.Deserialize<AgentUpdateState>(raw, JsonOptions);
-            return state is null || !string.Equals(state.SchemaVersion, AgentUpdateState.CurrentSchemaVersion, StringComparison.Ordinal)
-                ? AgentUpdateState.NotChecked(currentVersion)
-                : state;
+            if (state is null || state.SchemaVersion != AgentUpdateState.CurrentSchemaVersion || state.ReportSequence < 0)
+                throw new InvalidOperationException("Update state is invalid.");
+            return state;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            return AgentUpdateState.NotChecked(currentVersion);
+            throw new InvalidOperationException("Update state could not be read.", ex);
         }
     }
 
@@ -288,19 +335,16 @@ public sealed class AgentUpdateStateStore
     {
         var dir = Path.GetDirectoryName(StatePath);
         if (!string.IsNullOrWhiteSpace(dir))
-            Directory.CreateDirectory(dir);
+            EnsureStateDirectory(dir);
+        ValidateStatePath();
 
-        var tempPath = $"{StatePath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            var json = JsonSerializer.Serialize(state, JsonOptions);
-            await File.WriteAllTextAsync(tempPath, json, ct).ConfigureAwait(false);
-            File.Move(tempPath, StatePath, overwrite: true);
-        }
-        finally
-        {
-            TryDeleteFile(tempPath);
-        }
+        // This sequence belongs to the agent report stream, not to an attempt.
+        using var reportLock = new FileStream(StatePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var previous = await ReadAsync(state.CurrentVersion, ct).ConfigureAwait(false);
+        if (state with { ReportSequence = previous.ReportSequence, LastTransitionUtc = previous.LastTransitionUtc } == previous)
+            return;
+        var next = state with { ReportSequence = checked(previous.ReportSequence + 1) };
+        AgentUpdateDurableFile.Write(StatePath, dir!, next);
     }
 
     public async Task<AgentUpdateState> WriteTransitionAsync(
@@ -318,7 +362,12 @@ public sealed class AgentUpdateStateStore
         int? msiExitCode = null,
         bool? requiresReboot = null,
         bool markChecked = false,
-        string? installerResultId = null)
+        string? installerResultId = null,
+        string? attemptId = null,
+        long? sequence = null,
+        int? retryCount = null,
+        string? retryAfterUtc = null,
+        bool? quarantined = null)
     {
         var next = await BuildTransitionAsync(
             state,
@@ -335,9 +384,14 @@ public sealed class AgentUpdateStateStore
             msiExitCode,
             requiresReboot,
             markChecked,
-            installerResultId).ConfigureAwait(false);
+            installerResultId,
+            attemptId,
+            sequence,
+            retryCount,
+            retryAfterUtc,
+            quarantined).ConfigureAwait(false);
         await WriteAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await ReadAsync(currentVersion, ct).ConfigureAwait(false);
     }
 
     public async Task<AgentUpdateState> TryWriteTransitionAsync(
@@ -355,7 +409,12 @@ public sealed class AgentUpdateStateStore
         int? msiExitCode = null,
         bool? requiresReboot = null,
         bool markChecked = false,
-        string? installerResultId = null)
+        string? installerResultId = null,
+        string? attemptId = null,
+        long? sequence = null,
+        int? retryCount = null,
+        string? retryAfterUtc = null,
+        bool? quarantined = null)
     {
         var next = await BuildTransitionAsync(
             state,
@@ -372,7 +431,12 @@ public sealed class AgentUpdateStateStore
             msiExitCode,
             requiresReboot,
             markChecked,
-            installerResultId).ConfigureAwait(false);
+            installerResultId,
+            attemptId,
+            sequence,
+            retryCount,
+            retryAfterUtc,
+            quarantined).ConfigureAwait(false);
         try
         {
             await WriteAsync(next, ct).ConfigureAwait(false);
@@ -399,7 +463,12 @@ public sealed class AgentUpdateStateStore
         int? msiExitCode,
         bool? requiresReboot,
         bool markChecked,
-        string? installerResultId)
+        string? installerResultId,
+        string? attemptId,
+        long? sequence,
+        int? retryCount,
+        string? retryAfterUtc,
+        bool? quarantined)
     {
         var existing = await ReadAsync(currentVersion, ct).ConfigureAwait(false);
         return existing.Transition(
@@ -416,19 +485,26 @@ public sealed class AgentUpdateStateStore
             msiExitCode,
             requiresReboot,
             markChecked,
-            installerResultId);
+            installerResultId,
+            attemptId,
+            sequence,
+            retryCount,
+            retryAfterUtc,
+            quarantined);
     }
 
-    public async Task<AgentUpdateState> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)
+    /// <summary>Returns only a durable ordered report; an untouched agent has no update report yet.</summary>
+    public async Task<AgentUpdateState?> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)
     {
-        var state = await ReadAsync(currentVersion, ct).ConfigureAwait(false);
+        var state = await ReadPersistedAsync(ct).ConfigureAwait(false);
         var result = await ReadInstallerResultAsync(ct).ConfigureAwait(false);
-        if (result is null || string.Equals(result.ResultId, state.LastInstallerResultId, StringComparison.Ordinal))
+        if (result is null || string.Equals(result.ResultId, state?.LastInstallerResultId, StringComparison.Ordinal))
             return state;
 
-        var nextState = string.Equals(result.State, AgentUpdateStates.Applied, StringComparison.Ordinal)
-            ? AgentUpdateStates.Applied
-            : AgentUpdateStates.Failed;
+        state ??= AgentUpdateState.NotChecked(currentVersion);
+        if (state.AttemptId is not null && result.AttemptId != state.AttemptId)
+            throw new InvalidOperationException("Installer result does not match the active attempt.");
+        var nextState = result.State == AgentUpdateStates.Applied ? AgentUpdateStates.HealthPending : result.State;
         var next = state.Transition(
             nextState,
             currentVersion,
@@ -436,21 +512,31 @@ public sealed class AgentUpdateStateStore
             errorMessage: result.ErrorMessage,
             msiExitCode: result.MsiExitCode,
             requiresReboot: result.RequiresReboot,
-            installerResultId: result.ResultId);
+            installerResultId: result.ResultId,
+            attemptId: result.AttemptId,
+            retryCount: result.RetryCount,
+            retryAfterUtc: result.RetryAfterUtc,
+            quarantined: result.Quarantined);
         await WriteAsync(next, ct).ConfigureAwait(false);
-        return next;
+        return await ReadPersistedAsync(ct).ConfigureAwait(false);
     }
 
     public async Task WriteInstallerResultAsync(AgentUpdateInstallerResult result, CancellationToken ct)
     {
         var dir = Path.GetDirectoryName(InstallerResultPath);
         if (!string.IsNullOrWhiteSpace(dir))
-            Directory.CreateDirectory(dir);
+            EnsureStateDirectory(dir);
+        ValidateStatePath(InstallerResultPath);
 
         var tempPath = $"{InstallerResultPath}.{Guid.NewGuid():N}.tmp";
         try
         {
-            var json = JsonSerializer.Serialize(result, JsonOptions);
+            var safeResult = result with
+            {
+                ErrorMessage = result.ErrorMessage is null ? null : AgentUpdateState.SanitizeMessage(result.ErrorMessage),
+                MsiLogPath = null,
+            };
+            var json = JsonSerializer.Serialize(safeResult, JsonOptions);
             await File.WriteAllTextAsync(tempPath, json, ct).ConfigureAwait(false);
             File.Move(tempPath, InstallerResultPath, overwrite: true);
         }
@@ -460,10 +546,11 @@ public sealed class AgentUpdateStateStore
         }
     }
 
-    private async Task<AgentUpdateInstallerResult?> ReadInstallerResultAsync(CancellationToken ct)
+    public async Task<AgentUpdateInstallerResult?> ReadInstallerResultAsync(CancellationToken ct)
     {
         try
         {
+            ValidateStatePath(InstallerResultPath);
             if (!File.Exists(InstallerResultPath))
                 return null;
             var raw = await File.ReadAllTextAsync(InstallerResultPath, ct).ConfigureAwait(false);
@@ -486,4 +573,86 @@ public sealed class AgentUpdateStateStore
         {
         }
     }
+
+    private void ValidateStatePath(string? path = null)
+    {
+        var target = path ?? StatePath;
+        var root = AgentUpdateSecurity.DefaultPrivilegedRoot;
+        if (AgentUpdateSecurity.IsUnderDirectory(target, root))
+            AgentUpdateSecurity.ValidateTrustedPath(target, root, allowMissing: true);
+    }
+
+    private static void EnsureStateDirectory(string directory)
+    {
+        var root = AgentUpdateSecurity.DefaultPrivilegedRoot;
+        if (string.Equals(
+                AgentUpdateSecurity.NormalizeRoot(directory),
+                AgentUpdateSecurity.NormalizeRoot(root),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            if (!AgentUpdateSecurity.IsLocalSystem())
+                throw new UnauthorizedAccessException("Only the installed agent service may write update state.");
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            return;
+        }
+
+        Directory.CreateDirectory(directory);
+    }
+}
+
+public static class AgentUpdateSequenceStore
+{
+    private const string SequenceFileName = "highest-sequence.json";
+
+    private sealed record AcceptedManifest(
+        [property: JsonPropertyName("schema_version")] string SchemaVersion,
+        [property: JsonPropertyName("highest_sequence")] long HighestSequence,
+        [property: JsonPropertyName("manifest_digest")] string? ManifestDigest);
+
+    public static long ReadHighest(string root)
+    {
+        var path = Path.Combine(AgentUpdateSecurity.NormalizeRoot(root), SequenceFileName);
+        try
+        {
+            AgentUpdateSecurity.ValidateTrustedPath(path, root, allowMissing: true);
+            if (!File.Exists(path))
+                return 0;
+            var record = AgentUpdateDurableFile.Read<AcceptedManifest>(path, root);
+            if (record is null || record.SchemaVersion is not ("agent.update.sequence.v1" or "agent.update.sequence.v2") || record.HighestSequence <= 0)
+                throw new InvalidOperationException("Update sequence state is invalid.");
+            return record.HighestSequence;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            throw new InvalidOperationException("Update sequence state could not be read.", ex);
+        }
+    }
+
+    /// <summary>Accept the signed canonical payload before using it. A same-sequence payload may only resume byte-identical semantics.</summary>
+    public static void Accept(string root, long sequence, string digest)
+    {
+        if (sequence <= 0 || digest.Length != 64 || !digest.All(Uri.IsHexDigit))
+            throw new InvalidOperationException("Update manifest acceptance is invalid.");
+        using var gate = AgentUpdateSecurity.AcquireGlobalLock(root);
+        var path = Path.Combine(AgentUpdateSecurity.NormalizeRoot(root), SequenceFileName);
+        var current = ReadHighest(root);
+        var accepted = AgentUpdateDurableFile.Read<AcceptedManifest>(path, root);
+        if (sequence < current || (sequence == current &&
+            !string.Equals(accepted?.ManifestDigest, digest, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Update manifest sequence rollback or equivocation denied.");
+        if (sequence == current)
+            return;
+        AgentUpdateDurableFile.Write(path, root, new AcceptedManifest("agent.update.sequence.v2", sequence, digest.ToLowerInvariant()));
+    }
+
+    public static void RequireAccepted(string root, long sequence, string digest)
+    {
+        var path = Path.Combine(AgentUpdateSecurity.NormalizeRoot(root), SequenceFileName);
+        var current = ReadHighest(root);
+        var accepted = AgentUpdateDurableFile.Read<AcceptedManifest>(path, root);
+        if (sequence != current || !string.Equals(accepted?.ManifestDigest, digest, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update attempt does not match accepted manifest trust.");
+    }
+
+
 }

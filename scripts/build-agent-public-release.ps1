@@ -9,15 +9,16 @@ param(
   [string]$Runtime = "win-x64",
   [string]$OutputRoot = "out/public-release",
   [string]$TimestampUrl = "http://timestamp.digicert.com",
-  [string]$DefaultBackendUrl = $env:CERBERUS_BACKEND_URL,
-  [string]$DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL,
-  [string]$DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID,
-  [string]$DefaultSsoScope = $env:CERBERUS_SSO_SCOPE,
+  [string]$DefaultBackendUrl = "",
+  [string]$DefaultSsoBaseUrl = "",
+  [string]$DefaultSsoClientId = "",
+  [string]$DefaultSsoScope = "",
   [string]$UpdateManifestUrl = $env:CERBERUS_AGENT_UPDATE_MANIFEST_URL,
   [string]$AgentUpdateManifestPublicKeysB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64,
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
   [int]$DefaultOAuthRedirectPort = 0,
+  [long]$ManifestSequence = 0,
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild,
   [switch]$AllowEphemeralManifestKey
@@ -186,9 +187,34 @@ if ($DefaultOAuthRedirectPort -le 0) {
 if ($Channel -eq "dev") {
   if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = "http://127.0.0.1:8000" }
   if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = "http://localhost:18000" }
-  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = "1ad45750a9cc2eaed763" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = "610f03b77494869da4ef" }
   if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
   if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
+}
+else {
+  if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = $env:CERBERUS_BACKEND_URL }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = $env:CERBERUS_SSO_BASE_URL }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { $DefaultSsoClientId = $env:CERBERUS_SSO_CLIENT_ID }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = $env:CERBERUS_SSO_SCOPE }
+  if ([string]::IsNullOrWhiteSpace($DefaultBackendUrl)) { $DefaultBackendUrl = "https://app.cerberusd.com" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoBaseUrl)) { $DefaultSsoBaseUrl = "https://auth.cerberusd.com" }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoClientId)) { throw "A deployment-specific public SSO client ID is required for preview/stable builds." }
+  if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
+  if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
+}
+foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
+  $uri = $null
+  if (-not [Uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or
+      $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
+    throw "Build routing requires absolute backend/SSO URLs without credentials, query or fragment."
+  }
+  if ($Channel -eq "dev") {
+    if (-not $uri.IsLoopback -or $uri.Scheme -notin @("http", "https")) {
+      throw "Dev builds require loopback backend and SSO endpoints."
+    }
+  } elseif ($uri.IsLoopback -or $uri.Scheme -ne "https") {
+    throw "Preview/stable builds require non-loopback HTTPS backend and SSO endpoints."
+  }
 }
 
 $manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
@@ -210,7 +236,11 @@ $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
 $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
-  $UpdateManifestUrl = "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.json"
+  $UpdateManifestUrl = if ($Channel -eq "stable") {
+    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json"
+  } else {
+    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json"
+  }
 }
 if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
   $artifactRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
@@ -226,12 +256,36 @@ if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
   throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
 }
 
+$signerKeyIdentity = if ($Channel -eq "dev" -and $AllowUnsignedDevBuild) { "unsigned-dev" } else { "" }
+$allowUnsignedBuildMetadata = ($Channel -eq "dev" -and $AllowUnsignedDevBuild)
+$certBase64ForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
+$certPasswordForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
+if (-not [string]::IsNullOrWhiteSpace($certBase64ForMetadata)) {
+  try {
+    $certificateForMetadata = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+      [Convert]::FromBase64String($certBase64ForMetadata),
+      $certPasswordForMetadata,
+      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+    $signerKeyIdentity = "sha256:" + [Convert]::ToHexString(
+      [System.Security.Cryptography.SHA256]::HashData($certificateForMetadata.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant()
+  } catch {
+    throw "Windows signing certificate identity could not be read."
+  }
+}
+if ($ManifestSequence -le 0) {
+  $ManifestSequence = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+}
+if ($ManifestSequence -le 0) {
+  throw "Manifest sequence must be positive."
+}
+
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
   dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
+  if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
 }
 
-function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
+function Publish-AgentProject([string]$Project) {
   $args = @(
     "publish",
     (Join-Path $repoRoot $Project),
@@ -245,25 +299,29 @@ function Publish-AgentProject([string]$Project, [bool]$WithSetupConfig) {
     "-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64",
     "-p:AgentUpdateManifestUrl=$UpdateManifestUrl",
     "-p:AgentUpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes",
+    "-p:AgentReleaseChannel=$Channel",
+    "-p:AgentUpdateAllowedSignerKeyIdentity=$signerKeyIdentity",
+    "-p:AllowUnsignedDevBuild=$($allowUnsignedBuildMetadata.ToString().ToLowerInvariant())",
     "-o", $runtimePublishDir
   )
-  if ($WithSetupConfig) {
-    $args += @(
+  # Every publish must pass the same routing metadata to the shared runtime project.
+  # Otherwise later service/updater publishes overwrite it with an unconfigured runtime.
+  $args += @(
       "-p:AgentDefaultBackendUrlBase64=$(ConvertTo-Base64Utf8 $DefaultBackendUrl)",
       "-p:AgentDefaultSsoBaseUrlBase64=$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)",
       "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
       "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
       "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
-    )
-  }
+  )
   dotnet @args
+  if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
 }
 
 Write-Step "Publishing split agent runtime"
-Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" $true
-Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" $false
-Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" $false
-Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" $false
+Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj"
+Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj"
 
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
 $installerBase = "Cerberus.Agent-$Channel-$Version"
@@ -310,7 +368,9 @@ if (-not [string]::IsNullOrWhiteSpace($certBase64)) {
   $signtool = Find-SignTool
   foreach ($runtimeExe in $runtimeExecutables) {
     & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $runtimeExe
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
     & $signtool verify /pa /v $runtimeExe
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   $signed = $true
@@ -321,6 +381,14 @@ if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
 }
 
 Write-Step "Building MSI installer"
+$installerHelperOutput = Join-Path $outputRootPath "installer-helper"
+dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
+  -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:Version=$Version -o $installerHelperOutput
+if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
+$installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
+$serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
+$serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
 $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue
@@ -332,11 +400,15 @@ dotnet build $installerProject `
   -p:MsiProductVersion=$msiProductVersion `
   -p:Channel=$Channel `
   -p:AgentPublishDir=$runtimePublishDir `
+  -p:InstallerHelperPath=$installerHelperPath `
+  -p:ServiceExeSha256=$serviceExeSha256 `
+  -p:ServiceAssemblySha256=$serviceAssemblySha256 `
   -p:InstallerAssetBase=$installerBuildBase `
   -p:UpdateManifestUrl=$UpdateManifestUrl `
   -p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64 `
   -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
   -p:OutputPath="$publishDir\"
+if ($LASTEXITCODE -ne 0) { throw "MSI package build failed." }
 
 $msi = Join-Path $publishDir "$installerBase.msi"
 $builtMsi = Join-Path $publishDir "$installerBuildBase.msi"
@@ -365,7 +437,9 @@ if ($signed) {
   [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
   $signtool = Find-SignTool
   & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $msi
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   & $signtool verify /pa /v $msi
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
 }
 
@@ -393,6 +467,8 @@ if ($secretHits.Count -gt 0) {
 
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
+$expiresAt = (Get-Date).ToUniversalTime().AddDays(30).ToString("O")
+$artifactLength = (Get-Item -LiteralPath $msi).Length
 $canonical = @(
   "msi",
   $Version,
@@ -402,10 +478,16 @@ $canonical = @(
   "Cerberus Agent Release",
   $releasedAt,
   "agent.heartbeat.v1",
-  "false"
+  "false",
+  "agent.update.manifest.v2",
+  $ManifestSequence.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+  $expiresAt,
+  $artifactLength.ToString([System.Globalization.CultureInfo]::InvariantCulture),
+  $signerKeyIdentity
 ) -join "`n"
 $manifestSignature = Sign-ManifestPayload -CanonicalPayload $canonical -PrivateKeyPem $manifestPrivateKey
 $manifest = [ordered]@{
+  schema_version = "agent.update.manifest.v2"
   artifact_kind = "msi"
   version = $Version
   channel = $Channel
@@ -415,14 +497,34 @@ $manifest = [ordered]@{
   released_at_utc = $releasedAt
   minimum_protocol_version = "agent.heartbeat.v1"
   rollback_allowed = $false
+  sequence = $ManifestSequence
+  expires_at_utc = $expiresAt
+  artifact_length = $artifactLength
+  signer_key_identity = $signerKeyIdentity
   signature = $manifestSignature
 }
-$manifestPath = Join-Path $publishDir "$assetBase.update-manifest.json"
+$manifestPath = Join-Path $publishDir "$assetBase.update-manifest.v2.json"
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+
+# Keep the historical v1 endpoint for legacy clients; fixed clients embed the v2 endpoint.
+$legacyManifest = [ordered]@{}
+foreach ($name in @("artifact_kind", "version", "channel", "artifact_url", "sha256", "signing_identity", "released_at_utc", "minimum_protocol_version", "rollback_allowed")) {
+  $legacyManifest[$name] = $manifest[$name]
+}
+$legacyCanonical = ($canonical -split "`n" | Select-Object -First 9) -join "`n"
+$legacyManifest["signature"] = Sign-ManifestPayload -CanonicalPayload $legacyCanonical -PrivateKeyPem $manifestPrivateKey
+$legacyManifestPath = Join-Path $publishDir "$assetBase.update-manifest.json"
+$legacyManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyManifestPath -Encoding utf8
+Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $publishDir "Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json") -Force
 
 $gate = [ordered]@{
   schema = "cerberus.agent.release_gate.v1"
   channel = $Channel
+  manifest_schema = "agent.update.manifest.v2"
+  manifest_sequence = $ManifestSequence
+  manifest_expires_at_utc = $expiresAt
+  signer_key_identity = $signerKeyIdentity
+  unsigned_dev_build_allowed = $allowUnsignedBuildMetadata
   authenticode_signature_present = $signed
   checksum_sha256 = $msiHash
   installer = [ordered]@{
@@ -456,7 +558,7 @@ Copy-ChannelLatestAliases `
   -Zip $zip `
   -Sbom $sbom `
   -Provenance $provenance `
-  -Manifest $manifestPath `
+  -Manifest $legacyManifestPath `
   -Gate $gatePath `
   -MsiHash $msiHash `
   -ZipHash $zipHash

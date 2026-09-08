@@ -71,8 +71,6 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                     _currentVersion,
                     ct,
                     targetVersion: request.TargetVersion,
-                    channel: request.Channel,
-                    manifestUrl: request.ManifestUrl,
                     campaignId: campaignId,
                     commandId: commandId,
                     errorCode: AgentUpdateErrorCodes.NotConfigured,
@@ -91,7 +89,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                 campaignId: campaignId,
                 commandId: commandId).ConfigureAwait(false);
 
-            var check = await coordinator.CheckUpdateAsync(signal, ct).ConfigureAwait(false);
+            var check = await coordinator.CheckUpdateAsync(signal, ct, explicitRequest: true).ConfigureAwait(false);
             if (!check.Available)
             {
                 var current = await _stateStore.WriteTransitionAsync(
@@ -115,14 +113,19 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                     ct,
                     targetVersion: check.Version ?? request.TargetVersion,
                     channel: check.Channel ?? signal.Channel,
-                    manifestUrl: check.ManifestUrl ?? signal.ManifestUrl,
+                    manifestUrl: signal.ManifestUrl,
                     campaignId: campaignId,
                     commandId: commandId,
                     markChecked: true).ConfigureAwait(false);
                 return Done(available);
             }
 
-            var plan = await coordinator.StageUpdateAsync(signal, campaignId, commandId, ct).ConfigureAwait(false);
+            var plan = await coordinator.StageUpdateAsync(
+                signal,
+                campaignId,
+                commandId,
+                ct,
+                explicitRequest: true).ConfigureAwait(false);
             if (plan is null)
             {
                 var current = await _stateStore.WriteTransitionAsync(
@@ -131,7 +134,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                     ct,
                     targetVersion: check.Version ?? request.TargetVersion,
                     channel: check.Channel ?? signal.Channel,
-                    manifestUrl: check.ManifestUrl ?? signal.ManifestUrl,
+                    manifestUrl: signal.ManifestUrl,
                     campaignId: campaignId,
                     commandId: commandId,
                     markChecked: true).ConfigureAwait(false);
@@ -161,8 +164,8 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                 _currentVersion,
                 CancellationToken.None,
                 targetVersion: request.TargetVersion,
-                channel: request.Channel,
-                manifestUrl: request.ManifestUrl,
+                channel: AgentUpdateTrustFactory.BuildConfiguredManualSignal()?.Channel,
+                manifestUrl: AgentUpdateTrustFactory.BuildConfiguredManualSignal()?.ManifestUrl,
                 campaignId: campaignId,
                 commandId: commandId,
                 errorCode: AgentUpdateErrorCodes.Classify(ex),
@@ -173,16 +176,24 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
     private static AgentUpdateSignal BuildSignal(AgentUpdateRequestPayload request)
     {
-        var configured = AgentUpdateTrustFactory.BuildConfiguredManualSignal();
-        var manifestUrl = Clean(request.ManifestUrl) ?? configured?.ManifestUrl;
-        if (string.IsNullOrWhiteSpace(manifestUrl))
-            throw new InvalidOperationException("Update manifest URL is required.");
+        var configured = AgentUpdateTrustFactory.BuildConfiguredManualSignal()
+            ?? throw new InvalidOperationException("Update manifest URL is not configured.");
+        var requestedUrl = Clean(request.ManifestUrl);
+        if (!string.IsNullOrWhiteSpace(requestedUrl) &&
+            !string.Equals(requestedUrl, configured.ManifestUrl, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update manifest URL does not match the installed release configuration.");
+
+        var requestedChannel = Clean(request.Channel);
+        if (!string.IsNullOrWhiteSpace(requestedChannel) &&
+            !string.Equals(requestedChannel, configured.Channel, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update channel does not match the installed release configuration.");
+
         return new AgentUpdateSignal(
             Required: false,
             Recommended: true,
-            ManifestUrl: manifestUrl,
+            ManifestUrl: configured.ManifestUrl,
             Reason: Clean(request.Reason) ?? "agent_update_request",
-            Channel: Clean(request.Channel) ?? configured?.Channel ?? WindowsDeviceInfo.GetBuildChannel());
+            Channel: configured.Channel);
     }
 
     private static void ValidateRequest(AgentUpdateRequestPayload request)

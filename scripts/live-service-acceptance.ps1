@@ -7,6 +7,8 @@ param(
   [string]$Username = "",
   [switch]$RunLocalUserLifecycle,
   [switch]$RunManagedAssignmentLifecycle,
+  [switch]$RunDoubleLockAcceptance,
+  [switch]$DoubleLockExclusiveDisposableTarget,
   [string]$ManagedUserId = "",
   [string]$ManagedUserEmail = "",
   [string]$ManagedDisplayName = "",
@@ -376,7 +378,7 @@ function Test-LiveAcceptancePreflight {
 function Invoke-PortalJson {
   param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet("GET", "POST", "DELETE")]
+    [ValidateSet("GET", "POST", "PATCH", "DELETE")]
     [string]$Method,
     [Parameter(Mandatory=$true)]
     [string]$Path,
@@ -384,26 +386,81 @@ function Invoke-PortalJson {
   )
 
   $uri = "$BackendUrl$Path"
+  $script:LastPortalFailure = $null
   try {
     if ($null -eq $Body) {
-      return Invoke-RestMethod -Method $Method -Uri $uri -Headers $portal.Headers -WebSession $portal.Session
+      $response = Invoke-RestMethod -Method $Method -Uri $uri -Headers $portal.Headers -WebSession $portal.Session
+      return $response
     }
 
     $json = $Body | ConvertTo-Json -Depth 8
-    return Invoke-RestMethod `
+    $response = Invoke-RestMethod `
       -Method $Method `
       -Uri $uri `
       -Headers $portal.Headers `
       -WebSession $portal.Session `
       -ContentType "application/json" `
       -Body $json
+    return $response
   } catch {
+    $errorRecord = $_
     $responseBody = $null
     $statusCode = $null
-    if ($_.Exception.Response) {
-      $statusCode = [int]$_.Exception.Response.StatusCode
+    $response = $null
+    try {
+      if ($null -ne $errorRecord.Exception) {
+        $response = $errorRecord.Exception.Response
+      }
+    } catch {
+      $response = $null
+    }
+    if ($null -ne $response) {
       try {
-        $stream = $_.Exception.Response.GetResponseStream()
+        $statusCode = [int]$response.StatusCode
+      } catch {
+        $statusCode = $null
+      }
+    }
+
+    # Windows PowerShell 5.1 consumes the WebException response stream before
+    # this catch block and exposes the JSON through ErrorDetails.Message.
+    try {
+      if ($null -ne $errorRecord.ErrorDetails) {
+        $errorDetailsBody = [string]$errorRecord.ErrorDetails.Message
+        if (-not [string]::IsNullOrWhiteSpace($errorDetailsBody)) {
+          $responseBody = $errorDetailsBody
+        }
+      }
+    } catch {
+      $responseBody = $null
+    }
+
+    # PowerShell 7 exposes an HttpResponseMessage. Prefer its content when
+    # PS5.1 did not provide ErrorDetails.Message, then retain the legacy stream
+    # fallback for WebException implementations that still expose a body.
+    if ([string]::IsNullOrWhiteSpace($responseBody) -and $null -ne $response) {
+      try {
+        $content = $response.Content
+        if ($null -ne $content) {
+          if ($content -is [string]) {
+            $responseBody = [string]$content
+          } else {
+            $readAsStringMethod = $content.PSObject.Methods["ReadAsStringAsync"]
+            if ($null -ne $readAsStringMethod) {
+              $contentTask = $content.ReadAsStringAsync()
+              if ($null -ne $contentTask) {
+                $responseBody = [string]$contentTask.GetAwaiter().GetResult()
+              }
+            }
+          }
+        }
+      } catch {
+        $responseBody = $null
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($responseBody) -and $null -ne $response) {
+      try {
+        $stream = $response.GetResponseStream()
         if ($stream) {
           $reader = [System.IO.StreamReader]::new($stream)
           $responseBody = $reader.ReadToEnd()
@@ -413,13 +470,54 @@ function Invoke-PortalJson {
         $responseBody = "<failed to read response body>"
       }
     }
+    $detailCode = $null
+    $blockerCodes = @()
+    if (-not [string]::IsNullOrWhiteSpace($responseBody) -and $responseBody -ne "<failed to read response body>") {
+      try {
+        $parsedFailure = $responseBody | ConvertFrom-Json -ErrorAction Stop
+        $detailProperty = if ($null -eq $parsedFailure) { $null } else { $parsedFailure.PSObject.Properties["detail"] }
+        if ($null -ne $detailProperty) {
+          $detail = $detailProperty.Value
+          if ($detail -is [string]) {
+            if (-not [string]::IsNullOrWhiteSpace($detail)) {
+              $detailCode = [string]$detail
+            }
+          } elseif ($null -ne $detail) {
+            $codeProperty = $detail.PSObject.Properties["code"]
+            if ($null -ne $codeProperty -and $codeProperty.Value -is [string] -and
+                -not [string]::IsNullOrWhiteSpace([string]$codeProperty.Value)) {
+              $detailCode = [string]$codeProperty.Value
+            }
+            $paramsProperty = $detail.PSObject.Properties["params"]
+            if ($null -ne $paramsProperty -and $null -ne $paramsProperty.Value) {
+              $blockerProperty = $paramsProperty.Value.PSObject.Properties["blocker_codes"]
+              if ($null -ne $blockerProperty -and $blockerProperty.Value -is [string]) {
+                $blockerCodes = @(
+                  [string]$blockerProperty.Value -split ',' |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+              }
+            }
+          }
+        }
+      } catch {
+        $detailCode = $null
+        $blockerCodes = @()
+      }
+    }
+    $script:LastPortalFailure = [ordered]@{
+      status_code = $statusCode
+      detail_code = $detailCode
+      blocker_codes = $blockerCodes
+    }
     $safeFailure = [ordered]@{
       method = $Method
       path = $Path
       status_code = $statusCode
       request_body = $Body
       response_body = $responseBody
-      error = $_.Exception.Message
+      error = $errorRecord.Exception.Message
     }
     $failurePath = Write-ArtifactJson -Name "portal-request-failed-$($Method.ToLowerInvariant())-$((New-ClientRequestId -Prefix 'http') -replace '[^a-zA-Z0-9-]', '-').json" -Value $safeFailure
     Write-Host "portal-request-failed -> $failurePath"
@@ -556,6 +654,7 @@ function Get-LocalUserState {
   return [PSCustomObject]@{
     username = $Name
     exists = $true
+    sid = [string]$user.SID.Value
     enabled = [bool]$user.Enabled
     description = [string]$user.Description
     password_cannot_change = -not [bool]$user.UserMayChangePassword
@@ -796,6 +895,545 @@ function Remove-ManagedAssignment {
   return $response
 }
 
+function Assert-DoubleLockDisabledAccountState {
+  param(
+    [Parameter(Mandatory=$true)][ValidateSet("disable", "rotate")][string]$Action,
+    [Parameter(Mandatory=$true)][object]$State,
+    [Parameter(Mandatory=$true)][string]$ExpectedSid
+  )
+
+  if (-not $State.exists -or [bool]$State.enabled -or
+      $State.remote_desktop_users_member -ne $false -or
+      [string]$State.sid -ne $ExpectedSid) {
+    $description = if ($Action -eq "disable") {
+      "preserve the account/SID while removing RDP membership"
+    } else {
+      "preserve the disabled state/SID without restoring RDP membership"
+    }
+    throw "Double-lock disabled-account $Action did not $description."
+  }
+}
+
+function Assert-DoubleLockAgentDetail {
+  param([Parameter(Mandatory=$true)][string]$Phase)
+
+  $detail = Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId"
+  if ($null -eq $detail -or [string]$detail.agent_id -ne [string]$AgentId) {
+    throw "Double-lock agent detail identity changed before $Phase."
+  }
+  return $detail
+}
+
+function Cleanup-DoubleLockManagedAssignment {
+  param(
+    [Parameter(Mandatory=$true)][string]$AssignmentId,
+    [Parameter(Mandatory=$true)][string]$ManagedUsername,
+    [AllowEmptyCollection()][string[]]$OwnedCommandIds = @()
+  )
+
+  Assert-LabUsername -Value $ManagedUsername
+  $ownedIds = @($OwnedCommandIds + @($script:DoubleLockOwnedCommandIds) | Select-Object -Unique)
+  $before = Write-LocalUserState -Phase "double-lock-product-cleanup-before" -Name $ManagedUsername
+  $ownershipBefore = Get-ManagedOwnershipState -Name $ManagedUsername
+
+  $assignmentRows = @(Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/assignments")
+  $assignmentMatches = @($assignmentRows | Where-Object { [string]$_.id -eq $AssignmentId })
+  if ($assignmentMatches.Count -ne 1) {
+    throw "Double-lock cleanup requires exactly one live target assignment."
+  }
+  $assignment = $assignmentMatches[0]
+  if ([string]$assignment.user_id -ne [string]$ManagedUserId -or
+      [string]$assignment.managed_username -ne $ManagedUsername) {
+    throw "Double-lock cleanup target assignment identity changed."
+  }
+
+  if (-not $before.exists -and -not $ownershipBefore.exists) {
+    Assert-DoubleLockPreflight -Phase "failure-before-SAM-cleanup" -BaselineCommands $script:DoubleLockBaselineCommands `
+      -AssignmentId $AssignmentId -ManagedUsername $ManagedUsername -OwnedCommandIds $ownedIds -Stage "failure-before-SAM"
+    Remove-ManagedAssignment -AssignmentId $AssignmentId | Out-Null
+    $remaining = @(Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/assignments" | Where-Object { [string]$_.id -eq $AssignmentId })
+    if ($remaining.Count -ne 0) { throw "Double-lock failure cleanup did not remove the created assignment." }
+    return
+  }
+
+  Assert-DoubleLockPreflight -Phase "product-cleanup" -BaselineCommands $script:DoubleLockBaselineCommands `
+    -AssignmentId $AssignmentId -ManagedUsername $ManagedUsername -OwnedCommandIds $ownedIds -Stage "owned"
+  Run-ManagedUserAction -Action "disable" -AssignmentId $AssignmentId | Out-Null
+  $afterDisable = Write-LocalUserState -Phase "double-lock-product-cleanup-after-disable" -Name $ManagedUsername
+  if ($afterDisable.exists -and [bool]$afterDisable.enabled) {
+    throw "Product managed disable did not disable $ManagedUsername."
+  }
+  Run-ManagedUserAction -Action "delete" -AssignmentId $AssignmentId | Out-Null
+  $afterDelete = Write-LocalUserState -Phase "double-lock-product-cleanup-after-delete" -Name $ManagedUsername
+  $ownershipAfterDelete = Get-ManagedOwnershipState -Name $ManagedUsername
+  if ($afterDelete.exists -or $ownershipAfterDelete.exists -or $afterDelete.remote_desktop_users_member) {
+    throw "Product managed delete did not remove the exact local user, RDP membership, and ownership marker."
+  }
+  Assert-DoubleLockPreflight -Phase "product-cleanup-before-assignment-removal" -BaselineCommands $script:DoubleLockBaselineCommands `
+    -AssignmentId $AssignmentId -ManagedUsername $ManagedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "failure-before-SAM"
+  Remove-ManagedAssignment -AssignmentId $AssignmentId | Out-Null
+  $remainingAssignments = @(Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/assignments") |
+    Where-Object { [string]$_.id -eq $AssignmentId }
+  if ($remainingAssignments.Count -ne 0) {
+    throw "Managed assignment $AssignmentId remains visible after product cleanup."
+  }
+  Assert-DoubleLockPreflight -Phase "product-cleanup-complete" -BaselineCommands $script:DoubleLockBaselineCommands `
+    -ManagedUsername $ManagedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "post-cleanup"
+}
+
+function Get-ManagedUserPolicy {
+  Ensure-PortalContext
+  $agent = Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId"
+  $policy = Get-ObjectPropertyValue -InputObject $agent -Name "managed_user_policy"
+  if ($null -eq $policy) {
+    throw "Portal agent projection did not include managed_user_policy."
+  }
+  return $policy
+}
+
+function Set-WebManagedUserPolicy {
+  param(
+    [Parameter(Mandatory=$true)]
+    [bool]$Enabled,
+    [Parameter(Mandatory=$true)]
+    [string]$Reason
+  )
+
+  $current = Get-ManagedUserPolicy
+  $revision = [int](Get-ObjectPropertyValue -InputObject $current -Name "revision")
+  $response = Invoke-PortalJson `
+    -Method PATCH `
+    -Path "/api/v1/portal/agents/$AgentId/account-policy" `
+    -Body @{
+      web_enabled = $Enabled
+      expected_revision = $revision
+      reason = $Reason.Substring(0, [Math]::Min($Reason.Length, 160))
+    }
+  $path = Write-ArtifactJson -Name "double-lock-web-policy-$($Enabled.ToString().ToLowerInvariant()).json" -Value $response
+  Write-Host "double-lock web policy enabled=$Enabled -> $path"
+  return $response
+}
+
+function Wait-ManagedUserPolicy {
+  param(
+    [Parameter(Mandatory=$true)]
+    [bool]$ExpectedWebEnabled,
+    [Parameter(Mandatory=$true)]
+    [string]$ExpectedLocalState,
+    [Parameter(Mandatory=$true)]
+    [string]$Phase
+  )
+
+  $deadline = (Get-Date).AddSeconds($ServiceProjectionTimeoutSeconds)
+  $last = $null
+  do {
+    $last = Get-ManagedUserPolicy
+    $web = [bool](Get-ObjectPropertyValue -InputObject $last -Name "web_enabled")
+    $local = [string](Get-ObjectPropertyValue -InputObject $last -Name "local_state")
+    if ($web -eq $ExpectedWebEnabled -and $local -eq $ExpectedLocalState) {
+      $path = Write-ArtifactJson -Name "double-lock-policy-$Phase.json" -Value $last
+      Write-Host "double-lock policy[$Phase] -> $path"
+      return $last
+    }
+    Start-Sleep -Seconds $PollSeconds
+  } while ((Get-Date) -lt $deadline)
+
+  $path = Write-ArtifactJson -Name "double-lock-policy-$Phase-timeout.json" -Value $last
+  throw "Managed account policy did not reach web_enabled=$ExpectedWebEnabled local_state=$ExpectedLocalState. See $path"
+}
+
+function Set-LocalManagedUserPolicy {
+  param([Parameter(Mandatory=$true)][bool]$Enabled)
+
+  # This is the same installed-agent CLI path used by the GUI control. It
+  # writes the canonical machine policy and deliberately does not restart the
+  # service; the running service must observe the change on its next heartbeat.
+  $argument = if ($Enabled) { "--enable-local-user-create" } else { "--disable-local-user-create" }
+  Invoke-AgentExe -Arguments @($argument) -FailureMessage "Local managed-user policy toggle failed"
+  Write-ArtifactJson -Name "double-lock-local-policy-$($Enabled.ToString().ToLowerInvariant()).json" -Value ([ordered]@{
+    enabled = $Enabled
+    service_restart_requested = $false
+    cli_argument = $argument
+  }) | Out-Null
+}
+
+function Invoke-ManagedActionExpectedDenied {
+  param(
+    [Parameter(Mandatory=$true)]
+    [ValidateSet("create", "rotate-password")]
+    [string]$Action,
+    [Parameter(Mandatory=$true)]
+    [string]$AssignmentId,
+    [Parameter(Mandatory=$true)]
+    [string]$Phase,
+    [Parameter(Mandatory=$true)]
+    [string[]]$ExpectedBlockerCodes
+  )
+
+  $script:LastPortalFailure = $null
+  try {
+    $null = Enqueue-ManagedUserCommand -Action $Action -AssignmentId $AssignmentId
+    throw "Expected managed-user $Action denial was not observed while double lock was closed."
+  }
+  catch {
+    $failure = $script:LastPortalFailure
+    $statusCode = if ($null -eq $failure) { $null } else { $failure.status_code }
+    $detailCode = if ($null -eq $failure) { $null } else { [string]$failure.detail_code }
+    $actualBlockerCodes = if ($null -eq $failure) { @() } else { @($failure.blocker_codes) }
+    $missingBlockers = @($ExpectedBlockerCodes | Where-Object { $actualBlockerCodes -notcontains $_ })
+    if ($statusCode -ne 409 -or $detailCode -ne "managed_user_create_policy_blocked" -or $missingBlockers.Count -gt 0) {
+      throw "Managed-user $Action denial was not the expected policy rejection (status=$statusCode code=$detailCode blockers=$($actualBlockerCodes -join ','))."
+    }
+    $path = Write-ArtifactJson -Name "double-lock-denied-$Phase.json" -Value ([ordered]@{
+      action = $Action
+      phase = $Phase
+      status_code = $statusCode
+      detail_code = $detailCode
+      blocker_codes = $actualBlockerCodes
+      denied = $true
+    })
+    Write-Host "double-lock denied[$Action/$Phase] -> $path"
+  }
+}
+
+function Get-ManagedOwnershipState {
+  param([Parameter(Mandatory=$true)][string]$Name)
+
+  Assert-LabUsername -Value $Name
+  $path = "HKLM:\SOFTWARE\Cerberus\ManagedLocalUsers\$Name"
+  $key = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue
+  if ($null -eq $key) {
+    return [PSCustomObject]@{ username = $Name; registry_path = $path; exists = $false }
+  }
+  return [PSCustomObject]@{
+    username = $Name
+    registry_path = $path
+    exists = $true
+    marker_id = [string]$key.marker_id
+    assignment_id = [string]$key.assignment_id
+    managed_account_id = [string]$key.managed_account_id
+    membership_user_id = [string]$key.membership_user_id
+    agent_id = [string]$key.agent_id
+    tenant_id = [string]$key.tenant_id
+    local_sid = [string]$key.local_sid
+  }
+}
+
+function Get-AllAgentCommands {
+  $pageSize = 100
+  $offset = 0
+  $all = @()
+  $seen = @{}
+  $previousCreatedAt = $null
+  while ($true) {
+    $page = @(Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/commands?offset=$offset&limit=$pageSize")
+    foreach ($command in $page) {
+      $id = [string]$command.id
+      if ([string]::IsNullOrWhiteSpace($id) -or $seen.ContainsKey($id)) {
+        throw "Agent command pagination was inconsistent; refusing double-lock mutation."
+      }
+      $createdAt = [string]$command.created_at
+      if ($null -ne $previousCreatedAt -and $createdAt -gt $previousCreatedAt) {
+        throw "Agent command pagination order changed; refusing double-lock mutation."
+      }
+      $seen[$id] = $true
+      $all += $command
+      $previousCreatedAt = $createdAt
+    }
+    if ($page.Count -lt $pageSize) { return $all }
+    $offset += $page.Count
+  }
+}
+
+function Assert-DoubleLockPreflight {
+  param(
+    [Parameter(Mandatory=$true)][string]$Phase,
+    [Parameter(Mandatory=$true)][AllowEmptyCollection()][object[]]$BaselineCommands,
+    [ValidateSet("pre-create", "owned", "post-create", "failure-before-SAM", "post-cleanup")][string]$Stage = "pre-create",
+    [AllowEmptyCollection()][string[]]$OwnedCommandIds = @(),
+    [string]$AssignmentId = "",
+    [string]$ManagedUsername = ""
+  )
+
+  $assignments = @(Invoke-PortalJson -Method GET -Path "/api/v1/portal/agents/$AgentId/assignments")
+  if ([string]::IsNullOrWhiteSpace($AssignmentId)) {
+    if ($assignments.Count -ne 0) { throw "Double-lock disposable target has active assignments before $Phase." }
+  }
+  else {
+    $targetAssignments = @($assignments | Where-Object { [string]$_.id -eq $AssignmentId })
+    if ($targetAssignments.Count -ne 1 -or
+        @($assignments | Where-Object { [string]$_.id -ne $AssignmentId }).Count -ne 0 -or
+        [string]$targetAssignments[0].user_id -ne [string]$ManagedUserId) {
+      throw "Double-lock target assignment changed before $Phase."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ManagedUsername) -and
+        [string]$targetAssignments[0].managed_username -ne $ManagedUsername) {
+      throw "Double-lock target managed username changed before $Phase."
+    }
+  }
+
+  $commands = @(Get-AllAgentCommands)
+  $baselineById = @{}
+  foreach ($command in $BaselineCommands) {
+    $baselineById[[string]$command.id] = [string]$command.status
+  }
+  foreach ($id in $baselineById.Keys) {
+    $current = @($commands | Where-Object { [string]$_.id -eq $id })
+    if ($current.Count -ne 1 -or [string]$current[0].status -ne $baselineById[$id]) {
+      throw "Double-lock command baseline changed before $Phase (command=$id)."
+    }
+  }
+  $ownedById = @{}
+  foreach ($id in $OwnedCommandIds) { if (-not [string]::IsNullOrWhiteSpace($id)) { $ownedById[$id] = $true } }
+  foreach ($command in $commands) {
+    $id = [string]$command.id
+    if (-not $baselineById.ContainsKey($id) -and -not $ownedById.ContainsKey($id)) {
+      throw "Double-lock command baseline has an unknown new command before $Phase (command=$id)."
+    }
+  }
+  foreach ($id in $ownedById.Keys) {
+    $owned = @($commands | Where-Object { [string]$_.id -eq $id })
+    if ($owned.Count -ne 1 -or [string]$owned[0].status -notin @("DONE", "FAILED")) {
+      throw "Double-lock owned command $id is not terminal before $Phase."
+    }
+  }
+  $inFlight = @($commands | Where-Object {
+    $status = [string]$_.status
+    $managedPrefix = ([string]$_.idempotency_key).StartsWith("managed-user:", [System.StringComparison]::Ordinal)
+    ($status -in @("QUEUED", "PROCESSING")) -and
+      ($managedPrefix -or [string]$_.type -eq "windows.local_user.create")
+  })
+  if ($inFlight.Count -gt 0) {
+    throw "Double-lock target has queued/processing managed-user work before $Phase."
+  }
+
+  if ($Stage -in @("pre-create", "failure-before-SAM", "post-cleanup") -and -not [string]::IsNullOrWhiteSpace($ManagedUsername)) {
+    $local = Get-LocalUserState -Name $ManagedUsername
+    $ownership = Get-ManagedOwnershipState -Name $ManagedUsername
+    if ($local.exists -or $ownership.exists) {
+      throw "Double-lock target local user or ownership marker already exists before $Phase."
+    }
+  }
+  if ($Stage -in @("owned", "post-create") -and -not [string]::IsNullOrWhiteSpace($ManagedUsername)) {
+    $target = $targetAssignments[0]
+    $local = Get-LocalUserState -Name $ManagedUsername
+    $ownership = Get-ManagedOwnershipState -Name $ManagedUsername
+    if (-not $local.exists -or -not $ownership.exists -or
+        [string]$ownership.assignment_id -ne $AssignmentId -or
+        [string]$ownership.membership_user_id -ne [string]$ManagedUserId -or
+        [string]$ownership.agent_id -ne [string]$AgentId -or
+        [string]$ownership.marker_id -eq "" -or
+        ([string]$target.managed_account_id -ne "" -and [string]$ownership.managed_account_id -ne [string]$target.managed_account_id) -or
+        ([string]$target.tenant_id -ne "" -and [string]$ownership.tenant_id -ne [string]$target.tenant_id)) {
+      throw "Double-lock owned account/marker identity is not exact before $Phase."
+    }
+    if ([string]$ownership.local_sid -ne "" -and [string]$local.sid -ne [string]$ownership.local_sid) {
+      throw "Double-lock ownership marker SID does not match the local account before $Phase."
+    }
+  }
+}
+
+function Run-DoubleLockAcceptance {
+  if (-not $DoubleLockExclusiveDisposableTarget) {
+    throw "Double-lock acceptance requires -DoubleLockExclusiveDisposableTarget; refusing a non-exclusive live target."
+  }
+  if ([string]::IsNullOrWhiteSpace($AgentId) -or [string]::IsNullOrWhiteSpace($ManagedUserId) -or $ManagedUserId.StartsWith("LIVE/")) {
+    throw "Double-lock acceptance requires exact -AgentId and durable -ManagedUserId values."
+  }
+  Assert-ServiceRunningForCommandLoop
+  Ensure-PortalContext
+  Assert-DoubleLockAgentDetail -Phase "initial target" | Out-Null
+
+  $baselineCommands = @(Get-AllAgentCommands)
+  $script:DoubleLockBaselineCommands = $baselineCommands
+  $script:DoubleLockOwnedCommandIds = @()
+  Assert-DoubleLockPreflight -Phase "initial target" -BaselineCommands $baselineCommands
+
+  $original = Get-ManagedUserPolicy
+  $originalWeb = [bool](Get-ObjectPropertyValue -InputObject $original -Name "web_enabled")
+  $originalLocal = [string](Get-ObjectPropertyValue -InputObject $original -Name "local_state")
+  if ($originalLocal -notin @("enabled", "disabled")) {
+    throw "Double-lock acceptance requires a restorable local policy observation; current state=$originalLocal."
+  }
+  Write-ArtifactJson -Name "double-lock-original-policy.json" -Value $original | Out-Null
+
+  $assignmentId = ""
+  $managedUsername = ""
+  try {
+    $assignment = New-ManagedAssignment
+    $assignmentId = [string]$assignment.id
+    $managedUsername = [string]$assignment.managed_username
+    if ([string]::IsNullOrWhiteSpace($assignmentId) -or [string]::IsNullOrWhiteSpace($managedUsername)) {
+      throw "Double-lock assignment response did not include id and managed_username."
+    }
+    Assert-LabUsername -Value $managedUsername
+    Assert-DoubleLockPreflight -Phase "assignment creation" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername
+
+    # Open both locks through their real control surfaces, then create and
+    # rotate through the real API -> command -> installed service chain.
+    Assert-DoubleLockPreflight -Phase "web policy open" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername
+    Set-WebManagedUserPolicy -Enabled $true -Reason "double-lock acceptance open web policy" | Out-Null
+    Assert-DoubleLockPreflight -Phase "local policy open" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername
+    Set-LocalManagedUserPolicy -Enabled $true
+    Wait-ManagedUserPolicy -ExpectedWebEnabled $true -ExpectedLocalState "enabled" -Phase "both-open" | Out-Null
+    $openDecision = Get-ManagedUserPolicy
+    if (-not [bool](Get-ObjectPropertyValue -InputObject $openDecision -Name "effective_enabled")) {
+      throw "Double-lock both-open policy did not become effective."
+    }
+
+    $before = Write-LocalUserState -Phase "double-lock-before-create" -Name $managedUsername
+    $ownershipBefore = Get-ManagedOwnershipState -Name $managedUsername
+    if ($before.exists -or $ownershipBefore.exists) { throw "Double-lock managed account or ownership marker already exists before create." }
+
+    Run-ManagedUserAction -Action "create" -AssignmentId $assignmentId | Out-Null
+    $created = Write-LocalUserState -Phase "double-lock-after-create" -Name $managedUsername
+    if (-not $created.exists -or -not $created.enabled) { throw "Double-lock create did not create an enabled local account." }
+
+    Run-ManagedUserAction -Action "rotate-password" -AssignmentId $assignmentId | Out-Null
+    $rotated = Write-LocalUserState -Phase "double-lock-after-open-rotate" -Name $managedUsername
+    if (-not $rotated.exists -or -not $rotated.enabled) { throw "Double-lock open rotate did not preserve the local account." }
+    $createdSid = [string]$created.sid
+    if ([string]::IsNullOrWhiteSpace($createdSid) -or [string]$rotated.sid -ne $createdSid) {
+      throw "Double-lock open rotate changed or omitted the managed account SID."
+    }
+
+    # Exercise the disabled-account sibling while both locks are still open:
+    # disable, rotate without re-enabling, then use the canonical create action
+    # for explicit re-enable. The acceptance path deliberately does not add an
+    # agent payload field; the real create endpoint must carry the explicit
+    # enable intent understood by the installed agent.
+    Assert-DoubleLockPreflight -Phase "disabled-account-before-disable" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "owned"
+    Run-ManagedUserAction -Action "disable" -AssignmentId $assignmentId | Out-Null
+    $disabled = Write-LocalUserState -Phase "double-lock-after-disabled-account-disable" -Name $managedUsername
+    Assert-DoubleLockDisabledAccountState -Action "disable" -State $disabled -ExpectedSid $createdSid
+
+    Run-ManagedUserAction -Action "rotate-password" -AssignmentId $assignmentId | Out-Null
+    $rotatedDisabled = Write-LocalUserState -Phase "double-lock-after-disabled-account-rotate" -Name $managedUsername
+    Assert-DoubleLockDisabledAccountState -Action "rotate" -State $rotatedDisabled -ExpectedSid $createdSid
+
+    Run-ManagedUserAction -Action "create" -AssignmentId $assignmentId | Out-Null
+    $reenabled = Write-LocalUserState -Phase "double-lock-after-disabled-account-reenable" -Name $managedUsername
+    if (-not $reenabled.exists -or -not $reenabled.enabled -or
+        $reenabled.remote_desktop_users_member -ne $true -or
+        [string]$reenabled.sid -ne $createdSid) {
+      throw "Double-lock explicit re-enable did not restore the account/RDP membership or preserve its SID."
+    }
+
+    Assert-DoubleLockPreflight -Phase "local policy close" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "owned"
+    Set-LocalManagedUserPolicy -Enabled $false
+    Wait-ManagedUserPolicy -ExpectedWebEnabled $true -ExpectedLocalState "disabled" -Phase "local-closed" | Out-Null
+    Invoke-ManagedActionExpectedDenied -Action "create" -AssignmentId $assignmentId -Phase "local-closed" -ExpectedBlockerCodes @("local_policy_disabled")
+    Invoke-ManagedActionExpectedDenied -Action "rotate-password" -AssignmentId $assignmentId -Phase "local-closed" -ExpectedBlockerCodes @("local_policy_disabled")
+    $afterLocalClose = Write-LocalUserState -Phase "double-lock-after-local-close" -Name $managedUsername
+    if (-not $afterLocalClose.exists -or [bool]$afterLocalClose.enabled -ne [bool]$created.enabled) { throw "Local policy closure did not preserve existing local account state." }
+
+    Assert-DoubleLockPreflight -Phase "local policy reopen" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "owned"
+    Set-LocalManagedUserPolicy -Enabled $true
+    Wait-ManagedUserPolicy -ExpectedWebEnabled $true -ExpectedLocalState "enabled" -Phase "local-reopened" | Out-Null
+
+    # Exercise the two single-lock closures and the both-closed state. A
+    # denied create/rotate must be rejected at the API boundary; no command is
+    # allowed to be delivered while either lock is closed.
+    Assert-DoubleLockPreflight -Phase "web policy close" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "owned"
+    Set-WebManagedUserPolicy -Enabled $false -Reason "double-lock acceptance close web policy" | Out-Null
+    Wait-ManagedUserPolicy -ExpectedWebEnabled $false -ExpectedLocalState "enabled" -Phase "web-closed" | Out-Null
+    Invoke-ManagedActionExpectedDenied -Action "create" -AssignmentId $assignmentId -Phase "web-closed" -ExpectedBlockerCodes @("web_disabled")
+    Invoke-ManagedActionExpectedDenied -Action "rotate-password" -AssignmentId $assignmentId -Phase "web-closed" -ExpectedBlockerCodes @("web_disabled")
+    $afterWebClose = Write-LocalUserState -Phase "double-lock-after-web-close" -Name $managedUsername
+    if (-not $afterWebClose.exists -or [bool]$afterWebClose.enabled -ne [bool]$created.enabled) { throw "Web policy closure did not preserve existing local account state." }
+
+    Assert-DoubleLockPreflight -Phase "both policy close" -BaselineCommands $baselineCommands `
+      -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "owned"
+    Set-LocalManagedUserPolicy -Enabled $false
+    Wait-ManagedUserPolicy -ExpectedWebEnabled $false -ExpectedLocalState "disabled" -Phase "both-closed" | Out-Null
+    Invoke-ManagedActionExpectedDenied -Action "create" -AssignmentId $assignmentId -Phase "both-closed" -ExpectedBlockerCodes @("web_disabled", "local_policy_disabled")
+    Invoke-ManagedActionExpectedDenied -Action "rotate-password" -AssignmentId $assignmentId -Phase "both-closed" -ExpectedBlockerCodes @("web_disabled", "local_policy_disabled")
+    $afterBothClose = Write-LocalUserState -Phase "double-lock-after-both-close" -Name $managedUsername
+    if (-not $afterBothClose.exists -or [bool]$afterBothClose.enabled -ne [bool]$created.enabled) { throw "Both-lock closure did not preserve existing local account state." }
+
+    # Existing-account lifecycle remains available under closed create locks.
+    Run-ManagedUserAction -Action "disable" -AssignmentId $assignmentId | Out-Null
+    $disabled = Write-LocalUserState -Phase "double-lock-after-closed-disable" -Name $managedUsername
+    if (-not $disabled.exists -or $disabled.enabled) { throw "Disable under closed locks did not disable the existing account." }
+    Run-ManagedUserAction -Action "delete" -AssignmentId $assignmentId | Out-Null
+    $deleted = Write-LocalUserState -Phase "double-lock-after-closed-delete" -Name $managedUsername
+    if ($deleted.exists) { throw "Delete under closed locks did not remove the managed account." }
+    Remove-ManagedAssignment -AssignmentId $assignmentId | Out-Null
+    Assert-DoubleLockPreflight -Phase "normal-cleanup-complete" -BaselineCommands $baselineCommands `
+      -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "post-cleanup"
+    $assignmentId = ""
+
+    Write-ArtifactJson -Name "double-lock-native-hook-gaps.json" -Value ([ordered]@{
+      evidence_tier = "live"
+      covered = @("web_api_policy", "installed_agent_cli_policy", "both_open_create_rotate", "disabled_account_rotate_preserves_state", "explicit_reenable_preserves_sid", "single_lock_create_rotate_denial", "both_lock_create_rotate_denial", "closed_lock_disable_delete", "existing_account_preserved")
+      missing = @("web_ui_playwright_assertion_app_owned", "queued_vs_delivered_assertion_native_hook_unavailable")
+      proposal = "Complete the UI assertion in the App-owned native Playwright phase; keep queued-vs-delivered unclaimed until an existing deterministic native hook is available."
+    }) | Out-Null
+  }
+  finally {
+    $cleanupErrors = @()
+    if (-not [string]::IsNullOrWhiteSpace($managedUsername)) {
+      try {
+        if (-not [string]::IsNullOrWhiteSpace($assignmentId)) {
+          Cleanup-DoubleLockManagedAssignment -AssignmentId $assignmentId -ManagedUsername $managedUsername `
+            -OwnedCommandIds $script:DoubleLockOwnedCommandIds
+          $assignmentId = ""
+        }
+        else {
+          $remaining = Get-LocalUserState -Name $managedUsername
+          $ownership = Get-ManagedOwnershipState -Name $managedUsername
+          if ($remaining.exists -or $ownership.exists) {
+            throw "Double-lock cleanup has no live assignment handle; refusing direct local-user removal."
+          }
+        }
+      }
+      catch {
+        $cleanupErrors += "local account cleanup: $($_.Exception.Message)"
+      }
+    }
+    $restoreErrors = @()
+    try {
+      Assert-DoubleLockPreflight -Phase "web policy restoration" -BaselineCommands $baselineCommands `
+        -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "post-cleanup"
+      Set-WebManagedUserPolicy -Enabled $originalWeb -Reason "double-lock acceptance restore web policy" | Out-Null
+    }
+    catch {
+      $restoreErrors += "web policy restoration: $($_.Exception.Message)"
+    }
+    try {
+      Assert-DoubleLockPreflight -Phase "local policy restoration" -BaselineCommands $baselineCommands `
+        -AssignmentId $assignmentId -ManagedUsername $managedUsername -OwnedCommandIds $script:DoubleLockOwnedCommandIds -Stage "post-cleanup"
+      Set-LocalManagedUserPolicy -Enabled ($originalLocal -eq "enabled")
+    }
+    catch {
+      $restoreErrors += "local policy restoration: $($_.Exception.Message)"
+    }
+    try {
+      Wait-ManagedUserPolicy -ExpectedWebEnabled $originalWeb -ExpectedLocalState $originalLocal -Phase "restored" | Out-Null
+    }
+    catch {
+      $restoreErrors += "policy restoration verification: $($_.Exception.Message)"
+    }
+    if ($cleanupErrors.Count -gt 0 -or $restoreErrors.Count -gt 0) {
+      $cleanupFailure = [ordered]@{
+        cleanup_errors = $cleanupErrors
+        restore_errors = $restoreErrors
+        original_web_enabled = $originalWeb
+        original_local_state = $originalLocal
+      }
+      Write-ArtifactJson -Name "double-lock-cleanup-or-restore-failed.json" -Value $cleanupFailure | Out-Null
+      throw "Double-lock cleanup/restoration failed: $((($cleanupErrors + $restoreErrors) -join '; '))"
+    }
+  }
+}
+
 function Wait-CommandDone {
   param(
     [string]$CommandId,
@@ -916,6 +1554,15 @@ function Run-ManagedUserAction {
 
   Write-Step "Enqueue managed user $Action"
   $command = Enqueue-ManagedUserCommand -Action $Action -AssignmentId $AssignmentId
+  if ($null -ne $script:DoubleLockOwnedCommandIds) {
+    $commandId = [string]$command.command_id
+    if ([string]::IsNullOrWhiteSpace($commandId)) {
+      throw "Managed command enqueue did not return a command_id before pickup."
+    }
+    if ($script:DoubleLockOwnedCommandIds -notcontains $commandId) {
+      $script:DoubleLockOwnedCommandIds += $commandId
+    }
+  }
   Restart-ServiceForCommandPickup
   $safeAction = ($Action -replace '[^A-Za-z0-9_.-]', '_')
   Wait-CommandDone -CommandId ([string]$command.command_id) -Action "managed-$safeAction" | Out-Null
@@ -1078,6 +1725,7 @@ try {
     username = $Username
     run_local_user_lifecycle = [bool]$RunLocalUserLifecycle
     run_managed_assignment_lifecycle = [bool]$RunManagedAssignmentLifecycle
+    run_double_lock_acceptance = [bool]$RunDoubleLockAcceptance
     managed_user_id_present = -not [string]::IsNullOrWhiteSpace($ManagedUserId)
     managed_user_email_present = -not [string]::IsNullOrWhiteSpace($ManagedUserEmail)
     rotate_managed_password = [bool]$RotateManagedPassword
@@ -1103,9 +1751,9 @@ try {
     throw "Repeated managed assignment acceptance requires -DeleteAssignmentAfterManagedLifecycle to avoid leftover assignments."
   }
 
-  $needsAdmin = $InstallService -or $StartService -or $StopService -or $UninstallService -or $RunLocalUserLifecycle
+  $needsAdmin = $InstallService -or $StartService -or $StopService -or $UninstallService -or $RunLocalUserLifecycle -or $RunDoubleLockAcceptance
   $serviceProjectionNeedsPortal = (-not $SkipServiceProjectionCheck) -and ($InstallService -or $StartService -or $StopService -or $UninstallService)
-  $needsPortal = $RunLocalUserLifecycle -or $RunManagedAssignmentLifecycle -or $serviceProjectionNeedsPortal
+  $needsPortal = $RunLocalUserLifecycle -or $RunManagedAssignmentLifecycle -or $RunDoubleLockAcceptance -or $serviceProjectionNeedsPortal
   Test-LiveAcceptancePreflight -RequirePortal $needsPortal -NeedsAdmin $needsAdmin
 
   if ($PreflightOnly) {
@@ -1143,6 +1791,7 @@ try {
       service_lifecycle_inside_repeat = $serviceLifecycleInsideRepeat
       run_local_user_lifecycle = [bool]$RunLocalUserLifecycle
       run_managed_assignment_lifecycle = [bool]$RunManagedAssignmentLifecycle
+      run_double_lock_acceptance = [bool]$RunDoubleLockAcceptance
       result = "running"
     }
     Write-ArtifactJson -Name "summary-start.json" -Value $iterationSummary | Out-Null
@@ -1163,6 +1812,10 @@ try {
 
       if ($RunManagedAssignmentLifecycle) {
         Run-ManagedAssignmentLifecycle
+      }
+
+      if ($RunDoubleLockAcceptance) {
+        Run-DoubleLockAcceptance
       }
 
       if ($serviceLifecycleInsideRepeat) {

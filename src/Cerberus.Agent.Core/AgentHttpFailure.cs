@@ -5,6 +5,34 @@ using System.Text.RegularExpressions;
 
 namespace Cerberus.Agent.Core;
 
+public sealed record AgentHttpFailureInfo(
+    HttpStatusCode StatusCode,
+    string? TransportCode,
+    string? DetailCode,
+    string? Status,
+    string? RequestId,
+    TimeSpan? RetryAfter)
+{
+    /// <summary>
+    /// Returns the most specific bounded code without exposing the response body.
+    /// </summary>
+    public string? Code => DetailCode ?? TransportCode;
+}
+
+public sealed class AgentHttpException : HttpRequestException
+{
+    public AgentHttpException(string message, AgentHttpFailureInfo failure)
+        : base(message, inner: null, statusCode: failure.StatusCode)
+    {
+        Failure = failure;
+    }
+
+    public AgentHttpFailureInfo Failure { get; }
+    public string? Code => Failure.Code;
+    public string? RequestId => Failure.RequestId;
+    public TimeSpan? RetryAfter => Failure.RetryAfter;
+}
+
 /// <summary>
 /// Applies bounded, status-safe response handling to agent HTTP calls.
 /// </summary>
@@ -15,6 +43,9 @@ public static class AgentHttpFailure
     private const int MaxErrorBodyBytes = 4096;
     private const int MaxSuccessBodyBytes = 64 * 1024;
     private const int MaxRequestIdLength = 64;
+    private const int MaxCodeLength = 64;
+    private const int MaxStatusLength = 64;
+    private const string PayloadInvalidDataKey = "cerberus-agent-payload-invalid";
     private static readonly TimeSpan InfiniteTimeoutFallback = TimeSpan.FromSeconds(30);
 
     private static readonly Regex RequestIdPattern = new(
@@ -70,12 +101,21 @@ public static class AgentHttpFailure
         CancellationToken? deadlineCt = null)
     {
         var requestId = TryGetRequestId(response);
-        var code = await TryReadTransportCodeAsync(response, http, ct, deadlineCt).ConfigureAwait(false);
-        return CreateException(operation, response.StatusCode, code, requestId);
+        var info = await TryReadFailureInfoAsync(response, http, ct, deadlineCt, requestId).ConfigureAwait(false);
+        return CreateException(operation, info);
     }
 
-    public static HttpRequestException CreateStatusOnly(string operation, HttpResponseMessage response) =>
-        CreateException(operation, response.StatusCode, code: null, TryGetRequestId(response));
+    public static HttpRequestException CreateStatusOnly(string operation, HttpResponseMessage response)
+    {
+        var info = new AgentHttpFailureInfo(
+            response.StatusCode,
+            TransportCode: null,
+            DetailCode: null,
+            Status: null,
+            RequestId: TryGetRequestId(response),
+            RetryAfter: TryGetRetryAfter(response));
+        return CreateException(operation, info);
+    }
 
     public static async Task<string> ReadBodyAsStringAsync(
         string operation,
@@ -107,10 +147,10 @@ public static class AgentHttpFailure
         CancellationToken ct,
         CancellationToken? deadlineCt = null)
     {
+        byte[] body;
         try
         {
-            var body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxSuccessBodyBytes).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<T>(body, options);
+            body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxSuccessBodyBytes).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -118,42 +158,63 @@ public static class AgentHttpFailure
         }
         catch
         {
+            // A bounded body read can fail because the transport/deadline is
+            // unavailable. Keep it status-only so retry callers do not treat
+            // a temporary read outage as a protocol mismatch.
             throw CreateStatusOnly(operation, response);
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<T>(body, options);
+        }
+        catch
+        {
+            var failure = CreateStatusOnly(operation, response);
+            failure.Data[PayloadInvalidDataKey] = true;
+            throw failure;
         }
     }
 
-    private static HttpRequestException CreateException(
-        string operation,
-        HttpStatusCode statusCode,
-        string? code,
-        string? requestId)
+    public static bool IsPayloadInvalid(HttpRequestException exception)
+        => exception.Data.Contains(PayloadInvalidDataKey);
+
+    private static HttpRequestException CreateException(string operation, AgentHttpFailureInfo failure)
     {
         var details = new List<string>(capacity: 2);
-        if (!string.IsNullOrEmpty(code))
-            details.Add($"code={code}");
-        if (!string.IsNullOrEmpty(requestId))
-            details.Add($"request_id={requestId}");
+        if (!string.IsNullOrEmpty(failure.Code))
+            details.Add($"code={failure.Code}");
+        if (!string.IsNullOrEmpty(failure.RequestId))
+            details.Add($"request_id={failure.RequestId}");
 
         var suffix = details.Count == 0
             ? string.Empty
             : $" [{string.Join(", ", details)}]";
 
-        return new HttpRequestException(
-            $"{operation} failed ({(int)statusCode}).{suffix}",
-            inner: null,
-            statusCode: statusCode);
+        var message = $"{operation} failed ({(int)failure.StatusCode}).{suffix}";
+        // Preserve the established HttpRequestException contract for plain
+        // status-only failures. Metadata-bearing failures use the typed form
+        // so lifecycle/auth callers can consume only validated fields.
+        return failure.Code is null &&
+               failure.Status is null &&
+               failure.RequestId is null &&
+               failure.RetryAfter is null
+            ? new HttpRequestException(message, inner: null, statusCode: failure.StatusCode)
+            : new AgentHttpException(message, failure);
     }
 
-    private static async Task<string?> TryReadTransportCodeAsync(
+    private static async Task<AgentHttpFailureInfo> TryReadFailureInfoAsync(
         HttpResponseMessage response,
         HttpClient http,
         CancellationToken ct,
-        CancellationToken? deadlineCt)
+        CancellationToken? deadlineCt,
+        string? requestId)
     {
         try
         {
             var body = await ReadBoundedBodyAsync(response, http, ct, deadlineCt, MaxErrorBodyBytes).ConfigureAwait(false);
-            return ParseTransportCode(body, (int)response.StatusCode);
+            var parsed = ParseFailureInfo(body, response.StatusCode, requestId, TryGetRetryAfter(response));
+            return parsed;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -163,7 +224,13 @@ public static class AgentHttpFailure
         {
             // Response-body reads are diagnostic-only.  Any internal deadline,
             // read, or size failure falls back to status and safe headers.
-            return null;
+            return new AgentHttpFailureInfo(
+                response.StatusCode,
+                TransportCode: null,
+                DetailCode: null,
+                Status: null,
+                RequestId: requestId,
+                RetryAfter: TryGetRetryAfter(response));
         }
     }
 
@@ -202,10 +269,14 @@ public static class AgentHttpFailure
         return buffer.AsSpan(0, length).ToArray();
     }
 
-    private static string? ParseTransportCode(ReadOnlyMemory<byte> body, int statusCode)
+    internal static AgentHttpFailureInfo ParseFailureInfo(
+        ReadOnlyMemory<byte> body,
+        HttpStatusCode statusCode,
+        string? requestId = null,
+        TimeSpan? retryAfter = null)
     {
         if (body.IsEmpty)
-            return null;
+            return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
 
         try
         {
@@ -217,35 +288,141 @@ public static class AgentHttpFailure
             });
 
             if (document.RootElement.ValueKind != JsonValueKind.Object)
-                return null;
+                return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
 
-            string? code = null;
+            string? transportCode = null;
+            string? detailCode = null;
+            string? status = null;
+            var seenProperties = new HashSet<string>(StringComparer.Ordinal);
             foreach (var property in document.RootElement.EnumerateObject())
             {
-                if (!string.Equals(property.Name, "error_code", StringComparison.Ordinal))
+                if (!seenProperties.Add(property.Name))
+                    return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
+                if (string.Equals(property.Name, "error_code", StringComparison.Ordinal))
+                {
+                    if (transportCode is not null || property.Value.ValueKind != JsonValueKind.String)
+                        return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
+                    transportCode = ValidateCode(property.Value.GetString());
                     continue;
-                if (code is not null || property.Value.ValueKind != JsonValueKind.String)
-                    return null;
-                code = property.Value.GetString();
+                }
+
+                if (string.Equals(property.Name, "status", StringComparison.Ordinal))
+                {
+                    if (property.Value.ValueKind != JsonValueKind.String)
+                        continue;
+                    status = ValidateStatus(property.Value.GetString());
+                    continue;
+                }
+
+                if (!string.Equals(property.Name, "detail", StringComparison.Ordinal) ||
+                    property.Value.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var seenDetailProperties = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var detailProperty in property.Value.EnumerateObject())
+                {
+                    if (!seenDetailProperties.Add(detailProperty.Name))
+                        return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
+                    if (!string.Equals(detailProperty.Name, "code", StringComparison.Ordinal))
+                        continue;
+                    if (detailCode is not null || detailProperty.Value.ValueKind != JsonValueKind.String)
+                        return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
+                    detailCode = ValidateCode(detailProperty.Value.GetString());
+                }
             }
 
-            if (string.IsNullOrEmpty(code) || !KnownTransportCodes.Contains(code))
-                return null;
+            if (transportCode is not null &&
+                !KnownTransportCodes.Contains(transportCode) &&
+                !AgentLifecycleStatePolicy.IsProtocolOrConfigCode(transportCode))
+            {
+                transportCode = null;
+            }
 
-            if (string.Equals(code, "CSRF_FAILED", StringComparison.Ordinal))
-                return statusCode == 403 ? code : null;
+            if (string.Equals(transportCode, "CSRF_FAILED", StringComparison.Ordinal) &&
+                statusCode != HttpStatusCode.Forbidden)
+            {
+                transportCode = null;
+            }
 
-            var expectedCode = ErrorCodeByStatus.TryGetValue(statusCode, out var mappedCode)
-                ? mappedCode
-                : "REQUEST_FAILED";
-            return string.Equals(code, expectedCode, StringComparison.Ordinal)
-                ? code
-                : null;
+            if (transportCode is not null &&
+                ErrorCodeByStatus.TryGetValue((int)statusCode, out var expectedCode) &&
+                !string.Equals(transportCode, expectedCode, StringComparison.Ordinal) &&
+                !AgentLifecycleStatePolicy.IsProtocolOrConfigCode(transportCode))
+            {
+                transportCode = null;
+            }
+
+            // Lifecycle authority is the canonical 401 envelope only. A code
+            // echoed by a proxy, HTML/error response or wrong status is not a revoke.
+            if ((AgentLifecycleStatePolicy.IsTerminalCode(detailCode) ||
+                 detailCode == AgentLifecycleStatePolicy.AgentReenrollRequiredCode) &&
+                (statusCode != HttpStatusCode.Unauthorized || transportCode != "AUTH_UNAUTHORIZED"))
+                detailCode = null;
+
+            return new AgentHttpFailureInfo(statusCode, transportCode, detailCode, status, requestId, retryAfter);
         }
         catch
         {
-            return null;
+            return new AgentHttpFailureInfo(statusCode, null, null, null, requestId, retryAfter);
         }
+    }
+
+    private static string? ValidateCode(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaxCodeLength)
+            return null;
+        foreach (var ch in value)
+        {
+            if (!(char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':'))
+                return null;
+        }
+        return value;
+    }
+
+    private static string? ValidateStatus(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaxStatusLength)
+            return null;
+        foreach (var ch in value)
+        {
+            if (!(char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-' or '.' or ':'))
+                return null;
+        }
+        return value;
+    }
+
+    private static TimeSpan? TryGetRetryAfter(HttpResponseMessage response)
+    {
+        try
+        {
+            if (!response.Headers.TryGetValues("Retry-After", out var values))
+                return null;
+
+            using var enumerator = values.GetEnumerator();
+            if (!enumerator.MoveNext())
+                return null;
+            var raw = enumerator.Current?.Trim();
+            if (enumerator.MoveNext())
+                return null;
+            if (string.IsNullOrWhiteSpace(raw) || raw.Length > 64)
+                return null;
+
+            if (int.TryParse(raw, out var seconds) && seconds >= 0)
+                return TimeSpan.FromSeconds(Math.Clamp(seconds, 5, 3600));
+
+            if (DateTimeOffset.TryParse(raw, out var retryAt))
+            {
+                var delay = retryAt - DateTimeOffset.UtcNow;
+                return TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 5, 3600));
+            }
+        }
+        catch
+        {
+            // Header parsing is diagnostic-only and must never fail the request.
+        }
+        return null;
     }
 
     private static string? TryGetRequestId(HttpResponseMessage response)

@@ -254,7 +254,7 @@ public sealed class AgentServiceCredentialBridgeTests
     }
 
     [Fact]
-    public async Task EnsureMachineRegistrationForInstallAsync_PromotesUserRegistrationWhenAvailable()
+    public async Task PrepareRegistrationForInstallAsync_StagesUserRegistrationWithoutReplacingMachine()
     {
         var userStore = new InMemorySecretStore(
             new AgentIdentity("agent-id", "tenant-id"),
@@ -267,20 +267,23 @@ public sealed class AgentServiceCredentialBridgeTests
             privateKeyPem: "stale-private-key",
             backendUrl: "http://backend.local");
 
-        var result = await AgentServiceProvisioning.EnsureMachineRegistrationForInstallAsync(
+        var pendingStore = new InMemorySecretStore();
+        var result = await AgentServiceProvisioning.PrepareRegistrationForInstallAsync(
             userStore,
             machineStore,
+            pendingStore,
             CancellationToken.None);
 
-        Assert.True(result.PromotedFromUserScope);
-        Assert.Equal(1, machineStore.SaveCount);
+        Assert.True(result.StagedFromUserScope);
+        Assert.Equal(0, machineStore.SaveCount);
         var (storedIdentity, refreshToken, _, _, _, _) = await machineStore.LoadAsync(CancellationToken.None);
-        Assert.Equal("agent-id", storedIdentity.AgentId);
-        Assert.Equal("refresh-token", refreshToken);
+        Assert.Equal("stale-agent", storedIdentity.AgentId);
+        Assert.Equal("stale-refresh-token", refreshToken);
+        Assert.Equal("agent-id", (await pendingStore.LoadAsync(CancellationToken.None)).Identity.AgentId);
     }
 
     [Fact]
-    public async Task EnsureMachineRegistrationForInstallAsync_UsesMachineRegistrationForRepairWhenUserRegistrationMissing()
+    public async Task PrepareRegistrationForInstallAsync_UsesMachineRegistrationForRepairWhenUserRegistrationMissing()
     {
         var userStore = new ThrowingLoadSecretStore();
         var machineStore = new InMemorySecretStore(
@@ -289,17 +292,18 @@ public sealed class AgentServiceCredentialBridgeTests
             privateKeyPem: "private-key",
             backendUrl: "http://backend.local");
 
-        var result = await AgentServiceProvisioning.EnsureMachineRegistrationForInstallAsync(
+        var result = await AgentServiceProvisioning.PrepareRegistrationForInstallAsync(
             userStore,
             machineStore,
+            new InMemorySecretStore(),
             CancellationToken.None);
 
-        Assert.False(result.PromotedFromUserScope);
+        Assert.False(result.StagedFromUserScope);
         Assert.Equal(0, machineStore.SaveCount);
     }
 
     [Fact]
-    public async Task EnsureMachineRegistrationForInstallAsync_FailsWhenNoCompleteRegistrationExists()
+    public async Task PrepareRegistrationForInstallAsync_FailsWhenNoCompleteRegistrationExists()
     {
         var userStore = new ThrowingLoadSecretStore();
         var machineStore = new InMemorySecretStore(
@@ -309,9 +313,10 @@ public sealed class AgentServiceCredentialBridgeTests
             backendUrl: "http://backend.local");
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => AgentServiceProvisioning.EnsureMachineRegistrationForInstallAsync(
+            () => AgentServiceProvisioning.PrepareRegistrationForInstallAsync(
                 userStore,
                 machineStore,
+                new InMemorySecretStore(),
                 CancellationToken.None));
     }
 

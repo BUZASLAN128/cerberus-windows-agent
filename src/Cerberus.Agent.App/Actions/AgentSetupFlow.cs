@@ -2,6 +2,7 @@ using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
+using Cerberus.Agent.App.Control;
 
 namespace Cerberus.Agent.App.Actions;
 
@@ -30,11 +31,20 @@ internal sealed class AgentSetupFlow
 
         var registeredBefore = AgentStatus.IsRegistered();
         var registeredNow = false;
+        var requiresEnrollment = false;
+        if (AgentStatus.GetService().Installed)
+        {
+            var status = await AgentLocalControlClient.SendAsync(new("status"), ct).ConfigureAwait(false);
+            if (status.Code == AgentLifecycleStatePolicy.AgentRevokedCode)
+                throw new InvalidOperationException("This registration was revoked. Contact your administrator.");
+            requiresEnrollment = AgentOnboardingFlow.RequiresEnrollment(status.LifecycleState, status.Code);
+        }
         var userStore = new DpapiSecretStore(SecretStoreScope.User);
-        if (!registeredBefore)
+        var lifecycleState = new InMemoryAgentLifecycleStateStore();
+        if (!registeredBefore || requiresEnrollment)
         {
             var onboarding = await new AgentOnboardingFlow()
-                .RunAsync(cfg, log, progress, ct)
+                .RunAsync(cfg, log, progress, ct, replaceExistingRegistration: requiresEnrollment)
                 .ConfigureAwait(false);
             registeredNow = true;
             progress?.Invoke($"Registered agent {onboarding.Identity.AgentId}.");
@@ -52,14 +62,14 @@ internal sealed class AgentSetupFlow
             try
             {
                 await AgentClaimGate
-                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .WaitForClaimedAsync(userStore, progress, ct, lifecycleState)
                     .ConfigureAwait(false);
             }
-            catch (AgentRegistrationInactiveException) when (registeredBefore)
+            catch (AgentRegistrationInactiveException ex) when (registeredBefore && ex.CanReenroll)
             {
                 progress?.Invoke("Stored device registration is inactive. Signing in again...");
                 var onboarding = await new AgentOnboardingFlow()
-                    .RunAsync(cfg, log, progress, ct)
+                    .RunAsync(cfg, log, progress, ct, replaceExistingRegistration: true)
                     .ConfigureAwait(false);
                 registeredNow = true;
                 progress?.Invoke($"Registered agent {onboarding.Identity.AgentId}.");
@@ -67,12 +77,24 @@ internal sealed class AgentSetupFlow
                     progress?.Invoke($"Wrote private mesh command: {onboarding.TailscaleCommandPath}");
 
                 await AgentClaimGate
-                    .WaitForClaimedAsync(userStore, progress, ct)
+                    .WaitForClaimedAsync(userStore, progress, ct, lifecycleState)
                     .ConfigureAwait(false);
             }
         }
 
-        var serviceChanged = EnsureServiceInstallOrStart(progress);
+        bool serviceChanged;
+        using (var provisioning = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            provisioning.CancelAfter(ServiceReadyTimeout);
+            try
+            {
+                serviceChanged = await EnsureServiceInstallOrStartAsync(progress, registeredNow, provisioning.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new InvalidOperationException("Service provisioning did not finish in time. The elevated operation may still be running; wait for it before retrying setup.");
+            }
+        }
         var service = await WaitForServiceRunningAsync(ServiceReadyTimeout, progress, ct).ConfigureAwait(false);
         if (!service.Installed)
         {
@@ -86,6 +108,10 @@ internal sealed class AgentSetupFlow
                 $"Windows service is installed but not running (status={service.Text}).");
         }
 
+        var health = await AgentLocalControlClient.SendAsync(new("status"), ct).ConfigureAwait(false);
+        if (!health.Success || health.LifecycleState is not (nameof(AgentLifecycleState.Active) or nameof(AgentLifecycleState.Degraded)))
+            throw new InvalidOperationException("The service is running but requires registration or administrator recovery.");
+
         return new AgentSetupResult(
             registeredBefore,
             registeredNow,
@@ -94,13 +120,13 @@ internal sealed class AgentSetupFlow
             "Agent setup completed. The service is running.");
     }
 
-    private static bool EnsureServiceInstallOrStart(Action<string>? progress)
+    private static async Task<bool> EnsureServiceInstallOrStartAsync(Action<string>? progress, bool promoteRegistration, CancellationToken ct)
     {
         var service = AgentStatus.GetService();
-        if (!service.Installed)
+        if (!service.Installed || promoteRegistration)
         {
             progress?.Invoke("Installing Windows service (UAC may prompt)...");
-            var result = ServiceControlAction.Run(ServiceControlCommand.Install);
+            var result = await ServiceControlAction.RunAndWaitAsync(ServiceControlCommand.Install, ct).ConfigureAwait(false);
             progress?.Invoke(result.Message);
             if (!result.Succeeded)
                 throw new InvalidOperationException(result.Message);
@@ -110,7 +136,7 @@ internal sealed class AgentSetupFlow
         if (service.CanStart)
         {
             progress?.Invoke("Starting Windows service...");
-            var result = ServiceControlAction.Run(ServiceControlCommand.Start);
+            var result = await ServiceControlAction.RunAndWaitAsync(ServiceControlCommand.Start, ct).ConfigureAwait(false);
             progress?.Invoke(result.Message);
             if (!result.Succeeded)
                 throw new InvalidOperationException(result.Message);

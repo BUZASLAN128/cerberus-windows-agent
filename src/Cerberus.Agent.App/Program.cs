@@ -48,13 +48,7 @@ internal static class Program
         }
 
         if (!string.IsNullOrWhiteSpace(parsed.ApplyUpdatePlan))
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
-            return UpdateApplyMode
-                .RunAsync(parsed.ApplyUpdatePlan, parsed.ApplyUpdateTarget, cts.Token)
-                .GetAwaiter()
-                .GetResult();
-        }
+            return 2;
 
         if (parsed.UpdateCheckOnce || parsed.UpdateApplyOnce)
         {

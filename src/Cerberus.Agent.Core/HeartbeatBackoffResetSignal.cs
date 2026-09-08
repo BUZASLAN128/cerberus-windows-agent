@@ -15,8 +15,9 @@ public static class HeartbeatBackoffResetSignal
         try
         {
             var directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
+            // A pre-service UI request must not claim ownership of the machine namespace.
+            if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+                return false;
 
             File.WriteAllText(path, $"{DateTimeOffset.UtcNow:O}\n{reason}\n");
             return true;

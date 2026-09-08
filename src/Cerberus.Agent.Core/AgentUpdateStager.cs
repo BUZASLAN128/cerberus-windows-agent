@@ -10,7 +10,13 @@ public sealed record AgentUpdateTrust(
     string CurrentVersion,
     bool AllowRollbackManifest = false,
     bool AllowChannelDowngrade = false,
-    long MaxArtifactBytes = 200 * 1024 * 1024);
+    long MaxArtifactBytes = 200 * 1024 * 1024,
+    string? ConfiguredManifestUrl = null,
+    string? AllowedSignerKeyIdentity = null,
+    bool AllowUnsignedDevBuild = false,
+    bool RequireManifestV2 = false,
+    bool RequireBitsDownloader = false,
+    bool RequireSystemAuthority = false);
 
 public sealed record AgentUpdateSignal(
     bool Required,
@@ -26,7 +32,18 @@ public sealed record AgentUpdatePlan(
     string ArtifactPath,
     string Sha256,
     string StagedAtUtc,
-    string Reason);
+    string Reason,
+    string SchemaVersion = "agent.update.plan.v2",
+    string? AttemptId = null,
+    long Sequence = 0,
+    string? ExpiresAtUtc = null,
+    long? ArtifactLength = null,
+    string? ManifestPath = null,
+    string? SignerKeyIdentity = null,
+    bool Required = false,
+    bool RollbackAllowed = false,
+    int RetryCount = 0,
+    string? ManifestDigest = null);
 
 public sealed record AgentUpdateCheckResult(
     bool Available,
@@ -61,18 +78,13 @@ public sealed class AgentUpdateStager
     private readonly string _stagingRoot;
     private readonly IAgentLogger _log;
 
-    public static string DefaultStagingRoot => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "CerberusAgent",
-        "updates");
+    public static string DefaultStagingRoot => AgentUpdateSecurity.DefaultPrivilegedRoot;
 
     public AgentUpdateStager(HttpClient http, AgentUpdateTrust trust, string stagingRoot, IAgentLogger? log = null)
     {
-        _http = http;
-        _trust = trust;
-        _stagingRoot = string.IsNullOrWhiteSpace(stagingRoot)
-            ? throw new ArgumentException("Update staging root is required.", nameof(stagingRoot))
-            : stagingRoot;
+        _http = http ?? throw new ArgumentNullException(nameof(http));
+        _trust = trust ?? throw new ArgumentNullException(nameof(trust));
+        _stagingRoot = AgentUpdateSecurity.NormalizeRoot(stagingRoot);
         _log = log ?? NullAgentLogger.Instance;
     }
 
@@ -91,21 +103,19 @@ public sealed class AgentUpdateStager
     }
 
     public async Task<AgentUpdateCheckResult> CheckAsync(HeartbeatResponse response, CancellationToken ct)
-    {
-        var signal = FromHeartbeat(response);
-        return await CheckAsync(signal, ct).ConfigureAwait(false);
-    }
+        => await CheckAsync(FromHeartbeat(response), ct).ConfigureAwait(false);
 
     public async Task<AgentUpdateCheckResult> CheckAsync(AgentUpdateSignal signal, CancellationToken ct)
     {
+        if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
+            throw new InvalidOperationException("Only the installed agent service may check updates.");
         if (!signal.Required && !signal.Recommended)
             return AgentUpdateCheckResult.None;
 
-        var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        var (manifest, _) = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
         if (!IsActionableManifest(manifest))
         {
-            _log.Info(
-                $"Agent update skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
+            _log.Info($"Agent update skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
             return new AgentUpdateCheckResult(
                 Available: false,
                 Required: signal.Required,
@@ -129,69 +139,133 @@ public sealed class AgentUpdateStager
     }
 
     public async Task<AgentUpdatePlan?> StageAsync(HeartbeatResponse response, CancellationToken ct)
-    {
-        var signal = FromHeartbeat(response);
-        return await StageAsync(signal, ct).ConfigureAwait(false);
-    }
+        => await StageAsync(FromHeartbeat(response), ct).ConfigureAwait(false);
 
     public async Task<AgentUpdatePlan?> StageAsync(AgentUpdateSignal signal, CancellationToken ct)
     {
+        if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
+            throw new InvalidOperationException("Only the installed agent service may stage updates.");
         if (!signal.Required && !signal.Recommended)
             return null;
-        var manifest = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+
+        AgentUpdateSecurity.EnsureProtectedRoot(_stagingRoot);
+        var (manifest, manifestJson) = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
         if (!IsActionableManifest(manifest))
         {
-            _log.Info(
-                $"Agent update staging skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
+            _log.Info($"Agent update staging skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
             return null;
         }
 
-        var stageDir = Path.Combine(_stagingRoot, manifest.Version);
-        Directory.CreateDirectory(stageDir);
-        var artifactName = Path.GetFileName(new Uri(manifest.ArtifactUrl).LocalPath);
-        if (string.IsNullOrWhiteSpace(artifactName))
-            artifactName = $"Cerberus.Agent-{manifest.Channel}-{manifest.Version}.msi";
-        var artifactPath = Path.Combine(stageDir, artifactName);
+        var existing = FindExistingAttempt(manifest);
+        if (existing is not null)
+            return existing;
 
-        await DownloadWithHashCheckAsync(manifest, artifactPath, ct).ConfigureAwait(false);
+        var attemptId = Guid.NewGuid().ToString("N");
+        var attemptDir = AgentUpdateSecurity.CreateExclusiveAttemptDirectory(_stagingRoot, attemptId);
+        var artifactPath = Path.Combine(attemptDir, AgentUpdateSecurity.ArtifactFileName);
+        var partialPath = artifactPath + ".part";
+        var journal = new AgentUpdateJournalStore(_stagingRoot);
+        journal.Change(before => before.HasUnfinishedAttempt
+            ? throw new InvalidOperationException("Another update attempt is active.")
+            : before with
+            {
+                AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
+                RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
+                InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
+                InstallationBootId = null,
+            });
+        try
+        {
+            await DownloadWithHashCheckAsync(manifest, partialPath, ct).ConfigureAwait(false);
+            AgentUpdateSecurity.ValidateTrustedPath(partialPath, _stagingRoot, allowMissing: false);
+            AgentUpdateSecurity.ValidateTrustedPath(artifactPath, _stagingRoot, allowMissing: true);
+            File.Move(partialPath, artifactPath, overwrite: false);
+            AgentUpdateSecurity.ValidateTrustedPath(artifactPath, _stagingRoot, allowMissing: false);
 
-        var plan = new AgentUpdatePlan(
-            ArtifactKind: manifest.ArtifactKind,
-            Version: manifest.Version,
-            Channel: manifest.Channel,
-            ArtifactPath: artifactPath,
-            Sha256: manifest.Sha256.ToLowerInvariant(),
-            StagedAtUtc: DateTimeOffset.UtcNow.ToString("O"),
-            Reason: signal.Reason ?? "server_update_policy");
-        await File.WriteAllTextAsync(
-            Path.Combine(stageDir, "update-plan.json"),
-            JsonSerializer.Serialize(plan, JsonOptions),
-            ct).ConfigureAwait(false);
-        PruneOldStagedVersions(manifest.Version);
-        return plan;
+            var artifactLength = new FileInfo(artifactPath).Length;
+            var hash = await HashFileAsync(artifactPath, ct).ConfigureAwait(false);
+            if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Staged update checksum mismatch.");
+            if (manifest.ArtifactLength is not null && manifest.ArtifactLength.Value != artifactLength)
+                throw new InvalidOperationException("Staged update length mismatch.");
+
+            var manifestPath = Path.Combine(attemptDir, AgentUpdateSecurity.ManifestFileName);
+            var planPath = Path.Combine(attemptDir, AgentUpdateSecurity.PlanFileName);
+            await WriteAtomicAsync(manifestPath, manifestJson, ct).ConfigureAwait(false);
+            var plan = new AgentUpdatePlan(
+                ArtifactKind: manifest.ArtifactKind,
+                Version: manifest.Version,
+                Channel: manifest.Channel,
+                ArtifactPath: artifactPath,
+                Sha256: manifest.Sha256.ToLowerInvariant(),
+                StagedAtUtc: DateTimeOffset.UtcNow.ToString("O"),
+                Reason: signal.Reason ?? "server_update_policy",
+                AttemptId: attemptId,
+                Sequence: manifest.Sequence,
+                ExpiresAtUtc: manifest.ExpiresAtUtc,
+                ArtifactLength: artifactLength,
+                ManifestPath: manifestPath,
+                SignerKeyIdentity: manifest.EffectiveSignerKeyIdentity,
+                Required: signal.Required,
+                RollbackAllowed: manifest.RollbackAllowed,
+                ManifestDigest: AgentUpdateManifestValidator.Digest(manifest));
+            await WriteAtomicAsync(planPath, JsonSerializer.Serialize(plan, JsonOptions), ct).ConfigureAwait(false);
+            journal.ChangeAttempt(attemptId, before => before with { Phase = AgentUpdateStates.Staged });
+            return plan;
+        }
+        catch
+        {
+            // Keep the protected attempt and BITS receipt for crash/retirement reconciliation.
+            journal.ChangeAttempt(attemptId, before => before with { Phase = AgentUpdateStates.Failed });
+            throw;
+        }
     }
 
-    private async Task<AgentUpdateManifest> LoadAndValidateManifestAsync(AgentUpdateSignal signal, CancellationToken ct)
+    private async Task<(AgentUpdateManifest Manifest, string Json)> LoadAndValidateManifestAsync(
+        AgentUpdateSignal signal,
+        CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(signal.ManifestUrl))
             throw new InvalidOperationException("Update requested but manifest URL is missing.");
+        if (!Uri.TryCreate(signal.ManifestUrl, UriKind.Absolute, out var manifestUri) ||
+            !string.Equals(manifestUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update manifest URL must use HTTPS.");
         if (!string.IsNullOrWhiteSpace(signal.Channel) &&
             !string.Equals(signal.Channel, _trust.ExpectedChannel, StringComparison.Ordinal))
             throw new InvalidOperationException("Update signal channel mismatch.");
+        if (!string.IsNullOrWhiteSpace(_trust.ConfiguredManifestUrl) &&
+            !string.Equals(signal.ManifestUrl, _trust.ConfiguredManifestUrl, StringComparison.Ordinal))
+            throw new InvalidOperationException("Update manifest URL is not trusted by this build.");
 
         string manifestJson;
         try
         {
-            using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, ct).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            using var manifestResponse = await _http.GetAsync(signal.ManifestUrl, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             manifestResponse.EnsureSuccessStatusCode();
-            manifestJson = await manifestResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (manifestResponse.RequestMessage?.RequestUri?.Scheme != Uri.UriSchemeHttps ||
+                manifestResponse.Content.Headers.ContentLength > AgentUpdateDurableFile.MaxBytes)
+                throw new InvalidOperationException("Update manifest response is not trusted or exceeds size limit.");
+            await using var stream = await manifestResponse.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            using var content = new MemoryStream();
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var count = await stream.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
+                if (count == 0) break;
+                if (content.Length + count > AgentUpdateDurableFile.MaxBytes)
+                    throw new InvalidOperationException("Update manifest exceeds size limit.");
+                content.Write(buffer, 0, count);
+            }
+            manifestJson = System.Text.Encoding.UTF8.GetString(content.ToArray());
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
             throw new InvalidOperationException("Update manifest unavailable.", ex);
         }
 
-        return AgentUpdateManifestValidator.ParseAndValidateJson(
+        var manifest = AgentUpdateManifestValidator.ParseAndValidateJson(
             manifestJson,
             _trust.ManifestPublicKeyPems,
             _trust.ExpectedChannel,
@@ -199,6 +273,30 @@ public sealed class AgentUpdateStager
             currentVersion: _trust.CurrentVersion,
             allowRollbackManifest: _trust.AllowRollbackManifest,
             allowChannelDowngrade: _trust.AllowChannelDowngrade);
+        if (_trust.RequireManifestV2 && !manifest.IsV2)
+            throw new InvalidOperationException("Update manifest v2 is required for this release channel.");
+        if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(_stagingRoot) > 0)
+            throw new InvalidOperationException("Legacy update manifest fallback is disabled after v2 trust was accepted.");
+        ValidateSignerIdentity(manifest);
+        if (manifest.IsV2)
+            AgentUpdateSequenceStore.Accept(_stagingRoot, manifest.Sequence, AgentUpdateManifestValidator.Digest(manifest));
+        return (manifest, manifestJson);
+    }
+
+    private void ValidateSignerIdentity(AgentUpdateManifest manifest)
+    {
+        var expected = _trust.AllowedSignerKeyIdentity?.Trim();
+        var actual = manifest.EffectiveSignerKeyIdentity;
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            if (!string.IsNullOrWhiteSpace(actual))
+                throw new InvalidOperationException("Update manifest signer identity is not embedded in this build.");
+            return;
+        }
+
+        if (!expected.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(actual, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update manifest signer identity does not match this build.");
     }
 
     private bool IsActionableManifest(AgentUpdateManifest manifest)
@@ -212,80 +310,16 @@ public sealed class AgentUpdateStager
                (_trust.AllowChannelDowngrade || (_trust.AllowRollbackManifest && manifest.RollbackAllowed));
     }
 
-    public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)
+    private AgentUpdatePlan? FindExistingAttempt(AgentUpdateManifest manifest)
     {
-        var stagingRoot = Path.GetDirectoryName(Path.GetFullPath(planPath))
-            ?? throw new InvalidOperationException("Update plan directory could not be resolved.");
-        return ApplyPlanAsync(planPath, targetExecutablePath, stagingRoot, targetExecutablePath, ct);
-    }
-
-    public static async Task ApplyPlanAsync(
-        string planPath,
-        string targetExecutablePath,
-        string trustedStagingRoot,
-        string allowedTargetExecutablePath,
-        CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(planPath))
-            throw new ArgumentException("Update plan path is required.", nameof(planPath));
-        if (string.IsNullOrWhiteSpace(targetExecutablePath))
-            throw new ArgumentException("Target executable path is required.", nameof(targetExecutablePath));
-        if (string.IsNullOrWhiteSpace(trustedStagingRoot))
-            throw new ArgumentException("Trusted staging root is required.", nameof(trustedStagingRoot));
-        if (string.IsNullOrWhiteSpace(allowedTargetExecutablePath))
-            throw new ArgumentException("Allowed target executable path is required.", nameof(allowedTargetExecutablePath));
-
-        var fullPlanPath = Path.GetFullPath(planPath);
-        var fullStagingRoot = Path.GetFullPath(trustedStagingRoot);
-        var fullTargetPath = Path.GetFullPath(targetExecutablePath);
-        var fullAllowedTargetPath = Path.GetFullPath(allowedTargetExecutablePath);
-        if (!IsUnderDirectory(fullPlanPath, fullStagingRoot))
-            throw new InvalidOperationException("Update plan path is outside trusted staging root.");
-        if (!string.Equals(fullTargetPath, fullAllowedTargetPath, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Update target executable path is not allowed.");
-
-        var raw = await File.ReadAllTextAsync(fullPlanPath, ct).ConfigureAwait(false);
-        var plan = JsonSerializer.Deserialize<AgentUpdatePlan>(raw, JsonOptions)
-            ?? throw new InvalidOperationException("Update plan is invalid.");
-        if (!File.Exists(plan.ArtifactPath))
-            throw new FileNotFoundException("Staged update artifact not found.", plan.ArtifactPath);
-        var fullArtifactPath = Path.GetFullPath(plan.ArtifactPath);
-        if (!IsUnderDirectory(fullArtifactPath, fullStagingRoot))
-            throw new InvalidOperationException("Update artifact path is outside trusted staging root.");
-
-        var hash = await HashFileAsync(fullArtifactPath, ct).ConfigureAwait(false);
-        if (!string.Equals(hash, plan.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Staged update checksum mismatch.");
-
-        var targetDir = Path.GetDirectoryName(fullTargetPath);
-        if (!string.IsNullOrWhiteSpace(targetDir))
-            Directory.CreateDirectory(targetDir);
-        var backupPath = File.Exists(fullTargetPath)
-            ? $"{fullTargetPath}.bak-{Guid.NewGuid():N}"
-            : null;
-        try
-        {
-            if (backupPath is not null)
-                File.Move(fullTargetPath, backupPath, overwrite: false);
-
-            File.Copy(fullArtifactPath, fullTargetPath, overwrite: false);
-            var appliedHash = await HashFileAsync(fullTargetPath, ct).ConfigureAwait(false);
-            if (!string.Equals(appliedHash, plan.Sha256, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Applied update checksum mismatch.");
-
-            if (backupPath is not null && File.Exists(backupPath))
-                File.Delete(backupPath);
-        }
-        catch
-        {
-            if (backupPath is not null && File.Exists(backupPath))
-            {
-                if (File.Exists(fullTargetPath))
-                    File.Delete(fullTargetPath);
-                File.Move(backupPath, fullTargetPath, overwrite: false);
-            }
-            throw;
-        }
+        var active = new AgentUpdateJournalStore(_stagingRoot).Read();
+        if (!active.HasUnfinishedAttempt)
+            return null;
+        var directory = AgentUpdateSecurity.ResolveAttemptDirectory(_stagingRoot, active.AttemptId!);
+        var plan = AgentUpdateDurableFile.Read<AgentUpdatePlan>(Path.Combine(directory, AgentUpdateSecurity.PlanFileName), directory);
+        if (plan is null || plan.Sequence != manifest.Sequence || plan.ManifestDigest != AgentUpdateManifestValidator.Digest(manifest))
+            throw new InvalidOperationException("Another update attempt is active or requires recovery.");
+        return plan;
     }
 
     private async Task DownloadWithHashCheckAsync(
@@ -293,18 +327,19 @@ public sealed class AgentUpdateStager
         string artifactPath,
         CancellationToken ct)
     {
-        if (await FileHashMatchesAsync(artifactPath, manifest.Sha256, ct).ConfigureAwait(false))
+        AgentUpdateSecurity.ValidateTrustedPath(artifactPath, _stagingRoot, allowMissing: true);
+        if (_trust.RequireBitsDownloader)
         {
-            _log.Info($"Agent update artifact already staged: {Path.GetFileName(artifactPath)}.");
+            await new AgentUpdateBitsDownloader()
+                .DownloadAsync(
+                    new Uri(manifest.ArtifactUrl, UriKind.Absolute),
+                    artifactPath,
+                    _trust.MaxArtifactBytes,
+                    ct,
+                    expectedBytes: manifest.ArtifactLength)
+                .ConfigureAwait(false);
             return;
         }
-
-        var artifactDir = Path.GetDirectoryName(Path.GetFullPath(artifactPath))
-            ?? throw new InvalidOperationException("Update artifact directory could not be resolved.");
-        Directory.CreateDirectory(artifactDir);
-        var tempPath = Path.Combine(
-            artifactDir,
-            $".{Path.GetFileName(artifactPath)}.{Guid.NewGuid():N}.part");
 
         HttpResponseMessage response;
         try
@@ -322,54 +357,50 @@ public sealed class AgentUpdateStager
 
         using (response)
         {
-        if (response.Content.Headers.ContentLength is > 0 &&
-            response.Content.Headers.ContentLength > _trust.MaxArtifactBytes)
-            throw new InvalidOperationException("Update artifact exceeds size limit.");
+            if (response.Content.Headers.ContentLength is > 0 &&
+                response.Content.Headers.ContentLength > _trust.MaxArtifactBytes)
+                throw new InvalidOperationException("Update artifact exceeds size limit.");
 
-        try
-        {
-            await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using var target = new FileStream(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None);
-            using var sha = SHA256.Create();
-
-            var buffer = new byte[64 * 1024];
-            long total = 0;
-            long nextProgressBytes = 8 * 1024 * 1024;
-            var contentLength = response.Content.Headers.ContentLength;
-            while (true)
+            try
             {
-                var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
-                if (read <= 0)
-                    break;
-                total += read;
-                if (total > _trust.MaxArtifactBytes)
-                    throw new InvalidOperationException("Update artifact exceeds size limit.");
-                await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                sha.TransformBlock(buffer, 0, read, null, 0);
-                if (total >= nextProgressBytes)
+                await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                await using var target = new FileStream(artifactPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using var sha = SHA256.Create();
+                var buffer = new byte[64 * 1024];
+                long total = 0;
+                long nextProgressBytes = 8 * 1024 * 1024;
+                var contentLength = response.Content.Headers.ContentLength;
+                while (true)
                 {
-                    LogDownloadProgress(total, contentLength);
-                    nextProgressBytes = total + (8 * 1024 * 1024);
+                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                    if (read <= 0)
+                        break;
+                    total += read;
+                    if (total > _trust.MaxArtifactBytes)
+                        throw new InvalidOperationException("Update artifact exceeds size limit.");
+                    await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                    sha.TransformBlock(buffer, 0, read, null, 0);
+                    if (total >= nextProgressBytes)
+                    {
+                        LogDownloadProgress(total, contentLength);
+                        nextProgressBytes = total + (8 * 1024 * 1024);
+                    }
                 }
-            }
-            LogDownloadProgress(total, contentLength);
-            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
-            if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Update artifact checksum mismatch.");
-        }
-        catch
-        {
-            TryDeleteFile(tempPath);
-            throw;
-        }
-        }
 
-        File.Move(tempPath, artifactPath, overwrite: true);
+                LogDownloadProgress(total, contentLength);
+                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
+                if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Update artifact checksum mismatch.");
+                if (manifest.ArtifactLength is not null && manifest.ArtifactLength.Value != total)
+                    throw new InvalidOperationException("Update artifact length mismatch.");
+            }
+            catch
+            {
+                TryDeleteFile(artifactPath);
+                throw;
+            }
+        }
     }
 
     private void LogDownloadProgress(long total, long? contentLength)
@@ -384,29 +415,18 @@ public sealed class AgentUpdateStager
         _log.Info($"Agent update download progress: {total} bytes.");
     }
 
-    private void PruneOldStagedVersions(string currentVersion)
-    {
-        try
-        {
-            var root = new DirectoryInfo(_stagingRoot);
-            if (!root.Exists)
-                return;
+    [Obsolete("Direct plan application is disabled; only the SYSTEM updater may apply an attempt.")]
+    public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)
+        => throw new InvalidOperationException("Direct update application is disabled.");
 
-            var oldDirs = root
-                .EnumerateDirectories()
-                .Where(dir => !string.Equals(dir.Name, currentVersion, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(dir => dir.CreationTimeUtc)
-                .Skip(2)
-                .ToArray();
-
-            foreach (var dir in oldDirs)
-                dir.Delete(recursive: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.Warn($"Agent update staging cleanup skipped: {ex.GetType().Name}: {ex.Message}");
-        }
-    }
+    [Obsolete("Direct plan application is disabled; only the SYSTEM updater may apply an attempt.")]
+    public static Task ApplyPlanAsync(
+        string planPath,
+        string targetExecutablePath,
+        string trustedStagingRoot,
+        string allowedTargetExecutablePath,
+        CancellationToken ct)
+        => throw new InvalidOperationException("Direct update application is disabled.");
 
     private static async Task<string> HashFileAsync(string path, CancellationToken ct)
     {
@@ -415,23 +435,23 @@ public sealed class AgentUpdateStager
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static async Task<bool> FileHashMatchesAsync(string path, string expectedSha256, CancellationToken ct)
+    private async Task WriteAtomicAsync(string path, string contents, CancellationToken ct)
     {
-        if (!File.Exists(path))
-            return false;
-
+        AgentUpdateSecurity.ValidateTrustedPath(path, _stagingRoot, allowMissing: true);
+        var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            var hash = await HashFileAsync(path, ct).ConfigureAwait(false);
-            return string.Equals(hash, expectedSha256, StringComparison.OrdinalIgnoreCase);
+            AgentUpdateSecurity.ValidateTrustedPath(tempPath, _stagingRoot, allowMissing: true);
+            await using (var output = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                await output.WriteAsync(System.Text.Encoding.UTF8.GetBytes(contents), ct).ConfigureAwait(false);
+                output.Flush(flushToDisk: true);
+            }
+            File.Move(tempPath, path, overwrite: false);
         }
-        catch (IOException)
+        finally
         {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
+            TryDeleteFile(tempPath);
         }
     }
 
@@ -442,19 +462,21 @@ public sealed class AgentUpdateStager
             if (File.Exists(path))
                 File.Delete(path);
         }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
         }
     }
 
-    private static bool IsUnderDirectory(string path, string directory)
+    private static void TryDeleteDirectory(string path)
     {
-        var normalizedDirectory = directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            + Path.DirectorySeparatorChar;
-        return path.StartsWith(normalizedDirectory, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private static bool ReadBool(IReadOnlyDictionary<string, JsonElement> values, string key)
@@ -470,9 +492,7 @@ public sealed class AgentUpdateStager
     }
 
     private static string? ReadString(IReadOnlyDictionary<string, JsonElement> values, string key)
-    {
-        if (!values.TryGetValue(key, out var value))
-            return null;
-        return value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-    }
+        => values.TryGetValue(key, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 }

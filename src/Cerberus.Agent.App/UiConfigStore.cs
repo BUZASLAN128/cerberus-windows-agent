@@ -39,28 +39,26 @@ internal static class UiConfigStore
     private static PersistedUiConfig Default => new(
         // Public values only. Build-time defaults can be provided by CI for dev/local artifacts.
         BackendUrl: BuildDefaultOrEmpty(AgentBuildConfig.BackendUrlBase64),
-        CasdoorEndpoint: BuildDefaultOr(AgentBuildConfig.SsoBaseUrlBase64, "http://100.101.130.51:31080"),
+        CasdoorEndpoint: BuildDefaultOrEmpty(AgentBuildConfig.SsoBaseUrlBase64),
         // NOTE: client_id is public (not a secret). Keep override via env/config for other deployments.
-        CasdoorClientId: BuildDefaultOr(AgentBuildConfig.SsoClientIdBase64, "610f03b77494869da4ef"),
+        CasdoorClientId: BuildDefaultOrEmpty(AgentBuildConfig.SsoClientIdBase64),
         // Include "groups" because backend maps tenant from group membership.
         CasdoorScope: BuildDefaultOr(AgentBuildConfig.SsoScopeBase64, "openid profile email groups"),
         OAuthRedirectPort: IsValidPort(AgentBuildConfig.OAuthRedirectPort)
             ? AgentBuildConfig.OAuthRedirectPort
             : 19823);
 
-    private static bool IsLegacyLocalBackend(string url)
-    {
-        var v = (url ?? "").Trim().TrimEnd('/');
-        return string.Equals(v, "http://localhost:5001", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(v, "http://127.0.0.1:5001", StringComparison.OrdinalIgnoreCase);
-    }
+    internal static bool SameEndpoint(string first, string second)
+        => AgentBuildConfig.SameEndpoint(first, second);
 
-    private static bool IsLegacyLocalSso(string url)
-    {
-        var v = (url ?? "").Trim().TrimEnd('/');
-        return string.Equals(v, "http://localhost:31080", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(v, "http://127.0.0.1:31080", StringComparison.OrdinalIgnoreCase);
-    }
+    internal static bool MatchesBuildRouting(RuntimeUiConfig config)
+        => MatchesBuildRouting(config, Default);
+
+    internal static bool MatchesBuildRouting(RuntimeUiConfig config, PersistedUiConfig build)
+        => (string.IsNullOrWhiteSpace(build.BackendUrl) || SameEndpoint(config.BackendUrl, build.BackendUrl))
+           && (string.IsNullOrWhiteSpace(build.CasdoorEndpoint) || SameEndpoint(config.CasdoorEndpoint, build.CasdoorEndpoint))
+           && (string.IsNullOrWhiteSpace(build.CasdoorClientId)
+               || string.Equals(config.CasdoorClientId, build.CasdoorClientId, StringComparison.Ordinal));
 
     public static PersistedUiConfig Load()
     {
@@ -74,15 +72,8 @@ internal static class UiConfigStore
             if (parsed is null)
                 return Default;
 
-            // Auto-migrate legacy defaults that break current dev/test setup.
-            // If you really want localhost endpoints, override explicitly via env vars.
+            // Preserve deployment identity; upgrading a package must not rebind saved endpoints.
             var migrated = parsed;
-            if (IsLegacyLocalBackend(migrated.BackendUrl))
-                migrated = migrated with { BackendUrl = Default.BackendUrl };
-            if (IsLegacyLocalSso(migrated.CasdoorEndpoint))
-                migrated = migrated with { CasdoorEndpoint = Default.CasdoorEndpoint };
-            if (string.IsNullOrWhiteSpace(migrated.CasdoorClientId))
-                migrated = migrated with { CasdoorClientId = Default.CasdoorClientId };
             var scope = (migrated.CasdoorScope ?? "").Trim();
             if (string.IsNullOrWhiteSpace(scope))
             {

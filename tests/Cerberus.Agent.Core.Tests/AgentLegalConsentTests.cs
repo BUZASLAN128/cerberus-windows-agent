@@ -1,5 +1,6 @@
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Legal;
+using Cerberus.Agent.Core;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 
@@ -40,23 +41,51 @@ public sealed class AgentLegalConsentTests
     [Fact]
     public void AgentStatus_SetupCompleteRequiresRegistrationAndRunningService()
     {
+        var status = new AgentLocalControlResponse(true, "ready") { LifecycleState = "Active" };
         Assert.True(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: true,
-            serviceText: "running"));
+            serviceText: "running", status));
 
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: true,
-            serviceText: "stopped"));
+            serviceText: "stopped", status));
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: false,
-            serviceText: "running"));
+            serviceText: "running", status));
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: false,
             serviceInstalled: true,
-            serviceText: "running"));
+            serviceText: "running", status));
+    }
+
+    [Theory]
+    [InlineData("Active", true, true)]
+    [InlineData("Degraded", true, true)]
+    [InlineData("NeedsReenrollment", true, false)]
+    [InlineData("Retired", true, false)]
+    [InlineData("BlockedConfig", true, false)]
+    [InlineData("AuthSuspect", true, false)]
+    [InlineData(null, true, false)]
+    [InlineData("unknown", true, false)]
+    [InlineData("Active", false, false)]
+    public void AgentStatus_SetupReadinessRequiresConfirmedOperationalLifecycle(
+        string? lifecycle, bool success, bool expected)
+    {
+        var status = new AgentLocalControlResponse(success, "status") { LifecycleState = lifecycle };
+        Assert.Equal(expected, AgentStatus.IsSetupCompleteFromSignals(true, true, "running", status));
+        Assert.False(AgentStatus.IsSetupCompleteFromSignals(true, true, "running", null));
+    }
+
+    [Theory]
+    [InlineData("cleanup_pending")]
+    [InlineData("enrollment_proof_required")]
+    public void AgentStatus_SetupReadinessWaitsForServiceRecovery(string code)
+    {
+        var status = new AgentLocalControlResponse(true, code, LifecycleState: "Active");
+        Assert.False(AgentStatus.IsSetupCompleteFromSignals(true, true, "running", status));
     }
 
     [Fact]
@@ -163,12 +192,46 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("After=\"InstallInitialize\"", package);
         Assert.Contains("After=\"RemoveExistingProducts\"", package);
         Assert.Contains("RepairExistingCerberusServicePath", package);
-        Assert.Contains("StartExistingCerberusServiceAfterRepair", package);
-        Assert.Contains("Cerberus.Agent.Service.exe", package);
-        Assert.Contains("[APPFOLDER]Cerberus.Agent.Service.exe", package);
         Assert.Contains("Condition=\"NOT REMOVE AND WIX_UPGRADE_DETECTED\"", package);
-        Assert.Contains("sc.exe&quot; config CerberusAgent", package);
-        Assert.Contains("sc.exe&quot; start CerberusAgent", package);
+        var installerXml = System.Xml.Linq.XDocument.Parse(package);
+        System.Xml.Linq.XNamespace wix = "http://wixtoolset.org/schemas/v4/wxs";
+        var packageElement = installerXml.Root!.Element(wix + "Package")!;
+        var executeSequence = packageElement.Element(wix + "InstallExecuteSequence")!;
+        System.Xml.Linq.XElement Action(string id) => packageElement.Elements(wix + "CustomAction").Single(element => (string?)element.Attribute("Id") == id);
+        System.Xml.Linq.XElement Scheduled(string id) => executeSequence.Elements(wix + "Custom").Single(element => (string?)element.Attribute("Action") == id);
+        foreach (var (id, mode) in new[]
+        {
+            ("CaptureCerberusServiceBeforeUpgrade", "deferred"),
+            ("RestoreCerberusServicePathOnRollback", "rollback"),
+            ("StopCerberusServiceOnRollback", "rollback"),
+            ("RepairExistingCerberusServicePath", "deferred"),
+            ("CheckCerberusServiceHealth", "deferred"),
+        })
+        {
+            Assert.Equal("CerberusInstallerHelper", (string?)Action(id).Attribute("BinaryRef"));
+            Assert.Equal(mode, (string?)Action(id).Attribute("Execute"));
+            Assert.Equal("no", (string?)Action(id).Attribute("Impersonate"));
+            Assert.Equal("check", (string?)Action(id).Attribute("Return"));
+            Assert.Equal("NOT REMOVE AND WIX_UPGRADE_DETECTED", (string?)Scheduled(id).Attribute("Condition"));
+        }
+        Assert.Equal("CaptureCerberusServiceBeforeUpgrade", (string?)Scheduled("RestoreCerberusServicePathOnRollback").Attribute("Before"));
+        Assert.Equal("BootstrapCerberusMachineNamespace", (string?)Scheduled("CaptureCerberusServiceBeforeUpgrade").Attribute("Before"));
+        Assert.Equal("StopServices", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Before"));
+        Assert.Equal("NOT REMOVE", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Condition"));
+        Assert.Equal("CerberusInstallerHelper", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("BinaryRef"));
+        Assert.Equal("deferred", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Execute"));
+        Assert.Equal("no", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Impersonate"));
+        Assert.Equal("check", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Return"));
+        Assert.StartsWith("bootstrap ", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("ExeCommand"));
+        Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("StopCerberusServiceOnRollback").Attribute("Before"));
+        Assert.Equal("RemoveExistingProducts", (string?)Scheduled("RepairExistingCerberusServicePath").Attribute("After"));
+        Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("CheckCerberusServiceHealth").Attribute("After"));
+        Assert.Equal("InstallInitialize", (string?)Scheduled("BlockUpgradeWithoutRollback").Attribute("Before"));
+        Assert.Equal("WIX_UPGRADE_DETECTED AND RollbackDisabled", (string?)Scheduled("BlockUpgradeWithoutRollback").Attribute("Condition"));
+        Assert.Contains("$(var.ServiceExeSha256)", (string?)Action("CheckCerberusServiceHealth").Attribute("ExeCommand"));
+        Assert.Contains("$(var.ServiceAssemblySha256)", (string?)Action("CheckCerberusServiceHealth").Attribute("ExeCommand"));
+        Assert.DoesNotContain("sc.exe&quot; config CerberusAgent", package);
+        Assert.DoesNotContain("sc.exe&quot; start CerberusAgent", package);
         Assert.Contains("RemoveLegacyUserStartupShortcut", package);
         Assert.Contains("Cerberus Agent Tray.lnk", package);
         Assert.Contains("WIXUI_EXITDIALOGOPTIONALCHECKBOX", package);
@@ -230,8 +293,22 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
         Assert.Contains("$latestAssetBase", workflow);
         Assert.Contains("$latestInstallerBase", workflow);
+        Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.v2.json", workflow);
         Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
+        Assert.Contains("$latestAssetBase.update-manifest.v2.json", workflow);
         Assert.Contains("$latestInstallerBase.msi", workflow);
+
+        var installerHelper = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Helper",
+            "Program.cs"));
+        Assert.Contains("ErrorServiceDoesNotExist", installerHelper);
+        Assert.Contains("ServicePresent = false", installerHelper);
+        Assert.Contains("if (snapshot is not null && !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("operation == \"capture\" && (snapshot is null || !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("if (service is null)", installerHelper);
 
         var eulaRtf = File.ReadAllText(Path.Combine(
             repoRoot,

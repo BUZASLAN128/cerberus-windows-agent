@@ -53,27 +53,50 @@ public sealed class AgentUpdateLaunchGateTests
     [Fact]
     public void PrepareUpdaterRunner_CopiesRunnerOutsideInstallDirectory()
     {
-        var root = Path.Combine(Path.GetTempPath(), "cerberus-updater-runner-test-" + Guid.NewGuid().ToString("N"));
-        var installDir = Path.Combine(root, "install");
-        var stageDir = Path.Combine(root, "stage", "1.2.3");
-        Directory.CreateDirectory(installDir);
-        Directory.CreateDirectory(stageDir);
-        var updaterPath = Path.Combine(installDir, "Cerberus.Agent.Updater.exe");
-        var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-dev-1.2.3.msi");
-        File.WriteAllText(updaterPath, "updater");
-        File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.dll"), "dll");
-        File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.deps.json"), "{}");
-        File.WriteAllText(Path.Combine(installDir, "ignore.txt"), "ignore");
-        File.WriteAllText(artifactPath, "msi");
+        // Installed-source provenance includes ancestors; a personal temp directory is not a trusted install parent.
+        var parent = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+        var fixtureName = "cerberus-updater-runner-test-" + Guid.NewGuid().ToString("N");
+        var root = Path.Combine(parent, fixtureName);
+        try
+        {
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            var installDir = Path.Combine(root, "install");
+            var stageDir = Path.Combine(root, "stage", "1.2.3");
+            Directory.CreateDirectory(installDir);
+            Directory.CreateDirectory(stageDir);
+            var updaterPath = Path.Combine(installDir, "Cerberus.Agent.Updater.exe");
+            var artifactPath = Path.Combine(stageDir, "Cerberus.Agent-dev-1.2.3.msi");
+            File.WriteAllText(updaterPath, "updater");
+            File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.dll"), "dll");
+            File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Core.dll"), "core");
+            File.WriteAllText(Path.Combine(installDir, "Cerberus.Agent.Updater.deps.json"), "{}");
+            File.WriteAllText(Path.Combine(installDir, "ignore.txt"), "ignore");
+            File.WriteAllText(artifactPath, "msi");
 
-        var runnerPath = AgentUpdateCoordinator.PrepareUpdaterRunner(updaterPath, artifactPath);
+            var runnerPath = AgentUpdateRunnerFiles.Prepare(installDir, stageDir);
 
-        Assert.True(File.Exists(runnerPath));
-        Assert.StartsWith(stageDir, runnerPath, StringComparison.OrdinalIgnoreCase);
-        Assert.False(string.Equals(installDir, Path.GetDirectoryName(runnerPath), StringComparison.OrdinalIgnoreCase));
-        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.dll")));
-        Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.deps.json")));
-        Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "ignore.txt")));
+            Assert.True(File.Exists(runnerPath));
+            Assert.StartsWith(stageDir, runnerPath, StringComparison.OrdinalIgnoreCase);
+            Assert.False(string.Equals(installDir, Path.GetDirectoryName(runnerPath), StringComparison.OrdinalIgnoreCase));
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.dll")));
+            Assert.True(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Updater.deps.json")));
+            Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(runnerPath)!, "ignore.txt")));
+            AgentUpdateRunnerFiles.Validate(Path.GetDirectoryName(runnerPath)!, stageDir);
+            File.AppendAllText(Path.Combine(Path.GetDirectoryName(runnerPath)!, "Cerberus.Agent.Core.dll"), "tampered");
+            Assert.Throws<InvalidOperationException>(() => AgentUpdateRunnerFiles.Validate(Path.GetDirectoryName(runnerPath)!, stageDir));
+        }
+        finally
+        {
+            var cleanupTarget = Path.GetFullPath(root);
+            if (!string.Equals(Path.GetDirectoryName(cleanupTarget), parent, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileName(cleanupTarget), fixtureName, StringComparison.Ordinal))
+                throw new InvalidOperationException("Runner fixture cleanup target is not the generated disposable child.");
+            if (Directory.Exists(cleanupTarget))
+            {
+                AgentUpdateSecurity.ValidateProtectedTree(cleanupTarget);
+                Directory.Delete(cleanupTarget, recursive: true);
+            }
+        }
     }
 
     private static AgentUpdateCheckResult Check(string version)

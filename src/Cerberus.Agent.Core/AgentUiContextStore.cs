@@ -17,11 +17,20 @@ public static class AgentUiContextStore
         WriteIndented = true
     };
 
-    public static async Task WriteBestEffortAsync(
+    public static Task WriteBestEffortAsync(
         AgentIdentity identity,
         string? tenantName,
         string? accountLabel,
         CancellationToken ct)
+        => WriteBestEffortAsync(identity, tenantName, accountLabel, ct, CandidatePaths().First(), CandidatePaths().Last());
+
+    internal static async Task WriteBestEffortAsync(
+        AgentIdentity identity,
+        string? tenantName,
+        string? accountLabel,
+        CancellationToken ct,
+        string userPath,
+        string machinePath)
     {
         var context = new AgentUiContext(
             identity.AgentId,
@@ -30,7 +39,7 @@ public static class AgentUiContextStore
             NormalizeOptional(accountLabel),
             DateTimeOffset.UtcNow.ToString("O"));
 
-        foreach (var path in CandidatePaths())
+        foreach (var (path, createDirectory) in new[] { (userPath, true), (machinePath, false) })
         {
             try
             {
@@ -38,7 +47,9 @@ public static class AgentUiContextStore
                 var directory = Path.GetDirectoryName(path);
                 if (!string.IsNullOrWhiteSpace(directory))
                 {
-                    Directory.CreateDirectory(directory);
+                    // Only elevated installer/service provisioning may create the machine namespace.
+                    if (createDirectory) Directory.CreateDirectory(directory);
+                    else if (!Directory.Exists(directory)) continue;
                 }
                 await File.WriteAllTextAsync(
                     path,

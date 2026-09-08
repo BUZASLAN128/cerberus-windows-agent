@@ -23,6 +23,8 @@ public sealed class HeartbeatLoop
     private readonly int _commandConcurrency;
     private readonly TimeSpan _initialSnapshotDelay;
     private readonly Func<CancellationToken, Task<bool>>? _backoffResetRequested;
+    private readonly IAgentLifecycleStateStore? _lifecycleState;
+    private readonly bool _automaticNetwork;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -43,7 +45,9 @@ public sealed class HeartbeatLoop
         TimeSpan? initialSnapshotDelay = null,
         TimeSpan? maxDelayOnError = null,
         Func<CancellationToken, Task<bool>>? backoffResetRequested = null,
-        AgentBuildMetadata? metadata = null)
+        AgentBuildMetadata? metadata = null,
+        IAgentLifecycleStateStore? lifecycleState = null,
+        bool automaticNetwork = true)
     {
         _api = api;
         _dispatcher = dispatcher;
@@ -76,19 +80,25 @@ public sealed class HeartbeatLoop
         _initialSnapshotDelay = initialSnapshotDelay is null || initialSnapshotDelay.Value < TimeSpan.Zero
             ? TimeSpan.FromSeconds(60)
             : initialSnapshotDelay.Value;
-        _backoffResetRequested = backoffResetRequested;
+        _backoffResetRequested = lifecycleState is null ? backoffResetRequested : null;
+        _lifecycleState = lifecycleState;
+        _automaticNetwork = automaticNetwork;
     }
 
     public async Task RunAsync(CancellationToken ct)
     {
         var degraded = false;
         var startedEventSent = false;
-        var consecutiveHeartbeatErrors = 0;
+        var consecutiveHeartbeatErrors = _lifecycleState is null ? 0 :
+            (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).TransientFailureCount;
         var nextSnapshotAt = DateTimeOffset.UtcNow.Add(_initialSnapshotDelay);
         while (!ct.IsCancellationRequested)
         {
             try
             {
+                if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false))
+                    return;
+
                 object? tailscale = null;
                 if (_status is not null)
                 {
@@ -98,7 +108,7 @@ public sealed class HeartbeatLoop
                     }
                     catch (Exception ex)
                     {
-                        _log.Warn($"Status provider error: {ex.GetType().Name}: {ex.Message}");
+                        _log.Warn($"Status provider error: {ex.GetType().Name}.");
                     }
                 }
 
@@ -120,11 +130,15 @@ public sealed class HeartbeatLoop
 
                 degraded = false;
                 consecutiveHeartbeatErrors = 0;
+                await ClearPersistedRetryAsync(ct).ConfigureAwait(false);
 
                 var control = _responseHandler is null
                     ? HeartbeatControlAction.Continue
                     : await _responseHandler.HandleAsync(hb, ct).ConfigureAwait(false);
                 if (control == HeartbeatControlAction.Stop)
+                    return;
+
+                if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false))
                     return;
 
                 if (string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
@@ -156,9 +170,34 @@ public sealed class HeartbeatLoop
                 }
 
                 var now = DateTimeOffset.UtcNow;
-                if (_telemetryProvider is not null && now >= nextSnapshotAt)
+                var snapshotTrigger = _telemetryProvider as IAgentTelemetrySnapshotTrigger;
+                var snapshotRefreshRequired = false;
+                if (snapshotTrigger is not null)
                 {
-                    await TrySubmitSnapshotAsync(hb, ct).ConfigureAwait(false);
+                    try
+                    {
+                        snapshotRefreshRequired = snapshotTrigger.IsSnapshotRefreshRequired();
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Warn($"Snapshot refresh check failed: {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+
+                if (_telemetryProvider is not null && (now >= nextSnapshotAt || snapshotRefreshRequired))
+                {
+                    var snapshotSubmitted = await TrySubmitSnapshotAsync(hb, ct).ConfigureAwait(false);
+                    if (snapshotSubmitted && snapshotTrigger is not null)
+                    {
+                        try
+                        {
+                            snapshotTrigger.MarkSnapshotSubmitted();
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Warn($"Snapshot refresh acknowledgement failed: {ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
                     var snapshotDelay = Math.Max(hb.NextSnapshotSeconds, 60);
                     nextSnapshotAt = now.AddSeconds(snapshotDelay);
                 }
@@ -179,12 +218,27 @@ public sealed class HeartbeatLoop
             {
                 return;
             }
+            catch (AgentRetiredException)
+            {
+                _log.Warn("Heartbeat loop entering retired dormant state.");
+                return;
+            }
+            catch (AgentLifecycleDormantException ex)
+            {
+                _log.Warn($"Heartbeat loop entering dormant state={ex.State}.");
+                return;
+            }
             catch (Exception ex)
             {
                 degraded = true;
                 consecutiveHeartbeatErrors++;
-                var retryDelay = CalculateErrorDelay(_minDelayOnError, _maxDelayOnError, consecutiveHeartbeatErrors);
-                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}: {ex.Message}. Next retry in {FormatDelay(retryDelay)}.");
+                await RecordTransientLifecycleFailureAsync(ex, ct).ConfigureAwait(false);
+                if (await StopForPersistedLifecycleAsync(ct).ConfigureAwait(false))
+                    return;
+
+                var retryDelay = CalculateRetryDelay(ex, consecutiveHeartbeatErrors);
+                await PersistRetryAsync(retryDelay, ct).ConfigureAwait(false);
+                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}. Next retry in {FormatDelay(retryDelay)}.");
                 bool resetRequested;
                 try
                 {
@@ -198,6 +252,7 @@ public sealed class HeartbeatLoop
                 if (resetRequested)
                 {
                     consecutiveHeartbeatErrors = 0;
+                    await ClearPersistedRetryAsync(ct).ConfigureAwait(false);
                     _log.Info("Heartbeat retry backoff reset requested.");
                 }
             }
@@ -216,6 +271,180 @@ public sealed class HeartbeatLoop
         if (ticks >= maxDelay.Ticks)
             return maxDelay;
         return TimeSpan.FromTicks((long)ticks);
+    }
+
+    private async Task<bool> WaitForLifecycleGateAsync(CancellationToken ct)
+    {
+        if (_lifecycleState is null || !_automaticNetwork)
+            return true;
+
+        var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) || !snapshot.QuiescenceComplete)
+        {
+            _log.Warn($"Heartbeat network paused by lifecycle state={snapshot.State}.");
+            return false;
+        }
+
+        var nextAttempt = snapshot.NextAttemptUtc;
+        if (nextAttempt is null || nextAttempt <= DateTimeOffset.UtcNow)
+            return true;
+
+        var remaining = nextAttempt.Value - DateTimeOffset.UtcNow;
+        _log.Info($"Heartbeat retry deferred until {nextAttempt.Value:O}.");
+        var resetRequested = await DelayForErrorBackoffAsync(remaining, ct).ConfigureAwait(false);
+        if (resetRequested)
+            await ClearPersistedRetryAsync(ct).ConfigureAwait(false);
+        return !ct.IsCancellationRequested;
+    }
+
+    private async Task<bool> StopForPersistedLifecycleAsync(CancellationToken ct)
+    {
+        if (_lifecycleState is null || !_automaticNetwork)
+            return false;
+
+        var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        return !AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State);
+    }
+
+    private async Task ClearPersistedRetryAsync(CancellationToken ct)
+    {
+        if (_lifecycleState is null || !_automaticNetwork)
+            return;
+
+        var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (snapshot.NextAttemptUtc is not null)
+        {
+            await _lifecycleState.TrySaveAsync(
+                AgentLifecycleStatePolicy.Normalize(snapshot with
+                {
+                    NextAttemptUtc = null,
+                    TransientFailureCount = 0,
+                    UpdatedAtUtc = DateTimeOffset.UtcNow,
+                }),
+                snapshot.Revision, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PersistRetryAsync(TimeSpan delay, CancellationToken ct)
+    {
+        if (_lifecycleState is null || !_automaticNetwork)
+            return;
+
+        var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+        if (!AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State))
+            return;
+
+        await _lifecycleState.TrySaveAsync(
+            AgentLifecycleStatePolicy.Normalize(snapshot with
+            {
+                NextAttemptUtc = DateTimeOffset.UtcNow.Add(delay),
+                TransientFailureCount = Math.Min(30, snapshot.TransientFailureCount + 1),
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            }),
+                snapshot.Revision, ct).ConfigureAwait(false);
+    }
+
+    private async Task RecordTransientLifecycleFailureAsync(Exception exception, CancellationToken ct)
+    {
+        if (_lifecycleState is null || !_automaticNetwork ||
+            !TryGetTransientFailure(exception, out var reasonCode, out var requestId))
+        {
+            return;
+        }
+
+        var controller = new AgentLifecycleController(_lifecycleState, log: _log);
+        await controller.RecordTransientFailureAsync(reasonCode, requestId, ct).ConfigureAwait(false);
+    }
+
+    private static bool TryGetTransientFailure(
+        Exception exception,
+        out string reasonCode,
+        out string? requestId)
+    {
+        requestId = null;
+        if (exception is AgentHttpException typed)
+        {
+            requestId = typed.RequestId;
+            if (!AgentLifecycleStatePolicy.IsTransientHttpStatus(typed.Failure.StatusCode))
+            {
+                reasonCode = string.Empty;
+                return false;
+            }
+
+            reasonCode = TransientReason(typed.Failure.StatusCode);
+            return true;
+        }
+
+        if (exception is HttpRequestException request)
+        {
+            if (request.StatusCode is { } statusCode)
+            {
+                if (!AgentLifecycleStatePolicy.IsTransientHttpStatus(statusCode))
+                {
+                    reasonCode = string.Empty;
+                    return false;
+                }
+
+                reasonCode = TransientReason(statusCode);
+                return true;
+            }
+
+            reasonCode = "network_transient";
+            return true;
+        }
+
+        if (exception is TimeoutException || exception is TaskCanceledException ||
+            exception is OperationCanceledException)
+        {
+            reasonCode = "request_timeout";
+            return true;
+        }
+
+        reasonCode = string.Empty;
+        return false;
+    }
+
+    private static string TransientReason(System.Net.HttpStatusCode statusCode)
+        => statusCode switch
+        {
+            System.Net.HttpStatusCode.RequestTimeout => "request_timeout",
+            System.Net.HttpStatusCode.TooManyRequests => "rate_limited",
+            _ when (int)statusCode is >= 500 and <= 599 => "server_unavailable",
+            _ => "network_transient",
+        };
+
+    private TimeSpan CalculateRetryDelay(Exception exception, int consecutiveFailures)
+    {
+        if (exception is AgentHttpException rateLimit &&
+            (rateLimit.RetryAfter is not null || rateLimit.Failure.StatusCode == System.Net.HttpStatusCode.TooManyRequests))
+        {
+            var retryAfter = rateLimit.RetryAfter ?? TimeSpan.FromSeconds(5);
+            retryAfter = TimeSpan.FromSeconds(Math.Clamp(retryAfter.TotalSeconds, 5, 3600));
+            var jitterSeconds = RandomNumberGenerator.GetInt32(1, Math.Max(2, (int)Math.Ceiling(retryAfter.TotalSeconds * 0.20) + 1));
+            return retryAfter.Add(TimeSpan.FromSeconds(jitterSeconds));
+        }
+
+        var cap = TimeSpan.FromMinutes(15);
+        var baseDelay = _minDelayOnError <= TimeSpan.Zero ? TimeSpan.FromSeconds(10) : _minDelayOnError;
+        if (_lifecycleState is not null && baseDelay < TimeSpan.FromSeconds(10))
+            baseDelay = TimeSpan.FromSeconds(10);
+        var exponential = TimeSpan.FromTicks(Math.Min(
+            cap.Ticks,
+            baseDelay.Ticks * (long)Math.Pow(2, Math.Clamp(consecutiveFailures - 1, 0, 20))));
+        var upperSeconds = Math.Max(1, (int)Math.Min(int.MaxValue, Math.Ceiling(exponential.TotalSeconds)));
+        var jitteredSeconds = RandomNumberGenerator.GetInt32(1, upperSeconds + 1);
+        return TimeSpan.FromSeconds(jitteredSeconds);
+    }
+
+    private static async Task WaitUntilCancellationAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
     }
 
     private static string FormatDelay(TimeSpan delay)
@@ -292,16 +521,9 @@ public sealed class HeartbeatLoop
             var timeout = string.Equals(cmd.Type, "agent.update.request", StringComparison.Ordinal)
                 ? Max(_commandTimeout, TimeSpan.FromMinutes(20))
                 : _commandTimeout;
+            await _api.SubmitCommandAckAsync(cmd, ct).ConfigureAwait(false);
             var res = await _dispatcher.DispatchAsync(cmd, timeout, ct).ConfigureAwait(false);
-            var resultBody = new
-            {
-                status = res.Status,
-                exit_code = res.ExitCode,
-                stdout = res.Stdout,
-                stderr = res.Stderr,
-                post_verify = res.PostVerify,
-            };
-            await _api.SubmitCommandResultAsync(cmd.Id, resultBody, ct).ConfigureAwait(false);
+            await _api.SubmitCommandResultAsync(cmd, res, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -312,10 +534,10 @@ public sealed class HeartbeatLoop
     private static TimeSpan Max(TimeSpan left, TimeSpan right)
         => left >= right ? left : right;
 
-    private async Task TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
+    private async Task<bool> TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
     {
         if (_telemetryProvider is null)
-            return;
+            return false;
 
         AgentSnapshotRequest snapshot;
         try
@@ -325,18 +547,19 @@ public sealed class HeartbeatLoop
         catch (Exception ex)
         {
             _log.Warn($"Snapshot build failed: {ex.GetType().Name}: {ex.Message}");
-            return;
+            return false;
         }
 
         try
         {
             await _api.SubmitSnapshotAsync(snapshot, ct).ConfigureAwait(false);
+            return true;
         }
         catch (Exception ex)
         {
             _log.Warn($"Snapshot submit failed: {ex.GetType().Name}: {ex.Message}");
             if (_telemetryBuffer is null)
-                return;
+                return false;
             try
             {
                 await _telemetryBuffer.EnqueueAsync(
@@ -350,6 +573,7 @@ public sealed class HeartbeatLoop
             {
                 _log.Warn($"Snapshot offline buffer failed: {bufferEx.GetType().Name}: {bufferEx.Message}");
             }
+            return false;
         }
     }
 

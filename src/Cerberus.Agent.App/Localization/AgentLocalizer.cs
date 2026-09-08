@@ -9,9 +9,10 @@ internal static class AgentLocalizer
 {
     public const string DefaultCultureName = "en-US";
     public const string TurkishCultureName = "tr-TR";
+    public const string GermanCultureName = "de-DE";
     public const string LanguageEnvVar = "CERBERUS_LANGUAGE";
 
-    private static readonly string[] SupportedCultures = [DefaultCultureName, TurkishCultureName];
+    private static readonly string[] SupportedCultures = [DefaultCultureName, TurkishCultureName, GermanCultureName];
     private static readonly string[] ResourceBaseNames =
     [
         "Cerberus.Agent.App.Localization.AgentStrings",

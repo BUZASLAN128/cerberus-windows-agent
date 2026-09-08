@@ -19,6 +19,8 @@ param(
   [int]$RestartServiceCooldownSeconds = 0,
   [switch]$SkipLocalUserLifecycle,
   [switch]$SkipManagedAssignmentLifecycle,
+  [switch]$RunDoubleLockAcceptance,
+  [switch]$DoubleLockExclusiveDisposableTarget,
   [ValidateRange(1, 10)]
   [int]$AcceptanceRepeat = 10,
   [ValidateRange(10, 300)]
@@ -223,6 +225,12 @@ if (-not $SkipManagedAssignmentLifecycle) {
     "-RotateManagedPassword",
     "-DeleteAssignmentAfterManagedLifecycle"
   )
+}
+if ($RunDoubleLockAcceptance) {
+  $liveArgs += "-RunDoubleLockAcceptance"
+  if ($DoubleLockExclusiveDisposableTarget) {
+    $liveArgs += "-DoubleLockExclusiveDisposableTarget"
+  }
 }
 if ($PreflightOnly) {
   $liveArgs += "-PreflightOnly"
