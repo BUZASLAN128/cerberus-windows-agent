@@ -790,7 +790,21 @@ internal static class AgentUpdateLocalService
         long? requiredPolicyGeneration,
         CancellationToken callerToken)
     {
-        var existing = ReadPlan(active) ?? throw new InvalidOperationException("Active update plan is missing.");
+        if (active.AttemptId is null)
+            throw new InvalidOperationException("Active update attempt is missing.");
+
+        var existing = LoadOrRetireMissingPlan(
+            Root,
+            active,
+            required,
+            requiredPolicyGeneration,
+            DateTimeOffset.UtcNow,
+            Journal.ChangeAttempt);
+        if (existing is null)
+        {
+            await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
+            return null;
+        }
 
         // A launch/install/recovery state is protected by the launch fence. It is
         // never replaced based on a later manifest.
@@ -1167,11 +1181,65 @@ internal static class AgentUpdateLocalService
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
     }
 
+    /// <summary>
+    /// Reads the trusted attempt plan and durably retires a genuinely absent,
+    /// pre-install attempt. The root and compare/transition writer are
+    /// parameters so this exact operation can be checked against disposable
+    /// attempt storage while production binds its canonical journal writer.
+    /// </summary>
+    internal static AgentUpdatePlan? LoadOrRetireMissingPlan(
+        string root,
+        AgentUpdateJournal active,
+        bool required,
+        long? requiredPolicyGeneration,
+        DateTimeOffset retryAtUtc,
+        Func<string, Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeAttempt)
+    {
+        if (active.AttemptId is null)
+            throw new InvalidOperationException("Active update attempt is missing.");
+
+        var existing = ReadPlan(root, active);
+        if (existing is not null)
+            return existing;
+
+        if (active.Phase == "launch_requested" || active.MayHaveStartedInstallation)
+            throw new InvalidOperationException("Active update plan is missing.");
+
+        // Staging flushes Downloading before plan creation, so a crash can
+        // leave an incomplete pre-install attempt without a plan. Retire it
+        // under the journal lock, but never cross the launch fence if another
+        // process wins the race before this compare/transition.
+        var retired = changeAttempt(
+            active.AttemptId,
+            before => TransitionReconciliationFailure(
+                before,
+                retryAtUtc,
+                required,
+                requiredPolicyGeneration));
+        if (retired.Phase == "launch_requested" || retired.MayHaveStartedInstallation)
+            throw new InvalidOperationException("Active update plan is missing.");
+        return null;
+    }
+
     private static AgentUpdatePlan? ReadPlan(AgentUpdateJournal active)
+        => ReadPlan(Root, active);
+
+    private static AgentUpdatePlan? ReadPlan(string root, AgentUpdateJournal active)
     {
         if (active.AttemptId is null) return null;
-        var directory = AgentUpdateSecurity.ResolveAttemptDirectory(Root, active.AttemptId);
-        return AgentUpdateDurableFile.Read<AgentUpdatePlan>(Path.Combine(directory, AgentUpdateSecurity.PlanFileName), directory);
+        var directory = AgentUpdateSecurity.ResolveAttemptDirectory(root, active.AttemptId);
+        var path = Path.Combine(directory, AgentUpdateSecurity.PlanFileName);
+        // File.Exists hides access errors; probe explicitly so only a genuinely
+        // absent plan is eligible for retirement.
+        try
+        {
+            _ = File.GetAttributes(path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+        return AgentUpdateDurableFile.Read<AgentUpdatePlan>(path, directory);
     }
 
     private static async Task<AgentLocalControlResponse> StatusAsync(string code, CancellationToken ct)
