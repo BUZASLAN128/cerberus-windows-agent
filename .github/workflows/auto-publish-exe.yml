@@ -157,9 +157,16 @@ jobs:
           CERBERUS_OAUTH_REDIRECT_PORT: ${{ vars.CERBERUS_OAUTH_REDIRECT_PORT }}
           CERBERUS_RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
           CERBERUS_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          CERBERUS_RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           $channel = $env:CERBERUS_RELEASE_CHANNEL
           $version = $env:CERBERUS_RELEASE_VERSION
+          if ($channel -ceq "stable") {
+            # Bind stable manifests to this immutable versioned release. The
+            # stable pointer only selects the signed manifest; it never hosts
+            # the installer payload itself.
+            $env:AGENT_RELEASE_ARTIFACT_BASE_URL = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:CERBERUS_RELEASE_TAG"
+          }
           if ($channel -ceq "dev") {
             ./scripts/build-agent-public-release.ps1 `
               -Version $version `
@@ -186,6 +193,8 @@ jobs:
           prerelease: ${{ steps.release.outputs.prerelease }}
           makeLatest: ${{ steps.release.outputs.make_latest }}
           allowUpdates: false
+          artifactErrorsFailBuild: true
+          immutableCreate: ${{ steps.release.outputs.channel == 'stable' }}
           bodyFile: out/release-notes.md
           artifacts: |
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip
@@ -196,9 +205,11 @@ jobs:
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.release-gate.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.update-manifest.v2.json
+            out/public-release/publish/Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest.update-manifest.v2.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update channel latest release
+        if: ${{ steps.release.outputs.channel != 'stable' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

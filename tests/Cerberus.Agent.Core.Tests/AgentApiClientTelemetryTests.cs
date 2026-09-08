@@ -182,6 +182,43 @@ public sealed class AgentApiClientTelemetryTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetAdCommandAuthorityAsync(delivered, default));
     }
 
+    [Fact]
+    public async Task AdCommandLeaseValues_Accept256CharactersAndReject257BeforeSending()
+    {
+        var acceptedValue = new string('a', 256);
+        var accepted = new AgentCommand(
+            acceptedValue,
+            "windows.ad_user.disable",
+            acceptedValue,
+            new { username = "bounded" },
+            LeaseId: acceptedValue);
+        var acceptedHandler = new CaptureHandler(JsonSerializer.Serialize(
+            new AdCommandAuthority("t1", "a1", DateTimeOffset.UtcNow.AddSeconds(25), accepted)));
+        using var acceptedHttp = new HttpClient(acceptedHandler) { BaseAddress = new Uri("http://backend.test") };
+        var acceptedClient = new AgentApiClient(
+            acceptedHttp,
+            new StaticSecretStore(),
+            new StaticTokenManager(),
+            new StaticSigner());
+
+        await acceptedClient.GetAdCommandAuthorityAsync(accepted, default);
+        Assert.NotNull(acceptedHandler.CapturedRequest);
+
+        var rejectedValue = new string('b', 257);
+        var rejected = accepted with { Id = rejectedValue, IdempotencyKey = rejectedValue, LeaseId = rejectedValue };
+        var rejectedHandler = new CaptureHandler(JsonSerializer.Serialize(
+            new AdCommandAuthority("t1", "a1", DateTimeOffset.UtcNow.AddSeconds(25), rejected)));
+        using var rejectedHttp = new HttpClient(rejectedHandler) { BaseAddress = new Uri("http://backend.test") };
+        var rejectedClient = new AgentApiClient(
+            rejectedHttp,
+            new StaticSecretStore(),
+            new StaticTokenManager(),
+            new StaticSigner());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rejectedClient.GetAdCommandAuthorityAsync(rejected, default));
+        Assert.Null(rejectedHandler.CapturedRequest);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.Conflict)]

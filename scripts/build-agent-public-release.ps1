@@ -236,7 +236,11 @@ $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
 $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
-  $UpdateManifestUrl = "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json"
+  $UpdateManifestUrl = if ($Channel -eq "stable") {
+    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json"
+  } else {
+    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json"
+  }
 }
 if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
   $artifactRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }

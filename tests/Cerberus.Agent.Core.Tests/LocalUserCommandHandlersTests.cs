@@ -621,9 +621,32 @@ public sealed class LocalUserCommandHandlersTests
     }
 
     [Theory]
-    [InlineData(false, false, false, true)]
-    [InlineData(false, false, true, true)]
-    [InlineData(false, true, false, true)]
+    [InlineData(0, false, true)]
+    [InlineData(0, true, false)]
+    [InlineData(0x0202, false, true)]
+    [InlineData(0x0202, true, false)]
+    public void ApplyManagedPasswordPolicyForNewUser_DisablesUnlessExplicitlyEnabled(
+        int originalFlags,
+        bool enableAccount,
+        bool expectedDisabled)
+    {
+        var method = typeof(LocalUserCommandHandlers)
+            .GetMethod("ApplyManagedPasswordPolicyFlagsForNewUser", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var flags = Assert.IsType<int>(method.Invoke(
+            null,
+            [originalFlags, enableAccount]));
+
+        Assert.Equal(expectedDisabled, (flags & 0x0002) != 0);
+        Assert.True((flags & 0x0040) != 0);
+        Assert.True((flags & 0x10000) != 0);
+    }
+
+    [Theory]
+    [InlineData(false, false, false, false)]
+    [InlineData(false, false, true, false)]
+    [InlineData(false, true, false, false)]
     [InlineData(false, true, true, true)]
     [InlineData(true, false, false, false)]
     [InlineData(true, false, true, false)]

@@ -12,8 +12,17 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public Task HandleUpdateAsync(HeartbeatResponse response, CancellationToken ct)
         => AgentUpdateLocalService.HandleHeartbeatAsync(AgentUpdateStager.FromHeartbeat(response), ct);
 
-    public Task<AgentUpdatePlan?> StageUpdateAsync(AgentUpdateSignal signal, string? campaignId, string? commandId, CancellationToken ct)
-        => AgentUpdateLocalService.CheckAndStageAsync(automatic: true, required: signal.Required, ct);
+    public Task<AgentUpdatePlan?> StageUpdateAsync(
+        AgentUpdateSignal signal,
+        string? campaignId,
+        string? commandId,
+        CancellationToken ct,
+        bool explicitRequest = false)
+        => AgentUpdateLocalService.CheckAndStageAsync(
+            automatic: true,
+            required: signal.Required,
+            ct,
+            bypassSchedule: explicitRequest);
 
     public Task<AgentUpdatePlan?> StageUpdateAsync(HeartbeatResponse response, string? campaignId, string? commandId, CancellationToken ct)
         => StageUpdateAsync(AgentUpdateStager.FromHeartbeat(response), campaignId, commandId, ct);
@@ -21,8 +30,11 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public Task<AgentUpdateCheckResult> CheckUpdateAsync(HeartbeatResponse response, CancellationToken ct)
         => CheckUpdateAsync(AgentUpdateStager.FromHeartbeat(response), ct);
 
-    public Task<AgentUpdateCheckResult> CheckUpdateAsync(AgentUpdateSignal signal, CancellationToken ct)
-        => AgentUpdateLocalService.CheckOnlyAsync(automatic: true, ct);
+    public Task<AgentUpdateCheckResult> CheckUpdateAsync(
+        AgentUpdateSignal signal,
+        CancellationToken ct,
+        bool explicitRequest = false)
+        => AgentUpdateLocalService.CheckOnlyAsync(automatic: true, ct, bypassSchedule: explicitRequest);
 
     public Task<bool> StageAndLaunchUpdateAsync(HeartbeatResponse response, bool requireElevation, CancellationToken ct)
         => StageAndLaunchUpdateAsync(AgentUpdateStager.FromHeartbeat(response), requireElevation, ct);

@@ -84,9 +84,12 @@ public sealed class AgentUpdateBitsDownloader
                         completed = true;
                         return;
                     case BackgroundCopyJobState.Error:
-                    case BackgroundCopyJobState.TransientError:
                     case BackgroundCopyJobState.Cancelled:
                         throw new InvalidOperationException("BITS update download failed.");
+                    case BackgroundCopyJobState.TransientError:
+                        // BITS owns transient retry scheduling. Keep polling so
+                        // the existing one-hour deadline remains the upper bound.
+                        break;
                 }
 
                 await Task.Delay(PollInterval, ct).ConfigureAwait(false);

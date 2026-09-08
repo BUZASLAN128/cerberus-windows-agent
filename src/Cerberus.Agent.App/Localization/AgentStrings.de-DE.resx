@@ -35,4 +35,5 @@
   <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Lokale Freigabe: nicht lesbar, Zugriff gesperrt</value></data>
   <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>Der laufende Dienst bestätigt diese lokale Einstellung. Die Webfreigabe ist separat.</value></data>
   <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Dienstbestätigung ausstehend oder eingeschränkt. Die gespeicherte Einstellung allein erlaubt keine Kontoaktionen.</value></data>
+  <data name="ReportLifecyclePendingDetail" xml:space="preserve"><value>Die Hintergrundberichterstattung ist nicht bestätigt. Prüfen Sie die Geräteeinrichtung, bevor Sie fortfahren.</value></data>
 </root>

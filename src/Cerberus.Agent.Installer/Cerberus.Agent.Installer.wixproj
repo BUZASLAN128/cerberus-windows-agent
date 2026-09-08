@@ -9,7 +9,8 @@
     <AgentPublishDir Condition="'$(AgentPublishDir)' == ''">$(MSBuildThisFileDirectory)..\..\out\public-release\publish</AgentPublishDir>
     <InstallerHelperPath Condition="'$(InstallerHelperPath)' == ''">$(MSBuildThisFileDirectory)Helper\bin\$(Configuration)\net8.0-windows\win-x64\publish\Cerberus.Agent.Installer.Helper.exe</InstallerHelperPath>
     <InstallerAssetBase Condition="'$(InstallerAssetBase)' == ''">Cerberus.Agent-$(Channel)-$(Version)</InstallerAssetBase>
-    <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/$(Channel)-latest/Cerberus.Agent.Bundle-$(Channel)-latest.update-manifest.v2.json</UpdateManifestUrl>
+    <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == '' and '$(Channel)' == 'stable'">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json</UpdateManifestUrl>
+    <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == '' and '$(Channel)' != 'stable'">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/$(Channel)-latest/Cerberus.Agent.Bundle-$(Channel)-latest.update-manifest.v2.json</UpdateManifestUrl>
     <UpdateManifestPublicKeyB64 Condition="'$(UpdateManifestPublicKeyB64)' == ''">IA==</UpdateManifestPublicKeyB64>
     <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</UpdateAllowedArtifactPrefixes>
     <OutputName>$(InstallerAssetBase)</OutputName>

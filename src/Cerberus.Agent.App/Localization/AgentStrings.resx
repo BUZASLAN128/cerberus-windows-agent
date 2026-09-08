@@ -150,4 +150,5 @@
   <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Local approval: unreadable, access denied</value></data>
   <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>The running service confirms this local setting. Web approval is separate.</value></data>
   <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Service confirmation pending or restricted. The saved setting alone does not permit account operations.</value></data>
+  <data name="ReportLifecyclePendingDetail" xml:space="preserve"><value>Background reporting is not confirmed. Check device setup before continuing.</value></data>
 </root>

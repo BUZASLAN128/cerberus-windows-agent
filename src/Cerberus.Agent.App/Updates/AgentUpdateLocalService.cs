@@ -69,15 +69,22 @@ internal static class AgentUpdateLocalService
         finally { OperationGate.Release(); }
     }
 
-    public static async Task<AgentUpdatePlan?> CheckAndStageAsync(bool automatic, bool required, CancellationToken ct)
+    public static async Task<AgentUpdatePlan?> CheckAndStageAsync(
+        bool automatic,
+        bool required,
+        CancellationToken ct,
+        bool bypassSchedule = false)
     {
         RequireService();
         await OperationGate.WaitAsync(ct).ConfigureAwait(false);
-        try { return await CheckAndStageOwnedAsync(automatic, required, ct).ConfigureAwait(false); }
+        try { return await CheckAndStageOwnedAsync(automatic, required, ct, bypassSchedule).ConfigureAwait(false); }
         finally { OperationGate.Release(); }
     }
 
-    public static async Task<AgentUpdateCheckResult> CheckOnlyAsync(bool automatic, CancellationToken ct)
+    public static async Task<AgentUpdateCheckResult> CheckOnlyAsync(
+        bool automatic,
+        CancellationToken ct,
+        bool bypassSchedule = false)
     {
         RequireService();
         await OperationGate.WaitAsync(ct).ConfigureAwait(false);
@@ -92,7 +99,7 @@ internal static class AgentUpdateLocalService
                 return existing is null ? AgentUpdateCheckResult.None : new(true, existing.Required, !existing.Required,
                     existing.Version, existing.Channel, existing.Reason, null, existing.ArtifactKind);
             }
-            if (automatic && active.NextCheckUtc > DateTimeOffset.UtcNow) return AgentUpdateCheckResult.None;
+            if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return AgentUpdateCheckResult.None;
             Journal.Change(before => before with
             {
                 AttemptId = null, InstallerResult = null, Phase = AgentUpdateStates.Checking,
@@ -120,7 +127,11 @@ internal static class AgentUpdateLocalService
         finally { OperationGate.Release(); }
     }
 
-    private static async Task<AgentUpdatePlan?> CheckAndStageOwnedAsync(bool automatic, bool required, CancellationToken ct)
+    private static async Task<AgentUpdatePlan?> CheckAndStageOwnedAsync(
+        bool automatic,
+        bool required,
+        CancellationToken ct,
+        bool bypassSchedule = false)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         if (automatic && !AllowsAutomatic(lifecycle))
@@ -137,7 +148,7 @@ internal static class AgentUpdateLocalService
                 });
             return ReadPlan(active);
         }
-        if (automatic && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
+        if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lock (CancellationGate) { _networkOperation = cancellation; }
         try

@@ -548,7 +548,7 @@ public sealed class AgentApiClient
     }
 
     private static bool BoundedCommandValue(string? value)
-        => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 && !value.Any(char.IsControl);
+        => !string.IsNullOrWhiteSpace(value) && value.Length <= 256 && !value.Any(char.IsControl);
 
     private async Task EnsureSuccessAsync(
         string operation,

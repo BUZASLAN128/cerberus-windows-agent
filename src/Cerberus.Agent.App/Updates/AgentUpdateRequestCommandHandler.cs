@@ -89,7 +89,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                 campaignId: campaignId,
                 commandId: commandId).ConfigureAwait(false);
 
-            var check = await coordinator.CheckUpdateAsync(signal, ct).ConfigureAwait(false);
+            var check = await coordinator.CheckUpdateAsync(signal, ct, explicitRequest: true).ConfigureAwait(false);
             if (!check.Available)
             {
                 var current = await _stateStore.WriteTransitionAsync(
@@ -120,7 +120,12 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                 return Done(available);
             }
 
-            var plan = await coordinator.StageUpdateAsync(signal, campaignId, commandId, ct).ConfigureAwait(false);
+            var plan = await coordinator.StageUpdateAsync(
+                signal,
+                campaignId,
+                commandId,
+                ct,
+                explicitRequest: true).ConfigureAwait(false);
             if (plan is null)
             {
                 var current = await _stateStore.WriteTransitionAsync(

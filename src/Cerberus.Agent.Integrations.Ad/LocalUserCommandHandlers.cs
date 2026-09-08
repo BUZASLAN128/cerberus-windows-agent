@@ -417,7 +417,7 @@ public static partial class LocalUserCommandHandlers
 
                 existing.Invoke("SetPassword", password);
                 existing.Properties["Description"].Value = ManagedDescription(payload);
-                ApplyManagedPasswordPolicy(existing, payload.EnableAccount);
+                ApplyManagedPasswordPolicy(existing, payload.EnableAccountExplicit && payload.EnableAccount);
                 existing.CommitChanges();
                 mutation.MarkNativeMutationCommitted(
                     payload.CredentialRequestId is null ? "already_exists" : "password_rotated");
@@ -445,7 +445,8 @@ public static partial class LocalUserCommandHandlers
         user.Invoke("SetPassword", generatedPassword);
         user.Properties["FullName"].Value = payload.DisplayName ?? "Cerberus managed user";
         user.Properties["Description"].Value = ManagedDescription(payload);
-        ApplyManagedPasswordPolicy(user);
+        var enableCreatedAccount = payload.EnableAccountExplicit && payload.EnableAccount;
+        ApplyManagedPasswordPolicyForNewUser(user, enableCreatedAccount);
         user.CommitChanges();
         mutation.MarkNativeMutationCommitted("created");
         if (!TryWriteManagedOwnership(payload, user, mutation))
@@ -461,7 +462,9 @@ public static partial class LocalUserCommandHandlers
                 compensationStatus: "attempted");
         }
 
-        var createdRdpLogonRight = EnsureRemoteDesktopUserMembership(payload.Username);
+        var createdRdpLogonRight = enableCreatedAccount
+            ? EnsureRemoteDesktopUserMembership(payload.Username)
+            : new RdpLogonRightResult("preserved", true);
         if (!createdRdpLogonRight.Granted)
         {
             RemoveManagedOwnership(payload.Username);
@@ -481,7 +484,7 @@ public static partial class LocalUserCommandHandlers
         return Success(
             "created",
             payload,
-            enabled: true,
+            enabled: enableCreatedAccount,
             localSid: createdSid.Value,
             localSidStatus: createdSid.Status,
             encryptedPassword: EncryptPassword(generatedPassword, payload),

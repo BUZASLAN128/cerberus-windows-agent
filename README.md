@@ -202,6 +202,13 @@ Release gate output includes:
 
 Unsigned public releases are denied. Tenant-controlled backend, update URL, signing key, channel, or artifact source is not supported.
 
+The stable workflow stages a versioned draft and requires all artifact uploads to
+succeed before publishing it as the latest stable release. New stable builds select
+the fixed v2 manifest through GitHub's `releases/latest/download` endpoint; its
+installer URL remains bound to the versioned release. An interrupted upload can
+leave a draft for operator review without replacing the previous stable release.
+The dev and preview channels retain their existing channel-specific aliases.
+
 ### Preview MSI Customer Flow
 
 Preview customer installs use the MSI asset from the mutable `preview-latest` GitHub release:

@@ -84,7 +84,14 @@ public sealed class AgentReleaseWorkflowContractTests
             "release_version validation must precede every GITHUB_OUTPUT write.");
         var latestStep = ExtractRunBlock(workflow, "Update channel latest release");
 
-        Assert.DoesNotContain("if: ${{ steps.release.outputs.channel == 'preview'", workflow, StringComparison.Ordinal);
+        var latestStepStart = workflow.IndexOf(
+            "      - name: Update channel latest release",
+            StringComparison.Ordinal);
+        var stableStepGuard = workflow.IndexOf(
+            "        if: ${{ steps.release.outputs.channel != 'stable' }}",
+            latestStepStart,
+            StringComparison.Ordinal);
+        Assert.True(latestStepStart >= 0 && stableStepGuard > latestStepStart);
         Assert.Contains("$channel = $env:CERBERUS_RELEASE_CHANNEL", latestStep);
         Assert.Contains("$setupBase = $env:CERBERUS_RELEASE_SETUP_BASE", latestStep);
         Assert.Contains("$assetBase = $env:CERBERUS_RELEASE_ASSET_BASE", latestStep);
@@ -98,13 +105,21 @@ public sealed class AgentReleaseWorkflowContractTests
         var versionedAssets = ExtractArtifactBlock(workflow, "Create GitHub release");
         Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.json", versionedAssets);
         Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.v2.json", versionedAssets);
+        Assert.Contains("Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest.update-manifest.v2.json", versionedAssets);
+        var releaseInputs = workflow[workflow.IndexOf("      - name: Create GitHub release", StringComparison.Ordinal)..];
+        Assert.Contains("artifactErrorsFailBuild: true", releaseInputs, StringComparison.Ordinal);
+        Assert.Contains("immutableCreate: ${{ steps.release.outputs.channel == 'stable' }}", releaseInputs, StringComparison.Ordinal);
 
-        foreach (var channel in new[] { "dev", "preview", "stable" })
+        // The mutable alias step is executed only for dev/preview. Stable is
+        // guarded by the workflow condition above and is intentionally not
+        // simulated with a fabricated successful process result.
+        foreach (var channel in new[] { "dev", "preview" })
         {
             var result = RunLatestReleaseBlock(channel);
             Assert.True(
                 result.ExitCode == 0,
                 result.StandardError + result.StandardOutput);
+
             Assert.Equal(2, result.Commands.Count);
             Assert.Equal(
                 new[] { "release", "delete", $"{channel}-latest", "--yes", "--cleanup-tag" },
@@ -139,6 +154,7 @@ public sealed class AgentReleaseWorkflowContractTests
         }
 
         var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
+        Assert.Contains("releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json", releaseScript);
         Assert.Contains("releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json", releaseScript);
         Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json", releaseScript);
     }

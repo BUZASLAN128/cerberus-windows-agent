@@ -232,9 +232,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _serviceStatus.Text = AgentLocalizer.Format("ServiceStatus", service.Text);
             _registeredStatus.Text = AgentLocalizer.Format("RegisteredStatus", registered ? AgentLocalizer.Get("Yes") : AgentLocalizer.Get("No"));
             _tailscaleStatus.Text = AgentLocalizer.Format("ConnectorStatus", tailscale.Text);
-            _setupComplete = registered &&
-                             service.Installed &&
-                             string.Equals(service.Text, "running", StringComparison.OrdinalIgnoreCase);
+            _setupComplete = await AgentStatus.IsSetupCompleteAsync(
+                registered, service.Installed, service.Text).ConfigureAwait(true);
             _connectDevice.Visible = !_setupComplete;
             await RefreshUpdateStateAsync().ConfigureAwait(true);
             _icon.Text = TrimTooltip($"Cerberus Agent | {service.Short} | {tailscale.Short} | reg={(registered ? "yes" : "no")}");
@@ -248,7 +247,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async Task OpenAgentAsync()
     {
         RequestHeartbeatBackoffReset("tray_opened");
-        var setupComplete = _setupComplete || await Task.Run(AgentStatus.IsSetupComplete).ConfigureAwait(true);
+        var setupComplete = await AgentStatus.IsSetupCompleteAsync().ConfigureAwait(true);
         if (!setupComplete)
         {
             LaunchSibling("Cerberus.Agent.Setup.exe");

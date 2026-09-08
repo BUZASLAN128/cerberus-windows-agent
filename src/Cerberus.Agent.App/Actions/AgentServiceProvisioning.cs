@@ -118,6 +118,7 @@ internal static class AgentServiceLocalState
         DeleteFileIfExists(Path.Combine(baseDir, "idempotency.json"));
         DeleteFileIfExists(Path.Combine(baseDir, "telemetry-offline.json"));
         DeleteDirectoryIfExists(Path.Combine(baseDir, "updates"));
+        DeleteDirectoryIfExists(AgentUpdateSecurity.DefaultPrivilegedRoot);
     }
 
     private static void DeleteFileIfExists(string path)

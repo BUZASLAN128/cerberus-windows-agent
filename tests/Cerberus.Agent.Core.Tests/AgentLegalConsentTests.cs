@@ -1,5 +1,6 @@
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Legal;
+using Cerberus.Agent.Core;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 
@@ -40,23 +41,51 @@ public sealed class AgentLegalConsentTests
     [Fact]
     public void AgentStatus_SetupCompleteRequiresRegistrationAndRunningService()
     {
+        var status = new AgentLocalControlResponse(true, "ready") { LifecycleState = "Active" };
         Assert.True(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: true,
-            serviceText: "running"));
+            serviceText: "running", status));
 
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: true,
-            serviceText: "stopped"));
+            serviceText: "stopped", status));
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: true,
             serviceInstalled: false,
-            serviceText: "running"));
+            serviceText: "running", status));
         Assert.False(AgentStatus.IsSetupCompleteFromSignals(
             registered: false,
             serviceInstalled: true,
-            serviceText: "running"));
+            serviceText: "running", status));
+    }
+
+    [Theory]
+    [InlineData("Active", true, true)]
+    [InlineData("Degraded", true, true)]
+    [InlineData("NeedsReenrollment", true, false)]
+    [InlineData("Retired", true, false)]
+    [InlineData("BlockedConfig", true, false)]
+    [InlineData("AuthSuspect", true, false)]
+    [InlineData(null, true, false)]
+    [InlineData("unknown", true, false)]
+    [InlineData("Active", false, false)]
+    public void AgentStatus_SetupReadinessRequiresConfirmedOperationalLifecycle(
+        string? lifecycle, bool success, bool expected)
+    {
+        var status = new AgentLocalControlResponse(success, "status") { LifecycleState = lifecycle };
+        Assert.Equal(expected, AgentStatus.IsSetupCompleteFromSignals(true, true, "running", status));
+        Assert.False(AgentStatus.IsSetupCompleteFromSignals(true, true, "running", null));
+    }
+
+    [Theory]
+    [InlineData("cleanup_pending")]
+    [InlineData("enrollment_proof_required")]
+    public void AgentStatus_SetupReadinessWaitsForServiceRecovery(string code)
+    {
+        var status = new AgentLocalControlResponse(true, code, LifecycleState: "Active");
+        Assert.False(AgentStatus.IsSetupCompleteFromSignals(true, true, "running", status));
     }
 
     [Fact]

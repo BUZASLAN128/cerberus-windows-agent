@@ -182,10 +182,25 @@ public static partial class LocalUserCommandHandlers
         user.Properties["UserFlags"].Value = ApplyManagedPasswordPolicyFlags(flags, enableAccount);
     }
 
+    private static void ApplyManagedPasswordPolicyForNewUser(DirectoryEntry user, bool enableAccount)
+    {
+        var flags = Convert.ToInt32(user.Properties["UserFlags"].Value ?? 0);
+        user.Properties["UserFlags"].Value = ApplyManagedPasswordPolicyFlagsForNewUser(flags, enableAccount);
+    }
+
     private static int ApplyManagedPasswordPolicyFlags(int flags, bool enableAccount)
         // Only an explicit create intent may restore a disabled account after preparation.
         // Password rotation and manifest recovery alone preserve the disabled state.
         => (enableAccount ? flags & ~AccountDisabledFlag : flags) | PasswordCannotChangeFlag | PasswordNeverExpiresFlag;
+
+    private static int ApplyManagedPasswordPolicyFlagsForNewUser(int flags, bool enableAccount)
+    {
+        // A missing account is a creation boundary: without an explicit enable
+        // intent it must remain disabled while ownership is recorded.
+        if (!enableAccount)
+            flags |= AccountDisabledFlag;
+        return ApplyManagedPasswordPolicyFlags(flags, enableAccount);
+    }
 
     private static bool IsManagedByCerberus(DirectoryEntry user, LocalUserPayload payload, bool allowLegacy = false)
     {
@@ -299,7 +314,7 @@ public static partial class LocalUserCommandHandlers
         bool existingUser,
         bool enableAccountExplicit,
         bool enableAccount)
-        => !existingUser || (enableAccountExplicit && enableAccount);
+        => enableAccountExplicit && enableAccount;
 
     private static string RemoveRemoteDesktopUserMembership(string username)
     {

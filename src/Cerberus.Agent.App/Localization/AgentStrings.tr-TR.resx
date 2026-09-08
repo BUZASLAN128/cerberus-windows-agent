@@ -150,4 +150,5 @@
   <data name="LocalUserCreateUnknown" xml:space="preserve"><value>Yerel onay: okunamıyor, izin kapalı</value></data>
   <data name="LocalUserCreateServiceConfirmed" xml:space="preserve"><value>Çalışan servis bu yerel ayarı doğruladı. Web onayı ayrıdır.</value></data>
   <data name="LocalUserCreateServicePending" xml:space="preserve"><value>Servis teyidi bekleniyor veya servis kısıtlıyor. Kaydedilmiş ayar tek başına hesap işlemlerine izin vermez.</value></data>
+  <data name="ReportLifecyclePendingDetail" xml:space="preserve"><value>Arka plan raporlaması doğrulanmadı. Devam etmeden önce cihaz kurulumunu kontrol edin.</value></data>
 </root>

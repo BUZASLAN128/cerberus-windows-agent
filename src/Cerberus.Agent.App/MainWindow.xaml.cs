@@ -25,7 +25,6 @@ public partial class MainWindow : Window
     private DateTimeOffset _nextRegistrationReconcileAt = DateTimeOffset.MinValue;
     private DateTimeOffset _localPolicyChangedAtUtc = DateTimeOffset.MinValue;
     private RuntimeUiConfig _config;
-    private bool _setupComplete;
 
     internal bool IsBusy => _busy;
 
@@ -220,8 +219,7 @@ public partial class MainWindow : Window
                     Log("Stored device registration is inactive in the portal; local registration was cleared.");
                 }
             }
-            var setupComplete = registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase);
-            _setupComplete = setupComplete;
+            var setupComplete = await AgentStatus.IsSetupCompleteAsync(registered, svc.Installed, svc.Text);
 
             var serviceText = FormatServiceStatus(svc.Text);
             var connectorText = FormatConnectorStatus(ts.Text);
@@ -259,7 +257,7 @@ public partial class MainWindow : Window
             LocalUserCreateToggleBtn.IsEnabled = !_busy;
 
             var cfgOk = AgentOnboardingFlow.IsConfigReady(_config);
-            var statusReport = BuildStatusReport(registered, svc, ts);
+            var statusReport = BuildStatusReport(registered, svc, ts, setupComplete);
             ReadinessValue.Text = AgentLocalizer.Get("StatusReport");
             ReadinessDetail.Text = statusReport.Detail;
             ReadinessHint.Text = statusReport.Hint;
@@ -276,6 +274,10 @@ public partial class MainWindow : Window
             if (setupComplete)
             {
                 OnboardHint.Text = AgentLocalizer.Get("StatusReportReadyHint");
+            }
+            else if (registered && svc.Installed && string.Equals(svc.Text, "running", StringComparison.OrdinalIgnoreCase))
+            {
+                OnboardHint.Text = AgentLocalizer.Get("ReportRegistrationMissingHint");
             }
             else if (registered && !svc.Installed)
             {
@@ -326,24 +328,14 @@ public partial class MainWindow : Window
     {
         if (_busy)
             return;
-        if (_setupComplete || AgentStatus.IsSetupComplete())
-        {
-            Hide();
-            return;
-        }
-
-        var currentService = AgentStatus.GetService();
-        if (AgentStatus.IsRegistered() &&
-            currentService.Installed &&
-            string.Equals(currentService.Text, "running", StringComparison.OrdinalIgnoreCase))
-        {
-            Hide();
-            return;
-        }
-
         _busy = true;
         try
         {
+            if (await AgentStatus.IsSetupCompleteAsync())
+            {
+                Hide();
+                return;
+            }
             await RefreshAsync();
             if (!LegalConsentPrompt.EnsureUserConsent(this, "sign-in and device registration"))
             {
@@ -387,7 +379,8 @@ public partial class MainWindow : Window
     private static StatusReport BuildStatusReport(
         bool registered,
         (string Text, string Short, bool CanStart, bool CanStop, bool Installed) service,
-        (string Text, string Short) connector)
+        (string Text, string Short) connector,
+        bool setupComplete)
     {
         if (!registered)
         {
@@ -421,6 +414,14 @@ public partial class MainWindow : Window
                 AgentLocalizer.Get("ReportServiceChangingDetail"),
                 AgentLocalizer.Get("ReportServiceChangingHint"),
                 "info");
+        }
+
+        if (!setupComplete)
+        {
+            return new StatusReport(
+                AgentLocalizer.Get("ReportLifecyclePendingDetail"),
+                AgentLocalizer.Get("ReportRegistrationMissingHint"),
+                "warning");
         }
 
         var connectorKey = NormalizeStatusKey(connector.Text);
