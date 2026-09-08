@@ -316,7 +316,7 @@ public static class AgentLifecycleStateStoreExtensions
             LastRequestId = requestId,
             NextAttemptUtc = nextAttemptUtc,
             GenericAuthFailureCount = genericAuthFailureCount ?? current.GenericAuthFailureCount,
-            QuiescenceComplete = AgentLifecycleStates.IsDormant(state) ? false : current.QuiescenceComplete,
+            QuiescenceComplete = !AgentLifecycleStates.IsDormant(state) && current.QuiescenceComplete,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
         };
         next = AgentLifecycleStatePolicy.Normalize(next);
@@ -414,7 +414,7 @@ public sealed class AgentLifecycleController
             LastRequestId = failure.RequestId ?? current.LastRequestId,
             NextAttemptUtc = current.NextAttemptUtc,
             GenericAuthFailureCount = authFailures,
-            QuiescenceComplete = AgentLifecycleStates.IsDormant(nextState) ? false : current.QuiescenceComplete,
+            QuiescenceComplete = !AgentLifecycleStates.IsDormant(nextState) && current.QuiescenceComplete,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
         };
         next = AgentLifecycleStatePolicy.Normalize(next);

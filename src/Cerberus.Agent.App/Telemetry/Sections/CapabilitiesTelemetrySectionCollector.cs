@@ -126,7 +126,8 @@ internal sealed class CapabilitiesTelemetrySectionCollector : IWindowsTelemetryS
         {
             return _localUserPolicyResolver();
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or
+            System.Security.SecurityException or PlatformNotSupportedException)
         {
             return LocalUserCommandPolicy.UnknownPolicy;
         }

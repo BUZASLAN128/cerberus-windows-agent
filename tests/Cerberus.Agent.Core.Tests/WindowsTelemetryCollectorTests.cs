@@ -117,6 +117,39 @@ public sealed class WindowsTelemetryCollectorTests
     }
 
     [Fact]
+    public async Task CapabilitiesTelemetry_ExpectedPolicyReadFailureReportsUnknownAndOmitsCreate()
+    {
+        var collector = new CapabilitiesTelemetrySectionCollector(
+            () => throw new UnauthorizedAccessException("registry denied"));
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(
+            await collector.CollectAsync(TelemetryContext(), CancellationToken.None)));
+
+        Assert.Equal("unknown", document.RootElement
+            .GetProperty("local_user_create_policy").GetProperty("state").GetString());
+        Assert.DoesNotContain(
+            "windows.local_user.create",
+            document.RootElement.GetProperty("mutation").GetRawText());
+    }
+
+    [Fact]
+    public void CapabilitiesTelemetry_UnexpectedPolicyResolverFailurePropagates()
+    {
+        var expected = new InvalidOperationException("resolver contract failed");
+        var calls = 0;
+        var collector = new CapabilitiesTelemetrySectionCollector(() =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                return LocalUserCommandPolicy.CreateDisabled;
+            throw expected;
+        });
+
+        var actual = Assert.Throws<InvalidOperationException>(() => collector.IsSnapshotRefreshRequired());
+
+        Assert.Same(expected, actual);
+    }
+
+    [Fact]
     public async Task CapabilitiesTelemetry_ServiceWriterReceivesEffectiveObservation()
     {
         LocalUserCommandPolicy? observedPolicy = null;

@@ -101,14 +101,16 @@ public static class ScopedAdCommandHandlers
                     _ => new AdOperationResult(false, "ad_command_invalid")
                 };
                 var expectedCode = payload.Phase switch { "prepare" => "ad_prepared", "activate" => "ad_activated", _ => Type.EndsWith("disable", StringComparison.Ordinal) ? "ad_disabled" : "ad_deleted" };
-                if (result.Success && (result.Code != expectedCode || result.Identity is null ||
-                    payload.Phase == "prepare" && result.PreparedCredential?.Request != payload.CredentialRequest))
+                if (result.Success && (result.Code != expectedCode || result.Identity is null))
                     return Failure(payload, "ad_outcome_uncertain");
                 var verify = PostVerify(payload, SafeCode(result.Code), result.Identity);
                 if (result.Success && payload.Phase == "prepare")
                 {
-                    verify["credential_request_id"] = result.PreparedCredential!.Request.CredentialRequestId;
-                    verify["rdp_credential"] = result.PreparedCredential.Envelope;
+                    if (result.PreparedCredential is not { } preparedCredential ||
+                        preparedCredential.Request != payload.CredentialRequest)
+                        return Failure(payload, "ad_outcome_uncertain");
+                    verify["credential_request_id"] = preparedCredential.Request.CredentialRequestId;
+                    verify["rdp_credential"] = preparedCredential.Envelope;
                 }
                 return new(result.Success ? "DONE" : "FAILED", result.Success ? 0 : 1, null,
                     result.Success ? null : "AD operation was not completed.", verify);

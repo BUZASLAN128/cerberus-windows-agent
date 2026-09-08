@@ -38,9 +38,10 @@ public sealed class AgentRegistrarTests
         await registrar.RegisterAsync("oauth", selected, "fp", "1.2.3", "build", "dev", cts.Token,
             replaceExisting: explicitReenrollment);
 
-        Assert.Equal(selected, secrets.LastSaved!.Value.BackendUrl);
-        Assert.True(AgentBuildConfig.SameEndpoint(selected, secrets.LastSaved.Value.BackendUrl));
-        Assert.False(AgentBuildConfig.SameEndpoint("https://foreign.example", secrets.LastSaved.Value.BackendUrl));
+        var saved = Assert.NotNull(secrets.LastSaved);
+        Assert.Equal(selected, saved.BackendUrl);
+        Assert.True(AgentBuildConfig.SameEndpoint(selected, saved.BackendUrl));
+        Assert.False(AgentBuildConfig.SameEndpoint("https://foreign.example", saved.BackendUrl));
     }
 
     [Fact]
