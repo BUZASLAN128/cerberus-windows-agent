@@ -24,8 +24,11 @@ internal static class Program
         if (answer != DialogResult.OK)
             return 1;
 
-        TryDeactivateAndClearLocalRegistration();
         try { ServiceInstaller.StopOrThrow(); } catch { }
+        // Stop the service before the elevated cleanup can enumerate all-user
+        // BITS jobs or remove the protected update tree. If SCM did not stop it,
+        // ClearMachineStateAsync fails closed and retains update evidence.
+        TryDeactivateAndClearLocalRegistration();
 
         var productCode = ReadProductCode();
         if (string.IsNullOrWhiteSpace(productCode))

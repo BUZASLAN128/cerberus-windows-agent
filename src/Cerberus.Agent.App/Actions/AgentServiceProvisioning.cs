@@ -112,6 +112,16 @@ internal static class AgentServiceLocalState
 {
     public static async Task ClearMachineStateAsync(CancellationToken ct)
     {
+        // The elevated removal caller runs after SCM has stopped the agent. Keep
+        // this guard local as well so a failed stop cannot race a service-created
+        // BITS job while the protected update tree is being removed.
+        Cerberus.Agent.App.ServiceInstaller.RequireStoppedOrAbsent();
+
+        // Admin removal cannot use the service's caller-owned EnumJobs(0)
+        // inventory. The all-users path remains narrowly scoped to SYSTEM jobs
+        // whose protected attempt marker, receipt and destination all bind them
+        // to this update root; any ambiguity fails before state deletion.
+        AgentUpdateBitsDownloader.QuiesceForRemoval(AgentUpdateSecurity.DefaultPrivilegedRoot);
         await new DpapiSecretStore(SecretStoreScope.Machine).ClearAsync(ct).ConfigureAwait(false);
 
         var baseDir = DpapiSecretStore.GetDefaultBaseDir(SecretStoreScope.Machine);

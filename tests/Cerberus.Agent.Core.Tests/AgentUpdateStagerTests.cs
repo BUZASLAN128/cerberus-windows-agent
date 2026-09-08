@@ -454,6 +454,111 @@ public sealed class AgentUpdateStagerTests
         Assert.Equal("Direct update application is disabled.", ex.Message);
     }
 
+    [Fact]
+    public async Task GetTrustedManifestIdentityAsync_BindsPlanToExactSignedManifest()
+    {
+        using var rsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(rsa, hash);
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-identity-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var http = new HttpClient(new StaticHandler(request =>
+                new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json")));
+            var stager = new AgentUpdateStager(
+                http,
+                new AgentUpdateTrust(
+                    ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
+                    ExpectedChannel: "stable",
+                    AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                    CurrentVersion: "1.1.0"),
+                root);
+
+            var identity = await stager.GetTrustedManifestIdentityAsync(
+                new AgentUpdateSignal(
+                    Required: true,
+                    Recommended: false,
+                    ManifestUrl: "https://releases.cerberus.local/manifest.json",
+                    Reason: "blocked_version",
+                    Channel: "stable"),
+                CancellationToken.None);
+
+            Assert.Equal(manifest.Sequence, identity.Sequence);
+            Assert.Equal(AgentUpdateManifestValidator.Digest(manifest), identity.ManifestDigest);
+
+            var plan = new AgentUpdatePlan(
+                ArtifactKind: manifest.ArtifactKind,
+                Version: manifest.Version,
+                Channel: manifest.Channel,
+                ArtifactPath: "unused",
+                Sha256: manifest.Sha256,
+                StagedAtUtc: manifest.ReleasedAtUtc,
+                Reason: "test",
+                Sequence: identity.Sequence,
+                ManifestDigest: identity.ManifestDigest);
+
+            Assert.True(identity.Matches(plan));
+            var changedDigest = identity.ManifestDigest[0] == 'a'
+                ? "b" + identity.ManifestDigest[1..]
+                : "a" + identity.ManifestDigest[1..];
+            Assert.False(identity.Matches(plan with { ManifestDigest = changedDigest }));
+            Assert.False(identity.Matches(plan with { Sequence = identity.Sequence + 1 }));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetTrustedManifestIdentityAsync_RejectsManifestSignedByUntrustedKey()
+    {
+        using var trustedRsa = RSA.Create(2048);
+        using var untrustedRsa = RSA.Create(2048);
+        var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        var manifest = SignedManifest(untrustedRsa, hash);
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-identity-signer-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var http = new HttpClient(new StaticHandler(_ =>
+                new StringContent(
+                    JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    Encoding.UTF8,
+                    "application/json")));
+            var stager = new AgentUpdateStager(
+                http,
+                new AgentUpdateTrust(
+                    ManifestPublicKeyPems: new[] { PublicKeyPem(trustedRsa) },
+                    ExpectedChannel: "stable",
+                    AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
+                    CurrentVersion: "1.1.0"),
+                root);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                stager.GetTrustedManifestIdentityAsync(
+                    new AgentUpdateSignal(
+                        Required: true,
+                        Recommended: false,
+                        ManifestUrl: "https://releases.cerberus.local/manifest.json",
+                        Reason: "blocked_version",
+                        Channel: "stable"),
+                    CancellationToken.None));
+
+            Assert.Contains("signature invalid", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static HeartbeatResponse UpdateResponse()
         => new(
             PendingCommands: Array.Empty<AgentCommand>(),

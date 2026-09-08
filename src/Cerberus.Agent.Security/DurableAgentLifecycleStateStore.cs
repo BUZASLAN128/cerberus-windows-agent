@@ -40,6 +40,28 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             "Privileged",
             "lifecycle-state.json");
 
+    /// <summary>
+    /// Materializes the initial lifecycle record before service readiness. A
+    /// missing file is the one allowed bootstrap case; an existing corrupt or
+    /// terminal record is returned unchanged so normal fail-closed handling and
+    /// generation/recovery semantics remain authoritative.
+    /// </summary>
+    public async Task<AgentLifecycleSnapshot> EnsureInitializedAsync(CancellationToken ct)
+    {
+        if (_production && (!OperatingSystem.IsWindows() || !WindowsIdentity.GetCurrent().IsSystem))
+            throw new UnauthorizedAccessException("Only the agent service can initialize machine lifecycle state.");
+
+        await using var processLock = await AcquireProcessLockAsync(ct).ConfigureAwait(false);
+        var current = await LoadAsync(ct).ConfigureAwait(false);
+        if (File.Exists(_path))
+            return current;
+
+        // WriteLockedAsync uses the same validated path, durable flush and
+        // replace semantics as every subsequent lifecycle transition.
+        return await WriteLockedAsync(AgentLifecycleStatePolicy.Normalize(new AgentLifecycleSnapshot()), ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task<AgentLifecycleSnapshot> LoadAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);

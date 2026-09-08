@@ -2,6 +2,8 @@ using System.Net;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
@@ -243,6 +245,86 @@ public sealed class AgentLifecycleControlTests
             Assert.Equal(next.NextAttemptUtc, persisted.NextAttemptUtc);
             Assert.Equal(initial.Generation, persisted.Generation);
             Assert.Equal(initial.Revision + 1, persisted.Revision);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_MaterializesDefaultAndIsByteIdempotent()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "lifecycle.json");
+        try
+        {
+            var store = new DurableAgentLifecycleStateStore(path);
+            Assert.False(File.Exists(path));
+
+            var first = await store.EnsureInitializedAsync(default);
+            var firstBytes = await File.ReadAllBytesAsync(path);
+            var second = await store.EnsureInitializedAsync(default);
+            var secondBytes = await File.ReadAllBytesAsync(path);
+
+            Assert.Equal(AgentLifecycleState.Active, first.State);
+            Assert.Equal(0L, first.Generation);
+            Assert.Equal(0L, first.Revision);
+            Assert.Equal(first, second);
+            Assert.Equal(firstBytes, secondBytes);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_PreservesCorruptStateAndFailsClosed()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "lifecycle.json");
+        try
+        {
+            var store = new DurableAgentLifecycleStateStore(path);
+            var corrupt = Encoding.UTF8.GetBytes("{broken");
+            await File.WriteAllBytesAsync(path, corrupt);
+
+            var snapshot = await store.EnsureInitializedAsync(default);
+
+            Assert.Equal(AgentLifecycleState.BlockedConfig, snapshot.State);
+            Assert.Equal("lifecycle_state_invalid", snapshot.ReasonCode);
+            Assert.False(snapshot.QuiescenceComplete);
+            Assert.Equal(corrupt, await File.ReadAllBytesAsync(path));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task EnsureInitializedAsync_PreservesExistingDormantStateAndBytes()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "lifecycle.json");
+        try
+        {
+            var store = new DurableAgentLifecycleStateStore(path);
+            var initial = await store.EnsureInitializedAsync(default);
+            var payload = JsonNode.Parse(await File.ReadAllTextAsync(path))?.AsObject()
+                ?? throw new InvalidOperationException("The initialized lifecycle payload was not an object.");
+            payload["state"] = AgentLifecycleState.BlockedConfig.ToString();
+            payload["reason_code"] = "agent_config_mismatch";
+            payload["quiescence_complete"] = false;
+            payload["generation"] = initial.Generation + 1;
+            payload["revision"] = initial.Revision + 1;
+            var options = new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true };
+            await File.WriteAllTextAsync(path, payload.ToJsonString(options), Encoding.UTF8);
+            var before = await File.ReadAllBytesAsync(path);
+
+            var restarted = new DurableAgentLifecycleStateStore(path);
+            var loaded = await restarted.LoadAsync(default);
+            var snapshot = await restarted.EnsureInitializedAsync(default);
+
+            Assert.Equal(AgentLifecycleState.BlockedConfig, loaded.State);
+            Assert.Equal("agent_config_mismatch", loaded.ReasonCode);
+            Assert.Equal(initial.Generation + 1, loaded.Generation);
+            Assert.Equal(initial.Revision + 1, loaded.Revision);
+            Assert.False(loaded.QuiescenceComplete);
+            Assert.Equal(loaded, snapshot);
+            Assert.Equal(before, await File.ReadAllBytesAsync(path));
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
     }

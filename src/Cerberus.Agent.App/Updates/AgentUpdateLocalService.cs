@@ -268,14 +268,13 @@ internal static class AgentUpdateLocalService
         var active = Journal.Read();
         if (active.HasUnfinishedAttempt)
         {
-            if (required && !active.Required && active.Phase == AgentUpdateStates.AwaitingConsent)
-                Journal.Change(before => before with
-                {
-                    Required = true,
-                    ApplyNotBeforeUtc = DateTimeOffset.UtcNow.Add(AgentUpdateJournalStore.Offset(
-                        before.ScheduleSeed + ":rollout:" + before.AttemptId, TimeSpan.FromHours(24))),
-                });
-            return ReadPlan(active);
+            var existingPlan = await ReconcileActiveAttemptAsync(
+                active, lifecycle, automatic, required, ct).ConfigureAwait(false);
+            if (existingPlan is not null)
+                return existingPlan;
+            // The old pre-install attempt was durably blocked. Re-read so its
+            // former schedule cannot suppress staging of the current release.
+            active = Journal.Read();
         }
         if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
         var operationStart = active;
@@ -338,6 +337,104 @@ internal static class AgentUpdateLocalService
         {
             await ReportFailureAsync(ex).ConfigureAwait(false);
             throw;
+        }
+        finally
+        {
+            lock (CancellationGate)
+                if (ReferenceEquals(_networkOperation, cancellation)) _networkOperation = null;
+        }
+    }
+
+    private static async Task<AgentUpdatePlan?> ReconcileActiveAttemptAsync(
+        AgentUpdateJournal active,
+        AgentLifecycleSnapshot lifecycle,
+        bool automatic,
+        bool required,
+        CancellationToken callerToken)
+    {
+        var existing = ReadPlan(active) ?? throw new InvalidOperationException("Active update plan is missing.");
+
+        // A launch/install/recovery state is protected by the launch fence. It is
+        // never replaced based on a later manifest.
+        if (active.MayHaveStartedInstallation)
+            return existing;
+
+        var authorizationChanged = false;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
+        lock (CancellationGate) { _networkOperation = cancellation; }
+        try
+        {
+            using var http = new HttpClient(new HttpClientHandler { MaxAutomaticRedirections = 5 })
+            {
+                Timeout = TimeSpan.FromSeconds(30),
+            };
+            var trust = AgentUpdateTrustFactory.BuildTrust();
+            var signal = new AgentUpdateSignal(
+                required,
+                !required,
+                trust.ConfiguredManifestUrl,
+                "service_update_check",
+                trust.ExpectedChannel);
+            var currentIdentity = await new AgentUpdateStager(http, trust, Root)
+                .GetTrustedManifestIdentityAsync(signal, cancellation.Token)
+                .ConfigureAwait(false);
+            var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
+            if (latestLifecycle.Generation != lifecycle.Generation ||
+                (automatic && !AllowsAutomatic(latestLifecycle)))
+            {
+                authorizationChanged = true;
+                cancellation.Cancel();
+                throw new IntentionalUpdateCancellationException(
+                    "Update authorization changed.", cancellation.Token);
+            }
+
+            if (!currentIdentity.Matches(existing))
+            {
+                // Retain the old protected attempt and artifact as audit / recovery
+                // evidence. A concurrent launch crossing the fence wins and must
+                // never be invalidated by this reconciliation.
+                var reconciled = Journal.ChangeAttempt(existing.AttemptId!, before =>
+                    before.MayHaveStartedInstallation
+                        ? before
+                        : before with
+                        {
+                            Phase = AgentUpdateStates.Blocked,
+                            NextRetryUtc = null,
+                            ApplyNotBeforeUtc = null,
+                            NextCheckUtc = null,
+                        });
+                if (reconciled.MayHaveStartedInstallation)
+                    return ReadPlan(reconciled);
+
+                await ProjectAsync(cancellation.Token).ConfigureAwait(false);
+                return null;
+            }
+
+            var current = Journal.Read();
+            if (current.AttemptId != existing.AttemptId || current.MayHaveStartedInstallation)
+                return ReadPlan(current);
+            if (required && !current.Required && current.Phase == AgentUpdateStates.AwaitingConsent)
+                Journal.ChangeAttempt(existing.AttemptId!, before => before.LifecycleGeneration == latestLifecycle.Generation
+                    ? before with
+                    {
+                        Required = true,
+                        ApplyNotBeforeUtc = DateTimeOffset.UtcNow.Add(AgentUpdateJournalStore.Offset(
+                            before.ScheduleSeed + ":rollout:" + before.AttemptId, TimeSpan.FromHours(24))),
+                    }
+                    : before);
+            return ReadPlan(Journal.Read());
+        }
+        catch (OperationCanceledException ex) when (ex is IntentionalUpdateCancellationException ||
+            IsIntentionalCancellation(ex, callerToken, cancellation.Token, authorizationChanged))
+        {
+            // Leave the existing pre-install transaction untouched. The caller
+            // can retry it after cancellation/authorization recovery, while no
+            // required-policy mutation can escape this linked operation.
+            throw ex is IntentionalUpdateCancellationException intentional
+                ? intentional
+                : new IntentionalUpdateCancellationException(
+                    ex.Message,
+                    CancellationTokenFor(callerToken, cancellation.Token));
         }
         finally
         {

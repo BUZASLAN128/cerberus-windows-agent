@@ -45,6 +45,15 @@ public sealed record AgentUpdatePlan(
     int RetryCount = 0,
     string? ManifestDigest = null);
 
+/// <summary>Identity of the currently trusted signed manifest, independent of its artifact.</summary>
+public sealed record AgentUpdateManifestIdentity(long Sequence, string ManifestDigest)
+{
+    public bool Matches(AgentUpdatePlan plan)
+        => plan.Sequence == Sequence &&
+           !string.IsNullOrWhiteSpace(plan.ManifestDigest) &&
+           string.Equals(plan.ManifestDigest, ManifestDigest, StringComparison.OrdinalIgnoreCase);
+}
+
 public sealed record AgentUpdateCheckResult(
     bool Available,
     bool Required,
@@ -136,6 +145,24 @@ public sealed class AgentUpdateStager
             Reason: signal.Reason,
             ManifestUrl: signal.ManifestUrl,
             ArtifactKind: manifest.ArtifactKind);
+    }
+
+    /// <summary>
+    /// Fetches and validates the configured signed manifest without downloading its
+    /// artifact. Callers use this identity to decide whether a pre-install attempt
+    /// can be resumed; version and channel alone are not release identity.
+    /// </summary>
+    public async Task<AgentUpdateManifestIdentity> GetTrustedManifestIdentityAsync(
+        AgentUpdateSignal signal,
+        CancellationToken ct)
+    {
+        if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
+            throw new InvalidOperationException("Only the installed agent service may inspect updates.");
+
+        var (manifest, _) = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        return new AgentUpdateManifestIdentity(
+            manifest.Sequence,
+            AgentUpdateManifestValidator.Digest(manifest));
     }
 
     public async Task<AgentUpdatePlan?> StageAsync(HeartbeatResponse response, CancellationToken ct)
