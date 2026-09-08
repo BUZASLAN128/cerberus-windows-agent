@@ -48,6 +48,11 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         }
         catch (Exception ex)
         {
+            var preserved = await AgentUpdateLocalService.ProjectPreservedAttemptAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            if (preserved is not null)
+                return Failed(ex.Message, preserved);
+
             var failed = await _stateStore.WriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 _currentVersion,
@@ -156,9 +161,32 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                 artifactSha256: plan.Sha256).ConfigureAwait(false);
             return Done(staged);
         }
+        catch (AgentUpdateReconciliationDeferredException ex)
+        {
+            // The service already committed the preserved attempt. Keep the
+            // command's FAILED contract while returning journal-derived state.
+            var projected = await AgentUpdateLocalService.ProjectCurrentStateAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            return Failed(ex.Message, projected);
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Cancellation must not overwrite a still-authoritative attempt
+            // with a synthetic Failed projection.
+            var preserved = await AgentUpdateLocalService.ProjectPreservedAttemptAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            if (preserved is not null)
+                return Failed(ex.Message, preserved);
+            throw;
+        }
         catch (Exception ex)
         {
             _log.Warn($"Agent update request failed: {ex.GetType().Name}: {ex.Message}");
+            var preserved = await AgentUpdateLocalService.ProjectPreservedAttemptAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            if (preserved is not null)
+                return Failed(ex.Message, preserved);
+
             var failed = await _stateStore.WriteTransitionAsync(
                 AgentUpdateStates.Failed,
                 _currentVersion,

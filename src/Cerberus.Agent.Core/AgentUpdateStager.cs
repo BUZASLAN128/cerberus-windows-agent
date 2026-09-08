@@ -199,7 +199,7 @@ public sealed class AgentUpdateStager
                 AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
                 RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
                 InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
-                InstallationBootId = null,
+                InstallationBootId = null, ReconciliationSnapshot = null,
             });
         try
         {

@@ -42,7 +42,19 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
     public async Task<bool> StageAndLaunchUpdateAsync(AgentUpdateSignal signal, bool requireElevation, CancellationToken ct)
     {
         // Server requests may stage and schedule policy; they are never local UI consent.
-        return await AgentUpdateLocalService.CheckAndStageAsync(automatic: true, required: signal.Required, ct).ConfigureAwait(false) is not null;
+        try
+        {
+            return await AgentUpdateLocalService.CheckAndStageAsync(
+                automatic: true,
+                required: signal.Required,
+                ct).ConfigureAwait(false) is not null;
+        }
+        catch (AgentUpdateReconciliationDeferredException)
+        {
+            // The preserved attempt has already been durably projected; a
+            // deferred verification is not a successful stage/launch result.
+            return false;
+        }
     }
 
     internal static string ResolveUpdaterPath()

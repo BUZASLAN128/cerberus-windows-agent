@@ -4,6 +4,20 @@ using System.Text.Json;
 
 namespace Cerberus.Agent.Core;
 
+/// <summary>
+/// Internal journal data used while a staged attempt awaits trusted manifest
+/// identity verification. It is not a public update-state protocol.
+/// </summary>
+public sealed record AgentUpdateReconciliationSnapshot(
+    string Phase,
+    long LifecycleGeneration,
+    bool Automatic,
+    bool Required,
+    DateTimeOffset? ApplyNotBeforeUtc,
+    int RetryCount,
+    DateTimeOffset? NextRetryUtc,
+    DateTimeOffset? NextCheckUtc);
+
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
 {
@@ -25,6 +39,7 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? InstallerStartedUtc { get; init; }
     public string? InstallationBootId { get; init; }
     public AgentUpdateInstallerResult? InstallerResult { get; init; }
+    public AgentUpdateReconciliationSnapshot? ReconciliationSnapshot { get; init; }
     public long HealthyInstalledSequence { get; init; }
     public string? HealthyInstalledVersion { get; init; }
 
@@ -54,10 +69,18 @@ public sealed class AgentUpdateJournalStore
         if (value.SchemaVersion != "agent.update.journal.v1" || value.Revision < 0 ||
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
-            (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)))
+            (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
+            !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");
         return value;
     }
+
+    private static bool ValidReconciliationSnapshot(AgentUpdateReconciliationSnapshot? snapshot)
+        => snapshot is null ||
+           (snapshot.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
+               AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy or AgentUpdateStates.Available) &&
+           snapshot.LifecycleGeneration >= 0 &&
+           snapshot.RetryCount is >= 0 and <= 3;
 
     private static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or

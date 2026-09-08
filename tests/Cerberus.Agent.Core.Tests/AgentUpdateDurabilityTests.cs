@@ -300,6 +300,240 @@ public sealed class AgentUpdateDurabilityTests
         Assert.True(transitioned.NextCheckUtc <= DateTimeOffset.UtcNow);
     }
 
+    [Theory]
+    [InlineData(AgentUpdateStates.Checking)]
+    [InlineData(AgentUpdateStates.Downloading)]
+    [InlineData(AgentUpdateStates.Staged)]
+    [InlineData(AgentUpdateStates.AwaitingConsent)]
+    [InlineData(AgentUpdateStates.RetryableBusy)]
+    public void ReconciliationFailure_BlocksPreInstallAttemptAndPreservesRequiredEvidence(string phase)
+    {
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var installerResult = AgentUpdateInstallerResult.Failure(new Exception("staged evidence"));
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = "reconcile-attempt",
+            Phase = phase,
+            Automatic = true,
+            Required = false,
+            LifecycleGeneration = 41,
+            ApplyNotBeforeUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+            RetryCount = 2,
+            NextRetryUtc = DateTimeOffset.Parse("2026-09-09T01:00:00Z"),
+            RunnerProcessId = 123,
+            RunnerStartedUtc = DateTimeOffset.Parse("2026-09-08T10:00:00Z"),
+            InstallerProcessId = 456,
+            InstallerStartedUtc = DateTimeOffset.Parse("2026-09-08T10:01:00Z"),
+            InstallationBootId = "boot-41",
+            InstallerResult = installerResult,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+
+        var transitioned = AgentUpdateLocalService.TransitionReconciliationFailure(
+            current, retryAt, required: true);
+
+        Assert.Equal(AgentUpdateStates.Blocked, transitioned.Phase);
+        Assert.Equal(current.AttemptId, transitioned.AttemptId);
+        Assert.Equal(current.Automatic, transitioned.Automatic);
+        Assert.True(transitioned.Required);
+        Assert.Equal(current.LifecycleGeneration, transitioned.LifecycleGeneration);
+        Assert.Equal(current.RunnerProcessId, transitioned.RunnerProcessId);
+        Assert.Equal(current.RunnerStartedUtc, transitioned.RunnerStartedUtc);
+        Assert.Equal(current.InstallerProcessId, transitioned.InstallerProcessId);
+        Assert.Equal(current.InstallerStartedUtc, transitioned.InstallerStartedUtc);
+        Assert.Equal(current.InstallationBootId, transitioned.InstallationBootId);
+        Assert.Equal(installerResult, transitioned.InstallerResult);
+        Assert.Null(transitioned.ApplyNotBeforeUtc);
+        Assert.Null(transitioned.NextRetryUtc);
+        Assert.Equal(retryAt, transitioned.NextCheckUtc);
+        Assert.False(transitioned.HasUnfinishedAttempt);
+        Assert.False(transitioned.MayHaveStartedInstallation);
+        Assert.False(AgentUpdateStates.CanApply(transitioned.Phase));
+
+        var preservedRequired = AgentUpdateLocalService.TransitionReconciliationFailure(
+            current with { Required = true }, retryAt, required: false);
+        Assert.True(preservedRequired.Required);
+    }
+
+    [Theory]
+    [InlineData("launch_requested")]
+    [InlineData("install_may_have_started")]
+    [InlineData(AgentUpdateStates.Installing)]
+    [InlineData(AgentUpdateStates.HealthPending)]
+    [InlineData(AgentUpdateStates.PendingReboot)]
+    [InlineData(AgentUpdateStates.RecoveryRequired)]
+    [InlineData(AgentUpdateStates.Installed)]
+    [InlineData(AgentUpdateStates.Failed)]
+    [InlineData(AgentUpdateStates.Blocked)]
+    [InlineData(AgentUpdateStates.Quarantined)]
+    public void ReconciliationFailure_PreservesLaunchFenceAndTerminalEvidence(string phase)
+    {
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = "protected-attempt",
+            Phase = phase,
+            Automatic = true,
+            Required = true,
+            LifecycleGeneration = 42,
+            ApplyNotBeforeUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+            RetryCount = 1,
+            NextRetryUtc = DateTimeOffset.Parse("2026-09-09T01:00:00Z"),
+            InstallerResult = AgentUpdateInstallerResult.Failure(new Exception("terminal evidence")),
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+
+        var transitioned = AgentUpdateLocalService.TransitionReconciliationFailure(
+            current, DateTimeOffset.Parse("2026-09-08T12:34:56Z"));
+
+        Assert.Equal(current, transitioned);
+    }
+
+    [Fact]
+    public void ReconciliationDeferred_PreservesDueRequiredRolloutUntilSameIdentityIsVerified()
+    {
+        var rolloutDue = DateTimeOffset.Parse("2026-09-08T10:00:00Z");
+        var priorCheck = DateTimeOffset.Parse("2026-09-10T00:00:00Z");
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = "due-required-attempt",
+            Phase = AgentUpdateStates.AwaitingConsent,
+            Automatic = true,
+            Required = true,
+            LifecycleGeneration = 41,
+            ApplyNotBeforeUtc = rolloutDue,
+            RetryCount = 1,
+            NextRetryUtc = null,
+            NextCheckUtc = priorCheck,
+        };
+
+        var deferred = AgentUpdateLocalService.TransitionReconciliationDeferred(
+            current, DateTimeOffset.Parse("2026-09-08T10:05:00Z"));
+
+        Assert.Equal(AgentUpdateStates.Blocked, deferred.Phase);
+        Assert.True(deferred.Required);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-08T10:05:00Z"), deferred.NextCheckUtc);
+        Assert.Equal(current.ApplyNotBeforeUtc, deferred.ApplyNotBeforeUtc);
+        Assert.Equal(current.NextRetryUtc, deferred.NextRetryUtc);
+        Assert.Equal(current.RetryCount, deferred.RetryCount);
+        Assert.NotNull(deferred.ReconciliationSnapshot);
+        Assert.Equal(current.Phase, deferred.ReconciliationSnapshot!.Phase);
+        Assert.Equal(current.ApplyNotBeforeUtc, deferred.ReconciliationSnapshot.ApplyNotBeforeUtc);
+        Assert.Equal(current.NextCheckUtc, deferred.ReconciliationSnapshot.NextCheckUtc);
+
+        var restored = AgentUpdateLocalService.RestoreReconciliationSnapshot(deferred, lifecycleGeneration: 41);
+
+        Assert.Equal(AgentUpdateStates.AwaitingConsent, restored.Phase);
+        Assert.True(restored.Required);
+        Assert.Equal(41, restored.LifecycleGeneration);
+        Assert.Equal(rolloutDue, restored.ApplyNotBeforeUtc);
+        Assert.Equal(current.NextCheckUtc, restored.NextCheckUtc);
+        Assert.Equal(current.RetryCount, restored.RetryCount);
+        Assert.Null(restored.ReconciliationSnapshot);
+
+        var retired = AgentUpdateLocalService.TransitionReconciliationFailure(
+            deferred, DateTimeOffset.Parse("2026-09-08T10:06:00Z"));
+        Assert.Equal(AgentUpdateStates.Blocked, retired.Phase);
+        Assert.Null(retired.ReconciliationSnapshot);
+        Assert.Null(retired.ApplyNotBeforeUtc);
+        Assert.Null(retired.NextRetryUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-08T10:06:00Z"), retired.NextCheckUtc);
+    }
+
+    [Fact]
+    public void ReconciliationRestore_CarriesRequiredSignalIntoSameGenerationRollout()
+    {
+        var current = new AgentUpdateJournal
+        {
+            ScheduleSeed = "required-on-retry",
+            AttemptId = "recommended-retry-attempt",
+            Phase = AgentUpdateStates.AwaitingConsent,
+            Automatic = true,
+            Required = false,
+            LifecycleGeneration = 41,
+            ApplyNotBeforeUtc = null,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        var deferred = AgentUpdateLocalService.TransitionReconciliationDeferred(
+            current, DateTimeOffset.Parse("2026-09-08T10:05:00Z"));
+        var beforeRestore = DateTimeOffset.UtcNow;
+
+        var restored = AgentUpdateLocalService.RestoreReconciliationSnapshot(
+            deferred,
+            lifecycleGeneration: 41,
+            required: true);
+
+        Assert.Equal(AgentUpdateStates.AwaitingConsent, restored.Phase);
+        Assert.True(restored.Required);
+        Assert.NotNull(restored.ApplyNotBeforeUtc);
+        Assert.True(restored.ApplyNotBeforeUtc >= beforeRestore);
+        Assert.True(restored.ApplyNotBeforeUtc <= beforeRestore.AddHours(24).AddSeconds(1));
+        Assert.Null(restored.ReconciliationSnapshot);
+    }
+
+    [Fact]
+    public void ReconciliationRestore_DoesNotMigrateSnapshotAcrossLifecycleGeneration()
+    {
+        var retryAt = DateTimeOffset.Parse("2026-09-08T10:06:00Z");
+        var deferred = new AgentUpdateJournal
+        {
+            AttemptId = "stale-generation-attempt",
+            Phase = AgentUpdateStates.Blocked,
+            Automatic = true,
+            Required = false,
+            LifecycleGeneration = 41,
+            ApplyNotBeforeUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+            RetryCount = 2,
+            NextRetryUtc = DateTimeOffset.Parse("2026-09-09T01:00:00Z"),
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+            ReconciliationSnapshot = new AgentUpdateReconciliationSnapshot(
+                AgentUpdateStates.AwaitingConsent,
+                LifecycleGeneration: 41,
+                Automatic: true,
+                Required: false,
+                ApplyNotBeforeUtc: DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+                RetryCount: 2,
+                NextRetryUtc: DateTimeOffset.Parse("2026-09-09T01:00:00Z"),
+                NextCheckUtc: DateTimeOffset.Parse("2026-09-10T00:00:00Z")),
+        };
+
+        var retired = AgentUpdateLocalService.RestoreReconciliationSnapshot(
+            deferred,
+            lifecycleGeneration: 42,
+            retryAtUtc: retryAt,
+            required: true);
+
+        Assert.Equal(AgentUpdateStates.Blocked, retired.Phase);
+        Assert.Equal(41, retired.LifecycleGeneration);
+        Assert.Equal(deferred.AttemptId, retired.AttemptId);
+        Assert.True(retired.Required);
+        Assert.Null(retired.ReconciliationSnapshot);
+        Assert.Null(retired.ApplyNotBeforeUtc);
+        Assert.Null(retired.NextRetryUtc);
+        Assert.Equal(retryAt, retired.NextCheckUtc);
+        Assert.False(retired.HasUnfinishedAttempt);
+        Assert.False(AgentUpdateStates.CanApply(retired.Phase));
+    }
+
+    [Fact]
+    public void ScheduledRetry_CarriesRequiredIntentOnlyFromBlockedAttempt()
+    {
+        var blockedRequired = new AgentUpdateJournal
+        {
+            AttemptId = "blocked-required-attempt",
+            Phase = AgentUpdateStates.Blocked,
+            Required = true,
+        };
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(blockedRequired, required: false));
+
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired with { Required = false }, required: false));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired with { AttemptId = null }, required: false));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired with { Phase = AgentUpdateStates.Failed }, required: false));
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(blockedRequired, required: true));
+    }
+
     [Fact]
     public void CancellationClassification_DistinguishesCallerOrLinkedCancellationFromTimeout()
     {
