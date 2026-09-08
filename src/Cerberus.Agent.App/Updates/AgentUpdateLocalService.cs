@@ -9,12 +9,112 @@ namespace Cerberus.Agent.App.Updates;
 /// <summary>The installed service owns update decisions. UI/CLI requests contain operations and attempt IDs only.</summary>
 internal static class AgentUpdateLocalService
 {
+    private sealed class IntentionalUpdateCancellationException(string message, CancellationToken cancellationToken)
+        : OperationCanceledException(message, cancellationToken);
+
     private static readonly SemaphoreSlim OperationGate = new(1, 1);
     private static readonly object CancellationGate = new();
     private static CancellationTokenSource? _networkOperation;
     private static string Root => AgentUpdateStager.DefaultStagingRoot;
     private static AgentUpdateJournalStore Journal => new(Root);
     private static AgentUpdateStateStore Projection => AgentUpdateStateStore.CreateDefault();
+
+    /// <summary>
+    /// Rewinds only the pre-install state created by the canceled check/stage operation.
+    /// Installer evidence and any state that may have crossed the launch fence remain durable.
+    /// </summary>
+    internal static AgentUpdateJournal TransitionIntentionalCancellation(
+        AgentUpdateJournal current,
+        AgentUpdateJournal operationStart,
+        DateTimeOffset retryAtUtc)
+    {
+        if (current.Phase == "launch_requested")
+            return current with { Phase = AgentUpdateStates.RecoveryRequired };
+
+        if (current.MayHaveStartedInstallation ||
+            current.Phase is AgentUpdateStates.Installed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined)
+            return current;
+
+        var samePriorAttempt = operationStart.AttemptId is not null &&
+            string.Equals(current.AttemptId, operationStart.AttemptId, StringComparison.Ordinal);
+        if (current.Phase == AgentUpdateStates.Failed && samePriorAttempt)
+            return current with { NextCheckUtc = retryAtUtc }; // This is the prior terminal failure, not a synthetic staging failure.
+
+        if (current.Phase == AgentUpdateStates.Current)
+            return current with { NextCheckUtc = retryAtUtc };
+
+        if (current.Phase == AgentUpdateStates.Staged)
+            return current with { Phase = AgentUpdateStates.Blocked, NextCheckUtc = retryAtUtc };
+
+        if (current.Phase is AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Available)
+            return current with { NextCheckUtc = retryAtUtc };
+
+        if (operationStart.Phase is AgentUpdateStates.Failed or AgentUpdateStates.Installed or
+            AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined)
+        {
+            // The current checking/downloading/failed record belongs to this operation. Keep the
+            // earlier terminal evidence, but make the next check immediately eligible.
+            return current with
+            {
+                Phase = operationStart.Phase,
+                AttemptId = operationStart.AttemptId,
+                Automatic = operationStart.Automatic,
+                Required = operationStart.Required,
+                LifecycleGeneration = operationStart.LifecycleGeneration,
+                InstallerResult = operationStart.InstallerResult,
+                RetryCount = operationStart.RetryCount,
+                NextRetryUtc = operationStart.NextRetryUtc,
+                ApplyNotBeforeUtc = operationStart.ApplyNotBeforeUtc,
+                RunnerProcessId = operationStart.RunnerProcessId,
+                RunnerStartedUtc = operationStart.RunnerStartedUtc,
+                InstallerProcessId = operationStart.InstallerProcessId,
+                InstallerStartedUtc = operationStart.InstallerStartedUtc,
+                InstallationBootId = operationStart.InstallationBootId,
+                NextCheckUtc = retryAtUtc,
+            };
+        }
+
+        return current with
+        {
+            Phase = AgentUpdateStates.NotChecked,
+            AttemptId = null,
+            InstallerResult = null,
+            RetryCount = 0,
+            NextRetryUtc = null,
+            ApplyNotBeforeUtc = null,
+            RunnerProcessId = null,
+            RunnerStartedUtc = null,
+            InstallerProcessId = null,
+            InstallerStartedUtc = null,
+            InstallationBootId = null,
+            NextCheckUtc = retryAtUtc,
+        };
+    }
+
+    internal static bool IsIntentionalCancellation(
+        OperationCanceledException error,
+        CancellationToken callerToken,
+        CancellationToken operationToken,
+        bool authorizationChanged)
+        => error is IntentionalUpdateCancellationException || authorizationChanged ||
+            callerToken.IsCancellationRequested || operationToken.IsCancellationRequested;
+
+    internal static AgentUpdateJournal TransitionFailure(AgentUpdateJournal before)
+        => before.Phase == "launch_requested" ? before with { Phase = AgentUpdateStates.RecoveryRequired } :
+            before.MayHaveStartedInstallation || before.Phase is
+            AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined
+            ? before : before with { Phase = AgentUpdateStates.Failed };
+
+    private static CancellationToken CancellationTokenFor(
+        CancellationToken callerToken,
+        CancellationToken operationToken)
+        => callerToken.IsCancellationRequested ? callerToken : operationToken;
+
+    private static async Task PersistIntentionalCancellationAsync(AgentUpdateJournal operationStart)
+    {
+        Journal.Change(current => TransitionIntentionalCancellation(current, operationStart, DateTimeOffset.UtcNow));
+        await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
+    }
 
     public static async Task<AgentLocalControlResponse> HandleAsync(AgentLocalControlRequest request, CancellationToken ct)
     {
@@ -65,6 +165,7 @@ internal static class AgentUpdateLocalService
     private static async Task RunManualCheckAsync()
     {
         try { await CheckAndStageOwnedAsync(automatic: false, required: false, CancellationToken.None).ConfigureAwait(false); }
+        catch (IntentionalUpdateCancellationException) { }
         catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }
         finally { OperationGate.Release(); }
     }
@@ -100,27 +201,55 @@ internal static class AgentUpdateLocalService
                     existing.Version, existing.Channel, existing.Reason, null, existing.ArtifactKind);
             }
             if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return AgentUpdateCheckResult.None;
-            Journal.Change(before => before with
-            {
-                AttemptId = null, InstallerResult = null, Phase = AgentUpdateStates.Checking,
-                Automatic = automatic, LifecycleGeneration = lifecycle.Generation,
-                NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
-            });
-            await ProjectAsync(ct).ConfigureAwait(false);
+            var operationStart = active;
+            var schedulePersisted = false;
+            var authorizationChanged = false;
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
             lock (CancellationGate) { _networkOperation = cancellation; }
             try
             {
+                Journal.Change(before => before with
+                {
+                    AttemptId = null, InstallerResult = null, Phase = AgentUpdateStates.Checking,
+                    Automatic = automatic, LifecycleGeneration = lifecycle.Generation,
+                    NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
+                });
+                schedulePersisted = true;
+                await ProjectAsync(cancellation.Token).ConfigureAwait(false);
                 using var http = new HttpClient(new HttpClientHandler { MaxAutomaticRedirections = 5 }) { Timeout = TimeSpan.FromSeconds(30) };
                 var trust = AgentUpdateTrustFactory.BuildTrust();
                 var signal = new AgentUpdateSignal(false, true, trust.ConfiguredManifestUrl, "service_update_check", trust.ExpectedChannel);
                 var result = await new AgentUpdateStager(http, trust, Root).CheckAsync(signal, cancellation.Token).ConfigureAwait(false);
+                var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
+                if (automatic && (latestLifecycle.Generation != lifecycle.Generation || !AllowsAutomatic(latestLifecycle)))
+                {
+                    authorizationChanged = true;
+                    cancellation.Cancel();
+                    throw new IntentionalUpdateCancellationException("Update authorization changed.", cancellation.Token);
+                }
                 Journal.Change(before => before with { AttemptId = null, InstallerResult = null, Phase = result.Available ? AgentUpdateStates.Available : AgentUpdateStates.Current });
                 var previous = await Projection.ReadAsync(WindowsDeviceInfo.GetAgentVersion(), cancellation.Token).ConfigureAwait(false);
                 await Projection.WriteAsync(previous.Transition(result.Available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
                     WindowsDeviceInfo.GetAgentVersion(), targetVersion: result.Version, channel: result.Channel, markChecked: true)
                     with { AttemptId = null, ReleaseId = null, Sequence = 0 }, cancellation.Token).ConfigureAwait(false);
                 return result;
+            }
+            catch (OperationCanceledException ex) when (schedulePersisted &&
+                IsIntentionalCancellation(ex, ct, cancellation.Token, authorizationChanged))
+            {
+                await PersistIntentionalCancellationAsync(operationStart).ConfigureAwait(false);
+                throw new IntentionalUpdateCancellationException(ex.Message,
+                    CancellationTokenFor(ct, cancellation.Token));
+            }
+            catch (OperationCanceledException ex)
+            {
+                await ReportFailureAsync(ex).ConfigureAwait(false);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await ReportFailureAsync(ex).ConfigureAwait(false);
+                throw;
             }
             finally { lock (CancellationGate) { if (ReferenceEquals(_networkOperation, cancellation)) _networkOperation = null; } }
         }
@@ -149,6 +278,9 @@ internal static class AgentUpdateLocalService
             return ReadPlan(active);
         }
         if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
+        var operationStart = active;
+        var schedulePersisted = false;
+        var authorizationChanged = false;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lock (CancellationGate) { _networkOperation = cancellation; }
         try
@@ -162,6 +294,7 @@ internal static class AgentUpdateLocalService
                 InstallationBootId = null,
                 NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
             });
+            schedulePersisted = true;
             await ProjectAsync(cancellation.Token).ConfigureAwait(false);
             using var http = new HttpClient(new HttpClientHandler { MaxAutomaticRedirections = 5 }) { Timeout = TimeSpan.FromSeconds(30) };
             var trust = AgentUpdateTrustFactory.BuildTrust();
@@ -170,7 +303,11 @@ internal static class AgentUpdateLocalService
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
             if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomatic(latestLifecycle)))
-                throw new OperationCanceledException("Update authorization changed.", cancellation.Token);
+            {
+                authorizationChanged = true;
+                cancellation.Cancel();
+                throw new IntentionalUpdateCancellationException("Update authorization changed.", cancellation.Token);
+            }
             var now = DateTimeOffset.UtcNow;
             Journal.Change(before => before with
             {
@@ -184,6 +321,23 @@ internal static class AgentUpdateLocalService
             });
             await ProjectAsync(cancellation.Token).ConfigureAwait(false);
             return plan;
+        }
+        catch (OperationCanceledException ex) when (schedulePersisted &&
+            IsIntentionalCancellation(ex, ct, cancellation.Token, authorizationChanged))
+        {
+            await PersistIntentionalCancellationAsync(operationStart).ConfigureAwait(false);
+            throw new IntentionalUpdateCancellationException(ex.Message,
+                CancellationTokenFor(ct, cancellation.Token));
+        }
+        catch (OperationCanceledException ex)
+        {
+            await ReportFailureAsync(ex).ConfigureAwait(false);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await ReportFailureAsync(ex).ConfigureAwait(false);
+            throw;
         }
         finally
         {
@@ -206,6 +360,8 @@ internal static class AgentUpdateLocalService
     private static async Task RunHeartbeatWorkAsync(bool required, CancellationToken ct)
     {
         try { await CheckAndStageOwnedAsync(automatic: true, required, ct).ConfigureAwait(false); }
+        catch (IntentionalUpdateCancellationException) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }
         finally { OperationGate.Release(); }
     }
@@ -265,7 +421,9 @@ internal static class AgentUpdateLocalService
                 else if (!active.HasUnfinishedAttempt && active.NextCheckUtc <= now)
                     await CheckAndStageOwnedAsync(automatic: true, required: false, ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) { await ReportFailureAsync(ex).ConfigureAwait(false); }
+            catch (IntentionalUpdateCancellationException) when (!ct.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }
             finally { OperationGate.Release(); }
         }
     }
@@ -444,10 +602,7 @@ internal static class AgentUpdateLocalService
     {
         try
         {
-            Journal.Change(before => before.Phase == "launch_requested" ? before with { Phase = AgentUpdateStates.RecoveryRequired } :
-                before.MayHaveStartedInstallation || before.Phase is
-                AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined
-                ? before : before with { Phase = AgentUpdateStates.Failed });
+            Journal.Change(TransitionFailure);
             await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception) { /* A corrupt/unwritable journal stays unavailable; never create replacement success state. */ }

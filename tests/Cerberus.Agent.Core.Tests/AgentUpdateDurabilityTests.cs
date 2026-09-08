@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -96,6 +97,251 @@ public sealed class AgentUpdateDurabilityTests
         Assert.False(new AgentUpdateJournal { AttemptId = "attempt1", Phase = AgentUpdateStates.Blocked }.HasUnfinishedAttempt);
     }
 
+    [Theory]
+    [InlineData(AgentUpdateStates.Checking, null)]
+    [InlineData(AgentUpdateStates.Downloading, "synthetic-attempt")]
+    [InlineData(AgentUpdateStates.Failed, "synthetic-attempt")]
+    public void IntentionalCancellation_RewindsSyntheticPreInstallState(string phase, string? attemptId)
+    {
+        var root = NewRoot();
+        var operationStart = new AgentUpdateJournal
+        {
+            ScheduleSeed = "cancel-retry",
+            Phase = AgentUpdateStates.Current,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+        };
+        var current = operationStart with
+        {
+            Phase = phase,
+            AttemptId = attemptId,
+            InstallerResult = attemptId is null ? null : AgentUpdateInstallerResult.Failure(new Exception("synthetic")),
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+        Assert.Equal(AgentUpdateStates.NotChecked, transitioned.Phase);
+        Assert.Null(transitioned.AttemptId);
+        Assert.Null(transitioned.InstallerResult);
+        Assert.Equal(retryAt, transitioned.NextCheckUtc);
+        Assert.Null(transitioned.NextRetryUtc);
+        Assert.Equal(0, transitioned.RetryCount);
+    }
+
+    [Fact]
+    public void IntentionalCancellation_PreservesFenceAndTerminalEvidence()
+    {
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        foreach (var phase in new[]
+        {
+            "launch_requested", "install_may_have_started", AgentUpdateStates.Installing,
+            AgentUpdateStates.HealthPending, AgentUpdateStates.PendingReboot, AgentUpdateStates.RecoveryRequired,
+        })
+        {
+            var root = NewRoot();
+            var operationStart = new AgentUpdateJournal { ScheduleSeed = "fence-" + phase, Phase = AgentUpdateStates.Current };
+            var current = operationStart with
+            {
+                Phase = phase,
+                AttemptId = "active-attempt",
+                NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+            };
+
+            var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+            Assert.Equal(phase == "launch_requested" ? AgentUpdateStates.RecoveryRequired : phase, transitioned.Phase);
+            Assert.Equal(current.AttemptId, transitioned.AttemptId);
+            Assert.Equal(current.NextCheckUtc, transitioned.NextCheckUtc);
+        }
+
+        foreach (var phase in new[] { AgentUpdateStates.Installed, AgentUpdateStates.Blocked, AgentUpdateStates.Quarantined })
+        {
+            var root = NewRoot();
+            var operationStart = new AgentUpdateJournal { ScheduleSeed = "terminal-" + phase, Phase = AgentUpdateStates.Current };
+            var current = operationStart with
+            {
+                Phase = phase,
+                AttemptId = "terminal-attempt",
+                InstallerResult = AgentUpdateInstallerResult.Failure(new Exception("terminal evidence")),
+                NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+            };
+
+            var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+            Assert.Equal(current.Phase, transitioned.Phase);
+            Assert.Equal(current.AttemptId, transitioned.AttemptId);
+            Assert.Equal(current.InstallerResult, transitioned.InstallerResult);
+            Assert.Equal(current.NextCheckUtc, transitioned.NextCheckUtc);
+        }
+    }
+
+    [Fact]
+    public void IntentionalCancellation_PreservesPriorFailureEvidenceButMakesRetryDue()
+    {
+        var root = NewRoot();
+        var priorResult = new AgentUpdateInstallerResult(
+            AgentUpdateInstallerResult.CurrentSchemaVersion, "prior-result", AgentUpdateStates.Failed,
+            "2026-09-07T00:00:00Z", 1603, false, AgentUpdateErrorCodes.MsiFailed, "prior failure", null, "prior-attempt");
+        var operationStart = new AgentUpdateJournal
+        {
+            ScheduleSeed = "prior-failure",
+            AttemptId = "prior-attempt",
+            Phase = AgentUpdateStates.Failed,
+            InstallerResult = priorResult,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        var current = operationStart with
+        {
+            Phase = AgentUpdateStates.Failed,
+            AttemptId = "synthetic-attempt",
+            InstallerResult = AgentUpdateInstallerResult.Failure(new Exception("synthetic failure")),
+        };
+
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+        Assert.Equal(AgentUpdateStates.Failed, transitioned.Phase);
+        Assert.Equal("prior-attempt", transitioned.AttemptId);
+        Assert.Equal(priorResult, transitioned.InstallerResult);
+        Assert.Equal(retryAt, transitioned.NextCheckUtc);
+    }
+
+    [Theory]
+    [InlineData(AgentUpdateStates.Failed)]
+    [InlineData(AgentUpdateStates.Installed)]
+    public void IntentionalCancellation_RestoresPriorOperationMetadata(string priorPhase)
+    {
+        var root = NewRoot();
+        var operationStart = new AgentUpdateJournal
+        {
+            ScheduleSeed = "prior-metadata-" + priorPhase,
+            AttemptId = "prior-attempt",
+            Phase = priorPhase,
+            Automatic = true,
+            Required = true,
+            LifecycleGeneration = 41,
+            InstallerResult = priorPhase == AgentUpdateStates.Failed
+                ? AgentUpdateInstallerResult.Failure(new Exception("prior failure"))
+                : null,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        var current = operationStart with
+        {
+            Phase = AgentUpdateStates.Checking,
+            Automatic = false,
+            Required = false,
+            LifecycleGeneration = 99,
+            AttemptId = null,
+            InstallerResult = null,
+        };
+
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+        Assert.Equal(priorPhase, transitioned.Phase);
+        Assert.Equal(operationStart.AttemptId, transitioned.AttemptId);
+        Assert.Equal(operationStart.Automatic, transitioned.Automatic);
+        Assert.Equal(operationStart.Required, transitioned.Required);
+        Assert.Equal(operationStart.LifecycleGeneration, transitioned.LifecycleGeneration);
+        Assert.Equal(operationStart.InstallerResult, transitioned.InstallerResult);
+        Assert.Equal(retryAt, transitioned.NextCheckUtc);
+    }
+
+    [Theory]
+    [InlineData(AgentUpdateStates.AwaitingConsent)]
+    [InlineData(AgentUpdateStates.Available)]
+    public void IntentionalCancellation_PreservesReadyResultAndMakesRetryDue(string phase)
+    {
+        var root = NewRoot();
+        var operationStart = new AgentUpdateJournal { ScheduleSeed = "ready-" + phase, Phase = AgentUpdateStates.Current };
+        var current = operationStart with
+        {
+            Phase = phase,
+            AttemptId = "staged-attempt",
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+        Assert.Equal(current.Phase, transitioned.Phase);
+        Assert.Equal(current.AttemptId, transitioned.AttemptId);
+        Assert.Equal(retryAt, transitioned.NextCheckUtc);
+    }
+
+    [Fact]
+    public void IntentionalCancellation_BlocksRequiredStagedAttemptAndLeavesItDue()
+    {
+        var root = NewRoot();
+        var operationStart = new AgentUpdateJournal { ScheduleSeed = "staged-cancel", Phase = AgentUpdateStates.Current };
+        var current = operationStart with
+        {
+            Phase = AgentUpdateStates.Staged,
+            AttemptId = "required-staged-attempt",
+            Automatic = true,
+            Required = true,
+            LifecycleGeneration = 17,
+            InstallerResult = AgentUpdateInstallerResult.Failure(new Exception("staging evidence")),
+            NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24),
+        };
+
+        var retryAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+        var transitioned = PersistTransition(root, current, operationStart, retryAt);
+
+        Assert.Equal(AgentUpdateStates.Blocked, transitioned.Phase);
+        Assert.Equal(current.AttemptId, transitioned.AttemptId);
+        Assert.Equal(current.InstallerResult, transitioned.InstallerResult);
+        Assert.Equal(current.Automatic, transitioned.Automatic);
+        Assert.Equal(current.Required, transitioned.Required);
+        Assert.Equal(current.LifecycleGeneration, transitioned.LifecycleGeneration);
+        Assert.False(transitioned.HasUnfinishedAttempt);
+        Assert.False(AgentUpdateStates.CanApply(transitioned.Phase));
+        Assert.True(transitioned.NextCheckUtc <= DateTimeOffset.UtcNow);
+    }
+
+    [Fact]
+    public void CancellationClassification_DistinguishesCallerOrLinkedCancellationFromTimeout()
+    {
+        using var caller = new CancellationTokenSource();
+        using var operation = new CancellationTokenSource();
+        var timeout = new OperationCanceledException("HTTP timeout");
+
+        Assert.False(AgentUpdateLocalService.IsIntentionalCancellation(
+            timeout, caller.Token, operation.Token, authorizationChanged: false));
+
+        caller.Cancel();
+        Assert.True(AgentUpdateLocalService.IsIntentionalCancellation(
+            timeout, caller.Token, operation.Token, authorizationChanged: false));
+
+        caller.Dispose();
+        using var linked = new CancellationTokenSource();
+        linked.Cancel();
+        Assert.True(AgentUpdateLocalService.IsIntentionalCancellation(
+            timeout, CancellationToken.None, linked.Token, authorizationChanged: false));
+        Assert.True(AgentUpdateLocalService.IsIntentionalCancellation(
+            timeout, CancellationToken.None, CancellationToken.None, authorizationChanged: true));
+    }
+
+    [Fact]
+    public void TimeoutFailureTransition_RetainsPersistedBackoffAndFailureState()
+    {
+        var future = DateTimeOffset.Parse("2026-09-10T00:00:00Z");
+        var before = new AgentUpdateJournal
+        {
+            Phase = AgentUpdateStates.Checking,
+            NextCheckUtc = future,
+            RetryCount = 0,
+        };
+
+        var after = AgentUpdateLocalService.TransitionFailure(before);
+
+        Assert.Equal(AgentUpdateStates.Failed, after.Phase);
+        Assert.Equal(future, after.NextCheckUtc);
+        Assert.Equal(before.RetryCount, after.RetryCount);
+        Assert.Null(after.NextRetryUtc);
+    }
+
     [Fact]
     public void DurableJournal_RejectsUnknownPhaseAndPreservesRecord()
     {
@@ -179,5 +425,19 @@ public sealed class AgentUpdateDurabilityTests
         var root = Path.Combine(Path.GetTempPath(), "cerberus-update-durability-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         return root;
+    }
+
+    private static AgentUpdateJournal PersistTransition(
+        string root,
+        AgentUpdateJournal current,
+        AgentUpdateJournal operationStart,
+        DateTimeOffset retryAtUtc)
+    {
+        var path = Path.Combine(root, "transaction.json");
+        AgentUpdateDurableFile.Write(path, root, current);
+        var persisted = new AgentUpdateJournalStore(root).Read();
+        var transitioned = AgentUpdateLocalService.TransitionIntentionalCancellation(persisted, operationStart, retryAtUtc);
+        AgentUpdateDurableFile.Write(path, root, transitioned);
+        return new AgentUpdateJournalStore(root).Read();
     }
 }
