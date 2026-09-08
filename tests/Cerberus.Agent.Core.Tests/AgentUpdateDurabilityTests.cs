@@ -337,6 +337,7 @@ public sealed class AgentUpdateDurabilityTests
         Assert.Equal(current.Automatic, transitioned.Automatic);
         Assert.True(transitioned.Required);
         Assert.Equal(current.LifecycleGeneration, transitioned.LifecycleGeneration);
+        Assert.Equal(current.LifecycleGeneration, transitioned.RequiredPolicyGeneration);
         Assert.Equal(current.RunnerProcessId, transitioned.RunnerProcessId);
         Assert.Equal(current.RunnerStartedUtc, transitioned.RunnerStartedUtc);
         Assert.Equal(current.InstallerProcessId, transitioned.InstallerProcessId);
@@ -429,6 +430,7 @@ public sealed class AgentUpdateDurabilityTests
         Assert.Equal(current.NextCheckUtc, restored.NextCheckUtc);
         Assert.Equal(current.RetryCount, restored.RetryCount);
         Assert.Null(restored.ReconciliationSnapshot);
+        Assert.Equal(41, restored.RequiredPolicyGeneration);
 
         var retired = AgentUpdateLocalService.TransitionReconciliationFailure(
             deferred, DateTimeOffset.Parse("2026-09-08T10:06:00Z"));
@@ -522,16 +524,251 @@ public sealed class AgentUpdateDurabilityTests
             AttemptId = "blocked-required-attempt",
             Phase = AgentUpdateStates.Blocked,
             Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
         };
-        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(blockedRequired, required: false));
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired, required: false, lifecycleGeneration: 41));
 
         Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
-            blockedRequired with { Required = false }, required: false));
+            blockedRequired with { Required = false, RequiredPolicyGeneration = null },
+            required: false,
+            lifecycleGeneration: 41));
         Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
-            blockedRequired with { AttemptId = null }, required: false));
+            blockedRequired with { AttemptId = null }, required: false, lifecycleGeneration: 41));
         Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
-            blockedRequired with { Phase = AgentUpdateStates.Failed }, required: false));
-        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(blockedRequired, required: true));
+            blockedRequired with { Phase = AgentUpdateStates.Failed }, required: false, lifecycleGeneration: 41));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired, required: false, lifecycleGeneration: 42));
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            blockedRequired, required: true, lifecycleGeneration: 42));
+    }
+
+    [Fact]
+    public void RequiredProvenance_SurvivesCheckOnlyAvailableIntoFreshStageSameGeneration()
+    {
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var retired = AgentUpdateLocalService.TransitionReconciliationFailure(
+            new AgentUpdateJournal
+            {
+                AttemptId = "required-old-release",
+                Phase = AgentUpdateStates.AwaitingConsent,
+                Required = true,
+                LifecycleGeneration = 41,
+                ApplyNotBeforeUtc = retryAt,
+                NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+            },
+            retryAt);
+
+        var requiredForCheck = AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            retired, required: false, lifecycleGeneration: 41);
+        Assert.True(requiredForCheck);
+
+        var checking = AgentUpdateLocalService.TransitionCheckStart(
+            retired,
+            automatic: true,
+            required: requiredForCheck,
+            lifecycleGeneration: 41,
+            nextCheckUtc: retryAt);
+        Assert.Equal(AgentUpdateStates.Checking, checking.Phase);
+        Assert.Null(checking.AttemptId);
+        Assert.True(checking.Required);
+        Assert.Equal(41, checking.RequiredPolicyGeneration);
+
+        var available = AgentUpdateLocalService.TransitionCheckResult(
+            checking,
+            available: true,
+            required: AgentUpdateLocalService.CarryRequiredBlockedIntent(
+                checking, required: false, lifecycleGeneration: 41),
+            lifecycleGeneration: 41);
+        Assert.Equal(AgentUpdateStates.Available, available.Phase);
+        Assert.Null(available.AttemptId);
+        Assert.True(available.Required);
+        Assert.Equal(41, available.RequiredPolicyGeneration);
+
+        var requiredForStage = AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            available, required: false, lifecycleGeneration: 41);
+        Assert.True(requiredForStage);
+        var staging = AgentUpdateLocalService.TransitionStageStart(
+            available,
+            automatic: true,
+            required: requiredForStage,
+            lifecycleGeneration: 41,
+            nextCheckUtc: retryAt);
+        Assert.Equal(AgentUpdateStates.Checking, staging.Phase);
+        Assert.True(staging.Required);
+        Assert.Equal(41, staging.RequiredPolicyGeneration);
+
+        var plan = new AgentUpdatePlan(
+            ArtifactKind: "msi",
+            Version: "2.0.0",
+            Channel: "stable",
+            ArtifactPath: "C:\\staged\\agent.msi",
+            Sha256: new string('a', 64),
+            StagedAtUtc: retryAt.ToString("O"),
+            Reason: "required_retry",
+            AttemptId: "fresh-required-attempt",
+            Sequence: 2);
+        var staged = AgentUpdateLocalService.TransitionStageResult(
+            staging with { AttemptId = plan.AttemptId },
+            plan,
+            automatic: true,
+            required: requiredForStage,
+            lifecycleGeneration: 41,
+            now: retryAt);
+        Assert.Equal(AgentUpdateStates.AwaitingConsent, staged.Phase);
+        Assert.True(staged.Required);
+        Assert.Equal(41, staged.RequiredPolicyGeneration);
+        Assert.NotNull(staged.ApplyNotBeforeUtc);
+    }
+
+    [Fact]
+    public void RequiredProvenance_DoesNotCrossReenrollmentOrTerminalHistory()
+    {
+        var oldGeneration = new AgentUpdateJournal
+        {
+            AttemptId = "old-required-attempt",
+            Phase = AgentUpdateStates.Blocked,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+        };
+
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            oldGeneration, required: false, lifecycleGeneration: 42));
+        var freshRecommended = AgentUpdateLocalService.TransitionStageStart(
+            oldGeneration,
+            automatic: true,
+            required: AgentUpdateLocalService.CarryRequiredBlockedIntent(
+                oldGeneration, required: false, lifecycleGeneration: 42),
+            lifecycleGeneration: 42,
+            nextCheckUtc: DateTimeOffset.UtcNow);
+        Assert.False(freshRecommended.Required);
+        Assert.Null(freshRecommended.RequiredPolicyGeneration);
+        Assert.False(AgentUpdateStates.CanApply(freshRecommended.Phase));
+
+        var historicalFailure = new AgentUpdateJournal
+        {
+            AttemptId = "historical-failure",
+            Phase = AgentUpdateStates.Failed,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = null,
+        };
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            historicalFailure, required: false, lifecycleGeneration: 41));
+    }
+
+    [Fact]
+    public void RequiredProvenance_CarriesIncomingGenerationWithoutRebindingRetiredAttempt()
+    {
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = "old-recommended-attempt",
+            Phase = AgentUpdateStates.AwaitingConsent,
+            Required = false,
+            LifecycleGeneration = 41,
+            ApplyNotBeforeUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
+            ReconciliationSnapshot = null,
+        };
+
+        var deferred = AgentUpdateLocalService.TransitionReconciliationDeferred(
+            current,
+            retryAt,
+            required: true,
+            requiredPolicyGeneration: 42);
+
+        Assert.Equal(AgentUpdateStates.Blocked, deferred.Phase);
+        Assert.True(deferred.Required);
+        Assert.Equal(42, deferred.RequiredPolicyGeneration);
+        Assert.Equal(41, deferred.LifecycleGeneration);
+        Assert.NotNull(deferred.ReconciliationSnapshot);
+        Assert.Equal(41, deferred.ReconciliationSnapshot!.LifecycleGeneration);
+
+        // A later recommended retry must retain the newer signal provenance;
+        // it must not replace it with the retired attempt's generation.
+        var retired = AgentUpdateLocalService.TransitionReconciliationFailure(
+            deferred,
+            retryAt.AddMinutes(5),
+            required: false,
+            requiredPolicyGeneration: 41);
+
+        Assert.Equal(42, retired.RequiredPolicyGeneration);
+        Assert.Equal(41, retired.LifecycleGeneration);
+        Assert.Null(retired.ReconciliationSnapshot);
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            retired,
+            required: false,
+            lifecycleGeneration: 42));
+    }
+
+    [Fact]
+    public void LegacyRequiredBlockedIntent_UsesSameGenerationOnly()
+    {
+        var legacy = new AgentUpdateJournal
+        {
+            AttemptId = "legacy-required-attempt",
+            Phase = AgentUpdateStates.Blocked,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = null,
+        };
+
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            legacy,
+            required: false,
+            lifecycleGeneration: 41));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            legacy,
+            required: false,
+            lifecycleGeneration: 42));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            legacy with { AttemptId = null },
+            required: false,
+            lifecycleGeneration: 41));
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            legacy with { Phase = AgentUpdateStates.Failed },
+            required: false,
+            lifecycleGeneration: 41));
+
+        var upgraded = AgentUpdateLocalService.TransitionStageStart(
+            legacy,
+            automatic: true,
+            required: true,
+            lifecycleGeneration: 41,
+            nextCheckUtc: DateTimeOffset.UtcNow);
+        Assert.Equal(41, upgraded.RequiredPolicyGeneration);
+    }
+
+    [Fact]
+    public void IncomingRequiredSignal_DoesNotCrossOwnedGenerationBoundary()
+    {
+        Assert.True(AgentUpdateLocalService.IsRequiredSignalCurrent(
+            required: true,
+            capturedGeneration: 42,
+            lifecycleGeneration: 42));
+        Assert.False(AgentUpdateLocalService.IsRequiredSignalCurrent(
+            required: true,
+            capturedGeneration: 41,
+            lifecycleGeneration: 42));
+        Assert.False(AgentUpdateLocalService.IsRequiredSignalCurrent(
+            required: false,
+            capturedGeneration: 42,
+            lifecycleGeneration: 42));
+
+        var historicalMarker = new AgentUpdateJournal
+        {
+            AttemptId = "historical-required-attempt",
+            Phase = AgentUpdateStates.Blocked,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+        };
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            historicalMarker,
+            required: false,
+            lifecycleGeneration: 42));
     }
 
     [Fact]

@@ -22,7 +22,8 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
             automatic: true,
             required: signal.Required,
             ct,
-            bypassSchedule: explicitRequest);
+            bypassSchedule: explicitRequest,
+            requiredPolicyGeneration: signal.LifecycleGeneration);
 
     public Task<AgentUpdatePlan?> StageUpdateAsync(HeartbeatResponse response, string? campaignId, string? commandId, CancellationToken ct)
         => StageUpdateAsync(AgentUpdateStager.FromHeartbeat(response), campaignId, commandId, ct);
@@ -47,7 +48,8 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
             return await AgentUpdateLocalService.CheckAndStageAsync(
                 automatic: true,
                 required: signal.Required,
-                ct).ConfigureAwait(false) is not null;
+                ct,
+                requiredPolicyGeneration: signal.LifecycleGeneration).ConfigureAwait(false) is not null;
         }
         catch (AgentUpdateReconciliationDeferredException)
         {

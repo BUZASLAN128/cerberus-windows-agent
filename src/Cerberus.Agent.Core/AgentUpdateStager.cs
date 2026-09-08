@@ -23,7 +23,8 @@ public sealed record AgentUpdateSignal(
     bool Recommended,
     string? ManifestUrl,
     string? Reason,
-    string? Channel);
+    string? Channel,
+    long? LifecycleGeneration = null);
 
 public sealed record AgentUpdatePlan(
     string ArtifactKind,
@@ -108,7 +109,8 @@ public sealed class AgentUpdateStager
             Recommended: ReadBool(update, "recommended"),
             ManifestUrl: ReadString(update, "manifest_url"),
             Reason: ReadString(update, "reason"),
-            Channel: ReadString(update, "channel"));
+            Channel: ReadString(update, "channel"),
+            LifecycleGeneration: AgentApiClient.GenerationOf(response));
     }
 
     public async Task<AgentUpdateCheckResult> CheckAsync(HeartbeatResponse response, CancellationToken ct)
@@ -199,7 +201,11 @@ public sealed class AgentUpdateStager
                 AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
                 RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
                 InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
-                InstallationBootId = null, ReconciliationSnapshot = null,
+                InstallationBootId = null,
+                RequiredPolicyGeneration = signal.Required
+                    ? signal.LifecycleGeneration ?? before.LifecycleGeneration
+                    : null,
+                ReconciliationSnapshot = null,
             });
         try
         {

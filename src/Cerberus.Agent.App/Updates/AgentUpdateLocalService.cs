@@ -51,10 +51,19 @@ internal static class AgentUpdateLocalService
             return current with { NextCheckUtc = retryAtUtc };
 
         if (current.Phase == AgentUpdateStates.Staged)
-            return current with { Phase = AgentUpdateStates.Blocked, NextCheckUtc = retryAtUtc };
+            return current with
+            {
+                Phase = AgentUpdateStates.Blocked,
+                RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, current.Required, null),
+                NextCheckUtc = retryAtUtc,
+            };
 
         if (current.Phase is AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Available)
-            return current with { NextCheckUtc = retryAtUtc };
+            return current with
+            {
+                RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, current.Required, null),
+                NextCheckUtc = retryAtUtc,
+            };
 
         if (operationStart.Phase is AgentUpdateStates.Failed or AgentUpdateStates.Installed or
             AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined)
@@ -68,6 +77,7 @@ internal static class AgentUpdateLocalService
                 Automatic = operationStart.Automatic,
                 Required = operationStart.Required,
                 LifecycleGeneration = operationStart.LifecycleGeneration,
+                RequiredPolicyGeneration = operationStart.RequiredPolicyGeneration,
                 InstallerResult = operationStart.InstallerResult,
                 RetryCount = operationStart.RetryCount,
                 NextRetryUtc = operationStart.NextRetryUtc,
@@ -94,6 +104,7 @@ internal static class AgentUpdateLocalService
             InstallerProcessId = null,
             InstallerStartedUtc = null,
             InstallationBootId = null,
+            RequiredPolicyGeneration = null,
             NextCheckUtc = retryAtUtc,
         };
     }
@@ -110,7 +121,7 @@ internal static class AgentUpdateLocalService
         => before.Phase == "launch_requested" ? before with { Phase = AgentUpdateStates.RecoveryRequired } :
             before.MayHaveStartedInstallation || before.Phase is
             AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined
-            ? before : before with { Phase = AgentUpdateStates.Failed };
+            ? before : before with { Phase = AgentUpdateStates.Failed, RequiredPolicyGeneration = null };
 
     /// <summary>
     /// Retires a pre-install attempt whose manifest identity no longer matches,
@@ -120,12 +131,19 @@ internal static class AgentUpdateLocalService
     internal static AgentUpdateJournal TransitionReconciliationFailure(
         AgentUpdateJournal current,
         DateTimeOffset retryAtUtc,
-        bool required = false)
+        bool required = false,
+        long? requiredPolicyGeneration = null)
     {
         // A previously retired attempt is already non-applicable. Preserve it
         // exactly, apart from carrying a newly observed required intent.
         if (current.Phase == AgentUpdateStates.Blocked && current.ReconciliationSnapshot is null)
-            return required && !current.Required ? current with { Required = true } : current;
+            return required
+                ? current with
+                {
+                    Required = true,
+                    RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, true, requiredPolicyGeneration),
+                }
+                : current;
 
         if (current.Phase == "launch_requested" ||
             current.MayHaveStartedInstallation ||
@@ -136,6 +154,10 @@ internal static class AgentUpdateLocalService
         {
             Phase = AgentUpdateStates.Blocked,
             Required = current.Required || required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationFor(
+                current,
+                required,
+                requiredPolicyGeneration),
             NextRetryUtc = null,
             ApplyNotBeforeUtc = null,
             NextCheckUtc = retryAtUtc,
@@ -152,10 +174,17 @@ internal static class AgentUpdateLocalService
     internal static AgentUpdateJournal TransitionReconciliationDeferred(
         AgentUpdateJournal current,
         DateTimeOffset retryAtUtc,
-        bool required = false)
+        bool required = false,
+        long? requiredPolicyGeneration = null)
     {
         if (current.Phase == AgentUpdateStates.Blocked && current.ReconciliationSnapshot is null)
-            return required && !current.Required ? current with { Required = true } : current;
+            return required
+                ? current with
+                {
+                    Required = true,
+                    RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, true, requiredPolicyGeneration),
+                }
+                : current;
 
         if (current.Phase == "launch_requested" ||
             current.MayHaveStartedInstallation ||
@@ -175,6 +204,10 @@ internal static class AgentUpdateLocalService
         {
             Phase = AgentUpdateStates.Blocked,
             Required = current.Required || required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationFor(
+                current,
+                required,
+                requiredPolicyGeneration),
             NextCheckUtc = retryAtUtc,
             ReconciliationSnapshot = snapshot,
         };
@@ -185,7 +218,8 @@ internal static class AgentUpdateLocalService
         AgentUpdateJournal current,
         long lifecycleGeneration,
         DateTimeOffset? retryAtUtc = null,
-        bool required = false)
+        bool required = false,
+        long? requiredPolicyGeneration = null)
     {
         var snapshot = current.ReconciliationSnapshot;
         if (snapshot is null)
@@ -199,7 +233,8 @@ internal static class AgentUpdateLocalService
             return TransitionReconciliationFailure(
                 current,
                 retryAtUtc ?? DateTimeOffset.UtcNow,
-                required);
+                required,
+                requiredPolicyGeneration);
         }
 
         var effectiveRequired = current.Required || snapshot.Required || required;
@@ -220,6 +255,10 @@ internal static class AgentUpdateLocalService
             LifecycleGeneration = lifecycleGeneration,
             Automatic = snapshot.Automatic,
             Required = effectiveRequired,
+            RequiredPolicyGeneration = RequiredPolicyGenerationFor(
+                current,
+                effectiveRequired,
+                requiredPolicyGeneration),
             ApplyNotBeforeUtc = applyNotBeforeUtc,
             RetryCount = snapshot.RetryCount,
             NextRetryUtc = snapshot.NextRetryUtc,
@@ -229,13 +268,150 @@ internal static class AgentUpdateLocalService
     }
 
     /// <summary>
-    /// Carries a required-policy retry intent only from a durable blocked
-    /// attempt. Historical terminal failures do not turn a later scheduled
-    /// check into a required update by themselves.
+    /// Carries an explicit required signal, or durable required-policy
+    /// provenance through the pre-stage check states of the same lifecycle
+    /// generation. Terminal/history records never become a new policy source.
     /// </summary>
-    internal static bool CarryRequiredBlockedIntent(AgentUpdateJournal current, bool required)
-        => required || (current.Phase == AgentUpdateStates.Blocked &&
-            current.AttemptId is not null && current.Required);
+    internal static bool CarryRequiredBlockedIntent(
+        AgentUpdateJournal current,
+        bool required,
+        long lifecycleGeneration)
+        => required || (current.Required &&
+            (current.Phase is AgentUpdateStates.Blocked or AgentUpdateStates.Checking or AgentUpdateStates.Available) &&
+            ((current.RequiredPolicyGeneration == lifecycleGeneration &&
+                (current.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Available ||
+                    current.AttemptId is not null)) ||
+             (current.RequiredPolicyGeneration is null && current.Phase == AgentUpdateStates.Blocked &&
+                current.AttemptId is not null && current.LifecycleGeneration == lifecycleGeneration)));
+
+    internal static bool IsRequiredSignalCurrent(
+        bool required,
+        long capturedGeneration,
+        long lifecycleGeneration)
+        => required && capturedGeneration == lifecycleGeneration;
+
+    /// <summary>
+    /// Retains an existing explicit provenance marker across retries. A newly
+    /// received generation may add/advance that marker, while a false-required
+    /// retry never manufactures one from the old attempt generation.
+    /// </summary>
+    private static long? RequiredPolicyGenerationFor(
+        AgentUpdateJournal current,
+        bool required,
+        long? incomingGeneration)
+    {
+        if (!required)
+            return current.RequiredPolicyGeneration;
+
+        if (current.RequiredPolicyGeneration is long existing)
+        {
+            if (incomingGeneration is long incoming && incoming >= 0)
+                return Math.Max(existing, incoming);
+            return existing;
+        }
+
+        return incomingGeneration is long generation && generation >= 0
+            ? generation
+            : current.LifecycleGeneration;
+    }
+
+    private static long? RequiredPolicyGenerationForResult(
+        AgentUpdateJournal before,
+        bool required,
+        long lifecycleGeneration,
+        long? incomingGeneration)
+        => required
+            ? RequiredPolicyGenerationFor(before, true, incomingGeneration) ?? lifecycleGeneration
+            : null;
+
+    /// <summary>Starts a check while carrying only current-generation required provenance.</summary>
+    internal static AgentUpdateJournal TransitionCheckStart(
+        AgentUpdateJournal before,
+        bool automatic,
+        bool required,
+        long lifecycleGeneration,
+        DateTimeOffset nextCheckUtc,
+        long? requiredPolicyGeneration = null)
+        => before with
+        {
+            AttemptId = null,
+            InstallerResult = null,
+            Phase = AgentUpdateStates.Checking,
+            Automatic = automatic,
+            LifecycleGeneration = lifecycleGeneration,
+            Required = required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
+                before, required, lifecycleGeneration, requiredPolicyGeneration),
+            NextCheckUtc = nextCheckUtc,
+        };
+
+    /// <summary>Finishes a check without preserving required policy when no release is available.</summary>
+    internal static AgentUpdateJournal TransitionCheckResult(
+        AgentUpdateJournal before,
+        bool available,
+        bool required,
+        long lifecycleGeneration,
+        long? requiredPolicyGeneration = null)
+        => before with
+        {
+            AttemptId = null,
+            InstallerResult = null,
+            Phase = available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
+            Required = available && required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
+                before, available && required, lifecycleGeneration, requiredPolicyGeneration),
+        };
+
+    /// <summary>Starts staging with a required policy bound to the current lifecycle generation.</summary>
+    internal static AgentUpdateJournal TransitionStageStart(
+        AgentUpdateJournal before,
+        bool automatic,
+        bool required,
+        long lifecycleGeneration,
+        DateTimeOffset nextCheckUtc,
+        long? requiredPolicyGeneration = null)
+        => before with
+        {
+            Phase = AgentUpdateStates.Checking,
+            AttemptId = null,
+            InstallerResult = null,
+            Automatic = automatic,
+            LifecycleGeneration = lifecycleGeneration,
+            Required = required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
+                before, required, lifecycleGeneration, requiredPolicyGeneration),
+            RetryCount = 0,
+            NextRetryUtc = null,
+            ApplyNotBeforeUtc = null,
+            RunnerProcessId = null,
+            RunnerStartedUtc = null,
+            InstallerProcessId = null,
+            InstallerStartedUtc = null,
+            InstallationBootId = null,
+            NextCheckUtc = nextCheckUtc,
+        };
+
+    /// <summary>Commits a staged outcome without dropping its current-generation policy provenance.</summary>
+    internal static AgentUpdateJournal TransitionStageResult(
+        AgentUpdateJournal before,
+        AgentUpdatePlan? plan,
+        bool automatic,
+        bool required,
+        long lifecycleGeneration,
+        DateTimeOffset now,
+        long? requiredPolicyGeneration = null)
+        => before with
+        {
+            Phase = plan is null ? AgentUpdateStates.Current : AgentUpdateStates.AwaitingConsent,
+            Automatic = automatic,
+            LifecycleGeneration = lifecycleGeneration,
+            Required = required,
+            RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
+                before, plan is not null && required, lifecycleGeneration, requiredPolicyGeneration),
+            ApplyNotBeforeUtc = plan is null || !required ? null : now.Add(AgentUpdateJournalStore.Offset(
+                before.ScheduleSeed + ":rollout:" + plan.Channel + ":" + plan.Sequence, TimeSpan.FromHours(24))),
+            NextCheckUtc = now.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
+        };
 
     private static CancellationToken CancellationTokenFor(
         CancellationToken callerToken,
@@ -252,11 +428,16 @@ internal static class AgentUpdateLocalService
         string attemptId,
         Exception cause,
         DateTimeOffset retryAtUtc,
-        bool required)
+        bool required,
+        long? requiredPolicyGeneration)
     {
         var reconciled = Journal.ChangeAttempt(
             attemptId,
-            before => TransitionReconciliationDeferred(before, retryAtUtc, required));
+            before => TransitionReconciliationDeferred(
+                before,
+                retryAtUtc,
+                required,
+                requiredPolicyGeneration));
         if (reconciled.Phase == "launch_requested" || reconciled.MayHaveStartedInstallation)
         {
             await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
@@ -352,11 +533,20 @@ internal static class AgentUpdateLocalService
         bool automatic,
         bool required,
         CancellationToken ct,
-        bool bypassSchedule = false)
+        bool bypassSchedule = false,
+        long? requiredPolicyGeneration = null)
     {
         RequireService();
         await OperationGate.WaitAsync(ct).ConfigureAwait(false);
-        try { return await CheckAndStageOwnedAsync(automatic, required, ct, bypassSchedule).ConfigureAwait(false); }
+        try
+        {
+            return await CheckAndStageOwnedAsync(
+                automatic,
+                required,
+                ct,
+                bypassSchedule,
+                requiredPolicyGeneration).ConfigureAwait(false);
+        }
         finally { OperationGate.Release(); }
     }
 
@@ -372,13 +562,19 @@ internal static class AgentUpdateLocalService
             var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && !AllowsAutomatic(lifecycle)) return AgentUpdateCheckResult.None;
             var active = Journal.Read();
+            var effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
             if (active.ReconciliationSnapshot is not null)
             {
                 // A deferred attempt must be identity-reconciled before a
                 // check can discard its journal link. This keeps an explicit
                 // `mode=check` fail-closed without losing the old artifact.
                 var preserved = await ReconcileActiveAttemptAsync(
-                    active, lifecycle, automatic, required: false, ct).ConfigureAwait(false);
+                    active,
+                    lifecycle,
+                    automatic,
+                    required: false,
+                    requiredPolicyGeneration: null,
+                    ct).ConfigureAwait(false);
                 if (preserved is not null)
                 {
                     var reconciled = Journal.Read();
@@ -386,6 +582,8 @@ internal static class AgentUpdateLocalService
                         preserved.Version, preserved.Channel, preserved.Reason, null, preserved.ArtifactKind);
                 }
                 active = Journal.Read();
+                lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+                effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
             }
             if (active.HasUnfinishedAttempt)
             {
@@ -401,12 +599,13 @@ internal static class AgentUpdateLocalService
             lock (CancellationGate) { _networkOperation = cancellation; }
             try
             {
-                Journal.Change(before => before with
-                {
-                    AttemptId = null, InstallerResult = null, Phase = AgentUpdateStates.Checking,
-                    Automatic = automatic, LifecycleGeneration = lifecycle.Generation,
-                    NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
-                });
+                Journal.Change(before => TransitionCheckStart(
+                    before,
+                    automatic,
+                    effectiveRequired,
+                    lifecycle.Generation,
+                    DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(
+                        before.ScheduleSeed, TimeSpan.FromHours(6)))));
                 schedulePersisted = true;
                 await ProjectAsync(cancellation.Token).ConfigureAwait(false);
                 using var http = new HttpClient(new HttpClientHandler { MaxAutomaticRedirections = 5 }) { Timeout = TimeSpan.FromSeconds(30) };
@@ -420,7 +619,12 @@ internal static class AgentUpdateLocalService
                     cancellation.Cancel();
                     throw new IntentionalUpdateCancellationException("Update authorization changed.", cancellation.Token);
                 }
-                Journal.Change(before => before with { AttemptId = null, InstallerResult = null, Phase = result.Available ? AgentUpdateStates.Available : AgentUpdateStates.Current });
+                lifecycle = latestLifecycle;
+                Journal.Change(before => TransitionCheckResult(
+                    before,
+                    result.Available,
+                    effectiveRequired,
+                    lifecycle.Generation));
                 var previous = await Projection.ReadAsync(WindowsDeviceInfo.GetAgentVersion(), cancellation.Token).ConfigureAwait(false);
                 await Projection.WriteAsync(previous.Transition(result.Available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
                     WindowsDeviceInfo.GetAgentVersion(), targetVersion: result.Version, channel: result.Channel, markChecked: true)
@@ -453,17 +657,32 @@ internal static class AgentUpdateLocalService
         bool automatic,
         bool required,
         CancellationToken ct,
-        bool bypassSchedule = false)
+        bool bypassSchedule = false,
+        long? requiredPolicyGeneration = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         if (automatic && !AllowsAutomatic(lifecycle))
             return null;
+        // Bind the incoming policy to the generation observed at the start of
+        // this owned operation. An unstamped internal signal is bound once to
+        // that same generation and is never rebound after reconciliation.
+        var capturedRequiredGeneration = requiredPolicyGeneration ?? lifecycle.Generation;
+        var incomingRequired = IsRequiredSignalCurrent(
+            required,
+            capturedRequiredGeneration,
+            lifecycle.Generation);
+        long? incomingRequiredGeneration = incomingRequired ? capturedRequiredGeneration : null;
         var active = Journal.Read();
-        required = CarryRequiredBlockedIntent(active, required);
+        var effectiveRequired = CarryRequiredBlockedIntent(active, incomingRequired, lifecycle.Generation);
         if (active.HasUnfinishedAttempt || active.ReconciliationSnapshot is not null)
         {
             var existingPlan = await ReconcileActiveAttemptAsync(
-                active, lifecycle, automatic, required, ct).ConfigureAwait(false);
+                active,
+                lifecycle,
+                automatic,
+                effectiveRequired,
+                incomingRequiredGeneration,
+                ct).ConfigureAwait(false);
             if (existingPlan is not null)
                 return existingPlan;
             // The old pre-install attempt was durably blocked. Re-read so its
@@ -471,13 +690,19 @@ internal static class AgentUpdateLocalService
             active = Journal.Read();
             // A required policy must not be downgraded by a later scheduled
             // (recommended) tick while this preserved attempt is retired.
-            required = CarryRequiredBlockedIntent(active, required);
+            effectiveRequired = CarryRequiredBlockedIntent(active, incomingRequired, lifecycle.Generation);
             // Reconciliation may have discovered a stale lifecycle generation.
             // Reload before staging so the new attempt is bound to the current
             // authorization boundary rather than the old check snapshot.
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && !AllowsAutomatic(lifecycle))
                 return null;
+            incomingRequired = IsRequiredSignalCurrent(
+                required,
+                capturedRequiredGeneration,
+                lifecycle.Generation);
+            incomingRequiredGeneration = incomingRequired ? capturedRequiredGeneration : null;
+            effectiveRequired = CarryRequiredBlockedIntent(active, incomingRequired, lifecycle.Generation);
         }
         if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
         var operationStart = active;
@@ -487,20 +712,27 @@ internal static class AgentUpdateLocalService
         lock (CancellationGate) { _networkOperation = cancellation; }
         try
         {
-            Journal.Change(before => before with
-            {
-                Phase = AgentUpdateStates.Checking, AttemptId = null, InstallerResult = null,
-                Automatic = automatic, LifecycleGeneration = lifecycle.Generation,
-                Required = required, RetryCount = 0, NextRetryUtc = null, ApplyNotBeforeUtc = null,
-                RunnerProcessId = null, RunnerStartedUtc = null, InstallerProcessId = null, InstallerStartedUtc = null,
-                InstallationBootId = null,
-                NextCheckUtc = DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
-            });
+            Journal.Change(before => TransitionStageStart(
+                before,
+                automatic,
+                effectiveRequired,
+                lifecycle.Generation,
+                DateTimeOffset.UtcNow.AddHours(24).Add(AgentUpdateJournalStore.Offset(
+                    before.ScheduleSeed, TimeSpan.FromHours(6))),
+                incomingRequiredGeneration));
             schedulePersisted = true;
             await ProjectAsync(cancellation.Token).ConfigureAwait(false);
             using var http = new HttpClient(new HttpClientHandler { MaxAutomaticRedirections = 5 }) { Timeout = TimeSpan.FromSeconds(30) };
             var trust = AgentUpdateTrustFactory.BuildTrust();
-            var signal = new AgentUpdateSignal(required, !required, trust.ConfiguredManifestUrl, "service_update_check", trust.ExpectedChannel);
+            var signal = new AgentUpdateSignal(
+                effectiveRequired,
+                !effectiveRequired,
+                trust.ConfiguredManifestUrl,
+                "service_update_check",
+                trust.ExpectedChannel,
+                effectiveRequired
+                    ? incomingRequiredGeneration ?? lifecycle.Generation
+                    : null);
             var stager = new AgentUpdateStager(http, trust, Root);
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
@@ -511,16 +743,14 @@ internal static class AgentUpdateLocalService
                 throw new IntentionalUpdateCancellationException("Update authorization changed.", cancellation.Token);
             }
             var now = DateTimeOffset.UtcNow;
-            Journal.Change(before => before with
-            {
-                Phase = plan is null ? AgentUpdateStates.Current : AgentUpdateStates.AwaitingConsent,
-                Automatic = automatic,
-                LifecycleGeneration = lifecycle.Generation,
-                Required = required,
-                ApplyNotBeforeUtc = plan is null || !required ? null : now.Add(AgentUpdateJournalStore.Offset(
-                    before.ScheduleSeed + ":rollout:" + plan.Channel + ":" + plan.Sequence, TimeSpan.FromHours(24))),
-                NextCheckUtc = now.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
-            });
+            Journal.Change(before => TransitionStageResult(
+                before,
+                plan,
+                automatic,
+                effectiveRequired,
+                lifecycle.Generation,
+                now,
+                incomingRequiredGeneration));
             await ProjectAsync(cancellation.Token).ConfigureAwait(false);
             return plan;
         }
@@ -553,6 +783,7 @@ internal static class AgentUpdateLocalService
         AgentLifecycleSnapshot lifecycle,
         bool automatic,
         bool required,
+        long? requiredPolicyGeneration,
         CancellationToken callerToken)
     {
         var existing = ReadPlan(active) ?? throw new InvalidOperationException("Active update plan is missing.");
@@ -580,7 +811,8 @@ internal static class AgentUpdateLocalService
                 !required,
                 trust.ConfiguredManifestUrl,
                 "service_update_check",
-                trust.ExpectedChannel);
+                trust.ExpectedChannel,
+                required ? requiredPolicyGeneration ?? lifecycle.Generation : null);
             var currentIdentity = await new AgentUpdateStager(http, trust, Root)
                 .GetTrustedManifestIdentityAsync(signal, cancellation.Token)
                 .ConfigureAwait(false);
@@ -600,7 +832,11 @@ internal static class AgentUpdateLocalService
                 // evidence. A concurrent launch crossing the fence wins and must
                 // never be invalidated by this reconciliation.
                 var reconciled = Journal.ChangeAttempt(existing.AttemptId!, before =>
-                    TransitionReconciliationFailure(before, DateTimeOffset.UtcNow, required));
+                    TransitionReconciliationFailure(
+                        before,
+                        DateTimeOffset.UtcNow,
+                        required,
+                        requiredPolicyGeneration));
                 if (reconciled.Phase == "launch_requested" || reconciled.MayHaveStartedInstallation)
                     return ReadPlan(reconciled);
 
@@ -632,7 +868,8 @@ internal static class AgentUpdateLocalService
                             before,
                             latestLifecycle.Generation,
                             DateTimeOffset.UtcNow,
-                            required));
+                            required,
+                            requiredPolicyGeneration));
                 await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
                 // A generation mismatch retires this old attempt. The caller
                 // must stage afresh under the current lifecycle/policy and
@@ -658,7 +895,11 @@ internal static class AgentUpdateLocalService
             // HttpClient timeout cancellation is a failed identity fetch, not
             // caller intent. Preserve the old attempt and retry verification.
             var reconciled = await DeferReconciliationAsync(
-                existing.AttemptId!, ex, DateTimeOffset.UtcNow.Add(ReconciliationRetryDelay), required).ConfigureAwait(false);
+                existing.AttemptId!,
+                ex,
+                DateTimeOffset.UtcNow.Add(ReconciliationRetryDelay),
+                required,
+                requiredPolicyGeneration).ConfigureAwait(false);
             return ReadPlan(reconciled);
         }
         catch (OperationCanceledException ex) when (ex is IntentionalUpdateCancellationException ||
@@ -669,7 +910,11 @@ internal static class AgentUpdateLocalService
             // transition is complete before the exception is returned.
             var reconciled = Journal.ChangeAttempt(
                 existing.AttemptId!,
-                before => TransitionReconciliationDeferred(before, DateTimeOffset.UtcNow, required));
+                before => TransitionReconciliationDeferred(
+                    before,
+                    DateTimeOffset.UtcNow,
+                    required,
+                    requiredPolicyGeneration));
             if (reconciled.Phase != "launch_requested" && !reconciled.MayHaveStartedInstallation)
                 await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
             throw ex is IntentionalUpdateCancellationException intentional
@@ -681,7 +926,11 @@ internal static class AgentUpdateLocalService
         catch (Exception ex)
         {
             var reconciled = await DeferReconciliationAsync(
-                existing.AttemptId!, ex, DateTimeOffset.UtcNow.Add(ReconciliationRetryDelay), required).ConfigureAwait(false);
+                existing.AttemptId!,
+                ex,
+                DateTimeOffset.UtcNow.Add(ReconciliationRetryDelay),
+                required,
+                requiredPolicyGeneration).ConfigureAwait(false);
             return ReadPlan(reconciled);
         }
         finally
@@ -698,13 +947,25 @@ internal static class AgentUpdateLocalService
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         if (!AllowsAutomatic(lifecycle))
             return;
+        if (signal.LifecycleGeneration is long signalGeneration && signalGeneration != lifecycle.Generation)
+            return;
         if (!await OperationGate.WaitAsync(0, ct).ConfigureAwait(false)) return;
-        _ = RunHeartbeatWorkAsync(signal.Required, ct);
+        _ = RunHeartbeatWorkAsync(signal.Required, signal.LifecycleGeneration, ct);
     }
 
-    private static async Task RunHeartbeatWorkAsync(bool required, CancellationToken ct)
+    private static async Task RunHeartbeatWorkAsync(
+        bool required,
+        long? requiredPolicyGeneration,
+        CancellationToken ct)
     {
-        try { await CheckAndStageOwnedAsync(automatic: true, required, ct).ConfigureAwait(false); }
+        try
+        {
+            await CheckAndStageOwnedAsync(
+                automatic: true,
+                required,
+                ct,
+                requiredPolicyGeneration: requiredPolicyGeneration).ConfigureAwait(false);
+        }
         catch (IntentionalUpdateCancellationException) { }
         catch (AgentUpdateReconciliationDeferredException) { }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

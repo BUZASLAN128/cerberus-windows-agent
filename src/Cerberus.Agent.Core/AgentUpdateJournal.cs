@@ -33,6 +33,8 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? ApplyNotBeforeUtc { get; init; }
     public int RetryCount { get; init; }
     public DateTimeOffset? NextRetryUtc { get; init; }
+    /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
+    public long? RequiredPolicyGeneration { get; init; }
     public int? RunnerProcessId { get; init; }
     public DateTimeOffset? RunnerStartedUtc { get; init; }
     public int? InstallerProcessId { get; init; }
@@ -70,6 +72,8 @@ public sealed class AgentUpdateJournalStore
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
+            value.RequiredPolicyGeneration is < 0 ||
+            (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");
         return value;
