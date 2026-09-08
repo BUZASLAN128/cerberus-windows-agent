@@ -844,6 +844,332 @@ public sealed class AgentUpdateDurabilityTests
         Assert.NotNull(persisted.ReconciliationSnapshot);
     }
 
+    [Theory]
+    [InlineData(AgentUpdateStates.Downloading)]
+    [InlineData(AgentUpdateStates.Blocked)]
+    [InlineData(AgentUpdateStates.Staged)]
+    [InlineData(AgentUpdateStates.AwaitingConsent)]
+    [InlineData(AgentUpdateStates.RetryableBusy)]
+    public void RecoveryDispatcher_RetiresMissingPreInstallBeforeNormalRouting(string phase)
+    {
+        var root = NewRoot();
+        var attemptId = "dispatcher-missing-" + phase;
+        CreateDisposableAttemptLayout(root, attemptId);
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = attemptId,
+            Phase = phase,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+            ApplyNotBeforeUtc = phase is AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Staged
+                ? retryAt.AddHours(-1)
+                : null,
+            RetryCount = phase is AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Staged ? 1 : 0,
+            NextRetryUtc = phase is AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy
+                ? retryAt.AddMinutes(5)
+                : null,
+            NextCheckUtc = retryAt.AddDays(1),
+            ReconciliationSnapshot = phase == AgentUpdateStates.Blocked
+                ? new AgentUpdateReconciliationSnapshot(
+                    Phase: AgentUpdateStates.AwaitingConsent,
+                    LifecycleGeneration: 41,
+                    Automatic: true,
+                    Required: true,
+                    ApplyNotBeforeUtc: retryAt.AddHours(-1),
+                    RetryCount: 1,
+                    NextRetryUtc: retryAt.AddMinutes(5),
+                    NextCheckUtc: retryAt.AddDays(1))
+                : null,
+        };
+        AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+        var journal = new AgentUpdateJournalStore(root);
+
+        var recovered = AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration: 41,
+            retryAtUtc: retryAt,
+            required: false,
+            requiredPolicyGeneration: null,
+            change: DisposableJournalChange(root),
+            changeAttempt: DisposableJournalWriter(root),
+            read: journal.Read);
+
+        Assert.Equal(AgentUpdateStates.Blocked, recovered.Phase);
+        Assert.Equal(attemptId, recovered.AttemptId);
+        Assert.True(recovered.Required);
+        Assert.Equal(41, recovered.RequiredPolicyGeneration);
+        Assert.Null(recovered.ReconciliationSnapshot);
+        Assert.Null(recovered.ApplyNotBeforeUtc);
+        Assert.Null(recovered.NextRetryUtc);
+        Assert.Equal(retryAt, recovered.NextCheckUtc);
+        Assert.False(recovered.HasUnfinishedAttempt);
+        Assert.Equal(recovered, journal.Read());
+
+        var freshStage = AgentUpdateLocalService.TransitionStageStart(
+            recovered,
+            automatic: true,
+            required: AgentUpdateLocalService.CarryRequiredBlockedIntent(
+                recovered,
+                required: false,
+                lifecycleGeneration: 41),
+            lifecycleGeneration: 41,
+            nextCheckUtc: retryAt);
+        Assert.Equal(AgentUpdateStates.Checking, freshStage.Phase);
+        Assert.True(freshStage.Required);
+        Assert.Equal(41, freshStage.RequiredPolicyGeneration);
+    }
+
+    [Theory]
+    [InlineData(41, true)]
+    [InlineData(42, false)]
+    public void RecoveryDispatcher_RecoversInterruptedCheckingWithoutAttempt(int lifecycleGeneration, bool requiredAfterRecovery)
+    {
+        var root = NewRoot();
+        var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var current = new AgentUpdateJournal
+        {
+            Phase = AgentUpdateStates.Checking,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+            ApplyNotBeforeUtc = retryAt.AddHours(-1),
+            RetryCount = 1,
+            NextRetryUtc = retryAt.AddMinutes(5),
+            NextCheckUtc = retryAt.AddDays(1),
+        };
+        AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+        var journal = new AgentUpdateJournalStore(root);
+
+        var recovered = AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration,
+            retryAt,
+            required: false,
+            requiredPolicyGeneration: null,
+            change: DisposableJournalChange(root),
+            changeAttempt: DisposableJournalWriter(root),
+            read: journal.Read);
+
+        Assert.Equal(AgentUpdateStates.NotChecked, recovered.Phase);
+        Assert.Null(recovered.AttemptId);
+        Assert.Equal(lifecycleGeneration, recovered.LifecycleGeneration);
+        Assert.Equal(requiredAfterRecovery, recovered.Required);
+        Assert.Equal(requiredAfterRecovery ? lifecycleGeneration : null, recovered.RequiredPolicyGeneration);
+        Assert.Null(recovered.ReconciliationSnapshot);
+        Assert.Null(recovered.ApplyNotBeforeUtc);
+        Assert.Null(recovered.NextRetryUtc);
+        Assert.Equal(retryAt, recovered.NextCheckUtc);
+        Assert.Equal(recovered, journal.Read());
+        Assert.Equal(requiredAfterRecovery, AgentUpdateLocalService.CarryRequiredBlockedIntent(
+            recovered,
+            required: false,
+            lifecycleGeneration: lifecycleGeneration));
+    }
+
+    [Theory]
+    [InlineData(AgentUpdateStates.Downloading)]
+    [InlineData(AgentUpdateStates.Staged)]
+    [InlineData(AgentUpdateStates.AwaitingConsent)]
+    [InlineData(AgentUpdateStates.RetryableBusy)]
+    public void RecoveryDispatcher_UsesValidPlanOnlyForStablePreInstallRouting(string phase)
+    {
+        var root = NewRoot();
+        var attemptId = "dispatcher-planned-" + phase;
+        var attemptDirectory = CreateDisposableAttemptLayout(root, attemptId);
+        var required = phase is AgentUpdateStates.Downloading or AgentUpdateStates.Staged;
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = attemptId,
+            Phase = phase,
+            Required = required,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = required ? 41 : null,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        var plan = new AgentUpdatePlan(
+            ArtifactKind: "msi",
+            Version: "2.0.0",
+            Channel: "stable",
+            ArtifactPath: Path.Combine(attemptDirectory, AgentUpdateSecurity.ArtifactFileName),
+            Sha256: new string('a', 64),
+            StagedAtUtc: "2026-09-08T10:00:00Z",
+            Reason: "dispatcher-plan",
+            AttemptId: attemptId,
+            Sequence: 7,
+            ManifestDigest: new string('b', 64));
+        AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+        AgentUpdateDurableFile.Write(
+            Path.Combine(attemptDirectory, AgentUpdateSecurity.PlanFileName),
+            attemptDirectory,
+            plan);
+        var journal = new AgentUpdateJournalStore(root);
+
+        var recovered = AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration: 41,
+            retryAtUtc: DateTimeOffset.Parse("2026-09-08T12:34:56Z"),
+            required: required,
+            requiredPolicyGeneration: required ? 41 : null,
+            change: DisposableJournalChange(root),
+            changeAttempt: DisposableJournalWriter(root),
+            read: journal.Read);
+
+        if (phase is AgentUpdateStates.Downloading or AgentUpdateStates.Staged)
+        {
+            Assert.Equal(AgentUpdateStates.Blocked, recovered.Phase);
+            Assert.True(recovered.Required);
+            Assert.Equal(41, recovered.RequiredPolicyGeneration);
+            Assert.Null(recovered.ReconciliationSnapshot);
+            Assert.Equal(DateTimeOffset.Parse("2026-09-08T12:34:56Z"), recovered.NextCheckUtc);
+            Assert.True(File.Exists(Path.Combine(attemptDirectory, AgentUpdateSecurity.PlanFileName)));
+        }
+        else
+        {
+            Assert.Equal(current, recovered);
+            Assert.Equal(current, journal.Read());
+        }
+    }
+
+    [Theory]
+    [InlineData("launch_requested")]
+    [InlineData(AgentUpdateStates.Installing)]
+    [InlineData(AgentUpdateStates.RecoveryRequired)]
+    [InlineData(AgentUpdateStates.Installed)]
+    [InlineData(AgentUpdateStates.Failed)]
+    [InlineData(AgentUpdateStates.Quarantined)]
+    public void RecoveryDispatcher_LeavesProtectedAndTerminalNonCandidatesUntouched(string phase)
+    {
+        var root = NewRoot();
+        var attemptId = "dispatcher-noncandidate-" + phase;
+        CreateDisposableAttemptLayout(root, attemptId);
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = attemptId,
+            Phase = phase,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+        var journal = new AgentUpdateJournalStore(root);
+
+        var recovered = AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration: 41,
+            retryAtUtc: DateTimeOffset.Parse("2026-09-08T12:34:56Z"),
+            required: false,
+            requiredPolicyGeneration: null,
+            change: DisposableJournalChange(root),
+            changeAttempt: DisposableJournalWriter(root),
+            read: journal.Read);
+
+        Assert.Equal(current, recovered);
+        Assert.Equal(current, journal.Read());
+    }
+
+    [Fact]
+    public void RecoveryDispatcher_PropagatesCorruptPlanWithoutRetirement()
+    {
+        var root = NewRoot();
+        var attemptId = "dispatcher-corrupt-plan";
+        var attemptDirectory = CreateDisposableAttemptLayout(root, attemptId);
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = attemptId,
+            Phase = AgentUpdateStates.Staged,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+            NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+        };
+        AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+        File.WriteAllText(Path.Combine(attemptDirectory, AgentUpdateSecurity.PlanFileName), "{");
+        var journal = new AgentUpdateJournalStore(root);
+
+        var error = Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration: 41,
+            retryAtUtc: DateTimeOffset.Parse("2026-09-08T12:34:56Z"),
+            required: false,
+            requiredPolicyGeneration: null,
+            change: DisposableJournalChange(root),
+            changeAttempt: DisposableJournalWriter(root),
+            read: journal.Read));
+
+        Assert.Contains("corrupt", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(current, journal.Read());
+    }
+
+    [Fact]
+    public void RecoveryDispatcher_ProtectsConcurrentFenceTransition()
+    {
+        var root = NewRoot();
+        var attemptId = "dispatcher-racing-protected";
+        CreateDisposableAttemptLayout(root, attemptId);
+        var current = new AgentUpdateJournal
+        {
+            AttemptId = attemptId,
+            Phase = AgentUpdateStates.Blocked,
+            Required = true,
+            LifecycleGeneration = 41,
+            RequiredPolicyGeneration = 41,
+            ReconciliationSnapshot = new AgentUpdateReconciliationSnapshot(
+                Phase: AgentUpdateStates.AwaitingConsent,
+                LifecycleGeneration: 41,
+                Automatic: true,
+                Required: true,
+                ApplyNotBeforeUtc: DateTimeOffset.UtcNow,
+                RetryCount: 1,
+                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(5),
+                NextCheckUtc: DateTimeOffset.UtcNow.AddHours(1)),
+        };
+        var transactionPath = Path.Combine(root, "transaction.json");
+        AgentUpdateDurableFile.Write(transactionPath, root, current);
+        var journal = new AgentUpdateJournalStore(root);
+
+        // Unit/support race writer: it models the canonical attempt-ID compare
+        // and durable roundtrip, not protected-root locking or ACL acceptance.
+        AgentUpdateJournal RaceWriter(
+            string requestedAttemptId,
+            Func<AgentUpdateJournal, AgentUpdateJournal> transition)
+        {
+            var before = journal.Read();
+            if (!string.Equals(before.AttemptId, requestedAttemptId, StringComparison.Ordinal))
+                throw new InvalidOperationException("Update attempt is no longer active.");
+            var protectedBefore = before with { Phase = AgentUpdateStates.RecoveryRequired };
+            AgentUpdateDurableFile.Write(transactionPath, root, protectedBefore);
+            var committedBefore = journal.Read();
+            var after = transition(committedBefore) with { Revision = checked(committedBefore.Revision + 1) };
+            AgentUpdateDurableFile.Write(transactionPath, root, after);
+            return journal.Read();
+        }
+
+        var error = Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.RecoverActiveAttempt(
+            root,
+            journal.Read(),
+            lifecycleGeneration: 41,
+            retryAtUtc: DateTimeOffset.Parse("2026-09-08T12:34:56Z"),
+            required: false,
+            requiredPolicyGeneration: null,
+            change: DisposableJournalChange(root),
+            changeAttempt: RaceWriter,
+            read: journal.Read));
+
+        Assert.Equal("Active update plan is missing.", error.Message);
+        var persisted = journal.Read();
+        Assert.Equal(AgentUpdateStates.RecoveryRequired, persisted.Phase);
+        Assert.True(persisted.MayHaveStartedInstallation);
+        Assert.NotNull(persisted.ReconciliationSnapshot);
+    }
+
     [Fact]
     public void ScheduledRetry_CarriesRequiredIntentOnlyFromBlockedAttempt()
     {
@@ -1264,6 +1590,19 @@ public sealed class AgentUpdateDurabilityTests
             var before = store.Read();
             if (!string.Equals(before.AttemptId, attemptId, StringComparison.Ordinal))
                 throw new InvalidOperationException("Update attempt is no longer active.");
+            var after = transition(before) with { Revision = checked(before.Revision + 1) };
+            AgentUpdateDurableFile.Write(path, root, after);
+            return new AgentUpdateJournalStore(root).Read();
+        };
+
+    // Unit/support writer only: mirrors the canonical journal Change roundtrip
+    // for no-attempt recovery; it is not native protected locking/ACL acceptance.
+    private static Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> DisposableJournalChange(string root)
+        => transition =>
+        {
+            var path = Path.Combine(root, "transaction.json");
+            var store = new AgentUpdateJournalStore(root);
+            var before = store.Read();
             var after = transition(before) with { Revision = checked(before.Revision + 1) };
             AgentUpdateDurableFile.Write(path, root, after);
             return new AgentUpdateJournalStore(root).Read();

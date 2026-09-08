@@ -277,9 +277,9 @@ internal static class AgentUpdateLocalService
         bool required,
         long lifecycleGeneration)
         => required || (current.Required &&
-            (current.Phase is AgentUpdateStates.Blocked or AgentUpdateStates.Checking or AgentUpdateStates.Available) &&
+            (current.Phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Blocked or AgentUpdateStates.Checking or AgentUpdateStates.Available) &&
             ((current.RequiredPolicyGeneration == lifecycleGeneration &&
-                (current.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Available ||
+                (current.Phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Checking or AgentUpdateStates.Available ||
                     current.AttemptId is not null)) ||
              (current.RequiredPolicyGeneration is null && current.Phase == AgentUpdateStates.Blocked &&
                 current.AttemptId is not null && current.LifecycleGeneration == lifecycleGeneration)));
@@ -322,7 +322,44 @@ internal static class AgentUpdateLocalService
         long? incomingGeneration)
         => required
             ? RequiredPolicyGenerationFor(before, true, incomingGeneration) ?? lifecycleGeneration
-            : null;
+             : null;
+
+    /// <summary>
+    /// Recovers an interrupted pre-install record that no longer has an attempt
+    /// identity. Only current-generation explicit required provenance survives;
+    /// an unbound consent or terminal/history record cannot authorize a stage.
+    /// </summary>
+    internal static AgentUpdateJournal TransitionInterruptedPreInstallWithoutAttempt(
+        AgentUpdateJournal current,
+        long lifecycleGeneration,
+        DateTimeOffset retryAtUtc,
+        bool required = false,
+        long? requiredPolicyGeneration = null)
+    {
+        var retainedRequired = current.Required && current.RequiredPolicyGeneration == lifecycleGeneration;
+        var effectiveRequired = required || retainedRequired;
+        return current with
+        {
+            Phase = AgentUpdateStates.NotChecked,
+            AttemptId = null,
+            LifecycleGeneration = lifecycleGeneration,
+            Required = effectiveRequired,
+            RequiredPolicyGeneration = effectiveRequired
+                ? requiredPolicyGeneration ?? lifecycleGeneration
+                : null,
+            InstallerResult = null,
+            RetryCount = 0,
+            NextRetryUtc = null,
+            ApplyNotBeforeUtc = null,
+            RunnerProcessId = null,
+            RunnerStartedUtc = null,
+            InstallerProcessId = null,
+            InstallerStartedUtc = null,
+            InstallationBootId = null,
+            ReconciliationSnapshot = null,
+            NextCheckUtc = retryAtUtc,
+        };
+    }
 
     /// <summary>Starts a check while carrying only current-generation required provenance.</summary>
     internal static AgentUpdateJournal TransitionCheckStart(
@@ -565,6 +602,17 @@ internal static class AgentUpdateLocalService
             if (automatic && !AllowsAutomatic(lifecycle)) return AgentUpdateCheckResult.None;
             var active = Journal.Read();
             var effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
+            active = RecoverActiveAttempt(
+                Root,
+                active,
+                lifecycle.Generation,
+                DateTimeOffset.UtcNow,
+                required: false,
+                requiredPolicyGeneration: null,
+                Journal.Change,
+                Journal.ChangeAttempt,
+                Journal.Read);
+            effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
             if (active.ReconciliationSnapshot is not null)
             {
                 // A deferred attempt must be identity-reconciled before a
@@ -678,6 +726,17 @@ internal static class AgentUpdateLocalService
         long? incomingRequiredGeneration = incomingRequired ? capturedRequiredGeneration : null;
         var active = Journal.Read();
         var effectiveRequired = CarryRequiredBlockedIntent(active, incomingRequired, lifecycle.Generation);
+        active = RecoverActiveAttempt(
+            Root,
+            active,
+            lifecycle.Generation,
+            DateTimeOffset.UtcNow,
+            effectiveRequired,
+            incomingRequiredGeneration,
+            Journal.Change,
+            Journal.ChangeAttempt,
+            Journal.Read);
+        effectiveRequired = CarryRequiredBlockedIntent(active, incomingRequired, lifecycle.Generation);
         if (active.HasUnfinishedAttempt || active.ReconciliationSnapshot is not null)
         {
             var existingPlan = await ReconcileActiveAttemptAsync(
@@ -1095,10 +1154,104 @@ internal static class AgentUpdateLocalService
         await ProjectAsync(ct).ConfigureAwait(false);
     }
 
+    private static bool IsIncompletePreInstallWithoutAttempt(AgentUpdateJournal active)
+        => !active.MayHaveStartedInstallation && active.Phase != "launch_requested" &&
+            active.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Downloading or
+                AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or
+                AgentUpdateStates.RetryableBusy ||
+           (!active.MayHaveStartedInstallation && active.Phase == AgentUpdateStates.Blocked &&
+                active.ReconciliationSnapshot is not null);
+
+    private static bool HasPreInstallAttemptForRecovery(AgentUpdateJournal active)
+        => active.Phase is not (AgentUpdateStates.Installed or AgentUpdateStates.Failed or
+                AgentUpdateStates.Quarantined) &&
+            active.Phase != "launch_requested" && !active.MayHaveStartedInstallation &&
+            (active.ReconciliationSnapshot is not null || active.Phase is
+                AgentUpdateStates.NotChecked or AgentUpdateStates.Available or AgentUpdateStates.Checking or
+                AgentUpdateStates.Downloading or AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or
+                AgentUpdateStates.RetryableBusy);
+
+    /// <summary>
+    /// Recovers all incomplete pre-install records before startup/scheduler or
+    /// check/stage routing can convert or apply them. The delegates keep this
+    /// exact decision boundary testable with disposable journal storage while
+    /// production binds its canonical Change/ChangeAttempt/Read operations.
+    /// </summary>
+    internal static AgentUpdateJournal RecoverActiveAttempt(
+        string root,
+        AgentUpdateJournal active,
+        long lifecycleGeneration,
+        DateTimeOffset retryAtUtc,
+        bool required,
+        long? requiredPolicyGeneration,
+        Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
+        Func<string, Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeAttempt,
+        Func<AgentUpdateJournal> read)
+    {
+        if (active.AttemptId is null)
+        {
+            if (!IsIncompletePreInstallWithoutAttempt(active))
+                return active;
+            return change(before => before.AttemptId is null && IsIncompletePreInstallWithoutAttempt(before)
+                ? TransitionInterruptedPreInstallWithoutAttempt(
+                    before,
+                    lifecycleGeneration,
+                    retryAtUtc,
+                    required,
+                    requiredPolicyGeneration)
+                : before);
+        }
+
+        if (!HasPreInstallAttemptForRecovery(active))
+            return active;
+
+        var plan = LoadOrRetireMissingPlan(
+            root,
+            active,
+            required,
+            requiredPolicyGeneration,
+            retryAtUtc,
+            changeAttempt);
+        if (plan is null)
+            return read();
+
+        // A crash can leave a complete plan while its preceding Download/Check
+        // phase is still durable. Keep the artifact as evidence, but make the
+        // incomplete transaction due for a fresh trusted stage; never auto-apply
+        // old consent merely because the file exists.
+        if (active.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged)
+            return changeAttempt(
+                active.AttemptId,
+                before => before.AttemptId == active.AttemptId &&
+                    before.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged
+                        ? TransitionReconciliationFailure(
+                            before,
+                            retryAtUtc,
+                            required || before.Required,
+                            requiredPolicyGeneration)
+                        : before);
+
+        return active;
+    }
+
     private static async Task ReconcileOwnedAsync(CancellationToken ct, bool allowHealth = true)
     {
-        var active = Journal.Read();
-        if (active.AttemptId is null) return;
+        var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+        var active = RecoverActiveAttempt(
+            Root,
+            Journal.Read(),
+            lifecycle.Generation,
+            DateTimeOffset.UtcNow,
+            required: false,
+            requiredPolicyGeneration: null,
+            Journal.Change,
+            Journal.ChangeAttempt,
+            Journal.Read);
+        if (active.AttemptId is null)
+        {
+            await ProjectAsync(ct).ConfigureAwait(false);
+            return;
+        }
         if (active.Phase is "launch_requested" or "install_may_have_started" or AgentUpdateStates.Installing)
         {
             if (!IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc))
