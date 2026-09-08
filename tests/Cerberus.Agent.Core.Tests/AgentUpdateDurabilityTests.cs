@@ -548,6 +548,7 @@ public sealed class AgentUpdateDurabilityTests
     public void RequiredProvenance_SurvivesCheckOnlyAvailableIntoFreshStageSameGeneration()
     {
         var retryAt = DateTimeOffset.Parse("2026-09-08T12:34:56Z");
+        var dailyNextCheck = retryAt.AddDays(1);
         var retired = AgentUpdateLocalService.TransitionReconciliationFailure(
             new AgentUpdateJournal
             {
@@ -556,7 +557,7 @@ public sealed class AgentUpdateDurabilityTests
                 Required = true,
                 LifecycleGeneration = 41,
                 ApplyNotBeforeUtc = retryAt,
-                NextCheckUtc = DateTimeOffset.Parse("2026-09-10T00:00:00Z"),
+                NextCheckUtc = dailyNextCheck,
             },
             retryAt);
 
@@ -569,7 +570,7 @@ public sealed class AgentUpdateDurabilityTests
             automatic: true,
             required: requiredForCheck,
             lifecycleGeneration: 41,
-            nextCheckUtc: retryAt);
+            nextCheckUtc: dailyNextCheck);
         Assert.Equal(AgentUpdateStates.Checking, checking.Phase);
         Assert.Null(checking.AttemptId);
         Assert.True(checking.Required);
@@ -580,11 +581,36 @@ public sealed class AgentUpdateDurabilityTests
             available: true,
             required: AgentUpdateLocalService.CarryRequiredBlockedIntent(
                 checking, required: false, lifecycleGeneration: 41),
-            lifecycleGeneration: 41);
+            lifecycleGeneration: 41,
+            now: retryAt);
         Assert.Equal(AgentUpdateStates.Available, available.Phase);
         Assert.Null(available.AttemptId);
         Assert.True(available.Required);
         Assert.Equal(41, available.RequiredPolicyGeneration);
+        Assert.Equal(retryAt, available.NextCheckUtc);
+        Assert.True(!available.HasUnfinishedAttempt && available.NextCheckUtc <= retryAt);
+
+        var recommendedChecking = AgentUpdateLocalService.TransitionCheckStart(
+            retired with { Required = false, RequiredPolicyGeneration = null },
+            automatic: true,
+            required: false,
+            lifecycleGeneration: 41,
+            nextCheckUtc: dailyNextCheck);
+        var recommendedAvailable = AgentUpdateLocalService.TransitionCheckResult(
+            recommendedChecking,
+            available: true,
+            required: false,
+            lifecycleGeneration: 41,
+            now: retryAt);
+        Assert.Equal(dailyNextCheck, recommendedAvailable.NextCheckUtc);
+
+        var requiredUnavailable = AgentUpdateLocalService.TransitionCheckResult(
+            recommendedChecking,
+            available: false,
+            required: true,
+            lifecycleGeneration: 41,
+            now: retryAt);
+        Assert.Equal(dailyNextCheck, requiredUnavailable.NextCheckUtc);
 
         var requiredForStage = AgentUpdateLocalService.CarryRequiredBlockedIntent(
             available, required: false, lifecycleGeneration: 41);

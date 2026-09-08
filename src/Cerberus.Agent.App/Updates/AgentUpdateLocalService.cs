@@ -345,13 +345,14 @@ internal static class AgentUpdateLocalService
             NextCheckUtc = nextCheckUtc,
         };
 
-    /// <summary>Finishes a check without preserving required policy when no release is available.</summary>
+    /// <summary>Finishes a check, making a newly available required release immediately schedulable.</summary>
     internal static AgentUpdateJournal TransitionCheckResult(
         AgentUpdateJournal before,
         bool available,
         bool required,
         long lifecycleGeneration,
-        long? requiredPolicyGeneration = null)
+        long? requiredPolicyGeneration = null,
+        DateTimeOffset? now = null)
         => before with
         {
             AttemptId = null,
@@ -360,6 +361,7 @@ internal static class AgentUpdateLocalService
             Required = available && required,
             RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
                 before, available && required, lifecycleGeneration, requiredPolicyGeneration),
+            NextCheckUtc = available && required ? now ?? DateTimeOffset.UtcNow : before.NextCheckUtc,
         };
 
     /// <summary>Starts staging with a required policy bound to the current lifecycle generation.</summary>
@@ -620,11 +622,13 @@ internal static class AgentUpdateLocalService
                     throw new IntentionalUpdateCancellationException("Update authorization changed.", cancellation.Token);
                 }
                 lifecycle = latestLifecycle;
+                var checkCompletedUtc = DateTimeOffset.UtcNow;
                 Journal.Change(before => TransitionCheckResult(
                     before,
                     result.Available,
                     effectiveRequired,
-                    lifecycle.Generation));
+                    lifecycle.Generation,
+                    now: checkCompletedUtc));
                 var previous = await Projection.ReadAsync(WindowsDeviceInfo.GetAgentVersion(), cancellation.Token).ConfigureAwait(false);
                 await Projection.WriteAsync(previous.Transition(result.Available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
                     WindowsDeviceInfo.GetAgentVersion(), targetVersion: result.Version, channel: result.Channel, markChecked: true)
