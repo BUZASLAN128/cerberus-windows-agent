@@ -389,7 +389,7 @@ public sealed class AgentUxStaticTests
         Assert.DoesNotContain("cerberus-app-mark", xaml);
         Assert.Contains("SystemInfoLabel", xaml);
         Assert.Contains("DeviceSetupCard.Visibility = setupComplete ? Visibility.Collapsed : Visibility.Visible", code);
-        Assert.Contains("BuildStatusReport(registered, svc, ts)", code);
+        Assert.Contains("BuildStatusReport(registered, svc, ts, setupComplete)", code);
         Assert.Contains("ReadinessValue.Text = AgentLocalizer.Get(\"StatusReport\")", code);
         Assert.Contains("AgentLocalizer.Get(\"StatusReportDetail\")", code);
         Assert.Contains("ReportServiceStoppedTitle", strings);
@@ -451,7 +451,7 @@ public sealed class AgentUxStaticTests
 
         Assert.Contains("src/Cerberus.Agent.App/Cerberus.Agent.App.csproj", solution);
         Assert.DoesNotContain("src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj", solution);
-        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\" $true", releaseScript);
+        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\"", releaseScript);
         Assert.DoesNotContain("Publish-AgentProject \"src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj\"", releaseScript);
         Assert.Contains("Cerberus.Agent.exe", releaseScript);
         Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", releaseScript);
@@ -460,8 +460,8 @@ public sealed class AgentUxStaticTests
         Assert.Contains("$allowedRuntimeExeNames", releaseScript);
         Assert.Contains("createdump.exe", releaseScript);
         Assert.Contains("Unexpected runtime executable(s) produced", releaseScript);
-        Assert.Contains("Cerberus.Agent-$channel-$cleanVersion", workflow);
-        Assert.DoesNotContain("Cerberus.Agent.Setup-$channel-$cleanVersion", workflow);
+        Assert.Contains("Cerberus.Agent-$channel-$version", workflow);
+        Assert.DoesNotContain("Cerberus.Agent.Setup-", workflow);
     }
 
     [Fact]
