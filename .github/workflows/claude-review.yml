@@ -1,11 +1,12 @@
 name: claude-review
 
 # Exact-head independent review by Claude.
-# Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is marked ready,
-# reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
+# Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is opened ready,
+# marked ready, reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
 # review is skipped; a newer push cancels the older run.
-# Comment "@claude review [focus]" on the PR (repository owner only): claude-review-comment.yml relays it
-# to a forced workflow_dispatch of this workflow, so no comment-triggered job ever checks out PR code.
+# Comment "@claude review [focus]" on the PR (repository owner or organization member):
+# claude-review-comment.yml relays it to a forced workflow_dispatch of this workflow, so no
+# comment-triggered job ever checks out PR code. Forced runs also review draft PRs.
 # Manual dispatch re-runs an incomplete run:
 #   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="..."] [-f force=true]
 # Exhaustive single-pass review (method: .claude/skills/review-tracker/references/review-contract.md
@@ -20,7 +21,7 @@ name: claude-review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize, reopened]
+    types: [opened, ready_for_review, synchronize, reopened]
     branches: [dev, develop, main, master]
   workflow_dispatch:
     inputs:
@@ -74,7 +75,7 @@ jobs:
           head="$(jq -r .head.sha <<<"$data")"
           base="$(jq -r .base.sha <<<"$data")"
           [ "$state" = "open" ] || { echo "::error::PR #${PR} is ${state}"; exit 1; }
-          [ "$(jq -r .draft <<<"$data")" = "false" ] || { echo "::error::PR #${PR} is a draft; mark it ready for review"; exit 1; }
+          [ "$(jq -r .draft <<<"$data")" = "false" ] || [ "${FORCE}" = "true" ] || { echo "::error::PR #${PR} is a draft; mark it ready for review or dispatch with force=true"; exit 1; }
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::fork PRs are not reviewed"; exit 1; }
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha"; exit 1; }
           merge_base="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq .merge_base_commit.sha)"
