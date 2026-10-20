@@ -123,35 +123,14 @@ jobs:
             echo "self_change=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Prepare subprocess sandbox
-        if: steps.pr.outputs.skip != 'true'
-        id: sandbox
-        run: |
-          # Env scrubbing (keeps the OAuth token out of tool subprocesses) runs Bash tools in Claude Code's
-          # sandbox, which needs bubblewrap (with user namespaces) and socat; without socat every Bash call fails.
-          pkgs="bubblewrap socat"
-          if ! { command -v bwrap && command -v socat; } > /dev/null; then
-            sudo apt-get install -y -qq $pkgs > /dev/null 2>&1 \
-              || { sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq $pkgs > /dev/null 2>&1; } || true
-          fi
-          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
-          if command -v socat > /dev/null && command -v bwrap > /dev/null \
-            && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
-            echo "scrub=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::bubblewrap or socat unavailable; Claude review not run without subprocess env scrubbing"
-            echo "scrub=0" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Claude review
-        if: steps.pr.outputs.skip != 'true' && steps.sandbox.outputs.scrub == '1'
+        if: steps.pr.outputs.skip != 'true'
         id: claude
         continue-on-error: true
         timeout-minutes: 25
         uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1.0.254
         env:
           CLAUDE_CODE_EFFORT_LEVEL: high
-          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The @claude review relay dispatches this workflow with GITHUB_TOKEN, so its runs start as
@@ -235,6 +214,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           EVENT_NAME: ${{ github.event_name }}
           SELF_CHANGE: ${{ steps.base.outputs.self_change }}
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
           set -euo pipefail
           python3 -I - <<'PY'
@@ -266,6 +246,12 @@ jobs:
                           "only runs the default-branch version of that file. Use a local independent review for this PR.")
               else:
                   note = f"Review incomplete: {exc}. Re-dispatch once for this head after fixing the cause."
+              try:  # the action hides tool calls, so log the denied ones for diagnosis
+                  log = json.loads(pathlib.Path(os.environ.get("EXEC_FILE") or "-").read_text(encoding="utf-8"))
+                  for d in next(m for m in reversed(log) if m.get("type") == "result").get("permission_denials") or []:
+                      print("denied:", d.get("tool_name"), json.dumps(d.get("tool_input"))[:300])
+              except Exception:
+                  pass
           body = [
               "## Claude exact-head review",
               f"**Head:** `{head}`  ",
