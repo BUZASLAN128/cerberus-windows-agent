@@ -130,19 +130,19 @@ jobs:
           if command -v bwrap > /dev/null && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
             echo "scrub=1" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::bubblewrap unavailable; subprocess env scrubbing disabled for this run"
+            echo "::error::bubblewrap unavailable; Claude review not run without subprocess env scrubbing"
             echo "scrub=0" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Claude review
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.sandbox.outputs.scrub == '1'
         id: claude
         continue-on-error: true
         timeout-minutes: 25
         uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1.0.254
         env:
           CLAUDE_CODE_EFFORT_LEVEL: high
-          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: ${{ steps.sandbox.outputs.scrub }}
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
