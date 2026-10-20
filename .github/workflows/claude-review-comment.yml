@@ -1,7 +1,7 @@
 name: claude-review-comment
 
-# Relays a repository owner's PR comment "@claude review [focus]" to claude-review.yml as a forced
-# workflow_dispatch for the PR's current head. This job never checks out or runs pull request code;
+# Relays a PR comment "@claude review [focus]" by the repository owner or an organization member to
+# claude-review.yml as a forced workflow_dispatch for the PR's current head (drafts included). This job never checks out or runs pull request code;
 # the dispatched run uses the default-branch workflow, which resolves and pins the exact head itself.
 
 on:
@@ -18,7 +18,7 @@ jobs:
     if: >-
       github.event.issue.pull_request && github.event.issue.state == 'open' &&
       startsWith(github.event.comment.body, '@claude review') &&
-      github.event.comment.author_association == 'OWNER'
+      contains(fromJSON('["OWNER","MEMBER"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

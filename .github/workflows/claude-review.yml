@@ -1,11 +1,12 @@
 name: claude-review
 
 # Exact-head independent review by Claude.
-# Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is marked ready,
-# reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
+# Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is opened ready,
+# marked ready, reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
 # review is skipped; a newer push cancels the older run.
-# Comment "@claude review [focus]" on the PR (repository owner only): claude-review-comment.yml relays it
-# to a forced workflow_dispatch of this workflow, so no comment-triggered job ever checks out PR code.
+# Comment "@claude review [focus]" on the PR (repository owner or organization member):
+# claude-review-comment.yml relays it to a forced workflow_dispatch of this workflow, so no
+# comment-triggered job ever checks out PR code. Forced runs also review draft PRs.
 # Manual dispatch re-runs an incomplete run:
 #   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="..."] [-f force=true]
 # Exhaustive single-pass review (method: .claude/skills/review-tracker/references/review-contract.md
@@ -20,7 +21,7 @@ name: claude-review
 
 on:
   pull_request:
-    types: [ready_for_review, synchronize, reopened]
+    types: [opened, ready_for_review, synchronize, reopened]
     branches: [dev, develop, main, master]
   workflow_dispatch:
     inputs:
@@ -74,7 +75,7 @@ jobs:
           head="$(jq -r .head.sha <<<"$data")"
           base="$(jq -r .base.sha <<<"$data")"
           [ "$state" = "open" ] || { echo "::error::PR #${PR} is ${state}"; exit 1; }
-          [ "$(jq -r .draft <<<"$data")" = "false" ] || { echo "::error::PR #${PR} is a draft; mark it ready for review"; exit 1; }
+          [ "$(jq -r .draft <<<"$data")" = "false" ] || [ "${FORCE}" = "true" ] || { echo "::error::PR #${PR} is a draft; mark it ready for review or dispatch with force=true"; exit 1; }
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::fork PRs are not reviewed"; exit 1; }
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha"; exit 1; }
           merge_base="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq .merge_base_commit.sha)"
@@ -106,6 +107,7 @@ jobs:
 
       - name: Fetch merge base
         if: steps.pr.outputs.skip != 'true'
+        id: base
         env:
           MERGE_BASE: ${{ steps.pr.outputs.merge_base }}
           GH_TOKEN: ${{ github.token }}
@@ -117,9 +119,27 @@ jobs:
           mkdir -p .claude-review
           git diff --stat "${MERGE_BASE}" HEAD > .claude-review/diffstat.txt
           echo "Changed files: $(git diff --name-only "${MERGE_BASE}" HEAD | wc -l)"
+          if git diff --name-only "${MERGE_BASE}" HEAD | grep -qx '.github/workflows/claude-review.yml'; then
+            echo "self_change=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare subprocess sandbox
+        if: steps.pr.outputs.skip != 'true'
+        id: sandbox
+        run: |
+          # Env scrubbing (keeps the OAuth token out of tool subprocesses) needs bubblewrap with user namespaces.
+          command -v bwrap > /dev/null || sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1 \
+            || { sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1; } || true
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
+          if command -v bwrap > /dev/null && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
+            echo "scrub=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::bubblewrap unavailable; Claude review not run without subprocess env scrubbing"
+            echo "scrub=0" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Claude review
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.sandbox.outputs.scrub == '1'
         id: claude
         continue-on-error: true
         timeout-minutes: 25
@@ -205,6 +225,8 @@ jobs:
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          SELF_CHANGE: ${{ steps.base.outputs.self_change }}
         run: |
           set -euo pipefail
           python3 -I - <<'PY'
@@ -231,7 +253,11 @@ jobs:
                   raise ValueError("verdict.json counts or result.md missing")
               verdict = "blocking" if counts["P0"] + counts["P1"] else ("nonblocking" if counts["P2"] + counts["P3"] else "no_findings")
           except Exception as exc:  # any gap keeps the review open
-              note = f"Review incomplete: {exc}. Re-dispatch once for this head after fixing the cause."
+              if os.environ.get("SELF_CHANGE") == "true" and os.environ.get("EVENT_NAME") == "pull_request":
+                  note = ("Not reviewed: this PR changes .github/workflows/claude-review.yml, and the Claude action "
+                          "only runs the default-branch version of that file. Use a local independent review for this PR.")
+              else:
+                  note = f"Review incomplete: {exc}. Re-dispatch once for this head after fixing the cause."
           body = [
               "## Claude exact-head review",
               f"**Head:** `{head}`  ",
