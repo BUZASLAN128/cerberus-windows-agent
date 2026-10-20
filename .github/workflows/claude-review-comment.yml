@@ -1,8 +1,10 @@
 name: claude-review-comment
 
 # Relays a PR comment "@claude review [focus]" by the repository owner or an organization member to
-# claude-review.yml as a forced workflow_dispatch for the PR's current head (drafts included). This job never checks out or runs pull request code;
-# the dispatched run uses the default-branch workflow, which resolves and pins the exact head itself.
+# claude-review.yml as a forced workflow_dispatch for the PR's current head (drafts included), then
+# reacts with a rocket (the eyes reaction comes from the Claude GitHub App on any @claude mention).
+# This job never checks out or runs pull request code; the dispatched run uses the default-branch
+# workflow, which resolves and pins the exact head itself.
 
 on:
   issue_comment:
@@ -10,6 +12,7 @@ on:
 
 permissions:
   actions: write
+  contents: read
   issues: write
   pull-requests: write
 
@@ -28,6 +31,7 @@ jobs:
           PR: ${{ github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           first_line="${COMMENT_BODY%%$'\n'*}"
@@ -41,5 +45,6 @@ jobs:
           focus="$(printf '%s' "${BASH_REMATCH[2]:-}" | tr -d '\r\n' | cut -c1-200)"
           shopt -u nocasematch
           [[ "${PR}" =~ ^[0-9]+$ ]] || { echo "::error::bad PR number"; exit 1; }
-          gh workflow run claude-review.yml -R "${GITHUB_REPOSITORY}" -f pr="${PR}" -f focus="${focus}" -f force=true
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes --silent || true
+          gh workflow run claude-review.yml -R "${GITHUB_REPOSITORY}" --ref "${DEFAULT_BRANCH}" \
+            -f pr="${PR}" -f focus="${focus}" -f force=true
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=rocket --silent || true
