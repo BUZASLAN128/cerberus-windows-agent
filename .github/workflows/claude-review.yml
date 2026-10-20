@@ -4,7 +4,8 @@ name: claude-review
 # Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is marked ready,
 # reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
 # review is skipped; a newer push cancels the older run.
-# Comment "@claude review [focus]" on the PR (repository owner only) re-reviews the current head.
+# Comment "@claude review [focus]" on the PR (repository owner only): claude-review-comment.yml relays it
+# to a forced workflow_dispatch of this workflow, so no comment-triggered job ever checks out PR code.
 # Manual dispatch re-runs an incomplete run:
 #   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="..."] [-f force=true]
 # Exhaustive single-pass review (method: .claude/skills/review-tracker/references/review-contract.md
@@ -13,14 +14,14 @@ name: claude-review
 #   <!-- cerberus-claude-review:v1 head=<40-hex> verdict=<no_findings|nonblocking|blocking|incomplete> run=<id> -->
 # The marker is written by the deterministic "Post exact-head summary" step, never by the model.
 # Read by manage-cerberus-git/scripts/git_pr_state.py as exact-head review evidence.
+# The PR checkout is data only: its .claude settings/hooks and .mcp.json are never loaded
+# (--setting-sources user, --strict-mcp-config).
 # Review never approves, merges or pushes. Auth: CLAUDE_CODE_OAUTH_TOKEN (Claude Max subscription).
 
 on:
   pull_request:
     types: [ready_for_review, synchronize, reopened]
     branches: [dev, develop, main, master]
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
       pr:
@@ -45,12 +46,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: >-
-    ${{ (github.event_name == 'issue_comment' && !(github.event.issue.pull_request &&
-         startsWith(github.event.comment.body, '@claude review') &&
-         github.event.comment.author_association == 'OWNER'))
-        && format('claude-review-noop-{0}', github.run_id)
-        || format('claude-review-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr) }}
+  group: claude-review-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -58,48 +54,20 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.issue.state == 'open' &&
-       startsWith(github.event.comment.body, '@claude review') && github.event.comment.author_association == 'OWNER')
+       github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Acknowledge comment
-        if: github.event_name == 'issue_comment'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes --silent
-
       - name: Resolve exact PR head
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
-          FORCE: ${{ github.event_name == 'issue_comment' || inputs.force == true }}
-          EVENT_NAME: ${{ github.event_name }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          FORCE: ${{ inputs.force == true }}
           INPUT_FOCUS: ${{ inputs.focus }}
         run: |
           set -euo pipefail
-          focus=""
-          if [ "${EVENT_NAME}" = "issue_comment" ]; then
-            first_line="${COMMENT_BODY%%$'\n'*}"
-            first_line="${first_line//$'\r'/}"
-            pattern='^@claude[[:space:]]+review([[:space:]]+(.*))?$'
-            shopt -s nocasematch
-            if [[ "${first_line}" =~ $pattern ]]; then
-              focus="${BASH_REMATCH[2]:-}"
-            else
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              echo "Comment is not a review request; skipping."
-              exit 0
-            fi
-            shopt -u nocasematch
-          else
-            focus="${INPUT_FOCUS:-}"
-          fi
+          focus="${INPUT_FOCUS:-}"
           data="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}")"
           state="$(jq -r .state <<<"$data")"
           head_repo="$(jq -r .head.repo.full_name <<<"$data")"
@@ -164,6 +132,8 @@ jobs:
           claude_args: >-
             --model claude-opus-5-5
             --max-turns 100
+            --setting-sources user
+            --strict-mcp-config
             --allowedTools "Agent,Read,Grep,Glob,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),mcp__github_inline_comment__create_inline_comment"
           prompt: |
             You are the independent exact-head reviewer for ${{ github.repository }} pull request #${{ steps.pr.outputs.number }}
