@@ -1,12 +1,15 @@
 name: claude-review
 
-# Exact-head independent review by Claude. Runs automatically for same-repo, non-draft PRs into
-# dev/develop/main/master when the PR is marked ready, reopened, or gets a new head while ready.
-# Skips a head that already has a completed review; a newer push cancels the older run.
-# Manual re-run (e.g. after an incomplete run):
+# Exact-head independent review by Claude.
+# Automatic for same-repo, non-draft PRs into dev/develop/main/master when the PR is marked ready,
+# reopened, or gets a new head while ready (Dependabot excluded). A head that already has a completed
+# review is skipped; a newer push cancels the older run.
+# Comment "@claude review [focus]" on the PR (repository owner only) re-reviews the current head.
+# Manual dispatch re-runs an incomplete run:
 #   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="..."] [-f force=true]
 # Exhaustive single-pass review (method: .claude/skills/review-tracker/references/review-contract.md
-# in the Cerberus workspace). Posts inline findings (Claude GitHub App) and one summary comment ending with
+# in the Cerberus workspace). Posts inline findings (Claude GitHub App) and one github-actions summary
+# comment whose last line is the marker
 #   <!-- cerberus-claude-review:v1 head=<40-hex> verdict=<no_findings|nonblocking|blocking|incomplete> run=<id> -->
 # The marker is written by the deterministic "Post exact-head summary" step, never by the model.
 # Read by manage-cerberus-git/scripts/git_pr_state.py as exact-head review evidence.
@@ -16,6 +19,8 @@ on:
   pull_request:
     types: [ready_for_review, synchronize, reopened]
     branches: [dev, develop, main, master]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr:
@@ -40,26 +45,61 @@ permissions:
   id-token: write
 
 concurrency:
-  group: claude-review-${{ github.event.pull_request.number || inputs.pr }}
+  group: >-
+    ${{ (github.event_name == 'issue_comment' && !(github.event.issue.pull_request &&
+         startsWith(github.event.comment.body, '@claude review') &&
+         github.event.comment.author_association == 'OWNER'))
+        && format('claude-review-noop-{0}', github.run_id)
+        || format('claude-review-{0}', github.event.pull_request.number || github.event.issue.number || inputs.pr) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.draft == false &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.issue.state == 'open' &&
+       startsWith(github.event.comment.body, '@claude review') && github.event.comment.author_association == 'OWNER')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Acknowledge comment
+        if: github.event_name == 'issue_comment'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes --silent
+
       - name: Resolve exact PR head
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number || inputs.pr }}
-          FORCE: ${{ inputs.force || false }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          FORCE: ${{ github.event_name == 'issue_comment' || inputs.force == true }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          INPUT_FOCUS: ${{ inputs.focus }}
         run: |
           set -euo pipefail
+          focus=""
+          if [ "${EVENT_NAME}" = "issue_comment" ]; then
+            first_line="${COMMENT_BODY%%$'\n'*}"
+            first_line="${first_line//$'\r'/}"
+            pattern='^@claude[[:space:]]+review([[:space:]]+(.*))?$'
+            shopt -s nocasematch
+            if [[ "${first_line}" =~ $pattern ]]; then
+              focus="${BASH_REMATCH[2]:-}"
+            else
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Comment is not a review request; skipping."
+              exit 0
+            fi
+            shopt -u nocasematch
+          else
+            focus="${INPUT_FOCUS:-}"
+          fi
           data="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}")"
           state="$(jq -r .state <<<"$data")"
           head_repo="$(jq -r .head.repo.full_name <<<"$data")"
@@ -70,10 +110,10 @@ jobs:
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::fork PRs are not reviewed"; exit 1; }
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha"; exit 1; }
           merge_base="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq .merge_base_commit.sha)"
-          # Skip a head that already has a completed review from this workflow (unless forced).
+          # Skip a head whose github-actions summary comment ends with a completed marker (unless forced).
           done_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
-            | grep -cE "cerberus-claude-review:v1 head=${head} verdict=(no_findings|nonblocking|blocking) " || true)"
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body | gsub("\r";"") | split("\n") | map(select(test("\\S"))) | last // ""' \
+            | grep -cxE "<!-- cerberus-claude-review:v1 head=${head} verdict=(no_findings|nonblocking|blocking) run=[0-9]+ -->" || true)"
           skip=false
           if [ "${done_count}" != "0" ] && [ "${FORCE}" != "true" ]; then
             skip=true
@@ -85,11 +125,12 @@ jobs:
             echo "head=${head}"
             echo "merge_base=${merge_base}"
             echo "title=$(jq -r .title <<<"$data" | tr -d '\r\n' | cut -c1-200)"
+            echo "focus=$(printf '%s' "${focus}" | tr -d '\r\n' | cut -c1-200)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact head
         if: steps.pr.outputs.skip != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.pr.outputs.head }}
           fetch-depth: 1
@@ -104,6 +145,7 @@ jobs:
           set -euo pipefail
           auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
           git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --no-tags --depth=1 origin "${MERGE_BASE}"
+          rm -rf .claude-review
           mkdir -p .claude-review
           git diff --stat "${MERGE_BASE}" HEAD > .claude-review/diffstat.txt
           echo "Changed files: $(git diff --name-only "${MERGE_BASE}" HEAD | wc -l)"
@@ -112,20 +154,22 @@ jobs:
         if: steps.pr.outputs.skip != 'true'
         id: claude
         continue-on-error: true
+        timeout-minutes: 25
         uses: anthropics/claude-code-action@v1
         env:
           CLAUDE_CODE_EFFORT_LEVEL: high
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
             --model claude-opus-5-5
             --max-turns 100
-            --allowedTools "Agent,Read,Grep,Glob,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git grep:*),mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "Agent,Read,Grep,Glob,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),mcp__github_inline_comment__create_inline_comment"
           prompt: |
             You are the independent exact-head reviewer for ${{ github.repository }} pull request #${{ steps.pr.outputs.number }}
             ("${{ steps.pr.outputs.title }}"). Review exactly head ${{ steps.pr.outputs.head }} against merge base
             ${{ steps.pr.outputs.merge_base }}: `git diff ${{ steps.pr.outputs.merge_base }} HEAD`
-            (summary in .claude-review/diffstat.txt). Requested focus: "${{ inputs.focus || 'none' }}".
+            (summary in .claude-review/diffstat.txt). Requested focus: "${{ steps.pr.outputs.focus || 'none' }}".
 
             GOAL: one review = the complete list of problems at this head. An issue that exists now but is
             first reported in a later round is a review miss. Be thorough, not slow: finish when the method is done.
@@ -158,7 +202,7 @@ jobs:
                g tests/evidence (missing deny/negative tests, mock-only assertions, weakened guards, skipped tests)
                h operational (config/env/Helm values, backward compatibility, N+1/unbounded queries, leaks,
                  startup/readiness)
-            3. Sibling sweep: for EVERY finding, search the diff and the repository (git grep) for the same
+            3. Sibling sweep: for EVERY finding, search the diff and the repository (Grep tool) for the same
                construct or invariant violation. Put every occurrence in that one finding; 2+ occurrences =
                ROOT_CAUSE_REQUIRED. Never report one example and leave the rest for later.
             4. Verify each candidate against the code. Confirmed -> finding. Plausible but unproven -> Questions.
@@ -183,7 +227,7 @@ jobs:
                {"head": "${{ steps.pr.outputs.head }}", "counts": {"P0": <int>, "P1": <int>, "P2": <int>, "P3": <int>}}
 
       - name: Post exact-head summary
-        if: always() && steps.pr.outputs.head != '' && steps.pr.outputs.skip != 'true'
+        if: ${{ !cancelled() && steps.pr.outputs.head != '' && steps.pr.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
@@ -193,9 +237,15 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           import json, os, pathlib
           head = os.environ["HEAD_SHA"]
+
+
+          def neutral(s):
+              return s.replace("<!--", "&lt;!--")
+
+
           verdict, counts, note = "incomplete", {"P0": 0, "P1": 0, "P2": 0, "P3": 0}, ""
           result = pathlib.Path(".claude-review/result.md")
           raw = pathlib.Path(".claude-review/verdict.json")
@@ -207,7 +257,7 @@ jobs:
                   raise ValueError("verdict.json head does not match the reviewed head")
               got = data.get("counts") or {}
               counts = {k: int(got.get(k, -1)) for k in ("P0", "P1", "P2", "P3")}
-              if min(counts.values()) < 0 or not result.is_file():
+              if min(counts.values()) < 0 or not result.is_file() or result.is_symlink():
                   raise ValueError("verdict.json counts or result.md missing")
               verdict = "blocking" if counts["P0"] + counts["P1"] else ("nonblocking" if counts["P2"] + counts["P3"] else "no_findings")
           except Exception as exc:  # any gap keeps the review open
@@ -220,9 +270,9 @@ jobs:
               "",
           ]
           if note:
-              body.append(note)
-          elif result.is_file():
-              body.append(result.read_text(encoding="utf-8")[:60000])
+              body.append(neutral(note))
+          elif result.is_file() and not result.is_symlink():
+              body.append(neutral(result.read_text(encoding="utf-8", errors="replace")[:60000]))
           body += ["", f"<!-- cerberus-claude-review:v1 head={head} verdict={verdict} run={os.environ['RUN_ID']} -->"]
           pathlib.Path(".claude-review/comment.md").write_text("\n".join(body), encoding="utf-8")
           pathlib.Path(".claude-review/verdict.txt").write_text(verdict, encoding="utf-8")
