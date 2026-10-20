@@ -127,14 +127,19 @@ jobs:
         if: steps.pr.outputs.skip != 'true'
         id: sandbox
         run: |
-          # Env scrubbing (keeps the OAuth token out of tool subprocesses) needs bubblewrap with user namespaces.
-          command -v bwrap > /dev/null || sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1 \
-            || { sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1; } || true
+          # Env scrubbing (keeps the OAuth token out of tool subprocesses) runs Bash tools in Claude Code's
+          # sandbox, which needs bubblewrap (with user namespaces) and socat; without socat every Bash call fails.
+          pkgs="bubblewrap socat"
+          if ! { command -v bwrap && command -v socat; } > /dev/null; then
+            sudo apt-get install -y -qq $pkgs > /dev/null 2>&1 \
+              || { sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq $pkgs > /dev/null 2>&1; } || true
+          fi
           sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
-          if command -v bwrap > /dev/null && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
+          if command -v socat > /dev/null && command -v bwrap > /dev/null \
+            && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
             echo "scrub=1" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::bubblewrap unavailable; Claude review not run without subprocess env scrubbing"
+            echo "::error::bubblewrap or socat unavailable; Claude review not run without subprocess env scrubbing"
             echo "scrub=0" >> "$GITHUB_OUTPUT"
           fi
 
