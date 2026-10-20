@@ -119,6 +119,21 @@ jobs:
           git diff --stat "${MERGE_BASE}" HEAD > .claude-review/diffstat.txt
           echo "Changed files: $(git diff --name-only "${MERGE_BASE}" HEAD | wc -l)"
 
+      - name: Prepare subprocess sandbox
+        if: steps.pr.outputs.skip != 'true'
+        id: sandbox
+        run: |
+          # Env scrubbing (keeps the OAuth token out of tool subprocesses) needs bubblewrap with user namespaces.
+          command -v bwrap > /dev/null || sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1 \
+            || { sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y -qq bubblewrap > /dev/null 2>&1; } || true
+          sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0 > /dev/null 2>&1 || true
+          if command -v bwrap > /dev/null && bwrap --unshare-user --ro-bind / / true 2> /dev/null; then
+            echo "scrub=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::bubblewrap unavailable; subprocess env scrubbing disabled for this run"
+            echo "scrub=0" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Claude review
         if: steps.pr.outputs.skip != 'true'
         id: claude
@@ -127,7 +142,7 @@ jobs:
         uses: anthropics/claude-code-action@db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c # v1.0.254
         env:
           CLAUDE_CODE_EFFORT_LEVEL: high
-          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: ${{ steps.sandbox.outputs.scrub }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
