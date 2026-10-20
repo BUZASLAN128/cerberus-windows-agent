@@ -1,7 +1,10 @@
 name: claude-review
 
-# Exact-head independent review by Claude, dispatched manually once per final PR head.
-#   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="auth/tenant"]
+# Exact-head independent review by Claude. Runs automatically for same-repo, non-draft PRs into
+# dev/develop/main/master when the PR is marked ready, reopened, or gets a new head while ready.
+# Skips a head that already has a completed review; a newer push cancels the older run.
+# Manual re-run (e.g. after an incomplete run):
+#   gh workflow run claude-review.yml -R <owner>/<repo> -f pr=<number> [-f focus="..."] [-f force=true]
 # Exhaustive single-pass review (method: .claude/skills/review-tracker/references/review-contract.md
 # in the Cerberus workspace). Posts inline findings (Claude GitHub App) and one summary comment ending with
 #   <!-- cerberus-claude-review:v1 head=<40-hex> verdict=<no_findings|nonblocking|blocking|incomplete> run=<id> -->
@@ -10,6 +13,9 @@ name: claude-review
 # Review never approves, merges or pushes. Auth: CLAUDE_CODE_OAUTH_TOKEN (Claude Max subscription).
 
 on:
+  pull_request:
+    types: [ready_for_review, synchronize, reopened]
+    branches: [dev, develop, main, master]
   workflow_dispatch:
     inputs:
       pr:
@@ -21,6 +27,11 @@ on:
         required: false
         type: string
         default: ""
+      force:
+        description: Review again even if this head already has a completed review
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,11 +40,15 @@ permissions:
   id-token: write
 
 concurrency:
-  group: claude-review-${{ inputs.pr }}
-  cancel-in-progress: false
+  group: claude-review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -41,7 +56,8 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pr }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          FORCE: ${{ inputs.force || false }}
         run: |
           set -euo pipefail
           data="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}")"
@@ -50,16 +66,29 @@ jobs:
           head="$(jq -r .head.sha <<<"$data")"
           base="$(jq -r .base.sha <<<"$data")"
           [ "$state" = "open" ] || { echo "::error::PR #${PR} is ${state}"; exit 1; }
+          [ "$(jq -r .draft <<<"$data")" = "false" ] || { echo "::error::PR #${PR} is a draft; mark it ready for review"; exit 1; }
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || { echo "::error::fork PRs are not reviewed"; exit 1; }
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha"; exit 1; }
           merge_base="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq .merge_base_commit.sha)"
+          # Skip a head that already has a completed review from this workflow (unless forced).
+          done_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body' \
+            | grep -cE "cerberus-claude-review:v1 head=${head} verdict=(no_findings|nonblocking|blocking) " || true)"
+          skip=false
+          if [ "${done_count}" != "0" ] && [ "${FORCE}" != "true" ]; then
+            skip=true
+            echo "Head ${head} already has a completed Claude review; skipping."
+          fi
           {
+            echo "skip=${skip}"
+            echo "number=${PR}"
             echo "head=${head}"
             echo "merge_base=${merge_base}"
             echo "title=$(jq -r .title <<<"$data" | tr -d '\r\n' | cut -c1-200)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout exact head
+        if: steps.pr.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.pr.outputs.head }}
@@ -67,6 +96,7 @@ jobs:
           persist-credentials: false
 
       - name: Fetch merge base
+        if: steps.pr.outputs.skip != 'true'
         env:
           MERGE_BASE: ${{ steps.pr.outputs.merge_base }}
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +109,7 @@ jobs:
           echo "Changed files: $(git diff --name-only "${MERGE_BASE}" HEAD | wc -l)"
 
       - name: Claude review
+        if: steps.pr.outputs.skip != 'true'
         id: claude
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
@@ -91,10 +122,10 @@ jobs:
             --max-turns 100
             --allowedTools "Agent,Read,Grep,Glob,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git grep:*),mcp__github_inline_comment__create_inline_comment"
           prompt: |
-            You are the independent exact-head reviewer for ${{ github.repository }} pull request #${{ inputs.pr }}
+            You are the independent exact-head reviewer for ${{ github.repository }} pull request #${{ steps.pr.outputs.number }}
             ("${{ steps.pr.outputs.title }}"). Review exactly head ${{ steps.pr.outputs.head }} against merge base
             ${{ steps.pr.outputs.merge_base }}: `git diff ${{ steps.pr.outputs.merge_base }} HEAD`
-            (summary in .claude-review/diffstat.txt). Requested focus: "${{ inputs.focus }}".
+            (summary in .claude-review/diffstat.txt). Requested focus: "${{ inputs.focus || 'none' }}".
 
             GOAL: one review = the complete list of problems at this head. An issue that exists now but is
             first reported in a later round is a review miss. Be thorough, not slow: finish when the method is done.
@@ -152,10 +183,10 @@ jobs:
                {"head": "${{ steps.pr.outputs.head }}", "counts": {"P0": <int>, "P1": <int>, "P2": <int>, "P3": <int>}}
 
       - name: Post exact-head summary
-        if: always() && steps.pr.outputs.head != ''
+        if: always() && steps.pr.outputs.head != '' && steps.pr.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pr }}
+          PR: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
