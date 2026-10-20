@@ -1,0 +1,45 @@
+name: claude-review-comment
+
+# Relays a repository owner's PR comment "@claude review [focus]" to claude-review.yml as a forced
+# workflow_dispatch for the PR's current head. This job never checks out or runs pull request code;
+# the dispatched run uses the default-branch workflow, which resolves and pins the exact head itself.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  relay:
+    if: >-
+      github.event.issue.pull_request && github.event.issue.state == 'open' &&
+      startsWith(github.event.comment.body, '@claude review') &&
+      github.event.comment.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch exact-head review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          first_line="${COMMENT_BODY%%$'\n'*}"
+          first_line="${first_line//$'\r'/}"
+          pattern='^@claude[[:space:]]+review([[:space:]]+(.*))?$'
+          shopt -s nocasematch
+          if ! [[ "${first_line}" =~ $pattern ]]; then
+            echo "Comment is not a review request; nothing to do."
+            exit 0
+          fi
+          focus="$(printf '%s' "${BASH_REMATCH[2]:-}" | tr -d '\r\n' | cut -c1-200)"
+          shopt -u nocasematch
+          [[ "${PR}" =~ ^[0-9]+$ ]] || { echo "::error::bad PR number"; exit 1; }
+          gh workflow run claude-review.yml -R "${GITHUB_REPOSITORY}" -f pr="${PR}" -f focus="${focus}" -f force=true
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}/reactions" -f content=eyes --silent || true
