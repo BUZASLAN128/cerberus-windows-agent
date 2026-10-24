@@ -5,9 +5,10 @@ namespace Cerberus.Agent.App.Control;
 
 /// <summary>
 /// Unattended-profile recovery from AuthSuspect, BlockedConfig and NeedsReenrollment.
-/// One heartbeat per due attempt, sent against a throwaway lifecycle store so a failed
-/// probe cannot change machine state. Success returns the machine state to Active.
-/// Local identity, key and token material are never cleared here.
+/// One heartbeat per due attempt. Probe state stays in a scratch store; credential writes run
+/// under the durable lifecycle-generation fence. A terminal, re-enrollment or credential answer
+/// is recorded durably for the observed generation, which ends probing. Success returns the
+/// machine state to Active. Nothing here clears local identity, key or token material.
 /// </summary>
 internal static class DormantStateRecovery
 {
@@ -29,17 +30,22 @@ internal static class DormantStateRecovery
         if (!policy.IsDue(snapshot))
             return snapshot;
 
-        var probeState = new InMemoryAgentLifecycleStateStore();
+        var probeState = new FencedProbeLifecycleStore(lifecycle, snapshot.Generation);
         bool recovered;
         try
         {
             recovered = await probe(probeState, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            // A request timeout surfaces as a cancellation while ct is still live: a failed probe.
             recovered = false;
             log.Warn($"Lifecycle recovery probe failed ({ex.GetType().Name}); state={snapshot.State}.");
         }
+
+        var outcome = await probeState.LoadAsync(ct).ConfigureAwait(false);
+        if (StopOutcome(outcome) is { } stop)
+            return await RecordStopAsync(lifecycle, snapshot, stop.State, stop.Reason, outcome.LastRequestId, log, ct).ConfigureAwait(false);
 
         if (recovered)
         {
@@ -53,12 +59,24 @@ internal static class DormantStateRecovery
     }
 
     /// <summary>
-    /// A persisted backend_environment_mismatch block ends when the compiled address now passes
-    /// the migration rules: the registered address is replaced, credentials are kept and the
-    /// lifecycle returns to Active. Anything else leaves the state unchanged.
+    /// True for dormant, settled states without a terminal, re-enrollment or credential reason:
+    /// the states in which the registered address may move to the compiled one.
+    /// </summary>
+    internal static bool CanMigrate(AgentLifecycleSnapshot snapshot, bool awaitingAdoption)
+        => !awaitingAdoption && snapshot.QuiescenceComplete &&
+            AgentLifecycleStates.IsDormant(snapshot.State) && snapshot.State != AgentLifecycleState.Retired &&
+            !AgentLifecycleStatePolicy.IsTerminalCode(snapshot.ReasonCode) &&
+            snapshot.ReasonCode != AgentLifecycleStatePolicy.AgentReenrollRequiredCode &&
+            snapshot.ReasonCode?.StartsWith("credentials_", StringComparison.Ordinal) != true;
+
+    /// <summary>
+    /// Moves the registered address to the compiled one when the migration rules allow it, under
+    /// the durable generation fence. The lifecycle state is kept, except that a
+    /// backend_environment_mismatch block whose registration now points at the compiled address
+    /// returns to Active. Anything else leaves the state unchanged.
     /// </summary>
     internal static async Task<AgentLifecycleSnapshot> TryMigrateBackendAsync(
-        AgentLifecycleController controller,
+        IAgentLifecycleStateStore lifecycle,
         ISecretStore secrets,
         AgentLifecycleSnapshot snapshot,
         bool awaitingAdoption,
@@ -66,38 +84,113 @@ internal static class DormantStateRecovery
         CancellationToken ct,
         string? compiledBackendUrl = null)
     {
-        compiledBackendUrl ??= AgentBuildConfig.BackendUrl;
-        if (awaitingAdoption || snapshot.State != AgentLifecycleState.BlockedConfig ||
-            snapshot.ReasonCode != "backend_environment_mismatch" || !AgentDormantRecoveryPolicy.IsRecoverable(snapshot))
+        if (!CanMigrate(snapshot, awaitingAdoption))
             return snapshot;
+        compiledBackendUrl ??= AgentBuildConfig.BackendUrl;
 
+        ServerBackendMigration.Result result;
         try
         {
-            var current = await secrets.LoadAsync(ct).ConfigureAwait(false);
-            if (!ServerBackendMigration.ShouldMigrate(current.BackendUrl, compiledBackendUrl,
-                    Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL")))
-                return snapshot;
-            var migrated = await ServerBackendMigration.MigrateAsync(secrets, current, compiledBackendUrl, ct).ConfigureAwait(false);
-            log.Info($"Registered backend address updated from {ServerBackendMigration.HostPort(current.BackendUrl)} to {ServerBackendMigration.HostPort(migrated)}.");
+            result = await ServerBackendMigration.MigrateIfCurrentAsync(lifecycle, snapshot.Generation, secrets,
+                compiledBackendUrl, Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL"), log, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException
-            or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException)
+        catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
         {
             log.Warn($"Registered backend address could not be updated ({ex.GetType().Name}).");
             return snapshot;
         }
 
-        return await controller.CompleteScheduledRecoveryAsync(snapshot.Generation, ct).ConfigureAwait(false);
+        if (!IsMismatchBlock(snapshot) || result is not (ServerBackendMigration.Result.Migrated or ServerBackendMigration.Result.AtTarget))
+            return snapshot;
+        var current = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+        if (current.Generation != snapshot.Generation || !IsMismatchBlock(current) || !current.QuiescenceComplete)
+            return current;
+        return await lifecycle.TrySaveAsync(current with
+        {
+            State = AgentLifecycleState.Active,
+            ReasonCode = null,
+            NextAttemptUtc = null,
+            GenericAuthFailureCount = 0,
+            TransientFailureCount = 0,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        }, current.Revision, ct).ConfigureAwait(false) ?? await lifecycle.LoadAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>Production probe: one heartbeat with the stored machine credentials.</summary>
     internal static async Task<bool> HeartbeatProbeAsync(IAgentLifecycleStateStore probeState, CancellationToken ct)
     {
-        var response = await AgentLocalControlService.ProbeAsync(
-            new DpapiSecretStore(SecretStoreScope.Machine), probeState, quiesce: null, ct).ConfigureAwait(false);
+        if (probeState is not FencedProbeLifecycleStore fenced)
+            throw new InvalidOperationException("Recovery probe requires the fenced lifecycle store.");
+        var secrets = new RecoveryProbeSecretStore(new DpapiSecretStore(SecretStoreScope.Machine), fenced);
+        if (await CredentialProblemAsync(secrets, ct).ConfigureAwait(false) is { } reason)
+        {
+            await probeState.TransitionAsync(AgentLifecycleState.NeedsReenrollment, reason, requestId: null,
+                nextAttemptUtc: null, genericAuthFailureCount: null, ct).ConfigureAwait(false);
+            return false;
+        }
+        var response = await AgentLocalControlService.ProbeAsync(secrets, probeState, quiesce: null, ct).ConfigureAwait(false);
         return AgentLocalControlService.Claimed(response) &&
             !AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State);
     }
+
+    // Same reason codes as the worker start. InvalidOperationException is left out: it also
+    // signals an unresolved credential publication, which is not a credential defect.
+    private static async Task<string?> CredentialProblemAsync(ISecretStore secrets, CancellationToken ct)
+    {
+        try
+        {
+            var (identity, refreshToken, privateKeyPem, backendUrl, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
+            return string.IsNullOrWhiteSpace(identity.AgentId) || string.IsNullOrWhiteSpace(identity.TenantId) ||
+                string.IsNullOrWhiteSpace(refreshToken) || string.IsNullOrWhiteSpace(privateKeyPem) ||
+                string.IsNullOrWhiteSpace(backendUrl) ? "credentials_invalid" : null;
+        }
+        catch (Exception ex) when (ex is System.IO.FileNotFoundException or System.IO.DirectoryNotFoundException)
+        {
+            return "credentials_missing";
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            return "credentials_unavailable";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "credentials_invalid";
+        }
+    }
+
+    private static (AgentLifecycleState State, string Reason)? StopOutcome(AgentLifecycleSnapshot outcome)
+        => outcome.ReasonCode switch
+        {
+            { } code when outcome.State == AgentLifecycleState.Retired && AgentLifecycleStatePolicy.IsTerminalCode(code)
+                => (AgentLifecycleState.Retired, code),
+            { } code when outcome.State == AgentLifecycleState.NeedsReenrollment &&
+                (code == AgentLifecycleStatePolicy.AgentReenrollRequiredCode || code.StartsWith("credentials_", StringComparison.Ordinal))
+                => (AgentLifecycleState.NeedsReenrollment, code),
+            _ => null,
+        };
+
+    // Generation-checked compare-and-swap on the durable store. A changed generation means an
+    // adopt, unregister or retire already decided the state, so the probe answer is dropped.
+    private static async Task<AgentLifecycleSnapshot> RecordStopAsync(IAgentLifecycleStateStore lifecycle,
+        AgentLifecycleSnapshot observed, AgentLifecycleState state, string reason, string? requestId, IAgentLogger log, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var saved = await lifecycle.TransitionAsync(state, reason, requestId, nextAttemptUtc: null,
+                genericAuthFailureCount: null, ct, expectedGeneration: observed.Generation).ConfigureAwait(false);
+            if (saved.State == state && saved.ReasonCode == reason)
+            {
+                log.Warn($"Lifecycle recovery probe ended recovery; state={saved.State} reason={reason}.");
+                return saved;
+            }
+            if (saved.Generation != observed.Generation || saved.State == AgentLifecycleState.Retired)
+                return saved;
+        }
+        return await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+    }
+
+    private static bool IsMismatchBlock(AgentLifecycleSnapshot snapshot)
+        => snapshot.State == AgentLifecycleState.BlockedConfig && snapshot.ReasonCode == "backend_environment_mismatch";
 
     private static async Task<AgentLifecycleSnapshot> SaveScheduleAsync(
         IAgentLifecycleStateStore lifecycle,

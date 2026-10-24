@@ -5,7 +5,9 @@ namespace Cerberus.Agent.Core;
 /// recoverable state. Pure timing and eligibility logic; the caller performs
 /// the probe and persists the returned snapshot. The attempt counter and next
 /// attempt time are stored in the snapshot's TransientFailureCount and
-/// NextAttemptUtc fields, which are unused while a state is dormant.
+/// NextAttemptUtc fields, which the transient-retry backoff also uses. A dormant
+/// state can therefore carry values written before it went dormant; callers that
+/// start a schedule treat them as unset.
 /// </summary>
 public sealed class AgentDormantRecoveryPolicy
 {
@@ -28,6 +30,8 @@ public sealed class AgentDormantRecoveryPolicy
     /// True for dormant states that a plain authenticated heartbeat can end.
     /// Retired and cleanup-pending states, and any terminal reason code, are never recoverable.
     /// Missing or invalid credentials and required re-enrollment need a real re-enrollment, so they are not probed.
+    /// Locally detected blocks (backend_environment_mismatch, backend_url_invalid) are not answered by a heartbeat:
+    /// the address migration or a restart with a corrected setting ends them.
     /// </summary>
     public static bool IsRecoverable(AgentLifecycleSnapshot snapshot)
     {
@@ -35,6 +39,7 @@ public sealed class AgentDormantRecoveryPolicy
         return snapshot.QuiescenceComplete &&
             snapshot.State is AgentLifecycleState.AuthSuspect or AgentLifecycleState.BlockedConfig or AgentLifecycleState.NeedsReenrollment &&
             !AgentLifecycleStatePolicy.IsTerminalCode(snapshot.ReasonCode) &&
+            snapshot.ReasonCode is not ("backend_environment_mismatch" or "backend_url_invalid") &&
             snapshot.ReasonCode != "agent_reenroll_required" &&
             snapshot.ReasonCode?.StartsWith("credentials_", StringComparison.Ordinal) != true;
     }

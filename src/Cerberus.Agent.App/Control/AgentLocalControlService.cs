@@ -16,6 +16,9 @@ internal sealed class AgentLocalControlService
     internal AgentLocalControlService(IAgentLifecycleStateStore lifecycle, Func<CancellationToken, Task> quiesce)
         => (_lifecycle, _quiesce) = (lifecycle, quiesce);
 
+    /// <summary>Held by retry, enrollment-adopt and unregister; the server-profile recovery probe takes it too.</summary>
+    internal SemaphoreSlim ManualGate => _manual;
+
     internal async Task<AgentLocalControlResponse> HandleAsync(AgentLocalControlRequest request, CancellationToken ct)
     {
         if (request.Operation is "status" or "check" or "apply")
@@ -63,7 +66,9 @@ internal sealed class AgentLocalControlService
             return StateResponse(false, "cleanup_pending", snapshot);
         if (snapshot.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment)
             return StateResponse(false, snapshot.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode ? "contact_admin" : "reenrollment_required", snapshot);
-        if (snapshot.NextAttemptUtc > DateTimeOffset.UtcNow)
+        // On the server profile NextAttemptUtc of a dormant state is the recovery schedule; a manual retry ignores it.
+        var scheduleOnly = AgentBuildProfile.IsServer && AgentLifecycleStates.IsDormant(snapshot.State);
+        if (!scheduleOnly && snapshot.NextAttemptUtc > DateTimeOffset.UtcNow)
             return StateResponse(false, "retry_deferred", snapshot);
         if (snapshot.State == AgentLifecycleState.Active)
             return StateResponse(true, "already_active", snapshot);

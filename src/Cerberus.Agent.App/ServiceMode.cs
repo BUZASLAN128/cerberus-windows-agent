@@ -32,7 +32,6 @@ internal static class ServiceMode
         long? workerGeneration = null;
         var nextCleanupUtc = DateTimeOffset.MinValue;
         var cleanupDelaySeconds = 10;
-        var recoveryPolicy = new AgentDormantRecoveryPolicy();
         async Task QuiesceAsync(CancellationToken _)
         {
             automatic?.Cancel();
@@ -41,6 +40,8 @@ internal static class ServiceMode
         var controller = new AgentLifecycleController(lifecycle,
             new DpapiSecretStore(SecretStoreScope.Machine), log, QuiesceAsync);
         var control = new AgentLocalControlService(lifecycle, QuiesceAsync);
+        var recovery = AgentBuildProfile.IsServer ? new DormantRecoverySupervisor(lifecycle, controller,
+            new DpapiSecretStore(SecretStoreScope.Machine), control.ManualGate, log) : null;
         var pipeTask = new AgentLocalControlServer(control.HandleAsync).RunAsync(lifetime.Token);
         Task? schedulerTask = null;
         try
@@ -72,20 +73,8 @@ internal static class ServiceMode
                     cleanupDelaySeconds = 10;
                 var promotion = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
                 var awaitingAdoption = AgentEnrollmentPromotion.IsAwaitingAdoption(promotion, snapshot);
-                if (AgentBuildProfile.IsServer)
-                {
-                    try
-                    {
-                        snapshot = await DormantStateRecovery.TryMigrateBackendAsync(controller,
-                            new DpapiSecretStore(SecretStoreScope.Machine), snapshot, awaitingAdoption, log, lifetime.Token).ConfigureAwait(false);
-                        snapshot = await DormantStateRecovery.RunAsync(lifecycle, controller, recoveryPolicy,
-                            DormantStateRecovery.HeartbeatProbeAsync, snapshot, awaitingAdoption, log, lifetime.Token).ConfigureAwait(false);
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        log.Warn($"Lifecycle recovery attempt could not complete ({ex.GetType().Name}).");
-                    }
-                }
+                if (recovery is not null)
+                    snapshot = await recovery.TickAsync(snapshot, awaitingAdoption, lifetime.Token).ConfigureAwait(false);
                 if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete && !awaitingAdoption)
                 {
                     if (worker is null || worker.IsCompleted)
@@ -233,15 +222,18 @@ internal static class ServiceMode
         var privateKeyPem = loadedSecrets.PrivateKeyPem;
         var storedBackendUrl = loadedSecrets.BackendUrl;
         var environmentBackendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
-        if (ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
+        if (AgentBuildProfile.IsServer && ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
         {
             try
             {
-                var migrated = await ServerBackendMigration.MigrateAsync(secrets, loadedSecrets, AgentBuildConfig.BackendUrl, ct).ConfigureAwait(false);
-                log.Info($"Registered backend address updated from {ServerBackendMigration.HostPort(storedBackendUrl)} to {ServerBackendMigration.HostPort(migrated)}.");
-                storedBackendUrl = migrated;
+                var migration = await ServerBackendMigration.MigrateIfCurrentAsync(lifecycleState, persistedLifecycle.Generation,
+                    secrets, AgentBuildConfig.BackendUrl, environmentBackendUrl, log, ct).ConfigureAwait(false);
+                if (migration == ServerBackendMigration.Result.Superseded)
+                    return; // The lifecycle generation changed; the supervisor starts a worker for the new one.
+                if (migration == ServerBackendMigration.Result.Migrated)
+                    storedBackendUrl = AgentBuildConfig.BackendUrl.Trim();
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+            catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
             {
                 log.Warn($"Registered backend address could not be updated ({ex.GetType().Name}).");
             }
