@@ -53,7 +53,7 @@ try {
     $selfTestOut = Join-Path $runDir "selftest.json"
     $exe = if ($SkipPublish) {
       # Build output is redirected via BaseOutputPath, so pick it up from there.
-      Join-Path $repoRoot ("src\\Cerberus.Agent.App\\" + $baseOut + $Configuration + "\\net8.0-windows\\Cerberus.Agent.exe")
+      Join-Path $repoRoot ("src\\Cerberus.Agent.App\\" + $baseOut + $Configuration + "\\net10.0-windows\\Cerberus.Agent.exe")
     } else {
       Join-Path (Join-Path $runDir "publish") "Cerberus.Agent.exe"
     }

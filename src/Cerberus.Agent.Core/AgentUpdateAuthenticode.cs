@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
+// SYSLIB0057: X509CertificateLoader has no equivalent for extracting the signer from an Authenticode-signed PE file; trust is still enforced by WinVerifyTrust above.
+#pragma warning disable SYSLIB0057
 namespace Cerberus.Agent.Core;
 
 public static class AgentUpdateAuthenticode
