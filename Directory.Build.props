@@ -1,5 +1,7 @@
 <Project>
   <PropertyGroup>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Build-time profile: -p:AgentBuildProfile=server selects the server profile. Default is empty. -->
+    <DefineConstants Condition="'$(AgentBuildProfile)' == 'server'">$(DefineConstants);CERBERUS_SERVER_PROFILE</DefineConstants>
   </PropertyGroup>
 </Project>

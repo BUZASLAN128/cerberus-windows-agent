@@ -585,6 +585,27 @@ public sealed class AgentLifecycleController
         }, current.Revision, ct).ConfigureAwait(false) ?? await _store.LoadAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Unattended-profile recovery after a successful probe heartbeat. Unlike manual
+    /// recovery this also ends NeedsReenrollment; Retired and terminal reasons stay put.
+    /// Local credentials are not touched.
+    /// </summary>
+    public async Task<AgentLifecycleSnapshot> CompleteScheduledRecoveryAsync(long expectedGeneration, CancellationToken ct)
+    {
+        var current = await _store.LoadAsync(ct).ConfigureAwait(false);
+        if (current.Generation != expectedGeneration || !AgentDormantRecoveryPolicy.IsRecoverable(current))
+            return current;
+        return await _store.TrySaveAsync(current with
+        {
+            State = AgentLifecycleState.Active,
+            ReasonCode = null,
+            NextAttemptUtc = null,
+            GenericAuthFailureCount = 0,
+            TransientFailureCount = 0,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+        }, current.Revision, ct).ConfigureAwait(false) ?? await _store.LoadAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>Service-only completion after the protected promotion marker and backend identity have been verified.</summary>
     public async Task<AgentLifecycleSnapshot> CompleteEnrollmentAsync(long expectedGeneration, string nonce, CancellationToken ct)
     {

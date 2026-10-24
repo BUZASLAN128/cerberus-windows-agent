@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Compression;
 using System.Text.Json;
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
@@ -16,6 +17,9 @@ internal static class AgentDiagnosticsBundle
 
     public static async Task<string> ExportAsync(string? outputDir = null, string? logDir = null, CancellationToken ct = default)
     {
+        if (AgentBuildProfile.IsServer)
+            throw new InvalidOperationException("Diagnostic bundles are not available in this build profile.");
+
         outputDir ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "CerberusAgent",

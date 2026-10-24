@@ -43,7 +43,7 @@ public static class AgentUpdateAuthenticode
     }
 
     public static string PublisherSpkiSha256(X509Certificate2 certificate)
-        => "sha256:" + Convert.ToHexString(SHA256.HashData(certificate.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
+        => AgentKeyFingerprint.FromSubjectPublicKeyInfo(certificate.PublicKey.ExportSubjectPublicKeyInfo());
 
     private static bool IsActuallyUnsigned(string path)
     {

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
@@ -130,7 +131,7 @@ internal sealed class AgentLocalControlService
         return StateResponse(true, "enrollment_adopted", adopted);
     }
 
-    private static async Task<HeartbeatResponse> ProbeAsync(ISecretStore store, IAgentLifecycleStateStore lifecycle,
+    internal static async Task<HeartbeatResponse> ProbeAsync(ISecretStore store, IAgentLifecycleStateStore lifecycle,
         Func<CancellationToken, Task>? quiesce, CancellationToken ct)
     {
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
@@ -159,8 +160,10 @@ internal sealed class AgentLocalControlService
             capabilities = Array.Empty<string>(),
         };
 
-    private static bool Claimed(HeartbeatResponse response)
-        => response.RegistrationState == "claimed" && !response.ClaimRequired &&
+    internal static bool Claimed(HeartbeatResponse response)
+        => (AgentBuildProfile.IsServer
+            ? AgentClaimGate.IsClaimed(response)
+            : response.RegistrationState == "claimed" && !response.ClaimRequired) &&
             response.LifecycleState is not ("revoked" or "quarantined") &&
             !(response.Revoke?.TryGetValue("revoked", out var revoked) == true && revoked.ValueKind == System.Text.Json.JsonValueKind.True);
 

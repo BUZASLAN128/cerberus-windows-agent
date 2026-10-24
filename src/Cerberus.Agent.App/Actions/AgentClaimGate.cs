@@ -85,6 +85,9 @@ internal static class AgentClaimGate
         CancellationToken ct,
         IAgentLifecycleStateStore? lifecycleState = null)
     {
+        if (AgentBuildProfile.IsServer)
+            return;
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ClaimCheckTimeout);
 
@@ -154,7 +157,9 @@ internal static class AgentClaimGate
     }
 
     internal static bool IsClaimed(HeartbeatResponse response)
-        => string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
+        => AgentBuildProfile.IsServer
+            ? NormalizeState(response.RegistrationState) is not ("rejected" or "deactivated" or "revoked")
+            : string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
            && !response.ClaimRequired;
 
     private static async Task<HeartbeatResponse> CheckAsync(

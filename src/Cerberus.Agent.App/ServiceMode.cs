@@ -32,6 +32,7 @@ internal static class ServiceMode
         long? workerGeneration = null;
         var nextCleanupUtc = DateTimeOffset.MinValue;
         var cleanupDelaySeconds = 10;
+        var recoveryPolicy = new AgentDormantRecoveryPolicy();
         async Task QuiesceAsync(CancellationToken _)
         {
             automatic?.Cancel();
@@ -71,6 +72,20 @@ internal static class ServiceMode
                     cleanupDelaySeconds = 10;
                 var promotion = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
                 var awaitingAdoption = AgentEnrollmentPromotion.IsAwaitingAdoption(promotion, snapshot);
+                if (AgentBuildProfile.IsServer)
+                {
+                    try
+                    {
+                        snapshot = await DormantStateRecovery.TryMigrateBackendAsync(controller,
+                            new DpapiSecretStore(SecretStoreScope.Machine), snapshot, awaitingAdoption, log, lifetime.Token).ConfigureAwait(false);
+                        snapshot = await DormantStateRecovery.RunAsync(lifecycle, controller, recoveryPolicy,
+                            DormantStateRecovery.HeartbeatProbeAsync, snapshot, awaitingAdoption, log, lifetime.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        log.Warn($"Lifecycle recovery attempt could not complete ({ex.GetType().Name}).");
+                    }
+                }
                 if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete && !awaitingAdoption)
                 {
                     if (worker is null || worker.IsCompleted)
@@ -217,7 +232,21 @@ internal static class ServiceMode
 
         var privateKeyPem = loadedSecrets.PrivateKeyPem;
         var storedBackendUrl = loadedSecrets.BackendUrl;
-        var backendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl;
+        var environmentBackendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
+        if (ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
+        {
+            try
+            {
+                var migrated = await ServerBackendMigration.MigrateAsync(secrets, loadedSecrets, AgentBuildConfig.BackendUrl, ct).ConfigureAwait(false);
+                log.Info($"Registered backend address updated from {ServerBackendMigration.HostPort(storedBackendUrl)} to {ServerBackendMigration.HostPort(migrated)}.");
+                storedBackendUrl = migrated;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+            {
+                log.Warn($"Registered backend address could not be updated ({ex.GetType().Name}).");
+            }
+        }
+        var backendUrl = environmentBackendUrl ?? storedBackendUrl;
 
         if (!Uri.TryCreate(backendUrl.Trim().TrimEnd('/'), UriKind.Absolute, out var baseAddress) ||
             (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
@@ -286,14 +315,15 @@ internal static class ServiceMode
             maxBytes: 512 * 1024,
             ttl: TimeSpan.FromHours(24));
 
-        var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var handlers = new List<ICommandHandler>
         {
             new HealthSnapshotHandler(),
             new RdpQuickTestHandler(),
             new TailscaleEnsureConnectedHandler(),
-            new DiagnosticBundleCollectCommandHandler(diagnosticUploader),
         };
+        var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
+        if (!AgentBuildProfile.IsServer)
+            handlers.Add(new DiagnosticBundleCollectCommandHandler(diagnosticUploader));
         var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
             api.GetManagedAccountManifestAsync, LocalUserCommandHandlers.CreateManifestReconciler(log), log);
         handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts));
@@ -341,8 +371,9 @@ internal static class ServiceMode
             lifecycleState: lifecycleState);
 
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var diagnosticScheduler = new DiagnosticBundleScheduler(diagnosticUploader, log);
-        var diagnosticSchedulerTask = diagnosticScheduler.RunAsync(serviceCts.Token);
+        var diagnosticSchedulerTask = AgentBuildProfile.IsServer
+            ? Task.CompletedTask
+            : new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
 
         try
         {
