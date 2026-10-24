@@ -248,6 +248,7 @@ public sealed class AgentLegalConsentTests
         Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);
 
         var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
+        var publishLib = File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-publish-lib.ps1"));
         Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
         Assert.Contains("-p:PublishSingleFile=false", releaseScript);
         Assert.Contains("-p:DebugSymbols=false", releaseScript);
@@ -255,14 +256,14 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
-        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", releaseScript);
-        Assert.Contains("service_binary = \"app/Cerberus.Agent.Service.exe\"", releaseScript);
-        Assert.Contains("updater_binary = \"app/Cerberus.Agent.Updater.exe\"", releaseScript);
-        Assert.Contains("uninstall_binary = \"app/Cerberus.Agent.Uninstall.exe\"", releaseScript);
+        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", publishLib);
+        Assert.Contains("service_binary = \"app/Cerberus.Agent.Service.exe\"", publishLib);
+        Assert.Contains("updater_binary = \"app/Cerberus.Agent.Updater.exe\"", publishLib);
+        Assert.Contains("uninstall_binary = \"app/Cerberus.Agent.Uninstall.exe\"", publishLib);
         Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
-        Assert.Contains("Copy-ChannelLatestAliases", releaseScript);
-        Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", releaseScript);
-        Assert.Contains("Cerberus.Agent-$Channel-latest", releaseScript);
+        Assert.Contains("Copy-ChannelLatestAliases", publishLib);
+        Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", publishLib);
+        Assert.Contains("Cerberus.Agent-$Channel-latest", publishLib);
         Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
         Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);

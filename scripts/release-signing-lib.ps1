@@ -91,8 +91,14 @@ function Assert-ReleaseSigningInputs {
     if ([string]::IsNullOrWhiteSpace($ManifestSigningPublicKeyFile)) {
       throw "-ManifestSignatureFile requires -ManifestSigningPublicKeyFile (expected manifest public key)."
     }
-    if (-not [string]::IsNullOrWhiteSpace($ManifestSigningCertThumbprint)) {
-      throw "-ManifestSignatureFile and -ManifestSigningCertThumbprint are mutually exclusive."
+    # Finalize takes exactly -ManifestSignatureFile and -ManifestSigningPublicKeyFile; trust comes from the built runtime.
+    $refused = @()
+    if (-not [string]::IsNullOrWhiteSpace($SigningCertThumbprint)) { $refused += "-SigningCertThumbprint" }
+    if (-not [string]::IsNullOrWhiteSpace($ManifestSigningCertThumbprint)) { $refused += "-ManifestSigningCertThumbprint" }
+    if (@($ExtraSignerPins | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { $refused += "-ExtraSignerPins" }
+    if (@($ExtraManifestPublicKeyFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) { $refused += "-ExtraManifestPublicKeyFiles" }
+    if ($refused.Count -gt 0) {
+      throw "Finalize (-ManifestSignatureFile) accepts only -ManifestSigningPublicKeyFile and -ManifestSignatureFile. Remove: $($refused -join ', ')."
     }
     return [pscustomobject]@{ Mode = "Token"; ManifestSigning = "External"; Finalize = $true }
   }
@@ -325,4 +331,119 @@ function Assert-SignedFileSignerPin {
   } finally {
     $certificate.Dispose()
   }
+}
+
+function Write-Step([string]$Message) {
+  Write-Host "==> $Message"
+}
+
+function Find-SignTool {
+  $candidates = @(
+    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
+    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\signtool.exe"
+  )
+  foreach ($pattern in $candidates) {
+    $tool = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue |
+      Sort-Object FullName -Descending |
+      Select-Object -First 1
+    if ($tool) {
+      return $tool.FullName
+    }
+  }
+  throw "signtool.exe was not found. Install Windows SDK or use windows-latest GitHub runner."
+}
+
+function Assert-ReleaseFileSigned {
+  param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string[]]$AllowedPins)
+  # Default signature check of the finalize step: Authenticode policy verification plus the signer pin.
+  $signtool = Find-SignTool
+  & $signtool verify /pa /v $Path | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $Path" }
+  Assert-SignedFileSignerPin -Path $Path -AllowedPins $AllowedPins
+}
+
+function Read-AssemblyMetadataValues {
+  param([Parameter(Mandatory = $true)][string]$AssemblyPath)
+  # Reads AssemblyMetadata(key, value) attributes from the file without loading the assembly.
+  if (-not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
+    throw "Built runtime assembly was not found: $AssemblyPath"
+  }
+  $tokens = [System.Reflection.Metadata.Ecma335.MetadataTokens]
+  $stream = [IO.File]::Open($AssemblyPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  $values = @{}
+  try {
+    $pe = [System.Reflection.PortableExecutable.PEReader]::new($stream)
+    try {
+      $reader = [System.Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($pe)
+      foreach ($handle in $reader.GetAssemblyDefinition().GetCustomAttributes()) {
+        $attribute = $reader.GetCustomAttribute($handle)
+        if ($attribute.Constructor.Kind -ne [System.Reflection.Metadata.HandleKind]::MemberReference) { continue }
+        $member = $reader.GetMemberReference($tokens::MemberReferenceHandle($tokens::GetRowNumber($attribute.Constructor)))
+        if ($member.Parent.Kind -ne [System.Reflection.Metadata.HandleKind]::TypeReference) { continue }
+        $type = $reader.GetTypeReference($tokens::TypeReferenceHandle($tokens::GetRowNumber($member.Parent)))
+        if ($reader.GetString($type.Name) -cne "AssemblyMetadataAttribute") { continue }
+        $blob = $reader.GetBlobBytes($attribute.Value)
+        $offset = 2  # prolog 0x0001
+        $strings = @()
+        for ($i = 0; $i -lt 2; $i++) {
+          $first = $blob[$offset]
+          if ($first -eq 0xFF) { $strings += $null; $offset++; continue }
+          if (($first -band 0x80) -eq 0) { $length = $first; $offset += 1 }
+          elseif (($first -band 0xC0) -eq 0x80) { $length = (($first -band 0x3F) -shl 8) -bor $blob[$offset + 1]; $offset += 2 }
+          else { $length = (($first -band 0x1F) -shl 24) -bor ($blob[$offset + 1] -shl 16) -bor ($blob[$offset + 2] -shl 8) -bor $blob[$offset + 3]; $offset += 4 }
+          $strings += [Text.Encoding]::UTF8.GetString($blob, $offset, $length)
+          $offset += $length
+        }
+        if ($null -ne $strings[0]) { $values[[string]$strings[0]] = [string]$strings[1] }
+      }
+    } finally { $pe.Dispose() }
+  } finally { $stream.Dispose() }
+  return $values
+}
+
+function Get-EmbeddedReleaseTrust {
+  param([Parameter(Mandatory = $true)][string]$AssemblyPath)
+  # Manifest public keys and signer pins exactly as the shipped agent reads them (runtime assembly metadata).
+  $metadata = Read-AssemblyMetadataValues $AssemblyPath
+  $keys = New-Object System.Collections.Generic.List[string]
+  foreach ($item in ([string]$metadata["AgentUpdateManifestPublicKeysB64"] -split '[,;\s]+')) {
+    if ([string]::IsNullOrWhiteSpace($item)) { continue }
+    try { $keys.Add([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($item)).Trim()) }
+    catch { throw "The built runtime carries a malformed manifest public key." }
+  }
+  if ($keys.Count -eq 0) { throw "The built runtime carries no manifest public key." }
+  $pins = ConvertTo-NormalizedSignerPins @(([string]$metadata["AgentUpdateAllowedSignerKeyIdentity"]) -split ',')
+  if (@($pins).Count -eq 0) { throw "The built runtime carries no signer pin." }
+  return [pscustomobject]@{ PublicKeyPems = @($keys.ToArray()); SignerPins = @($pins) }
+}
+
+function Assert-ManifestAgainstBuild {
+  param(
+    [Parameter(Mandatory = $true)][string]$Canonical,
+    [Parameter(Mandatory = $true)][string]$Signature,
+    [Parameter(Mandatory = $true)][string]$ExpectedKeyPem,
+    [Parameter(Mandatory = $true)]$Trust,
+    [Parameter(Mandatory = $true)][string]$CoreAssembly,
+    [Parameter(Mandatory = $true)][string]$Channel,
+    [Parameter(Mandatory = $true)][string[]]$ArtifactPrefixes
+  )
+  # Self-check against what the build embeds: the signing key and signer identity must be trusted by the runtime,
+  # and the agent's own validator must accept the manifest. Returns the parsed manifest.
+  $normalize = { param($pem) ($pem -replace "`r", "").Trim() }
+  if ((& $normalize $ExpectedKeyPem) -notin @($Trust.PublicKeyPems | ForEach-Object { & $normalize $_ })) {
+    throw "The expected manifest public key is not among the keys embedded in this build."
+  }
+  $manifest = ConvertFrom-ManifestPayloadV2 -Canonical $Canonical -Signature $Signature
+  if ($manifest["channel"] -cne $Channel) { throw "Pending manifest channel does not match -Channel." }
+  if (([string]$manifest["signer_key_identity"]).ToLowerInvariant() -notin @($Trust.SignerPins)) {
+    throw "Manifest signer identity is not among the signer pins embedded in this build."
+  }
+  Import-AgentManifestVerifier $CoreAssembly
+  Assert-ManifestAcceptedByAgentVerifier `
+    -ManifestJson ($manifest | ConvertTo-Json -Depth 8) `
+    -PublicKeyPems @($ExpectedKeyPem) `
+    -Channel $Channel `
+    -ArtifactPrefixes $ArtifactPrefixes `
+    -ExpectedCanonicalPayload $Canonical
+  return $manifest
 }
