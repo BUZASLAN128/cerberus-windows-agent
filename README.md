@@ -294,7 +294,7 @@ Secrets are never persisted in this file.
 ### Prerequisites
 
 - Windows 10/11
-- .NET SDK 8.x
+- .NET SDK 10.x
 
 ### Restore / Build / Test
 
