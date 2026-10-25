@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -7,9 +6,11 @@ namespace Cerberus.Agent.Core;
 /// <summary>
 /// <c>agent_state</c> (contract v1 (b)). Runs inline in the envelope processor, so quarantine and
 /// a revoke gate later entries of the same batch. A <c>state_seq</c> at or below the last applied
-/// one fails with <c>stale_state_seq</c> and applies nothing. A revoke is recorded through the
+/// one fails with <c>stale_state_seq</c> and applies nothing. A revoke is stored with the state
+/// (<see cref="AgentPendingRevoke"/>), so it survives a restart, and is recorded through the
 /// lifecycle controller only after the DONE result reached a final outcome at the server
-/// (<see cref="IEnvelopeResultFollowUp"/>); then the execution queue is cancelled.
+/// (<see cref="IEnvelopeResultFollowUp"/>); then the pending revoke is cleared and the execution
+/// queue is cancelled.
 /// </summary>
 public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultFollowUp
 {
@@ -21,7 +22,6 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     private readonly AgentLifecycleController _lifecycle;
     private readonly Action _cancelExecution;
     private readonly IAgentLogger _log;
-    private readonly ConcurrentDictionary<(string AgentId, string CommandId), string> _pendingRevokes = new();
 
     /// <param name="currentAgentId">The current credential's agent id, read per call (pass the provider wrapped by <see cref="AgentSignedStateStore.Track"/>).</param>
     /// <param name="lifecycle">Records the revoke. Its quiesce delegate runs on the queue worker, so it must not await
@@ -74,31 +74,61 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             applied.Add("quarantine");
         }
 
-        string? revokeReason = null;
         if (payload.TryGetProperty("revoke", out var revoke))
         {
-            revokeReason = revoke.GetProperty("reason_code").GetString();
+            // Stored by the same write as state_seq: the revoke and its quarantine survive a restart.
+            next = next with { PendingRevoke = new AgentPendingRevoke(command.Id, revoke.GetProperty("reason_code").GetString()!) };
             applied.Add("revoke");
         }
 
         if (!_store.TrySave(next))
             throw new IOException("Signed agent state could not be stored.");
-        if (revokeReason is not null)
-        {
-            _store.MarkRevokePending(agentId);
-            _pendingRevokes[(agentId, command.Id)] = revokeReason;
-        }
 
-        _log.Info($"agent_state id={command.Id} applied state_seq={seq} quarantine={next.QuarantineActive} revoke={revokeReason ?? "none"}.");
+        _log.Info($"agent_state id={command.Id} applied state_seq={seq} quarantine={next.QuarantineActive} revoke={next.PendingRevoke?.ReasonCode ?? "none"}.");
         return new CommandResult("DONE", 0, null, null, new StateResult(ResultSchema, seq, applied));
     }
 
-    /// <summary>After the DONE result is final: record the signed revoke, then cancel the queue. Unknown ids are ignored.</summary>
+    /// <summary>
+    /// Startup recovery for a crash after the DONE result was delivered and marked submitted, but before the
+    /// revoke ran: run the follow-up now. A result still waiting in the outbox is left to the outbox, which
+    /// needs the credential. A missing record (retention ended) with a readable store can never be delivered, so
+    /// the signed revoke is applied.
+    /// </summary>
+    public async Task RecoverPendingRevokeAsync(CommandReplayStore replay, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(replay);
+        string agentId;
+        try
+        {
+            agentId = await _currentAgentId(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warn($"agent_state revoke recovery skipped: agent id unavailable ({ex.GetType().Name}).");
+            return;
+        }
+
+        if (_store.Load(agentId).PendingRevoke is not { } pending)
+            return;
+        var record = replay.Find(agentId, pending.CommandId);
+        var settled = record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
+                      || (record is null && replay.IsAvailable);
+        if (settled)
+            await OnResultFinalAsync(agentId, pending.CommandId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// After the DONE result is final: record the signed revoke, clear it from the store, then cancel the
+    /// queue. Ids without a stored pending revoke are ignored. Uses <paramref name="agentId"/>, not the
+    /// current credential, which the revoke clears.
+    /// </summary>
     public async Task OnResultFinalAsync(string agentId, string commandId, CancellationToken ct)
     {
-        if (!_pendingRevokes.TryRemove((agentId, commandId), out var reasonCode))
+        if (_store.Load(agentId).PendingRevoke is not { } pending
+            || !string.Equals(pending.CommandId, commandId, StringComparison.Ordinal))
             return;
 
+        var reasonCode = pending.ReasonCode;
         try
         {
             try
@@ -111,6 +141,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             }
 
             _log.Warn($"agent_state id={commandId} signed revoke recorded reason={reasonCode}.");
+            if (!_store.TryClearPendingRevoke(agentId, commandId))
+                _log.Warn($"agent_state id={commandId} pending revoke not cleared; it runs again at the next start.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {

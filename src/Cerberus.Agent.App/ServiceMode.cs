@@ -293,8 +293,9 @@ internal static class ServiceMode
         EnvelopeExecutionQueue? queue = null;
 #if CERBERUS_SERVER_PROFILE
         ManagedAccountManifestPolicy? managedAccounts = null;
-        var handlers = AgentCommandRegistry.CreateServer(metadata, new AgentStateCommandHandler(signedState, currentAgentId,
-            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log));
+        var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
+            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log);
+        var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
 #else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
@@ -305,6 +306,9 @@ internal static class ServiceMode
         var dispatcher = new CommandDispatcher(handlers, idempotency);
         await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log);
         queue = envelopeQueue;
+#if CERBERUS_SERVER_PROFILE
+        await agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, ct).ConfigureAwait(false);
+#endif
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
         var loop = new HeartbeatLoop(

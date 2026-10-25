@@ -43,9 +43,13 @@ public enum ReplayReserveOutcome
 }
 
 /// <summary>
-/// Replay store for signed command envelopes: <c>&lt;DataDir&gt;\command-envelopes.v1.json</c>,
+/// Replay store for signed command envelopes: <c>&lt;DataDir&gt;\Privileged\command-envelopes.v1.json</c>,
 /// written as temp file, flushed to disk, then atomically replaced. A corrupt or unreadable
 /// file is renamed <c>*.corrupt-&lt;unix&gt;</c> and a new store starts with <c>reset_at = now</c>.
+/// On a machine path (see <see cref="ProtectedMachineFile"/>) a file with an untrusted owner or DACL, a
+/// directory or a reparse point at the path is not parsed or renamed (a moved file would keep its DACL
+/// inside <c>Privileged</c>); the store resets the same way and its first write replaces the object.
+/// An untrusted directory chain makes the store unavailable.
 /// When the file cannot be written the store is unavailable and reservations fail closed.
 /// </summary>
 public sealed class CommandReplayStore
@@ -61,26 +65,27 @@ public sealed class CommandReplayStore
 
     private readonly object _gate = new();
     private readonly string _path;
+    private readonly ProtectedMachineFile _file;
     private readonly TimeProvider _time;
     private readonly IAgentLogger _log;
     private List<CommandReplayRecord> _records = new();
     private long _resetAt;
     private bool _loaded;
     private bool _persistPending;
+    private bool _untrustedDirectoryLogged;
 
-    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null)
+    /// <param name="enforceFileProvenance">Also demands a SYSTEM/Administrators owner and a DACL without untrusted
+    /// writers on a path outside <c>Privileged</c> (always on inside it).</param>
+    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false)
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
+        _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _time = time ?? TimeProvider.System;
         _log = log ?? NullAgentLogger.Instance;
     }
 
-    /// <summary>The store path under the profile's ProgramData directory.</summary>
-    public static string DefaultPath()
-        => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            AgentInstallIdentity.DataDirName,
-            FileName);
+    /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
+    public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
 
     /// <summary>Envelopes issued before this Unix time are rejected (step 15). 0 for a store that never existed.</summary>
     public long ResetAt
@@ -202,11 +207,39 @@ public sealed class CommandReplayStore
             return true;
         }
 
-        if (!File.Exists(_path))
+        try
+        {
+            _file.ValidateDirectory();
+        }
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
+        {
+            if (!_untrustedDirectoryLogged)
+                _log.Error($"Command replay store directory is untrusted ({ex.GetType().Name}); the store is unavailable.");
+            _untrustedDirectoryLogged = true;
+            return false;
+        }
+
+        _untrustedDirectoryLogged = false;
+        if (!_file.Exists())
         {
             _records = new List<CommandReplayRecord>();
             _resetAt = 0;
             _loaded = true;
+            return true;
+        }
+
+        try
+        {
+            _file.ValidateFile();
+        }
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
+        {
+            var resetNow = NowUnix();
+            _log.Warn($"Command replay store failed provenance ({ex.GetType().Name}); reset at {resetNow}.");
+            _records = new List<CommandReplayRecord>();
+            _resetAt = resetNow;
+            _loaded = true;
+            _persistPending = !TryPersist(_records, _resetAt);
             return true;
         }
 
@@ -266,12 +299,9 @@ public sealed class CommandReplayStore
         var tempPath = $"{_path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            var directory = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
+            _file.EnsureDirectory();
             var bytes = JsonSerializer.SerializeToUtf8Bytes(new StoreFile(Schema, resetAt, records), JsonOpts);
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096,
-                       FileOptions.WriteThrough))
+            using (var stream = _file.CreateTemp(tempPath))
             {
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
@@ -280,7 +310,7 @@ public sealed class CommandReplayStore
             File.Move(tempPath, _path, overwrite: true);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
         {
             _log.Error($"Command replay store write failed: {ex.GetType().Name}.");
             try
