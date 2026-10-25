@@ -45,6 +45,9 @@
     <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(ServiceExeSha256)', '^[a-fA-F0-9]{64}$'))" Text="Exact service executable SHA256 is required." />
     <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(ServiceAssemblySha256)', '^[a-fA-F0-9]{64}$'))" Text="Exact service assembly SHA256 is required." />
   </Target>
+  <ItemGroup Condition="'$(AgentBuildProfile)' != 'server'">
+    <EmbeddedResource Remove="Server.*.wxl" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.UI.wixext" Version="7.0.0" />
     <PackageReference Include="WixToolset.Util.wixext" Version="7.0.0" />

@@ -73,6 +73,9 @@
           Order="1" />
       <?endif ?>
     </UI>
+    <?if $(var.AgentBuildProfile) = server ?>
+    <UIRef Id="ServerEnrollmentUI" />
+    <?endif ?>
     <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-favicon.ico" />
     <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
     <?if $(var.AgentBuildProfile) != server ?>
@@ -146,7 +149,8 @@
         Impersonate="no"
         Return="check" />
     <?if $(var.AgentBuildProfile) = server ?>
-    <!-- The enrollment proof is hidden in the log and only read from the secure, hidden property. -->
+    <!-- The enrollment proof is hidden in the log and only read from the secure, hidden property.
+         Return=check: a non-zero exit fails the install and Windows Installer rolls it back. Upgrades never enroll. -->
     <CustomAction
         Id="ServerEnrollFromInstaller"
         Directory="APPFOLDER"
@@ -154,7 +158,7 @@
         Execute="deferred"
         Impersonate="no"
         HideTarget="yes"
-        Return="ignore" />
+        Return="check" />
     <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
@@ -210,7 +214,7 @@
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
       <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
       <?if $(var.AgentBuildProfile) = server ?>
-      <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND CERBERUS_ENROLLMENT_PROOF" />
+      <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <?else ?>
       <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />

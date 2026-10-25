@@ -120,13 +120,13 @@ public sealed class ServerPackageStaticTests
         Assert.Equal("deferred", (string)action.Attribute("Execute")!);
         Assert.Equal("no", (string)action.Attribute("Impersonate")!);
         Assert.Equal("yes", (string)action.Attribute("HideTarget")!);
-        Assert.Equal("ignore", (string)action.Attribute("Return")!);
+        Assert.Equal("check", (string)action.Attribute("Return")!);
         var command = (string)action.Attribute("ExeCommand")!;
         Assert.Contains("--enroll-headless --proof-from-installer \"[CERBERUS_ENROLLMENT_PROOF]\" --install-service", command);
 
         var step = doc.Descendants(Wix + "Custom").Single(c => (string?)c.Attribute("Action") == "ServerEnrollFromInstaller");
         Assert.Equal("InstallFinalize", (string)step.Attribute("Before")!);
-        Assert.Equal("NOT Installed AND CERBERUS_ENROLLMENT_PROOF", (string)step.Attribute("Condition")!);
+        Assert.Equal("NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF", (string)step.Attribute("Condition")!);
     }
 
     [Fact]
@@ -289,13 +289,13 @@ public sealed class ServerPackageStaticTests
         componentIds.Select(id => (string)doc.Descendants(Wix + "Component").Single(c => (string?)c.Attribute("Id") == id).Attribute("Guid")!).ToArray();
 
     // Evaluates <?define?>, <?if $(var.X) = / != Y?>, <?else?> and <?endif?> lines. Other lines are kept verbatim.
-    private static string Evaluate(string profile, string channel)
+    internal static string Evaluate(string profile, string channel, string file = "Package.wxs")
     {
         var vars = new Dictionary<string, string>(StringComparer.Ordinal) { ["AgentBuildProfile"] = profile, ["ReleaseChannel"] = channel };
         var output = new List<string>();
         var stack = new Stack<(bool Parent, bool Taken, bool Active)>();
         var active = true;
-        foreach (var line in File.ReadAllLines(PackagePath()))
+        foreach (var line in File.ReadAllLines(Path.Combine(FindRepoRoot(), "src", "Cerberus.Agent.Installer", file)))
         {
             var trimmed = line.Trim();
             var condition = Regex.Match(trimmed, @"^<\?if \$\(var\.(?<n>\w+)\)\s*(?<op>!=|=)\s*(?<v>\w+)\s*\?>$");
@@ -326,8 +326,6 @@ public sealed class ServerPackageStaticTests
         Assert.Empty(stack);
         return string.Join('\n', output);
     }
-
-    private static string PackagePath() => Path.Combine(FindRepoRoot(), "src", "Cerberus.Agent.Installer", "Package.wxs");
 
     private static (int ExitCode, string Output) RunPwsh(string command)
     {
