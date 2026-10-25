@@ -1,0 +1,126 @@
+{
+  "schema": "cerberus.agent-wire-vectors",
+  "version": 1,
+  "description": "Frozen agent-side wire values. Each section lists the agent source that produces it; reference_server lists the cerberus-app code that consumes it.",
+  "test_key": {
+    "note": "Test-only RSA 2048 public key. The signatures were made once with the matching private key, which was then discarded, so they can be verified with this key but not regenerated.",
+    "test_public_key_spki_der": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjkD2E/DTZ0WOELYXTZGoifnUHCV0t/8BeOr8nz9fmDcE0wdtkRlV2qGf4xhSdDHV5yiN1SxdBm9FgJpO9zQ4x0JqeontGSnKkrKjTXWVjnDfn3YZV26EL0TjbroDtORK6Lv+l6UCbzyJ91slPFuex3J0QaXzMwMIwbRqdugKcYpdpgfWtT7Pp501czzAoHxZAHsVR+Sw6EJLD/xcmylJGJO1tXS5cEgWjwlpE1gg6l0s6pURy06mxlOgWyjJGrBxJaF0beAQZF5hnux8eXkc6Z8HB06W1f5SnbnQkF1EAZ/amllQrRg6nshy20iXXJvcdW60mivOqh4lTJR7OPHtiwIDAQAB",
+    "public_key_spki_sha256_hex": "55b78a99c02d2e3e342e562f9351e7b9bcded4a94d864f712dc1e958c31bf2e2"
+  },
+  "request_signature": {
+    "canonical_format": "v1:{METHOD}:{path}:{nonce}:{timestamp}:{bodyHash}",
+    "body_hash": "standard padded base64 of SHA-256(body bytes); an empty body hashes the empty byte string",
+    "signature": "RSA PKCS#1 v1.5 + SHA-256 over the UTF-8 canonical string, standard base64",
+    "headers": ["X-Agent-Id", "X-Nonce", "X-Timestamp", "X-Body-Hash", "X-Signature"],
+    "nonce_format": "32 lowercase hex characters (16 random bytes)",
+    "timestamp_format": "decimal Unix seconds",
+    "source": [
+      "src/Cerberus.Agent.Security/RequestSigner.cs:16-30",
+      "src/Cerberus.Agent.Core/AgentApiClient.cs:631-660"
+    ],
+    "reference_server": [
+      "app/modules/agents/services/agent_request_validation.py:104-105,207-223,268",
+      "app/modules/agents/services/agent_crypto.py:44-46,385-410"
+    ],
+    "vectors": [
+      {
+        "id": "post-heartbeat-json-body",
+        "method": "POST",
+        "path": "/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/heartbeat",
+        "nonce": "00112233445566778899aabbccddeeff",
+        "timestamp": 1700000000,
+        "body_utf8": "{\"a\":1}",
+        "expected_body_hash": "AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX+GI=",
+        "expected_canonical": "v1:POST:/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/heartbeat:00112233445566778899aabbccddeeff:1700000000:AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX+GI=",
+        "expected_signature": "GF4pLIWLViqmmqXd+vREyabcpMFpoAMb9CLdfBRm94RM4qh90+lKvG4qi6MfByPnA1oRwhZS+7zYHXhY05CLPBosaWwYFnuGNSrdn9v13IWJ/nAYeBwkvllDt/rZkDxpPbGNtDL0Kq1SLU6kZQQQiqJUSp9l9kEt2YkaRi3hxI2MTdVEbSIhqB0QmUiR7I9IsbD45MnEGzd2NcD9Jmd64DP6B6Lir3HrcaUEE1kJ/yuhzjbGmpSBADnY9vk+Ezb9783sEP1Hv3Lan7LkWAa8bREDPqAdKNaFJBN1LFbHi2HYicb3YW7dc+kDAshxIh2pHdsmIcsAslbv1MIgRNTDrw=="
+      },
+      {
+        "id": "get-empty-body",
+        "method": "GET",
+        "path": "/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/managed-accounts/manifest",
+        "nonce": "00112233445566778899aabbccddeeff",
+        "timestamp": 1700000000,
+        "body_utf8": "",
+        "expected_body_hash": "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+        "expected_canonical": "v1:GET:/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/managed-accounts/manifest:00112233445566778899aabbccddeeff:1700000000:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+        "expected_signature": "gjKX9T4AFBNR9KNmft7iWK7XtupO6CpvyjGYGhQUj/R8gzIT7H982LlD3zQvc7gwdW4tcjkT7jitR8aplQsaaSUkUrmf8yPrVpL084Tt6NQWVdbGZ79kv/xUut0EiZ8R+ppMvSY9LeVqPZWw2Z4XTuKNKW4hXauyoRvoCVS6NlBVr+qUR0F7ccKVdGFShBXeGBSn/CQG3nTGhY7Lo+Nln2ijZZcAFOjftgVnxm/ebEjZAZkT8olGw1r5aQ32Wyiq3RpWtydikCze/WBAOLf/ccdZj2Yk/tbtggqJSiGwkDErnaJoZhb2MWy9juq5yastGqgr8oMLs5Opn4U96zxDZA=="
+      },
+      {
+        "id": "lowercase-method-utf8-body",
+        "method": "post",
+        "path": "/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/deactivate",
+        "nonce": "00112233445566778899aabbccddeeff",
+        "timestamp": 1700000000,
+        "body_utf8": "{\"n\":\"ü\"}",
+        "expected_body_hash": "ev4DqajeNfR4+QWpP1PvXgO5fBWuc/RMXPtcbPEIVAg=",
+        "expected_canonical": "v1:POST:/api/v1/agents/0b6b3f1e-5c2a-4d7e-9a41-3f2d8c6e1a77/deactivate:00112233445566778899aabbccddeeff:1700000000:ev4DqajeNfR4+QWpP1PvXgO5fBWuc/RMXPtcbPEIVAg=",
+        "expected_signature": "cS2xcJiC7zJa9ZaZE52KLlVoopqpeGmClU+ZpVcL+7BTez+QfNll7/+3JwS13j2U/1fXYfwE3tJmlENcTspi8LDakdp9uvgVsJOR02FKHpHx5MrbsUD96MGKsXANuoM8XhismwzKXH3775SKeyVYmm3MNediABLn0uJ5FxombP/MlUz8qGPOmIz19iksEbDTO4sRXZlsVilr5NsULnISYSlskWx7MHdgfQAoHLW2JIy3RWrrpK6212z2+q//TJPWU3dy6F1u6287RdRqcX4KkBACsZBqDzmVCj8ksiqQ8WXxfYi1tYLvu6u0y8oPhUndR/Ba3IR5vOnFOXgQRJ46Cg=="
+      }
+    ],
+    "notes": [
+      "The server verifies the signature over request.url.path (Starlette scope path: percent-decoded, query string excluded). The agent signs the path string it sends; no agent call adds a query string.",
+      "Path encoding: AgentApiClient.cs:153,189-190,214-215 build the command ad-authority/ack/result paths with Uri.EscapeDataString on agent id and command id and sign that encoded string, while the server canonical uses the decoded path. The two agree when the ids contain only unreserved characters (canonical UUID agent ids). Command ids with reserved characters (for example '/', ' ', '%') would sign differently. Other paths interpolate the agent id unescaped (AgentApiClient.cs:67,134,276,330,367,404). Vectors therefore use canonical UUID agent ids only.",
+      "X-Agent-Id is sent by the agent but is not read by the server request validation at app c054ebc1 (the agent id comes from the URL path and the JWT).",
+      "The server treats the nonce as an opaque non-empty string (replay key agent:nonce:{agent_id}:{nonce}, 120 s). The 32 lowercase hex format is agent-side behavior only.",
+      "Server values read in the reference source but not asserted by any agent test: timestamp skew default 60 s (AGENT_REQUEST_TIMESTAMP_SKEW_SECONDS, app/core/config/__init__.py:911) and JSON limit 64 KiB (MAX_JSON_BYTES, app/modules/agents/schemas/agent_schemas.py:13)."
+    ]
+  },
+  "key_fingerprints": {
+    "agent_key": {
+      "source": "src/Cerberus.Agent.App/Control/AgentEnrollmentPromotion.cs:78-83 (PublicKeyDigest)",
+      "format": "uppercase hex SHA-256 of the SubjectPublicKeyInfo DER, no prefix",
+      "expected": "55B78A99C02D2E3E342E562F9351E7B9BCDED4A94D864F712DC1E958C31BF2E2"
+    },
+    "update_publisher_pin": {
+      "source": "src/Cerberus.Agent.Core/AgentUpdateAuthenticode.cs:45-46 (PublisherSpkiSha256)",
+      "format": "'sha256:' + lowercase hex SHA-256 of the certificate SubjectPublicKeyInfo DER",
+      "expected": "sha256:55b78a99c02d2e3e342e562f9351e7b9bcded4a94d864f712dc1e958c31bf2e2"
+    },
+    "notes": [
+      "The two formats differ today. The planned canonical form is 'sha256:' + lowercase hex for the agent key as well; its function-level test belongs with that code change."
+    ]
+  },
+  "device_fingerprint": {
+    "source": "src/Cerberus.Agent.App/WindowsDeviceInfo.cs:49-55 (ComputeDeviceFingerprint)",
+    "format": "lowercase hex SHA-256 of UTF-8 \"{MachineName}:{MachineGuid}\"; either part falls back to \"unknown\"",
+    "notes": [
+      "MachineName and the registry MachineGuid are read inside the function; no pure (machineName, machineGuid) function exists, so this entry is documentation only and not asserted."
+    ]
+  },
+  "telemetry_section_hash": {
+    "source": "src/Cerberus.Agent.Core/TelemetryContracts.cs:135,167-172 (AgentSnapshotFactory.HashSection)",
+    "format": "lowercase hex SHA-256 of the UTF-8 System.Text.Json output using JsonSerializerDefaults.Web",
+    "vectors": [
+      {
+        "id": "dictionary-keeps-insertion-order",
+        "expected_json": "{\"zeta\":1,\"alpha\":\"x\",\"mid\":true}",
+        "expected_sha256": "a485d2092321286f1450963faac8c60aa8d0b979a53b3cd94e5e61367d42d04b"
+      },
+      {
+        "id": "number-formats",
+        "expected_json": "{\"int\":42,\"neg\":-7,\"double_whole\":2,\"double_frac\":0.1,\"long_big\":9007199254740993,\"decimal\":1.50}",
+        "expected_sha256": "9f4fc378ad792cecf311f589138f948db3838bcdcf111b5e623384437142acb8"
+      },
+      {
+        "id": "camel-case-null-and-escaping",
+        "expected_json": "{\"sectionName\":\"net\",\"count\":3,\"note\":null,\"text\":\"\\u00FC\\u003C\"}",
+        "expected_sha256": "5e8e06e31513743e7f9733136cc2bc78a08fabc3d0e01f8841dae24ec726e24c"
+      },
+      {
+        "id": "null-section",
+        "expected_json": "null",
+        "expected_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+      }
+    ]
+  },
+  "schema_constants": {
+    "source": "src/Cerberus.Agent.Core/TelemetryContracts.cs:10-14,28-29",
+    "heartbeat": "agent.heartbeat.v1",
+    "snapshot": "agent.snapshot.v1",
+    "events": "agent.events.v1",
+    "probe_result": "agent.probe-result.v1",
+    "diagnostic_bundle": "agent.diagnostic_bundle.v1",
+    "max_json_bytes": 65536,
+    "max_diagnostic_bundle_bytes": 262144
+  }
+}

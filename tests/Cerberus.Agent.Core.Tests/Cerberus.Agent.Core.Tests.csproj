@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-wire-vectors.v1.json" Link="fixtures\agent-wire-vectors.v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
