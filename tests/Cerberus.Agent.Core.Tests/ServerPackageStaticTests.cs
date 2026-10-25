@@ -284,6 +284,16 @@ public sealed class ServerPackageStaticTests
     }
 
     [Fact]
+    public void ReleaseScript_SignsAndGatesTheInstallerHelperBeforeTheMsiBuild()
+    {
+        var script = File.ReadAllText(Path.Combine(FindRepoRoot(), "scripts", "build-agent-public-release.ps1"));
+        var sign = script.IndexOf("Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput)", StringComparison.Ordinal);
+        Assert.True(sign > script.IndexOf("Installer helper publish failed", StringComparison.Ordinal));
+        Assert.Contains("Assert-FirstPartyPeFilesSigned $installerHelperOutput", script);
+        Assert.True(sign < script.IndexOf("dotnet build $installerProject", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void SmokeScript_SelectsTheServiceNameByProfile()
     {
         var script = File.ReadAllText(Path.Combine(FindRepoRoot(), "scripts", "clean-install-smoke.ps1"));

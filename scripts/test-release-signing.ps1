@@ -249,6 +249,11 @@ try {
   Check "payload gate lists the satellite assembly by relative path" {
     Throws { Assert-FirstPartyPeFilesSigned (Join-Path $good.Publish "runtime") } "tr\\Cerberus\.Agent\.resources\.dll"
   }
+  Check "payload gate covers the installer helper executable" {
+    $helperDir = Join-Path $work "installer-helper"; New-Item -ItemType Directory -Path $helperDir -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $helperDir "Cerberus.Agent.Installer.Helper.exe"), [byte[]](1, 2, 3))
+    Throws { Assert-FirstPartyPeFilesSigned $helperDir } "Unsigned first-party file\(s\).*Cerberus\.Agent\.Installer\.Helper\.exe"
+  }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
   Check "finalize removes the pending payload and state" {
     -not (Test-Path -LiteralPath (Join-Path $good.Publish $payloadName)) -and -not (Test-Path -LiteralPath (Join-Path $good.Publish $pendingName))

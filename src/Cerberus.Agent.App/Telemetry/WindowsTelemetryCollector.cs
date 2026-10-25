@@ -52,6 +52,8 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
                 .ConfigureAwait(false);
         }
 
+        // Only a failed_logons object that is in this snapshot can have its window committed after the upload.
+        FailedLogonSection.KeepPendingIfReported(payload.GetValueOrDefault("security"));
         return AgentSnapshotFactory.Create(metadata, DateTimeOffset.UtcNow, payload);
     }
 }

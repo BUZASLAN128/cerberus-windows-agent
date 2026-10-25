@@ -121,10 +121,13 @@ function Assert-CommandAnchorsNotManifestKeys([string]$AnchorsB64, [string[]]$Ma
 }
 
 # True when any supplied anchor line equals one in tests/fixtures/agent-command-test-anchors.b64 (the anchors
-# the test and preflight builds use). Input that does not decode is left to the later format checks.
+# the test and preflight builds use). Input that does not decode is left to the later format checks. The check
+# is only called for preview/stable builds, so a missing fixture file fails closed instead of passing everything.
 function Test-CommandAnchorsAreTestFixture([string]$AnchorsB64) {
   $fixtureFile = Join-Path $PSScriptRoot "..\tests\fixtures\agent-command-test-anchors.b64"
-  if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) { return $false }
+  if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) {
+    throw "The command trust anchor test fixture is missing ($fixtureFile); cannot verify that a preview or stable build does not use it."
+  }
   try {
     $lines = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Trim())).Split("`n") |
       ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } }

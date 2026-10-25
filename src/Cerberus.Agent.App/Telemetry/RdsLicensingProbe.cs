@@ -88,16 +88,24 @@ internal static class RdsLicensingProbe
 
     private static DateTime? ReadGracePeriodLastWriteUtc()
     {
-        using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-        using var key = hklm.OpenSubKey(GracePeriodKey, writable: false);
-        if (key is null)
+        try
+        {
+            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = hklm.OpenSubKey(GracePeriodKey, writable: false);
+            if (key is null)
+                return null;
+            var handle = key.Handle.DangerousGetHandle();
+            var rc = RegQueryInfoKey(handle, null, IntPtr.Zero, IntPtr.Zero, out _, out _, out _, out var valueCount,
+                out _, out _, IntPtr.Zero, out var lastWrite);
+            if (rc != 0 || valueCount == 0 || lastWrite == 0)
+                return null;
+            return DateTime.FromFileTimeUtc(lastWrite);
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException)
+        {
+            // The GracePeriod key is ACL-restricted; only the grace fields go missing, not the whole section.
             return null;
-        var handle = key.Handle.DangerousGetHandle();
-        var rc = RegQueryInfoKey(handle, null, IntPtr.Zero, IntPtr.Zero, out _, out _, out _, out var valueCount,
-            out _, out _, IntPtr.Zero, out var lastWrite);
-        if (rc != 0 || valueCount == 0 || lastWrite == 0)
-            return null;
-        return DateTime.FromFileTimeUtc(lastWrite);
+        }
     }
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegQueryInfoKeyW")]

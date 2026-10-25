@@ -26,14 +26,14 @@ internal static class FailedLogonProtocolProbe
         var ssh = new ProtocolPresence(
             services.Contains("sshd"),
             tcp.Contains(DefaultSshPort));
-        var sqlPresent = services.Any(s => FailedLogonEventReader.IsSqlProvider(s));
+        var sqlPresent = services.Any(FailedLogonEventReader.IsSqlProvider);
         var sql = new ProtocolPresence(
             sqlPresent,
             sqlPresent && (tcp.Contains(DefaultSqlPort) || sqlOwned));
         return (rdp, ssh, sql);
     }
 
-    private static HashSet<string> ReadServiceNames()
+    internal static HashSet<string> ReadServiceNames()
     {
         try
         {

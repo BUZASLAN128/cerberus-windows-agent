@@ -64,6 +64,7 @@
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServerServiceStartup.cs" Link="ServerServiceStartup.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
+    <Compile Include="..\Cerberus.Agent.App\ServiceMode.Support.cs" Link="ServiceMode.Support.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\**\*.cs" LinkBase="Updates" />
     <Compile Include="..\Cerberus.Agent.App\Control\**\*.cs" LinkBase="Control" />
     <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />

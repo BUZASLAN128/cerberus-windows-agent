@@ -10,18 +10,22 @@ namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 /// Only the scheduled snapshot path (<c>commit: true</c>) produces a pending cursor, which
 /// <see cref="CommitPending"/> persists after the snapshot upload succeeded; a failed upload leaves the committed
 /// cursor untouched, so the next collection reads the same attempts again. Every other caller peeks
-/// (<c>commit: false</c>): it reads forward from the committed cursor and never writes.
+/// (<c>commit: false</c>): it reads forward from the committed cursor and never writes. A pending cursor is bound to
+/// the report object it produced: <see cref="KeepPendingIfReported"/> drops it unless the snapshot being uploaded
+/// carries that very object, so a timed-out, failed or skipped collection never commits an unreported window.
 /// </para>
 /// </summary>
 internal static class FailedLogonSection
 {
     private static readonly object Gate = new();
-    private static (FailedLogonCursorStore Store, FailedLogonCursorState State)? _pending;
+    private static (FailedLogonCursorStore Store, FailedLogonCursorState State, object Report)? _pending;
 
     public static object Collect(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
     {
         lock (Gate)
         {
+            if (commit)
+                _pending = null;
             var state = store.Load(out var invalid);
             var firstRun = !invalid && state.LastWindowEndUtc is null;
             var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
@@ -67,24 +71,24 @@ internal static class FailedLogonSection
                 }
                 readable++;
                 capped |= read.Capped;
-                state.Channels[channel] = read.LastRecordId;
+                state.Channels[channel] = FailedLogonCursorLogic.NextSaved(read.LastRecordId, read.Capped, b.Newest);
                 events.AddRange(read.Events);
             }
 
             reset |= events.Any(e => e.Source == FailedLogonSource.LogCleared);
             state.LastWindowEndUtc = now;
-            var saveOk = true;
-            if (commit)
-            {
-                // First run has nothing to lose: persist the baseline now so a failed first upload cannot skip events.
-                if (firstRun)
-                    saveOk = store.Save(state);
-                else
-                    _pending = (store, state);
-            }
-            var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
             var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
-            return Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, FailedLogonAuditPolicy.ReadFailureEnabled());
+            var auditFailure = FailedLogonAuditPolicy.ReadFailureEnabled();
+            ct.ThrowIfCancellationRequested();
+            var saveOk = true;
+            // First run has nothing to lose: persist the baseline now so a failed first upload cannot skip events.
+            if (commit && firstRun)
+                saveOk = store.Save(state);
+            var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
+            var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
+            if (commit && !firstRun)
+                _pending = (store, state, report);
+            return report;
         }
     }
 
@@ -96,6 +100,19 @@ internal static class FailedLogonSection
             if (_pending is { } p)
                 p.Store.Save(p.State);
             _pending = null;
+        }
+    }
+
+    /// <summary>Drops the pending cursor unless <paramref name="securityPayload"/> carries the report it was produced for.</summary>
+    internal static void KeepPendingIfReported(object? securityPayload)
+    {
+        lock (Gate)
+        {
+            if (_pending is { } p
+                && !(securityPayload is IReadOnlyDictionary<string, object?> section
+                     && section.TryGetValue("failed_logons", out var reported)
+                     && ReferenceEquals(reported, p.Report)))
+                _pending = null;
         }
     }
 

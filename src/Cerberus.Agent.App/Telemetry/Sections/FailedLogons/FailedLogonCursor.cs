@@ -58,6 +58,14 @@ internal static class FailedLogonCursorLogic
         _ => newestRecordId,
     };
 
+    /// <summary>
+    /// Position to save after a read. An uncapped read saw everything up to the log end captured before it, so the
+    /// cursor moves there even when no record matched (a full circular log with rare matches would otherwise look
+    /// wrapped every window); a capped read stops at the last record it handled.
+    /// </summary>
+    internal static long NextSaved(long lastRecordId, bool capped, long newestBeforeRead)
+        => capped ? lastRecordId : Math.Max(lastRecordId, newestBeforeRead);
+
     /// <summary>Whether the decision means events may have been missed (reported as <c>cursor_reset</c>).</summary>
     internal static bool IsReset(ChannelStart decision) => decision is ChannelStart.Reset or ChannelStart.Gap;
 }

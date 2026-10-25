@@ -71,6 +71,8 @@ internal static class FailedLogonEventReader
         var capped = false;
         try
         {
+            // Application-log providers are only trusted when the matching SQL Server service is installed.
+            var sqlServices = channel == Application ? FailedLogonProtocolProbe.ReadServiceNames() : null;
             using var reader = new EventLogReader(new EventLogQuery(channel, PathType.LogName, Query(channel, after)));
             while (true)
             {
@@ -85,7 +87,7 @@ internal static class FailedLogonEventReader
                 }
                 if (record.RecordId is { } id && id > last)
                     last = id;
-                var parsed = Parse(channel, record);
+                var parsed = Parse(channel, record, sqlServices);
                 if (parsed is not null)
                     events.Add(parsed);
             }
@@ -101,7 +103,7 @@ internal static class FailedLogonEventReader
         }
     }
 
-    private static FailedLogonEvent? Parse(string channel, EventRecord record)
+    private static FailedLogonEvent? Parse(string channel, EventRecord record, HashSet<string>? sqlServices)
     {
         var time = record.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : DateTimeOffset.UtcNow;
         EventData data;
@@ -138,9 +140,10 @@ internal static class FailedLogonEventReader
                         return new FailedLogonEvent(FailedLogonSource.OpenSsh, time, sshIp);
                 return null;
             case Application:
-                if (!IsSqlProvider(record.ProviderName))
+                if (!IsInstalledSqlProvider(record.ProviderName, sqlServices))
                     return null;
-                // 18456 template: %1 account, %2 reason, %3 "[CLIENT: x]". The Application log accepts writes from
+                // Any local user can write Application events under an MSSQL provider name, so the provider must
+                // also be an installed SQL Server service. 18456 template: %1 account, %2 reason, %3 "[CLIENT: x]". The Application log accepts writes from
                 // non-admin callers, so only the third data field is read: no scan of the other values. A failed
                 // SQL logon without a usable address is still counted. (Not filtered by event UserId: the service
                 // account differs per install and is not reliably known to the agent.)
@@ -156,6 +159,10 @@ internal static class FailedLogonEventReader
     internal static bool IsSqlProvider(string? provider)
         => string.Equals(provider, "MSSQLSERVER", StringComparison.OrdinalIgnoreCase)
            || (provider is not null && provider.StartsWith("MSSQL$", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A SQL provider name that matches an installed service (MSSQLSERVER, MSSQL$name).</summary>
+    internal static bool IsInstalledSqlProvider(string? provider, IReadOnlySet<string>? installedServices)
+        => provider is not null && installedServices is not null && IsSqlProvider(provider) && installedServices.Contains(provider);
 
     private sealed record EventData(Dictionary<string, string> Named, List<string> Positional);
 

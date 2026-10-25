@@ -298,33 +298,36 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-# Sign every first-party PE before anything hashes the payload (service assembly hash, MSI, zip, SBOM, manifest).
+function Invoke-FirstPartySigning([string[]]$Files) {
+  if ($tokenMode) {
+    $signtool = Find-SignTool
+    foreach ($peFile in $Files) {
+      Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
+        -FilePath $peFile -AllowedPins $tokenSignerPins
+    }
+  }
+  elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
+    $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
+    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+      $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
+    }
+    [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
+    $signtool = Find-SignTool
+    foreach ($peFile in $Files) {
+      & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
+      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
+      & $signtool verify /pa /v $peFile
+      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
+    }
+    Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+  }
+}
+# Sign every first-party PE before anything hashes the payload (service assembly hash, MSI, zip, SBOM, manifest);
+# Invoke-FirstPartySigning also signs the installer helper below.
 $firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
 if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
   Write-Step "Signing $($firstPartyPeFiles.Count) first-party files"
-}
-if ($tokenMode) {
-  $signtool = Find-SignTool
-  foreach ($peFile in $firstPartyPeFiles) {
-    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-      -FilePath $peFile -AllowedPins $tokenSignerPins
-  }
-  $signed = $true
-}
-elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-  $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
-  if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-    $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
-  }
-  [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-  $signtool = Find-SignTool
-  foreach ($peFile in $firstPartyPeFiles) {
-    & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
-    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-    & $signtool verify /pa /v $peFile
-    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-  }
-  Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+  Invoke-FirstPartySigning $firstPartyPeFiles
   $signed = $true
 }
 if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir }
@@ -340,6 +343,8 @@ dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberu
   -p:Version=$Version @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
+# Built after the payload pass and packed into the MSI: sign and gate it here.
+if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
 $serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
