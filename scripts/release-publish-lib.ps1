@@ -21,7 +21,7 @@ function Invoke-SecretScan([string]$Path) {
     "headscale[_-]?(api[_-]?)?key\s*[:=]\s*['""][^'""]+['""]",
     "-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----",
     "Bearer\s+[A-Za-z0-9._~+/=-]{20,}",
-    "(password|refresh_token|signing_key|private_key)\s*[:=]\s*['""][^'""]+['""]"
+    "(password|refresh_token|signing_key|private_key)\s*[:=]\s*['""](?!(?:yes|no)['""])[^'""]+['""]"
   )
   $hits = New-Object System.Collections.Generic.List[string]
   $files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
