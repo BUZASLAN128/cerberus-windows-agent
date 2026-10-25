@@ -14,7 +14,7 @@ public static class HeadlessEnrollmentExit
     public const int BadInput = 2;
     /// <summary>Request or response rejected; retrying the same input cannot help.</summary>
     public const int Rejected = 3;
-    /// <summary>The proof is spent or refused; a new proof is required.</summary>
+    /// <summary>The proof is spent or refused, including a 2xx whose result was not stored; a new proof is required.</summary>
     public const int NewProofRequired = 4;
     /// <summary>429, 5xx or transport failure after the last attempt.</summary>
     public const int Unavailable = 5;
@@ -173,12 +173,12 @@ public sealed class HeadlessEnrollment
 
         var expectedAgentId = HeadlessEnrollmentProof.TryReadAgentId(proof);
         if (expectedAgentId is not null && !string.Equals(expectedAgentId, success.AgentId, StringComparison.Ordinal))
-            return new(HeadlessEnrollmentExit.Rejected, "agent_id_mismatch");
+            return new(HeadlessEnrollmentExit.NewProofRequired, "agent_id_mismatch");
 
         var identity = new AgentIdentity(success.AgentId, success.TenantId);
         var fingerprint = AgentKeyFingerprint.TryFromPrivateKeyPem(privateKeyPem);
         if (fingerprint is null)
-            return new(HeadlessEnrollmentExit.Rejected, "key_invalid");
+            return new(HeadlessEnrollmentExit.NewProofRequired, "key_invalid");
         try
         {
             // The destination store publishes atomically, so a failed save leaves the previous state intact.
@@ -294,7 +294,7 @@ public sealed class HeadlessEnrollment
             {
             }
         }
-        return (new(HeadlessEnrollmentExit.Rejected, "response_invalid"), null);
+        return (new(HeadlessEnrollmentExit.NewProofRequired, "response_invalid"), null);
     }
 
     private static string? Text(JsonElement root, string name, int maxLength)

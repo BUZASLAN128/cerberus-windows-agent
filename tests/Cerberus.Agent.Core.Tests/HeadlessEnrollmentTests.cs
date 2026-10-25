@@ -162,13 +162,14 @@ public sealed class HeadlessEnrollmentTests
     }
 
     [Fact]
-    public async Task Proof_agent_id_mismatch_exits_three_and_stores_nothing()
+    public async Task Proof_agent_id_mismatch_exits_four_and_stores_nothing()
     {
         var store = new MemoryStore();
 
         var result = await Run(new FakeHandler().Reply(200, SuccessBody()), store, proof: Proof("different-agent"));
 
-        Assert.Equal(3, result.ExitCode);
+        Assert.Equal(4, result.ExitCode);
+        Assert.Equal("agent_id_mismatch", result.Code);
         Assert.Equal(0, store.SaveCount);
     }
 
@@ -178,13 +179,14 @@ public sealed class HeadlessEnrollmentTests
     [InlineData("not json")]
     [InlineData("{\"agent_id\":\"bad id!\",\"tenant_id\":\"t\",\"agent_refresh_token\":\"r\"}")]
     [InlineData("{\"agent_id\":\"agent-0001\",\"tenant_id\":\"t\"}")]
-    public async Task Invalid_success_body_exits_three_and_stores_nothing(string body)
+    public async Task Invalid_success_body_exits_four_and_stores_nothing(string body)
     {
         var store = new MemoryStore();
 
         var result = await Run(new FakeHandler().Reply(200, body), store);
 
-        Assert.Equal(3, result.ExitCode);
+        Assert.Equal(4, result.ExitCode);
+        Assert.Equal("response_invalid", result.Code);
         Assert.Equal(0, store.SaveCount);
     }
 
