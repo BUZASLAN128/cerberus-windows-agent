@@ -31,6 +31,7 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
     private readonly IAgentLogger _log;
     private readonly ConcurrentQueue<QueuedEnvelope> _queue = new();
     private readonly ConcurrentDictionary<(string AgentId, string Id), byte> _inFlight = new();
+    private readonly ConcurrentDictionary<(string AgentId, string Id), (string Type, long Started)> _accepted = new();
     private readonly SemaphoreSlim _signal = new(0);
     private readonly object _lifecycleGate = new();
     private CancellationTokenSource _stop = new();
@@ -128,6 +129,10 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
     internal void MarkInFlight(string agentId, string id) => _inFlight[(agentId, id)] = 0;
 
     internal void ClearInFlight(string agentId, string id) => _inFlight.TryRemove((agentId, id), out _);
+
+    /// <summary>Remembers when an acked entry was accepted, for the duration in the finished log line.</summary>
+    internal void MarkAccepted(string agentId, string id, string type)
+        => _accepted[(agentId, id)] = (type, Time.GetTimestamp());
 
     internal bool TryAcquireSlot()
     {
@@ -306,10 +311,29 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
             return;
         }
 
+        if (_accepted.TryRemove((record.AgentId, record.Id), out var accepted))
+        {
+            var ms = (long)Math.Round(Time.GetElapsedTime(accepted.Started).TotalMilliseconds);
+            _log.Info($"Command finished id={record.Id} type={accepted.Type} status={ResultStatus(record)} duration_ms={ms}");
+        }
+
         if (!Store.TryUpdate(record with { ResultSubmitted = true }))
             _log.Warn($"Command envelope id={record.Id} result delivered; replay store not updated.");
         if (_handlers.TryGetValue(record.Type, out var handler) && handler is IEnvelopeResultFollowUp followUp)
             await followUp.OnResultFinalAsync(record.AgentId, record.Id, ct).ConfigureAwait(false);
+    }
+
+    private static string ResultStatus(CommandReplayRecord record)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(record.ResultB64!));
+            return doc.RootElement.GetProperty("status").GetString() ?? "UNKNOWN";
+        }
+        catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return "UNKNOWN";
+        }
     }
 
     private async Task<byte[]> ExecuteAsync(SignedEnvelope envelope, CancellationToken ct)

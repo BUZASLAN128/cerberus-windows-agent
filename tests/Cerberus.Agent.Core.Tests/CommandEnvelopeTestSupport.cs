@@ -133,6 +133,31 @@ internal sealed class FakeBackend : HttpMessageHandler
     }
 }
 
+internal sealed class RecordingLogger : IAgentLogger
+{
+    private readonly object _gate = new();
+    private readonly List<string> _lines = new();
+
+    public IReadOnlyList<string> Lines
+    {
+        get
+        {
+            lock (_gate)
+                return _lines.ToArray();
+        }
+    }
+
+    public void Info(string message) => Add("INFO " + message);
+    public void Warn(string message) => Add("WARN " + message);
+    public void Error(string message, Exception? ex = null) => Add("ERROR " + message);
+
+    private void Add(string line)
+    {
+        lock (_gate)
+            _lines.Add(line);
+    }
+}
+
 internal sealed class FakeCommandHandler : ICommandHandler
 {
     private int _calls;
@@ -313,6 +338,7 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
     public EnvelopeExecutionQueue Queue { get; private set; } = null!;
     public EnvelopeCommandProcessor Processor { get; private set; } = null!;
     public TestSigner Signer { get; set; } = TestSigner.Default;
+    public RecordingLogger Log { get; } = new();
 
     public static EnvelopeHarness Create(Action<EnvelopeHarnessOptions>? configure = null)
     {
@@ -332,9 +358,9 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
     {
         Store = new CommandReplayStore(StorePath, Time);
         Queue = new EnvelopeExecutionQueue(
-            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time);
+            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time, Log);
         var anchors = _options.Anchors ?? new[] { TestSigner.Default.Anchor };
-        Processor = new EnvelopeCommandProcessor(Api, anchors, Queue, Allowed, legacy: _options.Legacy ?? _options.LegacyFactory?.Invoke(Api));
+        Processor = new EnvelopeCommandProcessor(Api, anchors, Queue, Allowed, Log, legacy: _options.Legacy ?? _options.LegacyFactory?.Invoke(Api));
         if (_options.StartQueue)
             Queue.Start();
     }

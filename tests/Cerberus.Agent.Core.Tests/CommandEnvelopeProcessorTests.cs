@@ -33,6 +33,27 @@ public sealed partial class CommandEnvelopeProcessorTests
 
     public static IEnumerable<object[]> RejectRowNames() => RejectRows.Keys.Select(k => new object[] { k });
 
+    [Fact]
+    public async Task AcceptedCommand_LogsAcceptedAndFinishedWithoutArgumentsOrOutput()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Facts.Body = (_, _) => Task.FromResult(new CommandResult("DONE", 0, "STDOUT-SECRET", "STDERR-SECRET", new { v = "BODY-SECRET" }));
+        var cmd = h.Cmd(p => { p.Type = "collect_facts"; p.PayloadJson = "{\"sections\":[\"identity\"]}"; });
+
+        await h.Process(cmd);
+        await Wait.UntilAsync(() => h.Record(cmd)?.ResultSubmitted == true, "result submitted");
+
+        var accepted = Assert.Single(h.Log.Lines, l => l.Contains("Command accepted"));
+        var finished = Assert.Single(h.Log.Lines, l => l.Contains("Command finished"));
+        Assert.Equal($"INFO Command accepted id={cmd.Id} type=collect_facts", accepted);
+        Assert.Matches($@"^INFO Command finished id={cmd.Id} type=collect_facts status=DONE duration_ms=\d+$", finished);
+        foreach (var line in new[] { accepted, finished })
+        {
+            Assert.DoesNotContain("identity", line);
+            Assert.DoesNotContain("SECRET", line);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(RejectRowNames))]
     public async Task OrderTable_RowRejectsWithItsCodeAndNothingRuns(string row)

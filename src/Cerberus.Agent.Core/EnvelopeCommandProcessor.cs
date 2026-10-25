@@ -212,6 +212,8 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             return;
         }
 
+        _queue.MarkAccepted(agentId, envelope.Id, envelope.Type);
+        _log.Info($"Command accepted id={envelope.Id} type={envelope.Type}");
         if (queued)
             _queue.Enqueue(record, envelope);
         else
