@@ -280,6 +280,37 @@ public sealed class HeadlessEnrollmentTests
     }
 
     [Fact]
+    public async Task Cancellation_during_the_save_after_a_2xx_is_reported_as_a_spent_proof()
+    {
+        var log = new CaptureLog();
+        using var cts = new CancellationTokenSource();
+        var store = new MemoryStore { CancelOnSave = cts };
+
+        var result = await Run(new FakeHandler().Reply(200, SuccessBody()), store, log: log, ct: cts.Token);
+
+        Assert.Equal(4, result.ExitCode);
+        Assert.Equal("credentials_not_saved", result.Code);
+        Assert.Null(store.Saved);
+        Assert.Contains("could not be saved (OperationCanceledException)", log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Proof(), log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("rt-secret", log.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cancellation_before_the_request_completes_still_escapes_without_a_spent_proof()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var handler = new FakeHandler();
+        var store = new MemoryStore();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Run(handler, store, ct: cts.Token));
+
+        Assert.Empty(handler.Requests);
+        Assert.Null(store.Saved);
+    }
+
+    [Fact]
     public async Task Proof_refresh_token_and_private_key_never_reach_the_log_or_the_result()
     {
         var log = new CaptureLog();
@@ -319,11 +350,11 @@ public sealed class HeadlessEnrollmentTests
 
     private static Task<HeadlessEnrollmentResult> Run(
         FakeHandler handler, MemoryStore store, AgentLifecycleSnapshot? state = null, bool hasCredentials = false,
-        string? proof = null, CaptureLog? log = null, TimeProvider? time = null)
+        string? proof = null, CaptureLog? log = null, TimeProvider? time = null, CancellationToken ct = default)
     {
         var http = new HttpClient(handler) { BaseAddress = new Uri("https://backend.example") };
         return new HeadlessEnrollment(http, log: log, time: time ?? new ImmediateTimeProvider())
-            .RunAsync(proof ?? Proof(), Options(), state ?? new AgentLifecycleSnapshot(), hasCredentials, store, CancellationToken.None);
+            .RunAsync(proof ?? Proof(), Options(), state ?? new AgentLifecycleSnapshot(), hasCredentials, store, ct);
     }
 
     internal sealed record CapturedRequest(string Path, string Body, string? Authorization);
@@ -397,12 +428,18 @@ public sealed class HeadlessEnrollmentTests
         public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? Saved { get; set; }
         public int SaveCount { get; private set; }
         public bool FailSave { get; init; }
+        public CancellationTokenSource? CancelOnSave { get; init; }
 
         public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl,
             string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
         {
             if (FailSave)
                 throw new IOException("disk full");
+            if (CancelOnSave is { } cts)
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+            }
             SaveCount++;
             Saved = (identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey);
             return Task.CompletedTask;

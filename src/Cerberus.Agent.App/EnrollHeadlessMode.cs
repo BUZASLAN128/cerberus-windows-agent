@@ -176,8 +176,9 @@ internal static class EnrollHeadlessMode
                 return new(HeadlessEnrollmentExit.NewProofRequired, failure);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // Cancellation counts too: the proof is already spent.
             log.Error($"Enrolled credentials were not activated ({ex.GetType().Name}).");
             return new(HeadlessEnrollmentExit.NewProofRequired, "activation_failed");
         }

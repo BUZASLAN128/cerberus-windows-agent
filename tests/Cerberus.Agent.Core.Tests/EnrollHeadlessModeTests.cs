@@ -208,12 +208,41 @@ public sealed class EnrollHeadlessModeTests
     }
 #endif
 
+    [Fact]
+    public async Task Cancellation_during_activation_after_a_2xx_exits_four_as_a_spent_proof()
+    {
+        using var cts = new CancellationTokenSource();
+        var host = new FakeHost { CancelOnActivate = cts };
+
+        var result = await Execute(host, installService: false, ct: cts.Token);
+
+        Assert.Equal(4, result.Exit);
+        Assert.Contains("activation_failed", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("were not activated (OperationCanceledException)", host.Log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Proof, host.Log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Proof, result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cancellation_before_the_request_completes_exits_five()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var host = new FakeHost();
+
+        var result = await Execute(host, installService: false, ct: cts.Token);
+
+        Assert.Equal(5, result.Exit);
+        Assert.Empty(host.Http.Requests);
+        Assert.Empty(host.ActivateCalls);
+    }
+
     private static async Task<(int Exit, string Stdout, string Stderr)> Execute(
-        FakeHost host, bool installService, bool fromInstaller = false, string? proof = null)
+        FakeHost host, bool installService, bool fromInstaller = false, string? proof = null, CancellationToken ct = default)
     {
         var stdout = new StringWriter();
         var stderr = new StringWriter();
-        var exit = await EnrollHeadlessMode.ExecuteAsync(proof ?? Proof, fromInstaller, installService, host, stdout, stderr, CancellationToken.None);
+        var exit = await EnrollHeadlessMode.ExecuteAsync(proof ?? Proof, fromInstaller, installService, host, stdout, stderr, ct);
         return (exit, stdout.ToString(), stderr.ToString());
     }
 
@@ -230,6 +259,7 @@ public sealed class EnrollHeadlessModeTests
         public AgentLifecycleSnapshot Lifecycle { get; init; } = new();
         public string? OldFingerprintLine { get; init; }
         public string? ActivateResult { get; init; }
+        public CancellationTokenSource? CancelOnActivate { get; init; }
 
         public HeadlessEnrollmentTests.FakeHandler Http { get; set; } = new HeadlessEnrollmentTests.FakeHandler()
             .Reply(200, "{\"agent_id\":\"agent-0001\",\"tenant_id\":\"tenant-1\",\"agent_refresh_token\":\"rt-secret\"}");
@@ -269,6 +299,11 @@ public sealed class EnrollHeadlessModeTests
         public Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
         {
             ActivateCalls.Add(commitDirectly);
+            if (CancelOnActivate is { } cts)
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+            }
             return Task.FromResult(ActivateResult);
         }
 

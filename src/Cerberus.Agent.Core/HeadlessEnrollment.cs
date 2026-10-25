@@ -185,8 +185,9 @@ public sealed class HeadlessEnrollment
             await destination.SaveAsync(identity, success.RefreshToken, privateKeyPem,
                 options.BackendUrlForStorage.Trim().TrimEnd('/'), null, null, ct).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            // Cancellation lands here too: the 2xx already spent the proof.
             _log.Error($"Headless enrollment credentials could not be saved ({ex.GetType().Name}).");
             // The proof is spent server-side and the in-memory key is gone.
             return new(HeadlessEnrollmentExit.NewProofRequired, "credentials_not_saved");
