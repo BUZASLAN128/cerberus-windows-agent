@@ -1,6 +1,7 @@
 # Support-tier checks for scripts/release-signing-lib.ps1 and the two-step manifest path of
 # scripts/build-agent-public-release.ps1. Keys and certificates are generated in memory; no certificate
-# store, token, signtool or network is used. Exit code = number of failed checks.
+# store, token or network is used. The case that exercises the real signature check runs signtool verify and
+# needs the Windows SDK signtool.exe. Exit code = number of failed checks.
 param([string]$CoreDll = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -12,6 +13,7 @@ if (-not (Test-Path -LiteralPath $CoreDll -PathType Leaf)) {
 }
 $CoreDll = (Resolve-Path -LiteralPath $CoreDll).Path
 . (Join-Path $PSScriptRoot "release-signing-lib.ps1")
+. (Join-Path $PSScriptRoot "release-trust-lib.ps1")
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 Import-AgentManifestVerifier $CoreDll
@@ -159,6 +161,9 @@ try {
   Check "agent verifier rejects a tampered field" {
     Throws { Assert-ManifestAcceptedByAgentVerifier -ManifestJson ($json -replace "9\.9\.9", "9.9.8") -PublicKeyPems @($pemB) -Channel stable -ArtifactPrefixes @($prefix) -ExpectedCanonicalPayload $canonical } "rejected"
   }
+  Check "agent verifier refuses an expected payload that differs only in case" {
+    Throws { Assert-ManifestAcceptedByAgentVerifier -ManifestJson $json -PublicKeyPems @($pemB) -Channel stable -ArtifactPrefixes @($prefix) -ExpectedCanonicalPayload ($canonical -replace "Cerberus Agent Release", "cerberus agent release") } "does not match the signed payload"
+  }
   Check "agent verifier rejects a 46 day window" {
     $long = New-Canonical $now.AddDays(46)
     $longJson = ConvertTo-ManifestJson $long (Sign-ManifestPayloadWithCertificate -CanonicalPayload $long -Certificate $certB)
@@ -179,6 +184,13 @@ try {
   Check "public key file: private key is refused" { Throws { Read-ManifestPublicKeyFile $privateKey } "private key" }
   Check "key list is de-duplicated and carries both keys" { (ConvertTo-ManifestPublicKeyListB64 @($pemA, $pemA, $pemB)).Count -eq 2 }
 
+  # String sets compare ordinally and by count, like the agent
+  Check "string sets: one newline-joined item is not two items" { -not (Test-SameStringSet @("a`nb") @("a", "b")) }
+  Check "string sets: items that differ only in case differ" { -not (Test-SameStringSet @("Ab") @("aB")) }
+  Check "string sets: a soft hyphen makes an item differ" { -not (Test-SameStringSet @("ab") @("a$([char]0xAD)b")) }
+  Check "string sets: a repeated item changes the count" { -not (Test-SameStringSet @("a", "a") @("a")) }
+  Check "string sets: the same items in another order are equal" { Test-SameStringSet @("a", "b") @("b", "a") }
+
   # Finalize (step 2): Complete-ExternalManifestSigning in-process against a fixture publish directory.
   # The signature check is replaced through the function's test seam; the build script never passes it.
   . (Join-Path $PSScriptRoot "test-release-signing-fixture.ps1")
@@ -191,17 +203,18 @@ try {
   $gateName = "$assetBase.release-gate.json"
   $latestName = "Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json"
   $sigFile = Join-Path $work "manifest.sig"
-  function New-Fixture([string]$Dir = "", [hashtable]$Options = @{}) {
+  function New-Fixture([string]$Dir = "", [hashtable]$Options = @{}, [string[]]$Keys = @()) {
     if ([string]::IsNullOrWhiteSpace($Dir)) { $Dir = Join-Path $work ("pub-" + [guid]::NewGuid().ToString("N").Substring(0, 8)) }
-    New-FinalizeFixture -PublishDir $Dir -CoreDll $CoreDll -KeyListB64 $keyListB64 -SignerPin $pin -Prefix $prefix @Options
+    $fixtureKeys = if ($Keys.Count -gt 0) { $Keys } else { $keyListB64 }
+    New-FinalizeFixture -PublishDir $Dir -CoreDll $CoreDll -KeyListB64 $fixtureKeys -SignerPin $pin -Prefix $prefix @Options
   }
   function Write-FixtureSignature($Fixture, [string]$Signature = "") {
     if ([string]::IsNullOrEmpty($Signature)) { $Signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Fixture.Canonical -Certificate $certB }
     if ($Signature -eq "<none>") { Remove-Item -LiteralPath $sigFile -ErrorAction SilentlyContinue } else { Set-Content -LiteralPath $sigFile -Value $Signature }
   }
-  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB) {
+  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB, [string]$Channel = "stable") {
     Write-FixtureSignature $Fixture $Signature
-    Complete-ExternalManifestSigning -PublishDir $Fixture.Publish -Channel stable -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
+    Complete-ExternalManifestSigning -PublishDir $Fixture.Publish -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
       -SignaturePath $sigFile -PublicKeyPath $KeyFile -FileSignatureCheck $SignatureCheck 6>$null | Out-Null
   }
   function Test-NothingPublished([string]$Dir) {
@@ -211,7 +224,8 @@ try {
   }
 
   $script:checked = @()
-  $recordAll = { param($Path, $AllowedPins) $script:checked += $Path }
+  $script:checkedPins = @()
+  $recordAll = { param($Path, $AllowedPins) $script:checked += $Path; $script:checkedPins += (@($AllowedPins) -join "|") }
   $good = New-Fixture
   Invoke-Finalize $good $recordAll
   $gate = Get-Content -Raw -LiteralPath (Join-Path $good.Publish $gateName) | ConvertFrom-Json
@@ -220,6 +234,9 @@ try {
   }
   Check "finalize checks the four runtime executables and the MSI" {
     $script:checked.Count -eq 5 -and ($script:checked -contains $good.Msi) -and (@($script:checked | Where-Object { $_ -like "*runtime*" }).Count -eq 4)
+  }
+  Check "finalize hands the embedded signer pins to every signature check" {
+    $script:checkedPins.Count -eq 5 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 5)
   }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
   Check "finalize removes the pending payload and state" {
@@ -254,6 +271,135 @@ try {
   Assert-FinalizeRefused "finalize refuses when only the MSI fails the signature check" "msi signature check failed" (New-Fixture) {
     param($Path, $AllowedPins) if ($Path -like "*.msi") { throw "msi signature check failed" } }
 
+  # Binding of the pending payload and of both runtime assemblies to what the build embeds
+  $pinB = Get-SignerSpkiPin $certB
+  $keysAOnlyList = ConvertTo-ManifestPublicKeyListB64 @($pemA)
+  $keysAOnly = @($keysAOnlyList)
+  $otherPrefix = "https://other.example/package/"
+  function Get-Pairs([string[]]$Keys = $keyListB64, [string[]]$Pins = @($pin), [string]$Prefix = $prefix, [string]$Channel = "stable") {
+    Get-TrustPairs -Keys $Keys -Pins $Pins -Prefix $Prefix -Channel $Channel
+  }
+  $both = { param($Pairs) @{ AgentPairs = $Pairs; RuntimePairs = $Pairs } }
+  Assert-FinalizeRefused "finalize refuses pending keys that differ from the embedded keys" "Pending manifest keys do not match" (New-Fixture -Options (& $both (Get-Pairs -Keys $keysAOnly))) $accept
+  Assert-FinalizeRefused "finalize refuses pending signer pins that differ from the embedded pins" "Pending signer pins do not match" (New-Fixture -Options (& $both (Get-Pairs -Pins @($pinB)))) $accept
+  $f = New-Fixture
+  $pendingFile = Join-Path $f.Publish $pendingName
+  $pendingObject = Get-Content -Raw -LiteralPath $pendingFile | ConvertFrom-Json
+  $pendingObject.PSObject.Properties.Remove("signer_pins")
+  $pendingObject | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $pendingFile -Encoding utf8
+  Assert-FinalizeRefused "finalize refuses a pending state without signer pins" "Pending signer pins do not match" $f $accept
+  Assert-FinalizeRefused "finalize refuses a manifest signer identity that is not an embedded pin" "signer identity is not among the signer pins" (New-Fixture -Options @{ CanonicalSignerPin = $pinB }) $accept
+  Assert-FinalizeRefused "finalize refuses an embedded channel that differs from -Channel" "Embedded release channel does not match" (New-Fixture -Options @{ EmbeddedChannel = "preview" }) $accept
+  Assert-FinalizeRefused "finalize refuses an embedded channel outside dev, preview and stable" "must be lowercase dev, preview or stable" (New-Fixture -Options @{ EmbeddedChannel = "beta" }) $accept
+  Assert-FinalizeRefused "finalize refuses embedded prefixes that differ from the pending prefixes" "Pending artifact prefixes do not match" (New-Fixture -Options @{ EmbeddedPrefix = $otherPrefix }) $accept
+  Assert-FinalizeRefused "finalize refuses a runtime assembly without metadata" "carries no manifest public key" (New-Fixture -Options @{ RuntimePairs = @() }) $accept
+  Assert-FinalizeRefused "finalize refuses a runtime assembly with a malformed key" "malformed manifest public key" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Keys @("***")) }) $accept
+  Assert-FinalizeRefused "finalize refuses embedded keys joined by a space (single unusable entry)" "malformed manifest public key" (New-Fixture -Options (& $both (Get-Pairs -Keys @($keyListB64 -join " ")))) $accept
+  Assert-FinalizeRefused "finalize refuses a payload channel that differs from -Channel" "Pending manifest channel does not match" (New-Fixture -Options @{ CanonicalChannel = "preview" }) $accept
+  Assert-FinalizeRefused "finalize refuses an embedded channel that differs only in case" "must be lowercase dev, preview or stable" (New-Fixture -Options @{ EmbeddedChannel = "Stable" }) $accept
+  Assert-FinalizeRefused "finalize with embedded and -Channel 'Stable' is refused" "must be lowercase dev, preview or stable" (New-Fixture -Options @{ EmbeddedChannel = "Stable" }) $accept @{ Channel = "Stable" }
+  Assert-FinalizeRefused "finalize refuses a soft-hyphen embedded channel even with the same -Channel" "must be lowercase" (New-Fixture -Options @{ EmbeddedChannel = "sta$([char]0xAD)ble" }) $accept @{ Channel = "sta$([char]0xAD)ble" }
+  Assert-FinalizeRefused "finalize refuses -Channel that differs from a valid embedded channel only in case" "Embedded release channel does not match" (New-Fixture) $accept @{ Channel = "Stable" }
+  Assert-FinalizeRefused "finalize refuses embedded prefixes that differ only in case" "Pending artifact prefixes do not match" (New-Fixture -Options @{ EmbeddedPrefix = $prefix.ToUpperInvariant() }) $accept
+  Assert-FinalizeRefused "finalize refuses a payload version that differs from -Version only in case" "does not match -Version" (New-Fixture -Options @{ PayloadVersion = "9.9.9-rc" }) $accept @{ Version = "9.9.9-RC" }
+  Assert-FinalizeRefused "finalize refuses a runtime prefix containing a soft hyphen" "embed different ArtifactPrefixes" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Prefix $prefix.Insert(8, [string][char]0xAD)) }) $accept
+  Assert-FinalizeRefused "finalize refuses a runtime channel that differs only in case" "embed different release channels" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Channel "Stable") }) $accept
+  $urlA = @("AgentUpdateManifestUrl", "https://updates.example/a.json")
+  $urlB = @("AgentUpdateManifestUrl", "https://updates.example/b.json")
+  Assert-FinalizeRefused "finalize refuses different update manifest URLs in the two assemblies" "different update manifest URLs" (New-Fixture -Options @{
+    AgentPairs = (@(Get-Pairs) + ,$urlA); RuntimePairs = (@(Get-Pairs) + ,$urlB) }) $accept
+  foreach ($label in "AgentPairs", "RuntimePairs") {
+    $unsigned = @{ $label = (@(Get-Pairs) + ,@("AllowUnsignedDevBuild", "true")) }
+    Assert-FinalizeRefused "finalize refuses AllowUnsignedDevBuild=true in $label" "carries AllowUnsignedDevBuild='true'" (New-Fixture -Options $unsigned) $accept
+  }
+  Assert-FinalizeRefused "finalize refuses an AllowUnsignedDevBuild value that is not a boolean" "carries AllowUnsignedDevBuild='x'" (New-Fixture -Options @{
+    RuntimePairs = (@(Get-Pairs) + ,@("AllowUnsignedDevBuild", "x")) }) $accept
+  $sameUrl = @(Get-Pairs) + ,$urlA + ,@("AllowUnsignedDevBuild", "False")
+  $withUrl = New-Fixture -Options @{ AgentPairs = $sameUrl; RuntimePairs = $sameUrl }
+  Invoke-Finalize $withUrl $recordAll
+  Check "finalize accepts one shared manifest URL and AllowUnsignedDevBuild=False" { Test-Path -LiteralPath (Join-Path $withUrl.Publish $manifestName) }
+  Assert-FinalizeRefused "finalize refuses a runtime assembly with a repeated metadata key" "Duplicate assembly metadata key 'AgentReleaseChannel'" (New-Fixture -Options @{
+    RuntimePairs = @(Get-Pairs) + ,@("AgentReleaseChannel", "stable") }) $accept
+  Assert-FinalizeRefused "finalize ignores metadata attributes outside System.Reflection" "carries no manifest public key" (New-Fixture -Options @{ RuntimeNamespace = "Fixture.Other" }) $accept
+  Assert-FinalizeRefused "finalize refuses runtime keys that differ from the app assembly" "embed different PublicKeyPems" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Keys $keysAOnly) }) $accept
+  Assert-FinalizeRefused "finalize refuses runtime signer pins that differ from the app assembly" "embed different SignerPins" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Pins @($pinB)) }) $accept
+  Assert-FinalizeRefused "finalize refuses runtime prefixes that differ from the app assembly" "embed different ArtifactPrefixes" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Prefix $otherPrefix) }) $accept
+  Assert-FinalizeRefused "finalize refuses a runtime channel that differs from the app assembly" "embed different release channels" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Channel "beta") }) $accept
+  # Two signer pins: every signature check must receive both
+  $script:checkedPins = @()
+  $twoPinError = $null
+  try { Invoke-Finalize (New-Fixture -Options @{ ExtraPins = @($pinB) }) $recordAll } catch { $twoPinError = $_.Exception.Message }
+  Check "finalize with two embedded signer pins is accepted" { if ($twoPinError) { throw $twoPinError }; $true }
+  Check "finalize hands both embedded signer pins to each of the five signature checks" {
+    $want = (@($pin, $pinB) | Sort-Object) -join "|"
+    $script:checkedPins.Count -eq 5 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 5)
+  }
+  # Expected key that differs from an embedded key only in base64 letter case (still a valid RSA public key)
+  $lines = $pemB.Trim() -split "\r?\n"
+  $chars = $lines[3].ToCharArray()
+  $at = 0; while (-not [char]::IsLetter($chars[$at])) { $at++ }
+  $chars[$at] = if ([char]::IsUpper($chars[$at])) { [char]::ToLowerInvariant($chars[$at]) } else { [char]::ToUpperInvariant($chars[$at]) }
+  $lines[3] = -join $chars
+  $caseVariantPem = $lines -join "`n"
+  $caseKey = Join-Path $work "case-variant.pem"; Set-Content -LiteralPath $caseKey -Value $caseVariantPem
+  Check "key case variant: differs from the embedded key only in case and imports as RSA" {
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try { $rsa.ImportFromPem($caseVariantPem) } finally { $rsa.Dispose() }
+    ($caseVariantPem -cne $pemB.Trim()) -and ($caseVariantPem -ieq $pemB.Trim())
+  }
+  Assert-FinalizeRefused "finalize refuses an expected key that differs from an embedded key only in case" "not among the keys embedded" (New-Fixture) $accept @{ KeyFile = $caseKey }
+  # Per-key RSA check: an ECDSA public key next to a valid RSA key
+  $ecdsa = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve]::CreateFromFriendlyName("nistP256"))
+  $mixedKeys = @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pemB.Trim())), [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ecdsa.ExportSubjectPublicKeyInfoPem())))
+  $ecdsa.Dispose()
+  Assert-FinalizeRefused "finalize refuses an embedded and pending key list with a non-RSA key" "malformed manifest public key" (New-Fixture -Keys $mixedKeys) $accept
+  foreach ($output in @("$assetBase.zip","$assetBase.sbom.json", "$assetBase.provenance.json")) {
+    $f = New-Fixture; Remove-Item -LiteralPath (Join-Path $f.Publish $output)
+    Assert-FinalizeRefused "finalize with $output deleted refuses and publishes nothing" "Release output was not found" $f $accept
+  }
+  Check "metadata keys are case-sensitive; a case variant is not a repeated key" {
+    $caseDll = Join-Path $work "case.dll"
+    New-MetadataAssembly -Path $caseDll -AssemblyName "Case" -Pairs @(@("AgentReleaseChannel", "stable"), @("agentreleasechannel", "beta"))
+    $m = Read-AssemblyMetadataValues $caseDll
+    $m.Count -eq 2 -and $m["AgentReleaseChannel"] -ceq "stable"
+  }
+
+  # CNG flow: the declared lists must equal what the build embeds
+  $cng = New-Fixture
+  $cngRuntime = Join-Path $cng.Publish "runtime"
+  function Invoke-CngCheck([string[]]$Keys = $keyListB64, [string[]]$Pins = @($pin), [string[]]$Prefixes = @($prefix), [string]$Channel = "stable") {
+    New-CngSignedManifest -Canonical $cng.Canonical -Certificate $certB -RuntimeDir $cngRuntime -Channel $Channel -ArtifactPrefixes $Prefixes -KeyListB64 $Keys -SignerPins $Pins
+  }
+  Check "CNG self-check accepts declared values equal to the embedded ones" { (Invoke-CngCheck)["version"] -ceq "9.9.9" }
+  Check "CNG self-check refuses declared keys that differ from the embedded keys" { Throws { Invoke-CngCheck -Keys $keysAOnly } "Declared manifest keys do not match" }
+  Check "CNG self-check refuses declared pins that differ from the embedded pins" { Throws { Invoke-CngCheck -Pins @($pinB) } "Declared signer pins do not match" }
+  Check "CNG self-check refuses declared prefixes that differ from the embedded prefixes" { Throws { Invoke-CngCheck -Prefixes @($otherPrefix) } "Declared artifact prefixes do not match" }
+  Check "CNG self-check refuses a channel that differs from the embedded channel" { Throws { Invoke-CngCheck -Channel "beta" } "Embedded release channel does not match" }
+
+  Check "CNG self-check refuses an embedded and declared channel 'Stable'" {
+    $upper = New-Fixture -Options @{ EmbeddedChannel = "Stable" }
+    Throws { New-CngSignedManifest -Canonical $upper.Canonical -Certificate $certB -RuntimeDir (Join-Path $upper.Publish "runtime") -Channel "Stable" `
+      -ArtifactPrefixes @($prefix) -KeyListB64 $keyListB64 -SignerPins @($pin) } "must be lowercase dev, preview or stable"
+  }
+  Check "CNG trust check refuses before the token is asked to sign" {
+    & {
+      function Sign-ManifestPayloadWithCertificate { throw "token was asked to sign" }
+      Throws { Invoke-CngCheck -Keys $keysAOnly } "Declared manifest keys do not match"
+    }
+  }
+
+  # Token initialization with an extra manifest key (certificate lookup stubbed; no certificate store)
+  function Find-CertificateByThumbprint([string]$Thumbprint) { return $certA }
+  $tokenInit = Initialize-TokenSigning -SigningPlan ([pscustomobject]@{ ManifestSigning = "External" }) -SigningCertThumbprint $thumbprint `
+    -ManifestSigningPublicKeyFile $keyB -ExtraManifestPublicKeyFiles @($keyA)
+  Check "token init: two manifest keys give a flat two-element key list" { $tokenInit.KeyListB64.Count -eq 2 -and $tokenInit.KeyListB64[0] -is [string] }
+  Check "token init: the MSBuild key list value separates the keys with an escaped comma" { (ConvertTo-MsBuildListValue $tokenInit.KeyListB64) -match "%2C" }
+  Check "token init: the pending state carries two public keys" {
+    $pendingDir = Join-Path $work "pending-init"; New-Item -ItemType Directory -Path $pendingDir | Out-Null
+    Write-PendingExternalManifest -PublishDir $pendingDir -AssetBase $assetBase -Canonical "x" -KeyListB64 $tokenInit.KeyListB64 -ArtifactPrefixes @($prefix) -SignerPins @($pin) 6>$null
+    @((Get-Content -Raw -LiteralPath (Join-Path $pendingDir $pendingName) | ConvertFrom-Json).public_keys_b64).Count -eq 2
+  }
+
   # Extra or conflicting token parameters and the real signature check, through the real script
   $childPublish = Join-Path $outRootFull "publish"
   $childFixture = New-Fixture $childPublish
@@ -265,7 +411,10 @@ try {
   }
   $r = Invoke-Release $finalizeArgs
   Check "script: finalize on an unsigned fixture MSI is refused by the real signature check" {
-    $r.ExitCode -ne 0 -and ($r.Text -match "Authenticode") -and (Test-NothingPublished $childPublish)
+    # A failure here (for example signtool.exe missing) must show the child's error text, not only the case name.
+    if ($r.ExitCode -ne 0 -and ($r.Text -match "Authenticode") -and (Test-NothingPublished $childPublish)) { return $true }
+    $tail = (($r.Text -split "\r?\n" | Where-Object { $_.Trim() } | Select-Object -Last 4) -join " | ")
+    throw "exit $($r.ExitCode); child output: $tail"
   }
 
   # Pfx path: a legacy manifest is still written and aliased
@@ -303,6 +452,12 @@ try {
   $r = Invoke-Release @("-Version", "9.9.9", "-Channel", "stable", "-OutputRoot", $outRoot, "-SigningMode", "Token", "-ManifestSigningPublicKeyFile", $keyB, "-ManifestSignatureFile", (Join-Path $work "none.sig"))
   Check "script: finalize without a pending release stops with a clear error" {
     $r.ExitCode -ne 0 -and ($r.Text -match "No pending manifest") -and -not (Test-Path -LiteralPath (Join-Path $outRootFull "publish/$manifestName"))
+  }
+  foreach ($badChannel in @("Stable", "sta$([char]0xAD)ble")) {
+    $r = Invoke-Release @("-Version", "9.9.9", "-Channel", $badChannel, "-OutputRoot", $outRoot)
+    Check "script: -Channel '$($badChannel -replace [char]0xAD, '<U+00AD>')' is refused at binding before any output" {
+      $r.ExitCode -ne 0 -and ($r.Text -match "must be lowercase dev, preview or stable") -and -not (Test-Path -LiteralPath $outRootFull)
+    }
   }
 } finally {
   Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue

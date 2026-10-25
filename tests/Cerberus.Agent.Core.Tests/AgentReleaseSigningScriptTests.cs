@@ -2,8 +2,9 @@ using System.Diagnostics;
 
 namespace Cerberus.Agent.Core.Tests;
 
-// Runs scripts/test-release-signing.ps1 (support tier: in-memory keys, fixture publish directory, no signtool,
-// no certificate store). The script's exit code is the number of failed checks.
+// Runs scripts/test-release-signing.ps1 (support tier: in-memory keys, fixture publish directory, no certificate
+// store). The case that exercises the real signature check runs signtool verify and needs the Windows SDK
+// signtool.exe. The script's exit code is the number of failed checks.
 public sealed class AgentReleaseSigningScriptTests
 {
     [Fact]

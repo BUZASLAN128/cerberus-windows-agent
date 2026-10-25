@@ -1,5 +1,5 @@
 # Publish and finalize helpers for scripts/build-agent-public-release.ps1.
-# Dot-source only, after release-signing-lib.ps1. Loading this file has no side effects.
+# Dot-source only, after release-signing-lib.ps1 and release-trust-lib.ps1. Loading this file has no side effects.
 # No function here prompts for, accepts or logs a PIN or password.
 
 $script:ReleaseRuntimeExecutableNames = @(
@@ -201,21 +201,16 @@ function Complete-ExternalManifestSigning(
 
   # Everything below is measured from the publish directory; nothing is written until every check has passed.
   $runtimeDir = Join-Path $PublishDir "runtime"
-  $trust = Get-EmbeddedReleaseTrust (Join-Path $runtimeDir "Cerberus.Agent.dll")
-  $sameSet = { param($a, $b) ((@($a | Sort-Object -Unique -CaseSensitive) -join "`n") -ceq (@($b | Sort-Object -Unique -CaseSensitive) -join "`n")) }
+  $trust = Get-BuiltReleaseTrust $runtimeDir
   $pendingKeys = @($pending.public_keys_b64 | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)).Trim() })
-  if (-not (& $sameSet $pendingKeys $trust.PublicKeyPems)) {
-    throw "Pending manifest keys do not match the keys embedded in the built runtime."
-  }
-  if (-not (& $sameSet (ConvertTo-NormalizedSignerPins @($pending.signer_pins)) $trust.SignerPins)) {
-    throw "Pending signer pins do not match the signer pins embedded in the built runtime."
-  }
+  Assert-EmbeddedTrustMatches -Trust $trust -KeyPems $pendingKeys -SignerPins (ConvertTo-NormalizedSignerPins @($pending.signer_pins)) `
+    -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes) -Label "Pending"
 
   $expectedKey = Read-ManifestPublicKeyFile $PublicKeyPath
   $manifest = Assert-ManifestAgainstBuild `
     -Canonical $canonical -Signature $signature -ExpectedKeyPem $expectedKey -Trust $trust `
     -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
-  if ($manifest["version"] -cne $Version) { throw "Pending manifest version does not match -Version." }
+  if (-not [string]::Equals([string]$manifest["version"], $Version, [StringComparison]::Ordinal)) { throw "Pending manifest version does not match -Version." }
 
   $msi = Join-Path $PublishDir "$InstallerBase.msi"
   if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { throw "MSI installer was not found: $msi" }
@@ -235,6 +230,11 @@ function Complete-ExternalManifestSigning(
     $verified++
   }
   $signed = ($verified -eq $signedFiles.Count)
+
+  # Publish-ReleaseOutputs reads these; a missing one would otherwise fail after the manifest and aliases were written.
+  foreach ($suffix in "$AssetBase.zip", "$AssetBase.sbom.json", "$AssetBase.provenance.json") {
+    if (-not (Test-Path -LiteralPath (Join-Path $PublishDir $suffix) -PathType Leaf)) { throw "Release output was not found: $(Join-Path $PublishDir $suffix)" }
+  }
 
   Publish-ReleaseOutputs `
     -PublishDir $PublishDir -Channel $Channel -AssetBase $AssetBase -InstallerBase $InstallerBase `

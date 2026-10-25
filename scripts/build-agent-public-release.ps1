@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Version,
 
-  [ValidateSet("dev", "preview", "stable")]
+  [ValidatePattern('^(dev|preview|stable)\z', Options = 'None', ErrorMessage = 'Channel must be lowercase dev, preview or stable.')]
   [string]$Channel = "dev",
 
   [string]$Configuration = "Release",
@@ -43,6 +43,7 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 }
 
 . (Join-Path $PSScriptRoot "release-signing-lib.ps1")
+. (Join-Path $PSScriptRoot "release-trust-lib.ps1")
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 $signingPlan = Assert-ReleaseSigningInputs `
@@ -460,7 +461,7 @@ if ($tokenMode) {
   }
   $manifest = New-CngSignedManifest `
     -Canonical $canonical -Certificate $tokenSigning.ManifestSigningCertificate -RuntimeDir $runtimePublishDir `
-    -Channel $Channel -ArtifactPrefixes $artifactPrefixList
+    -Channel $Channel -ArtifactPrefixes $artifactPrefixList -KeyListB64 $tokenKeyListB64 -SignerPins $tokenSignerPins
 } else {
 $manifestSignature = Sign-ManifestPayload -CanonicalPayload $canonical -PrivateKeyPem $manifestPrivateKey
 $manifest = [ordered]@{
