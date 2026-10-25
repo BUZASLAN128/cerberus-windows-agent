@@ -46,6 +46,9 @@ internal static class ServiceMode
         Task? schedulerTask = null;
         try
         {
+#if CERBERUS_SERVER_PROFILE
+            WindowsUpdateCache.Shared.Start();
+#endif
             await AgentUpdateLocalService.ReconcileOnServiceStartAsync(lifetime.Token).ConfigureAwait(false);
             schedulerTask = AgentUpdateLocalService.RunScheduledAsync(lifetime.Token);
             while (!ct.IsCancellationRequested)
@@ -279,43 +282,29 @@ internal static class ServiceMode
             SupportedSchemaVersions: AgentSchemaVersions.All);
         var updateStateStore = AgentUpdateStateStore.CreateDefault();
 
-        var cachePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
-            "idempotency.json");
-        var idempotency = new IdempotencyCache(cachePath, maxEntries: 5000, ttl: TimeSpan.FromHours(24));
-        var telemetryBuffer = new OfflineTelemetryBuffer(
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "CerberusAgent",
-                "telemetry-offline.json"),
-            maxEntries: 200,
-            maxBytes: 512 * 1024,
-            ttl: TimeSpan.FromHours(24));
+        var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            AgentInstallIdentity.DataDirName);
+        var idempotency = new IdempotencyCache(Path.Combine(dataDir, "idempotency.json"), maxEntries: 5000, ttl: TimeSpan.FromHours(24));
+        var telemetryBuffer = new OfflineTelemetryBuffer(Path.Combine(dataDir, "telemetry-offline.json"),
+            maxEntries: 200, maxBytes: 8 * AgentTelemetryLimits.MaxSnapshotBytes, ttl: TimeSpan.FromHours(24));
 
-        var handlers = new List<ICommandHandler>
-        {
-            new HealthSnapshotHandler(),
-            new RdpQuickTestHandler(),
-            new TailscaleEnsureConnectedHandler(),
-        };
+        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPath(), log);
+        var currentAgentId = signedState.Track(EnvelopeWiring.CurrentAgentId(secrets));
+        EnvelopeExecutionQueue? queue = null;
+#if CERBERUS_SERVER_PROFILE
+        ManagedAccountManifestPolicy? managedAccounts = null;
+        var handlers = AgentCommandRegistry.CreateServer(metadata, new AgentStateCommandHandler(signedState, currentAgentId,
+            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log));
+#else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
-        if (!AgentBuildProfile.IsServer)
-            handlers.Add(new DiagnosticBundleCollectCommandHandler(diagnosticUploader));
         var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
             api.GetManagedAccountManifestAsync, LocalUserCommandHandlers.CreateManifestReconciler(log), log);
-        handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts));
-        var adUsers = new ScopedAdUserProvider(loadedSecrets.Identity, new ProtectedAdScopePolicy(),
-            new WindowsAdDirectoryBoundary(), new ProtectedAdOwnershipStore());
-        handlers.AddRange(ScopedAdCommandHandlers.CreateDefaultHandlers(loadedSecrets.Identity, lifecycleState,
-            api.GetAdCommandAuthorityAsync, adUsers));
-        handlers.Add(new AgentUpdateRequestCommandHandler(
-            () => BuildUpdateCoordinator(updateHttp, log, updateStateStore),
-            updateStateStore,
-            log,
-            agentVersion));
-
+        var handlers = AgentCommandRegistry.CreateDesktop(api, loadedSecrets.Identity, lifecycleState, managedAccounts,
+            diagnosticUploader, () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion);
+#endif
         var dispatcher = new CommandDispatcher(handlers, idempotency);
+        await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log);
+        queue = envelopeQueue;
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
         var loop = new HeartbeatLoop(
@@ -343,15 +332,17 @@ internal static class ServiceMode
             telemetryProvider: new WindowsTelemetryCollector(publishServiceObservation: true),
             telemetryBuffer: telemetryBuffer,
             log: log,
-            commandTimeout: TimeSpan.FromSeconds(120),
             backoffResetRequested: HeartbeatBackoffResetSignal.ConsumeDefaultAsync,
             metadata: metadata,
-            lifecycleState: lifecycleState);
+            lifecycleState: lifecycleState,
+            commandProcessor: EnvelopeWiring.CreateProcessor(api, envelopeQueue, dispatcher, log));
 
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var diagnosticSchedulerTask = AgentBuildProfile.IsServer
-            ? Task.CompletedTask
-            : new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
+#if CERBERUS_SERVER_PROFILE
+        var diagnosticSchedulerTask = Task.CompletedTask;
+#else
+        var diagnosticSchedulerTask = new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
+#endif
 
         try
         {
@@ -449,54 +440,6 @@ internal static class ServiceMode
         await api.SubmitEventsAsync(
             AgentTelemetryFactory.CreateEvents(metadata, new[] { item }),
             ct).ConfigureAwait(false);
-    }
-
-    private sealed class HealthSnapshotHandler : ICommandHandler
-    {
-        public string Type => "agent.health.snapshot";
-
-        public Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
-        {
-            var post = new
-            {
-                version = "v1",
-                uptime_seconds = (long)Environment.TickCount64 / 1000,
-                machine_name = Environment.MachineName,
-                os_version = Environment.OSVersion.VersionString,
-            };
-            return Task.FromResult(new CommandResult("DONE", 0, null, null, post));
-        }
-    }
-
-    private sealed class RdpQuickTestHandler : ICommandHandler
-    {
-        public string Type => "agent.rdp.quick_test";
-
-        public async Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
-        {
-            var collector = new Telemetry.Sections.RdpTelemetrySectionCollector();
-            var rdp = await collector.CollectAsync(
-                new WindowsTelemetryContext(
-                    new AgentBuildMetadata(
-                        AgentVersion: WindowsDeviceInfo.GetAgentVersion(),
-                        BuildId: WindowsDeviceInfo.GetBuildId(),
-                        BuildChannel: WindowsDeviceInfo.GetBuildChannel(),
-                        BootId: Guid.NewGuid().ToString("N"),
-                        SupportedSchemaVersions: AgentSchemaVersions.All),
-                    LastHeartbeat: null),
-                ct).ConfigureAwait(false);
-
-            return new CommandResult(
-                "DONE",
-                0,
-                null,
-                null,
-                new
-                {
-                    source = "agent.rdp.quick_test",
-                    rdp,
-                });
-        }
     }
 
     private sealed class TailscaleStatusProvider : IAgentStatusProvider

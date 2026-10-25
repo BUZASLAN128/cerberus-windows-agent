@@ -51,7 +51,7 @@ public sealed class AgentInstallIdentityTests
         var pattern = new Regex(@"CerberusAgent|Cerberus\\{1,2}WindowsAgent", RegexOptions.IgnoreCase);
         var exempt = new[]
         {
-            "AgentInstallIdentity.cs", "ServiceMode.cs", "MainWindow.xaml.cs", "TailscaleUpExporter.cs",
+            "AgentInstallIdentity.cs", "MainWindow.xaml.cs", "TailscaleUpExporter.cs",
         };
         var exemptDirs = new[] { "Cerberus.Agent.Integrations.", "Cerberus.Agent.Tray", "Cerberus.Agent.Uninstall" };
         var projects = new[]

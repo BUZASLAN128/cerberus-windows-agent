@@ -136,15 +136,12 @@ public static class AgentSnapshotFactory
         "clock",
         "runtime",
         "capabilities",
-#if CERBERUS_SERVER_PROFILE
-        "sessions",
-        "hardware",
-        "services",
-        "listening_ports",
-        "updates",
-        "software",
-#endif
     };
+
+#if CERBERUS_SERVER_PROFILE
+    // The server fact sections come from the one list collect_facts validates against.
+    static AgentSnapshotFactory() => AllowedSections.UnionWith(EnvelopeTypes.ServerFactSections);
+#endif
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
