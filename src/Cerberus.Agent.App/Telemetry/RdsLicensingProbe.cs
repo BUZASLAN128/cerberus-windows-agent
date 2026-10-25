@@ -1,24 +1,25 @@
-using System.Management;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App.Telemetry;
 
 /// <summary>
-/// Reads Remote Desktop Session Host licensing facts from the TerminalServices WMI namespace.
-/// License server names are never returned, only whether one is configured.
+/// Reads Remote Desktop Session Host licensing facts from the registry (no WMI, which endpoint
+/// protection products block). License server names are never returned, only whether one is configured.
 /// </summary>
 internal static class RdsLicensingProbe
 {
-    private const string Namespace = @"root\cimv2\TerminalServices";
-    private const string PolicyKeyPath = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
+    private const string TerminalServerKey = @"SYSTEM\CurrentControlSet\Control\Terminal Server";
+    private const string LicensingCoreKey = TerminalServerKey + @"\RCM\Licensing Core";
+    private const string PolicyKey = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
+    private const string TermServiceParametersKey = @"SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers";
     // Runs inside the 5 s server section budget of the sessions section, next to the WTS enumeration.
-    private static readonly TimeSpan WmiTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(2);
 
     public static async Task<RdsLicensingInfo> ReadAsync(CancellationToken ct)
     {
         try
         {
-            return await Task.Run(Read, CancellationToken.None).WaitAsync(WmiTimeout, ct).ConfigureAwait(false);
+            return await Task.Run(() => Read(ReadLocalMachineValue), CancellationToken.None).WaitAsync(ReadTimeout, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -30,33 +31,20 @@ internal static class RdsLicensingProbe
         }
     }
 
-    private static RdsLicensingInfo Read()
+    // getValue(subKey, valueName) reads HKLM (64-bit view) and returns null when the key or value is missing.
+    internal static RdsLicensingInfo Read(Func<string, string, object?> getValue)
     {
-        var options = new ConnectionOptions { Timeout = WmiTimeout };
-        var scope = new ManagementScope(Namespace, options);
-        scope.Connect();
-        using var searcher = new ManagementObjectSearcher(
-            scope,
-            new ObjectQuery("SELECT * FROM Win32_TerminalServiceSetting"),
-            new System.Management.EnumerationOptions { Timeout = WmiTimeout, ReturnImmediately = false });
-        using var results = searcher.Get();
-        foreach (ManagementObject setting in results)
-        {
-            using (setting)
-            {
-                var rdsh = Convert.ToInt32(setting["TerminalServerMode"]) == 1;
-                if (!rdsh)
-                    return RdsLicensingInfo.NotApplicable;
+        if (getValue(TerminalServerKey, "TSAppCompat") is not 1)
+            return RdsLicensingInfo.NotApplicable;
 
-                var mode = MapLicensingMode(setting["LicensingType"] is null ? null : Convert.ToInt32(setting["LicensingType"]));
-                return new RdsLicensingInfo("ok", true, mode, LicenseServerConfigured(setting), GraceDaysLeft(setting));
-            }
-        }
-
-        return RdsLicensingInfo.Unavailable;
+        var mode = MapLicensingMode(
+            getValue(PolicyKey, "LicensingMode") as int?
+            ?? getValue(LicensingCoreKey, "LicensingMode") as int?);
+        // Grace days are only exposed through WMI, so they are not reported.
+        return new RdsLicensingInfo("ok", true, mode, LicenseServerConfigured(getValue), null);
     }
 
-    // Win32_TerminalServiceSetting.LicensingType: 2 = per device, 4 = per user, 5 = not configured.
+    // LicensingMode: 2 = per device, 4 = per user, 5 = not configured.
     internal static string MapLicensingMode(int? licensingType) => licensingType switch
     {
         2 => "per_device",
@@ -65,34 +53,19 @@ internal static class RdsLicensingProbe
         _ => "unknown",
     };
 
-    private static bool? LicenseServerConfigured(ManagementObject setting)
+    private static bool LicenseServerConfigured(Func<string, string, object?> getValue)
     {
-        try
-        {
-            using var output = setting.InvokeMethod("GetSpecifiedLicenseServerList", null, null);
-            if (output?["SpecifiedLSList"] is string[] list && list.Any(s => !string.IsNullOrWhiteSpace(s)))
-                return true;
-        }
-        catch (ManagementException)
-        {
-            // Fall through to the policy value.
-        }
-
-        using var key = Registry.LocalMachine.OpenSubKey(PolicyKeyPath);
-        return key?.GetValue("LicenseServers") is string servers && !string.IsNullOrWhiteSpace(servers);
+        if (getValue(PolicyKey, "LicenseServers") is string policyServers && !string.IsNullOrWhiteSpace(policyServers))
+            return true;
+        return getValue(TermServiceParametersKey, "SpecifiedLicenseServers") is string[] list
+            && list.Any(s => !string.IsNullOrWhiteSpace(s));
     }
 
-    private static int? GraceDaysLeft(ManagementObject setting)
+    private static object? ReadLocalMachineValue(string subKey, string name)
     {
-        try
-        {
-            using var output = setting.InvokeMethod("GetGracePeriodDays", null, null);
-            return output?["DaysLeft"] is { } days ? Math.Max(0, Convert.ToInt32(days)) : null;
-        }
-        catch (ManagementException)
-        {
-            return null;
-        }
+        using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var key = hklm.OpenSubKey(subKey, writable: false);
+        return key?.GetValue(name);
     }
 }
 

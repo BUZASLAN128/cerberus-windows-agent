@@ -9,6 +9,7 @@ using static Cerberus.Agent.Core.Tests.ServerFactJson;
 namespace Cerberus.Agent.Core.Tests;
 
 /// <summary>Server fact sections: Windows Update cache, shared time budget, catalog and snapshot caps.</summary>
+[Collection("FailedLogonCursor")]
 public sealed partial class ServerFactSectionsTests
 {
     // ---- Windows Update cache --------------------------------------------------------------------------------

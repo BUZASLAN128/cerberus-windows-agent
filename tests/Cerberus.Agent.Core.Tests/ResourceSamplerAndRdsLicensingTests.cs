@@ -1,4 +1,5 @@
 using Cerberus.Agent.App.Telemetry;
+using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 using Cerberus.Agent.App.Telemetry.Sections;
 using System.Text.Json;
 
@@ -143,6 +144,85 @@ public sealed class ResourceSamplerAndRdsLicensingTests
     [InlineData(3, "unknown")]
     public void MapLicensingMode_FollowsLicensingType(int? type, string expected)
         => Assert.Equal(expected, RdsLicensingProbe.MapLicensingMode(type));
+
+    private const string Ts = @"SYSTEM\CurrentControlSet\Control\Terminal Server";
+    private const string Core = Ts + @"\RCM\Licensing Core";
+    private const string Policy = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
+    private const string Params = @"SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers";
+
+    private static Func<string, string, object?> Registry(params (string Key, string Name, object Value)[] values)
+        => (key, name) => values.FirstOrDefault(v => v.Key == key && v.Name == name).Value;
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public void Read_WithoutRdsh_IsNotApplicable(object? tsAppCompat)
+    {
+        var info = RdsLicensingProbe.Read(tsAppCompat is null ? Registry() : Registry((Ts, "TSAppCompat", tsAppCompat)));
+        Assert.Same(RdsLicensingInfo.NotApplicable, info);
+    }
+
+    [Fact]
+    public void Read_PolicyLicensingModeWinsOverLocal()
+    {
+        var info = RdsLicensingProbe.Read(Registry(
+            (Ts, "TSAppCompat", 1), (Policy, "LicensingMode", 4), (Core, "LicensingMode", 2)));
+        Assert.Equal("ok", info.Status);
+        Assert.True(info.RdshInstalled);
+        Assert.Equal("per_user", info.LicensingMode);
+        Assert.False(info.LicenseServerConfigured);
+        Assert.Null(info.GraceDaysLeft);
+    }
+
+    [Fact]
+    public void Read_FallsBackToLocalLicensingMode()
+    {
+        var info = RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1), (Core, "LicensingMode", 2)));
+        Assert.Equal("per_device", info.LicensingMode);
+        Assert.Equal("not_configured", RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1))).LicensingMode);
+    }
+
+    [Fact]
+    public void Read_LicenseServerConfigured_FromPolicyOrLocalList()
+    {
+        Assert.True(RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1), (Policy, "LicenseServers", "ls01"))).LicenseServerConfigured);
+        Assert.True(RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1), (Params, "SpecifiedLicenseServers", new[] { "ls01" }))).LicenseServerConfigured);
+        Assert.False(RdsLicensingProbe.Read(Registry(
+            (Ts, "TSAppCompat", 1), (Policy, "LicenseServers", " "), (Params, "SpecifiedLicenseServers", new[] { "" }))).LicenseServerConfigured);
+    }
+
+    [Theory]
+    [InlineData(0, 1, 3389, true, true, 3389)]
+    [InlineData(1, 0, 3390, false, false, 3390)]
+    [InlineData(null, null, null, null, null, null)]
+    public void RdpPosture_MapsRegistryValues(int? deny, int? nla, int? port, bool? enabled, bool? nlaRequired, int? expectedPort)
+    {
+        var posture = RdpPosture.From(deny, nla, port);
+        Assert.Equal(enabled, posture.RemoteDesktopEnabled);
+        Assert.Equal(nlaRequired, posture.NlaRequired);
+        Assert.Equal(expectedPort, posture.PortNumber);
+    }
+
+    [Theory]
+    [InlineData(0u, false)]
+    [InlineData(1u, false)]
+    [InlineData(2u, true)]
+    [InlineData(3u, true)]
+    [InlineData(4u, false)]
+    public void AuditFailureFlag_FollowsFailureBit(uint flags, bool expected)
+        => Assert.Equal(expected, FailedLogonAuditPolicy.MapFailureFlag(flags));
+
+    [Fact]
+    public void FailedLogons_CarriesAuditFailureEnabled()
+    {
+        var t = FailedLogonClassifier.Tally(Array.Empty<FailedLogonEvent>());
+        var now = DateTimeOffset.UnixEpoch;
+        using var set = JsonDocument.Parse(JsonSerializer.Serialize(
+            FailedLogonSection.Build("ok", now, now, false, t, default, default, default, true)));
+        Assert.True(set.RootElement.GetProperty("audit_failure_enabled").GetBoolean());
+        using var unknown = JsonDocument.Parse(JsonSerializer.Serialize(FailedLogonSection.Unavailable(now)));
+        Assert.Equal(JsonValueKind.Null, unknown.RootElement.GetProperty("audit_failure_enabled").ValueKind);
+    }
 
     [Fact]
     public void LicensingPayload_NotApplicableAndUnavailableShapes()

@@ -16,10 +16,16 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
     {
         var sessions = SessionsNative.Read(ct);
         var licensing = await RdsLicensingProbe.ReadAsync(ct).ConfigureAwait(false);
-        return Build(sessions, licensing);
+        return Build(sessions, licensing, ReadPosture());
     }
 
-    internal static object Build(IEnumerable<RawSession> raw, RdsLicensingInfo? licensing = null)
+    private static RdpPosture ReadPosture()
+    {
+        try { return RdpPosture.Read(); }
+        catch (Exception) { return RdpPosture.Unknown; }
+    }
+
+    internal static object Build(IEnumerable<RawSession> raw, RdsLicensingInfo? licensing = null, RdpPosture? posture = null)
     {
         var sessions = raw
             .Select(s => new
@@ -46,6 +52,7 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
             truncated = sessions.Length > MaxSessions,
             sessions = sessions.Take(MaxSessions).ToArray(),
             rds_licensing = (licensing ?? RdsLicensingInfo.Unavailable).ToPayload(),
+            rdp_posture = (posture ?? RdpPosture.Unknown).ToPayload(),
         };
     }
 }

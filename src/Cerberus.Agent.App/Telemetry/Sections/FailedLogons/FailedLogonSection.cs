@@ -84,7 +84,7 @@ internal static class FailedLogonSection
             }
             var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
             var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
-            return Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql);
+            return Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, FailedLogonAuditPolicy.ReadFailureEnabled());
         }
     }
 
@@ -110,7 +110,8 @@ internal static class FailedLogonSection
         FailedLogonTally tally,
         ProtocolPresence rdp,
         ProtocolPresence ssh,
-        ProtocolPresence sql)
+        ProtocolPresence sql,
+        bool? auditFailureEnabled = null)
     {
         var groups = tally.Groups
             .Take(FailedLogonClassifier.GroupCap)
@@ -130,6 +131,7 @@ internal static class FailedLogonSection
             window_start_utc = Iso(start),
             window_end_utc = Iso(end),
             cursor_reset = cursorReset,
+            audit_failure_enabled = auditFailureEnabled,
             protocols = new
             {
                 rdp = new { present = rdp.Present, listening = rdp.Listening, failed_count = tally.Counts["rdp"] },

@@ -37,7 +37,7 @@ public sealed partial class ServerFactSectionsTests
 
         var node = Obj(SessionsTelemetrySectionCollector.Build(raw));
 
-        Assert.Equal(Sorted("status", "session_count", "active_count", "disconnected_count", "truncated", "sessions", "rds_licensing"), Keys(node));
+        Assert.Equal(Sorted("status", "session_count", "active_count", "disconnected_count", "truncated", "sessions", "rds_licensing", "rdp_posture"), Keys(node));
         Assert.Equal("unavailable", (string)node["rds_licensing"]!["status"]!);
         Assert.Equal(4, (int)node["session_count"]!);
         Assert.Equal(2, (int)node["active_count"]!);

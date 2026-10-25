@@ -4,6 +4,7 @@ using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 namespace Cerberus.Agent.Core.Tests;
 
 /// <summary>Support evidence: pure classifier, aggregation, report shape and cursor logic for security.failed_logons.</summary>
+[Collection("FailedLogonCursor")]
 public sealed class FailedLogonClassifierTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
