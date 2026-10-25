@@ -135,6 +135,9 @@ internal static class EnrollHeadlessMode
             return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
 
         var serviceState = host.GetServiceState();
+        // Paused or stopping service: activation cannot start it, so keep the one-time proof unspent.
+        if (serviceState == HeadlessServiceState.Other)
+            return new(HeadlessEnrollmentExit.Unavailable, "service_not_ready");
 #if CERBERUS_SERVER_PROFILE
         // The server profile never installs a service; it only starts or notifies the MSI-installed one.
         if (serviceState == HeadlessServiceState.NotInstalled)

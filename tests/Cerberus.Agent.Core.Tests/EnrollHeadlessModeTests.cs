@@ -315,6 +315,21 @@ public sealed partial class EnrollHeadlessModeTests
     }
 
     [Fact]
+    public async Task Paused_or_stopping_service_exits_five_before_the_proof_is_sent()
+    {
+        var host = new FakeHost { State = HeadlessServiceState.Other };
+
+        var (exit, stdout, stderr) = await Execute(host, installService: false);
+
+        Assert.Equal(HeadlessEnrollmentExit.Unavailable, exit);
+        Assert.Contains("service_not_ready", stderr, StringComparison.Ordinal);
+        Assert.Equal("", stdout);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Empty(host.ActivateCalls);
+    }
+
+    [Fact]
     public async Task Cancellation_before_the_request_completes_exits_five()
     {
         using var cts = new CancellationTokenSource();
