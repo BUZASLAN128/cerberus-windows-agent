@@ -498,21 +498,18 @@ public sealed class AgentApiClientTelemetryTests
     [Fact]
     public async Task GetTailscalePreauthAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
     {
-        const int timeoutMs = 2000;
-        var handler = new FailureHandler(
-            HttpStatusCode.OK,
-            new StallingContent("preauth-delay-marker"),
-            TimeSpan.FromMilliseconds(1500));
-        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+        // Headers arrive only after the whole budget is spent. The body read must then
+        // see an already-cancelled token; a fresh body timeout would leave it live.
+        var content = new StallingContent("preauth-delay-marker");
+        var handler = new FailureHandler(HttpStatusCode.OK, content, headersOutlastBudget: true);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(1000) };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
-        var stopwatch = Stopwatch.StartNew();
 
         var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
 
-        stopwatch.Stop();
         Assert.Equal("Tailscale preauth failed (200).", exception.Message);
         Assert.DoesNotContain("preauth-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
+        Assert.True(content.ReadTokenCancelledPromptly, "body read must share the request budget, not start a fresh timeout");
     }
 
     [Fact]
@@ -683,19 +680,23 @@ public sealed class AgentApiClientTelemetryTests
         private readonly HttpStatusCode _statusCode;
         private readonly HttpContent _content;
 
-        public FailureHandler(HttpStatusCode statusCode, HttpContent content, TimeSpan? headerDelay = null)
+        public FailureHandler(HttpStatusCode statusCode, HttpContent content, bool headersOutlastBudget = false)
         {
             _statusCode = statusCode;
             _content = content;
-            _headerDelay = headerDelay ?? TimeSpan.Zero;
+            _headersOutlastBudget = headersOutlastBudget;
         }
 
-        private readonly TimeSpan _headerDelay;
+        private readonly bool _headersOutlastBudget;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            if (_headerDelay > TimeSpan.Zero)
-                await Task.Delay(_headerDelay, cancellationToken);
+            // Headers arrive only after the request budget is fully spent.
+            if (_headersOutlastBudget)
+            {
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
+                catch (OperationCanceledException) { }
+            }
             return new HttpResponseMessage(_statusCode) { Content = _content };
         }
     }
@@ -707,15 +708,24 @@ public sealed class AgentApiClientTelemetryTests
         public StallingContent(string? prefix = null) => _prefix = Encoding.UTF8.GetBytes(prefix ?? string.Empty);
 
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(_prefix));
+        // Set when the body stalls: true if the read token was cancelled within a short
+        // grace window, i.e. the read shares an already-spent budget instead of a fresh one.
+        public bool? ReadTokenCancelledPromptly { get; private set; }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(_prefix, this));
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
 
         private sealed class StallingStream : Stream
         {
             private readonly byte[] _prefix;
+            private readonly StallingContent _owner;
             private int _offset;
 
-            public StallingStream(byte[] prefix) => _prefix = prefix;
+            public StallingStream(byte[] prefix, StallingContent owner)
+            {
+                _prefix = prefix;
+                _owner = owner;
+            }
 
             public override bool CanRead => true;
             public override bool CanSeek => false;
@@ -737,11 +747,19 @@ public sealed class AgentApiClientTelemetryTests
                     return count;
                 }
 
+                var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var registration = cancellationToken.Register(() => cancelled.TrySetResult());
+                _owner.ReadTokenCancelledPromptly =
+                    await Task.WhenAny(cancelled.Task, Task.Delay(StallGrace)) == cancelled.Task;
+
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return 0;
             }
         }
     }
+
+    // Must stay well below the HttpClient timeouts used by the one-budget tests.
+    private static readonly TimeSpan StallGrace = TimeSpan.FromMilliseconds(400);
 
     private sealed class TransientThenOkHandler : HttpMessageHandler
     {
