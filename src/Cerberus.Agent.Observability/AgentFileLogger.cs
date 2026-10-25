@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Observability;
@@ -33,7 +31,7 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
         _alsoConsole = alsoConsole;
         _maxBytes = Math.Max(64 * 1024, maxBytes);
         _retentionFiles = Math.Clamp(retentionFiles, 1, 20);
-        _mutex = CreateMutex(logFilePath);
+        _mutex = OperatingSystem.IsWindows() ? AgentLogMutex.Open(logFilePath) : null;
         _writer = OpenWriter(logFilePath);
     }
 
@@ -83,20 +81,6 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
 
         if (_alsoConsole && Environment.UserInteractive)
             Console.WriteLine(line);
-    }
-
-    private static Mutex? CreateMutex(string logFilePath)
-    {
-        try
-        {
-            var path = Path.GetFullPath(logFilePath).ToUpperInvariant();
-            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path)));
-            return new Mutex(false, $"Global\\Cerberus.AgentLog.{hash[..32]}");
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or WaitHandleCannotBeOpenedException)
-        {
-            return null;
-        }
     }
 
     /// <summary>Takes the cross-process log mutex; false when unavailable or timed out (the write proceeds anyway).</summary>
