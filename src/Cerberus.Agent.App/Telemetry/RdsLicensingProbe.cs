@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App.Telemetry;
@@ -12,6 +14,8 @@ internal static class RdsLicensingProbe
     private const string LicensingCoreKey = TerminalServerKey + @"\RCM\Licensing Core";
     private const string PolicyKey = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
     private const string TermServiceParametersKey = @"SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers";
+    private const string GracePeriodKey = TerminalServerKey + @"\RCM\GracePeriod";
+    private const int GracePeriodDays = 120;
     // Runs inside the 5 s server section budget of the sessions section, next to the WTS enumeration.
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(2);
 
@@ -19,7 +23,7 @@ internal static class RdsLicensingProbe
     {
         try
         {
-            return await Task.Run(() => Read(ReadLocalMachineValue), CancellationToken.None).WaitAsync(ReadTimeout, ct).ConfigureAwait(false);
+            return await Task.Run(() => Read(ReadLocalMachineValue, ReadGracePeriodLastWriteUtc, TimeProvider.System), CancellationToken.None).WaitAsync(ReadTimeout, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -32,7 +36,11 @@ internal static class RdsLicensingProbe
     }
 
     // getValue(subKey, valueName) reads HKLM (64-bit view) and returns null when the key or value is missing.
-    internal static RdsLicensingInfo Read(Func<string, string, object?> getValue)
+    // readGraceLastWriteUtc returns the last-write time of the GracePeriod key, or null when it is missing, unreadable or empty.
+    internal static RdsLicensingInfo Read(
+        Func<string, string, object?> getValue,
+        Func<DateTime?>? readGraceLastWriteUtc = null,
+        TimeProvider? time = null)
     {
         if (getValue(TerminalServerKey, "TSAppCompat") is not 1)
             return RdsLicensingInfo.NotApplicable;
@@ -40,9 +48,19 @@ internal static class RdsLicensingProbe
         var mode = MapLicensingMode(
             getValue(PolicyKey, "LicensingMode") as int?
             ?? getValue(LicensingCoreKey, "LicensingMode") as int?);
-        // Grace days are only exposed through WMI, so they are not reported.
-        return new RdsLicensingInfo("ok", true, mode, LicenseServerConfigured(getValue), null);
+        // The remaining grace days are only exposed through WMI (grace_days_left stays null); the estimate comes
+        // from the key's creation-time write, because the value itself is encrypted and is never parsed.
+        var graceStart = readGraceLastWriteUtc?.Invoke();
+        var graceStartUtc = graceStart is { } t ? DateTime.SpecifyKind(t, DateTimeKind.Utc) : (DateTime?)null;
+        var now = (time ?? TimeProvider.System).GetUtcNow().UtcDateTime;
+        return new RdsLicensingInfo("ok", true, mode, LicenseServerConfigured(getValue), null,
+            graceStartUtc?.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture),
+            graceStartUtc is { } start ? EstimateGraceDaysLeft(start, now) : null);
     }
+
+    // WMI counts a started day as used: 120 - ceil(elapsed days), clamped to [0, 120].
+    internal static int EstimateGraceDaysLeft(DateTime startUtc, DateTime nowUtc)
+        => (int)Math.Clamp(GracePeriodDays - Math.Ceiling((nowUtc - startUtc).TotalDays), 0, GracePeriodDays);
 
     // LicensingMode: 2 = per device, 4 = per user, 5 = not configured.
     internal static string MapLicensingMode(int? licensingType) => licensingType switch
@@ -67,6 +85,26 @@ internal static class RdsLicensingProbe
         using var key = hklm.OpenSubKey(subKey, writable: false);
         return key?.GetValue(name);
     }
+
+    private static DateTime? ReadGracePeriodLastWriteUtc()
+    {
+        using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        using var key = hklm.OpenSubKey(GracePeriodKey, writable: false);
+        if (key is null)
+            return null;
+        var handle = key.Handle.DangerousGetHandle();
+        var rc = RegQueryInfoKey(handle, null, IntPtr.Zero, IntPtr.Zero, out _, out _, out _, out var valueCount,
+            out _, out _, IntPtr.Zero, out var lastWrite);
+        if (rc != 0 || valueCount == 0 || lastWrite == 0)
+            return null;
+        return DateTime.FromFileTimeUtc(lastWrite);
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegQueryInfoKeyW")]
+    private static extern int RegQueryInfoKey(
+        IntPtr hKey, char[]? lpClass, IntPtr lpcchClass, IntPtr lpReserved,
+        out uint lpcSubKeys, out uint lpcbMaxSubKeyLen, out uint lpcbMaxClassLen, out uint lpcValues,
+        out uint lpcbMaxValueNameLen, out uint lpcbMaxValueLen, IntPtr lpSecurityDescriptor, out long lpftLastWriteTime);
 }
 
 internal sealed record RdsLicensingInfo(
@@ -74,7 +112,9 @@ internal sealed record RdsLicensingInfo(
     bool? RdshInstalled,
     string? LicensingMode,
     bool? LicenseServerConfigured,
-    int? GraceDaysLeft)
+    int? GraceDaysLeft,
+    string? GraceStartedUtc = null,
+    int? GraceDaysLeftEstimate = null)
 {
     internal static readonly RdsLicensingInfo NotApplicable = new("not_applicable", false, null, null, null);
     internal static readonly RdsLicensingInfo Unavailable = new("unavailable", null, null, null, null);
@@ -86,5 +126,7 @@ internal sealed record RdsLicensingInfo(
         licensing_mode = LicensingMode,
         license_server_configured = LicenseServerConfigured,
         grace_days_left = GraceDaysLeft,
+        grace_started_utc = GraceStartedUtc,
+        grace_days_left_estimate = GraceDaysLeftEstimate,
     };
 }

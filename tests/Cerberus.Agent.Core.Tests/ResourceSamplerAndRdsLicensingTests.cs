@@ -191,6 +191,44 @@ public sealed class ResourceSamplerAndRdsLicensingTests
             (Ts, "TSAppCompat", 1), (Policy, "LicenseServers", " "), (Params, "SpecifiedLicenseServers", new[] { "" }))).LicenseServerConfigured);
     }
 
+
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    [Fact]
+    public void Read_GraceEstimate_MatchesObservedWmiSample()
+    {
+        var start = new DateTime(2026, 10, 22, 20, 38, 42, DateTimeKind.Utc);
+        var now = new DateTimeOffset(2026, 10, 25, 22, 26, 20, TimeSpan.Zero);
+
+        var info = RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1)), () => start, new FixedTime(now));
+
+        Assert.Equal("2026-10-22T20:38:42Z", info.GraceStartedUtc);
+        Assert.Equal(116, info.GraceDaysLeftEstimate);
+        Assert.Null(info.GraceDaysLeft);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(info.ToPayload()));
+        Assert.Equal("2026-10-22T20:38:42Z", json.RootElement.GetProperty("grace_started_utc").GetString());
+        Assert.Equal(116, json.RootElement.GetProperty("grace_days_left_estimate").GetInt32());
+    }
+
+    [Fact]
+    public void Read_GraceEstimate_ClampsAndIsNullWhenUnknown()
+    {
+        var now = new FixedTime(new DateTimeOffset(2027, 6, 1, 0, 0, 0, TimeSpan.Zero));
+        var old = new DateTime(2026, 10, 22, 0, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(0, RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1)), () => old, now).GraceDaysLeftEstimate);
+        var future = new DateTime(2027, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+        Assert.Equal(120, RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1)), () => future, now).GraceDaysLeftEstimate);
+
+        var unknown = RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1)), () => null, now);
+        Assert.Null(unknown.GraceStartedUtc);
+        Assert.Null(unknown.GraceDaysLeftEstimate);
+        Assert.Null(RdsLicensingProbe.Read(Registry((Ts, "TSAppCompat", 1))).GraceDaysLeftEstimate);
+        Assert.Null(RdsLicensingProbe.Read(Registry(), () => old, now).GraceDaysLeftEstimate);
+    }
+
     [Theory]
     [InlineData(0, 1, 3389, true, true, 3389)]
     [InlineData(1, 0, 3390, false, false, 3390)]
@@ -230,7 +268,7 @@ public sealed class ResourceSamplerAndRdsLicensingTests
         using var na = JsonDocument.Parse(JsonSerializer.Serialize(RdsLicensingInfo.NotApplicable.ToPayload()));
         Assert.Equal("not_applicable", na.RootElement.GetProperty("status").GetString());
         Assert.False(na.RootElement.GetProperty("rdsh_installed").GetBoolean());
-        foreach (var name in new[] { "licensing_mode", "license_server_configured", "grace_days_left" })
+        foreach (var name in new[] { "licensing_mode", "license_server_configured", "grace_days_left", "grace_started_utc", "grace_days_left_estimate" })
             Assert.Equal(JsonValueKind.Null, na.RootElement.GetProperty(name).ValueKind);
 
         using var unavailable = JsonDocument.Parse(JsonSerializer.Serialize(RdsLicensingInfo.Unavailable.ToPayload()));
