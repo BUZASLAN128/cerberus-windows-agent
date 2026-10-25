@@ -1,0 +1,574 @@
+{
+  "schema": "cerberus.agent-command-vectors",
+  "version": 1,
+  "description": "Golden vectors for the signed command envelope (contract v1). Expected outcomes are for the server profile. Cases run in order against one agent with an empty replay store; reject_same_id_different_bytes runs after accept_ping was reserved. step is the contract check number that decides the outcome.",
+  "test_key": {
+    "note": "Test-only RSA 2048 public key. The signatures were made once with the matching private key, which was then discarded, so they can be verified with this key but not regenerated.",
+    "spki_der_b64": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqQuG506eryHIsXZ6Lb8Lxx5G4tgFHiS/cZhP6Q+AWupGC+zQ3XOwbvQ274TEAF1YfBBfDbVPS6Nm+2n2J/4mN7BQwih5oo5xQKr6jnO9DWVdhN9XWKChXi/8CDpPTpnaXGuh+Zjc1rh6TmPqwHO/PZOO5tiszUkOXkQOrQTDIZkcVL90btnVDstOm5Y5JSuYnDDUJrz4GEUI/t2Qn3O9HRy4A0gxAQNKkeFV5IGqNXiL631Tp+fq5fO0QkTW0iP6k47WamDopoUDzhGwazvNWZl/GCIjNpeIf8+WY7y10Hv3dEPuDH6UgFs08qK8uhbpjcL34CDs8N1mcHNXJ6iQ0QIDAQAB",
+    "key_id": "1c558767af6f7982",
+    "trust_anchors_b64_file": "agent-command-test-anchors.b64"
+  },
+  "agent_id": "agent-0001",
+  "now_unix": 1790000000,
+  "canonical": "eleven lines joined by LF, no trailing LF: cerberus-agent-envelope.v1, id, agent_id, type, issued_at, expires_at, nonce, key_id, alg, delegation, payload (base64 of UTF-8 JSON)",
+  "cases": [
+    {
+      "name": "accept_ping",
+      "description": "Valid ping, empty payload, nonce containing =.",
+      "input": {
+        "id": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-ping-0001==",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9NmYxYzJiOWUtMWQyYS00YzU1LTlhNTEtMGU2YjdmM2MyYTEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1waW5nLTAwMDE9PQprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+      "envelope_sha256": "175878cdd899cf74ce5baeab8b3c5a53d4b7a24ca6ba3f1acd0ef9e0b78c2bc1",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "HvoTJqfyh5BVPqx1Vnfh0hdiDRcRR7wPgG3KbsLgGYN2nY+2ScpCYMiKpPN1bfCYsDop5mFFne9P8Pvp4dZdAlMKvyRFsadwESyR7KEASgwhAKaSa0iRLI5bwmBbvPIGcu8oBrY9hIxHlF+dDEn1MZGfWNccEwlULKruILA6GBDVPizZ2tfpiwHui7qCyFACEUtzw7GU0LHKIwgV+F/zU99x7WAArhP31rrM4FR5w92TAQ/tpo8hObwQNeYHmelnzOzlYorZgIDuBgyRLO3WZb8PdKzLpWC6DzF/LJbpZeVKhmdccWHsYMJByzx6Z5kmgb5O53AUfmOUfDETYX6AFg==",
+      "pending_command": {
+        "id": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "type": "ping",
+        "idempotency_key": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9NmYxYzJiOWUtMWQyYS00YzU1LTlhNTEtMGU2YjdmM2MyYTEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1waW5nLTAwMDE9PQprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+          "signature": "HvoTJqfyh5BVPqx1Vnfh0hdiDRcRR7wPgG3KbsLgGYN2nY+2ScpCYMiKpPN1bfCYsDop5mFFne9P8Pvp4dZdAlMKvyRFsadwESyR7KEASgwhAKaSa0iRLI5bwmBbvPIGcu8oBrY9hIxHlF+dDEn1MZGfWNccEwlULKruILA6GBDVPizZ2tfpiwHui7qCyFACEUtzw7GU0LHKIwgV+F/zU99x7WAArhP31rrM4FR5w92TAQ/tpo8hObwQNeYHmelnzOzlYorZgIDuBgyRLO3WZb8PdKzLpWC6DzF/LJbpZeVKhmdccWHsYMJByzx6Z5kmgb5O53AUfmOUfDETYX6AFg=="
+        }
+      },
+      "expected": {
+        "outcome": "accept",
+        "code": null,
+        "ack_sent": true,
+        "ack_decision": "accepted",
+        "step": 18
+      }
+    },
+    {
+      "name": "accept_collect_facts_sections",
+      "description": "Valid collect_facts with two sections.",
+      "input": {
+        "id": "0b7d3a52-91c4-4e08-8f6a-2c5e1d9b7a31",
+        "agent_id": "agent-0001",
+        "type": "collect_facts",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-facts-0002",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{\"sections\":[\"sessions\",\"hardware\"]}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9MGI3ZDNhNTItOTFjNC00ZTA4LThmNmEtMmM1ZTFkOWI3YTMxCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1jb2xsZWN0X2ZhY3RzCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1mYWN0cy0wMDAyCmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZXlKelpXTjBhVzl1Y3lJNld5SnpaWE56YVc5dWN5SXNJbWhoY21SM1lYSmxJbDE5",
+      "envelope_sha256": "44b6b030dffd6b126c935a216ce4e0f34b7df725bd481f729ff6806d8fc27d0a",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "OoHfhX3xK+4RRBa6vK09EKUJPbR9rCxUg5tBoBGmmqMNocoJ9Mkp2DA8on92UpqlLDvRlMKyc1EBOhOLIDACDwLka7AAf9j1ZOKYxElwGRln+azyKwtEfZZz1KdgjxKVWzkEj/z0zXJfH4bZ7dfC1LqYX25c7cZwXM85uVqcoExOBFa1NabCmDMnE+ERwmgI9XsUq5aA+KIzMAqLUSbaVYWPRL5mZ1zcEP3q/UAFB+BVA1wHRxorP8pO5847adK/bXl0OVH/HXLVHhn2y3/cXLWPDrzD0J5wkdgJM43T0ugLx0jYXzi+/VB81arhq3HeeVRbU1GcIoaQmIqNvmBGoA==",
+      "pending_command": {
+        "id": "0b7d3a52-91c4-4e08-8f6a-2c5e1d9b7a31",
+        "type": "collect_facts",
+        "idempotency_key": "0b7d3a52-91c4-4e08-8f6a-2c5e1d9b7a31",
+        "payload": {
+          "sections": [
+            "sessions",
+            "hardware"
+          ]
+        },
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9MGI3ZDNhNTItOTFjNC00ZTA4LThmNmEtMmM1ZTFkOWI3YTMxCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1jb2xsZWN0X2ZhY3RzCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1mYWN0cy0wMDAyCmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZXlKelpXTjBhVzl1Y3lJNld5SnpaWE56YVc5dWN5SXNJbWhoY21SM1lYSmxJbDE5",
+          "signature": "OoHfhX3xK+4RRBa6vK09EKUJPbR9rCxUg5tBoBGmmqMNocoJ9Mkp2DA8on92UpqlLDvRlMKyc1EBOhOLIDACDwLka7AAf9j1ZOKYxElwGRln+azyKwtEfZZz1KdgjxKVWzkEj/z0zXJfH4bZ7dfC1LqYX25c7cZwXM85uVqcoExOBFa1NabCmDMnE+ERwmgI9XsUq5aA+KIzMAqLUSbaVYWPRL5mZ1zcEP3q/UAFB+BVA1wHRxorP8pO5847adK/bXl0OVH/HXLVHhn2y3/cXLWPDrzD0J5wkdgJM43T0ugLx0jYXzi+/VB81arhq3HeeVRbU1GcIoaQmIqNvmBGoA=="
+        }
+      },
+      "expected": {
+        "outcome": "accept",
+        "code": null,
+        "ack_sent": true,
+        "ack_decision": "accepted",
+        "step": 18
+      }
+    },
+    {
+      "name": "accept_agent_state",
+      "description": "Valid agent_state with state_seq and quarantine.",
+      "input": {
+        "id": "c4a9e6f0-3b1d-4d7e-a2f8-5e0b9c1d6a42",
+        "agent_id": "agent-0001",
+        "type": "agent_state",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-state-0003",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{\"state_seq\":1,\"quarantine\":{\"active\":true}}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YzRhOWU2ZjAtM2IxZC00ZDdlLWEyZjgtNWUwYjljMWQ2YTQyCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1hZ2VudF9zdGF0ZQppc3N1ZWRfYXQ9MTc5MDAwMDAwMApleHBpcmVzX2F0PTE3OTAwMDAxMjAKbm9uY2U9bm9uY2Utc3RhdGUtMDAwMwprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWV5SnpkR0YwWlY5elpYRWlPakVzSW5GMVlYSmhiblJwYm1VaU9uc2lZV04wYVhabElqcDBjblZsZlgwPQ==",
+      "envelope_sha256": "87ffa416acb13836f1680ac3e45954d714bc71b78c35d4c8ca6a9405bf7ed0d6",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "Xqw5TfchBATX+GOZfrd9zytwWtTIomU7W0oWk3J7J8BPHpHgwCnC36x4+3+yrqYZoJD7cHrNglxfVhH+QfG0iVTEWlCoaC65up//j1NloTkbxuLIuNMu1kk44cmqb0SvGNrrG9VivgxDeT3yhXbqSEfKDcAc+hXXsdbvEMiz9n5Z5r/ZzZp5mhr/rCWh7JrXUYVWgdwT+mV9DF3uqVwfIV2J7c/XjHxJiDKddZLRYwGGcRQSwv59aD5nFxg6kKU7PWz8jeDHA6afJePbNKOMokTmGjjjJ8ahkQaBscDuoKiKSeTJpk1jbE+x7/IIPS3dgg+WFK2+DLFgQcsOxFWU8Q==",
+      "pending_command": {
+        "id": "c4a9e6f0-3b1d-4d7e-a2f8-5e0b9c1d6a42",
+        "type": "agent_state",
+        "idempotency_key": "c4a9e6f0-3b1d-4d7e-a2f8-5e0b9c1d6a42",
+        "payload": {
+          "state_seq": 1,
+          "quarantine": {
+            "active": true
+          }
+        },
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YzRhOWU2ZjAtM2IxZC00ZDdlLWEyZjgtNWUwYjljMWQ2YTQyCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1hZ2VudF9zdGF0ZQppc3N1ZWRfYXQ9MTc5MDAwMDAwMApleHBpcmVzX2F0PTE3OTAwMDAxMjAKbm9uY2U9bm9uY2Utc3RhdGUtMDAwMwprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWV5SnpkR0YwWlY5elpYRWlPakVzSW5GMVlYSmhiblJwYm1VaU9uc2lZV04wYVhabElqcDBjblZsZlgwPQ==",
+          "signature": "Xqw5TfchBATX+GOZfrd9zytwWtTIomU7W0oWk3J7J8BPHpHgwCnC36x4+3+yrqYZoJD7cHrNglxfVhH+QfG0iVTEWlCoaC65up//j1NloTkbxuLIuNMu1kk44cmqb0SvGNrrG9VivgxDeT3yhXbqSEfKDcAc+hXXsdbvEMiz9n5Z5r/ZzZp5mhr/rCWh7JrXUYVWgdwT+mV9DF3uqVwfIV2J7c/XjHxJiDKddZLRYwGGcRQSwv59aD5nFxg6kKU7PWz8jeDHA6afJePbNKOMokTmGjjjJ8ahkQaBscDuoKiKSeTJpk1jbE+x7/IIPS3dgg+WFK2+DLFgQcsOxFWU8Q=="
+        }
+      },
+      "expected": {
+        "outcome": "accept",
+        "code": null,
+        "ack_sent": true,
+        "ack_decision": "accepted",
+        "step": 18
+      }
+    },
+    {
+      "name": "reject_same_id_different_bytes",
+      "description": "Same id as accept_ping, different nonce and signature, validly signed; processed after accept_ping was reserved.",
+      "input": {
+        "id": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-conflict-0004",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9NmYxYzJiOWUtMWQyYS00YzU1LTlhNTEtMGU2YjdmM2MyYTEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1jb25mbGljdC0wMDA0CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZTMwPQ==",
+      "envelope_sha256": "7c3c91e638dde1836f523a8c5cf5d7ee37699c06b8ff0ea0f8db2c1cb38672c4",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "OSJUIPGeGVL9xngaxO3rGKbp9A9MJRSALMAFVCMQTIFxj31iiDSGRvTK3NzEBAmXTkIhaReHHKRA6KTDtDlRdRKF3V6dpFz1S6O2XAo2sZMUhB5QtVDzhD0CIPIGf7gcRosG79fJCvGyK0jqaFu/sIM7+t+PFAEddKF2Q1bTCVg/gnMW0kJR30IA7koSqapeNS9Ht7c5E5E9yAhV5hhD9OHCnhJ68Q77WgBytnUkQkuW3j+2MWIGMQ46ag0AkzXBERPc8Tv7ZGmNqDOgT7IO6L7Yse2GYZiS8Aetu8NYc/73erfDHlFqAqBmeajY8vac9V7fOI/fT0717Au73yeD2A==",
+      "pending_command": {
+        "id": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "type": "ping",
+        "idempotency_key": "6f1c2b9e-1d2a-4c55-9a51-0e6b7f3c2a10",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9NmYxYzJiOWUtMWQyYS00YzU1LTlhNTEtMGU2YjdmM2MyYTEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1jb25mbGljdC0wMDA0CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZTMwPQ==",
+          "signature": "OSJUIPGeGVL9xngaxO3rGKbp9A9MJRSALMAFVCMQTIFxj31iiDSGRvTK3NzEBAmXTkIhaReHHKRA6KTDtDlRdRKF3V6dpFz1S6O2XAo2sZMUhB5QtVDzhD0CIPIGf7gcRosG79fJCvGyK0jqaFu/sIM7+t+PFAEddKF2Q1bTCVg/gnMW0kJR30IA7koSqapeNS9Ht7c5E5E9yAhV5hhD9OHCnhJ68Q77WgBytnUkQkuW3j+2MWIGMQ46ag0AkzXBERPc8Tv7ZGmNqDOgT7IO6L7Yse2GYZiS8Aetu8NYc/73erfDHlFqAqBmeajY8vac9V7fOI/fT0717Au73yeD2A=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "id_conflict",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 13,
+        "prior_case": "accept_ping"
+      }
+    },
+    {
+      "name": "reject_signed_delegation_nonempty",
+      "description": "Signed delegation field is non-empty.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000005",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-deleg-0005",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "anchor-blob",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA1CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1kZWxlZy0wMDA1CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249YW5jaG9yLWJsb2IKcGF5bG9hZD1lMzA9",
+      "envelope_sha256": "9fa01a43460876da03ce1b62181d58a7b8841f3aaccacae8b0ab649971ccd802",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "S13HQ7pVKcGbOKd6U7qHF5SdITau4r+fZaXZpXcG4i0yulUJ1A7NZMoCe2hyY4uDBEyXjrGkcgvS6H/2UIghprdKc+523QHZm2QwRPYvqgIMhYtl7uEg+yxPVI+yFuQ21Z7TNvlR04/q5dooOXakx3TVhdj2aMbElRkxvzpAvAHse0iwY/nIiM41VHxGF4otuoGaQN5wvtRYcyrveu6uIjIImh5FOJGEIeXvL/PXxXcOtB5Fsz+ixkEv3dU37OqoMpKchzCR0k1vDPZyVZZp3iv5BnJTqZ1yZcVnp5c3M2ovmYxBIANrh+WnrnDEgLFkTv+lmX+nMqptcC5xCFvZjA==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000005",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000005",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA1CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1kZWxlZy0wMDA1CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249YW5jaG9yLWJsb2IKcGF5bG9hZD1lMzA9",
+          "signature": "S13HQ7pVKcGbOKd6U7qHF5SdITau4r+fZaXZpXcG4i0yulUJ1A7NZMoCe2hyY4uDBEyXjrGkcgvS6H/2UIghprdKc+523QHZm2QwRPYvqgIMhYtl7uEg+yxPVI+yFuQ21Z7TNvlR04/q5dooOXakx3TVhdj2aMbElRkxvzpAvAHse0iwY/nIiM41VHxGF4otuoGaQN5wvtRYcyrveu6uIjIImh5FOJGEIeXvL/PXxXcOtB5Fsz+ixkEv3dU37OqoMpKchzCR0k1vDPZyVZZp3iv5BnJTqZ1yZcVnp5c3M2ovmYxBIANrh+WnrnDEgLFkTv+lmX+nMqptcC5xCFvZjA=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "delegation_unsupported",
+        "ack_sent": true,
+        "ack_decision": "rejected",
+        "step": 10
+      }
+    },
+    {
+      "name": "reject_outer_delegation_nonempty",
+      "description": "Outer envelope.delegation is non-empty; signed bytes are valid.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000006",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-odeleg-0006",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA2CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1vZGVsZWctMDAwNgprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+      "envelope_sha256": "d7caac31affc6f127eca452bfea187b36812608272e0578a9addd4ade405a77c",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "Hhctbd3MojKdtOMRnelWTS8RMFkbvPLE3fCuPq0AxIUD/HJBwuheIOWEIy93IKjSnaqlXYrT9KbxuRKBHYnmSUUsmDHkOYLvNAjEmz7eqUMhz1Se//HTjE2dfJrL+DjdqTS47ARwpt0lNPBWOXZKVxo7yd1ohVoEjA1f2sxdGuc0ZcD6y1RyaIf0PYsNCcCiiTiQkNzp/RRrcxHLO5LRC/HzogiGUhXp/dNtrjMsrUzEuF4vjdwTqxMwDuJmURpufp8VT+c4fCzmBgZxF38Uzx/yeK28uyvE5vOX2AV5iqEmsCiSrs1Q7VFvKa6/fDlDyQKzWvDEaqbxVnresRPkLQ==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000006",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000006",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": "anchor-blob",
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA2CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1vZGVsZWctMDAwNgprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+          "signature": "Hhctbd3MojKdtOMRnelWTS8RMFkbvPLE3fCuPq0AxIUD/HJBwuheIOWEIy93IKjSnaqlXYrT9KbxuRKBHYnmSUUsmDHkOYLvNAjEmz7eqUMhz1Se//HTjE2dfJrL+DjdqTS47ARwpt0lNPBWOXZKVxo7yd1ohVoEjA1f2sxdGuc0ZcD6y1RyaIf0PYsNCcCiiTiQkNzp/RRrcxHLO5LRC/HzogiGUhXp/dNtrjMsrUzEuF4vjdwTqxMwDuJmURpufp8VT+c4fCzmBgZxF38Uzx/yeK28uyvE5vOX2AV5iqEmsCiSrs1Q7VFvKa6/fDlDyQKzWvDEaqbxVnresRPkLQ=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "delegation_unsupported",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 3
+      }
+    },
+    {
+      "name": "reject_expired",
+      "description": "expires_at + 60 is before now; ttl is 300.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000007",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1789999600,
+        "expires_at": 1789999900,
+        "nonce": "nonce-expired-0007",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA3CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzg5OTk5NjAwCmV4cGlyZXNfYXQ9MTc4OTk5OTkwMApub25jZT1ub25jZS1leHBpcmVkLTAwMDcKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+      "envelope_sha256": "05f403a7baed7136b5b54f0dcc9b7b3398c75e9d4eba74f35e56182cd421c2ee",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "T3aciuvrAmtgOhUiqg6bI6cfLdfeIW17OuSOdFSjd5Shj8n6belKbUI3eN74MbEDyPYdJbTszl+cShZLvAMFASsS/T482Qx+x5Ie0+o1XzvNTHG7bNW9Gog4Ft5mIs69mQmeQu9CTbEwocTkOOq5v25DWyEFNzFtmuOWuJc2qcrrqb6CZj2kgJSQ6us860edOfW+MoZZaFKIGRWiXSUHl4Vt5zHchDtXb+5h29JOGUvnL2hDZxe1+gelYg02ywSRCv59eS4aBsNd89RVOPLWlGxIAAh8hQsCBUyQOfzxEChRdnYS7UJcZyBRz1wLV4oeAqBeyGioKIqGzUziD37mPg==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000007",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000007",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA3CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzg5OTk5NjAwCmV4cGlyZXNfYXQ9MTc4OTk5OTkwMApub25jZT1ub25jZS1leHBpcmVkLTAwMDcKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+          "signature": "T3aciuvrAmtgOhUiqg6bI6cfLdfeIW17OuSOdFSjd5Shj8n6belKbUI3eN74MbEDyPYdJbTszl+cShZLvAMFASsS/T482Qx+x5Ie0+o1XzvNTHG7bNW9Gog4Ft5mIs69mQmeQu9CTbEwocTkOOq5v25DWyEFNzFtmuOWuJc2qcrrqb6CZj2kgJSQ6us860edOfW+MoZZaFKIGRWiXSUHl4Vt5zHchDtXb+5h29JOGUvnL2hDZxe1+gelYg02ywSRCv59eS4aBsNd89RVOPLWlGxIAAh8hQsCBUyQOfzxEChRdnYS7UJcZyBRz1wLV4oeAqBeyGioKIqGzUziD37mPg=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "expired",
+        "ack_sent": true,
+        "ack_decision": "rejected",
+        "step": 14
+      }
+    },
+    {
+      "name": "reject_wrong_agent_id",
+      "description": "Signed agent_id differs from the agent under test.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000008",
+        "agent_id": "agent-9999",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-agent-0008",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA4CmFnZW50X2lkPWFnZW50LTk5OTkKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1hZ2VudC0wMDA4CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZTMwPQ==",
+      "envelope_sha256": "6e2ac70dd0e0c0cdee780cba853412d241deb53b03ec4fc64a8112d617b51849",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "kQMzdo+SdsM9yO7XYn1brzl/fZHFrlSOhcoeTtRGcc6Z7ofEKcHC89+XljLCYPfgHenYVnp5lxQAblGyYQHOm1B16qsQVC2DUChZOIVaU4M1wkGo0kG4vO5ZJYFZxM0aowGcMDgUSXc24ScACWRMQb/2WI7gqjL5gAU1+0J3oGEZqCl/LLefYtyBtel4T+ISbvz+vmPU8bo0XICowgU+lC4ksZhe7aUtnX6lku3uHQKEydpKLgNYf2yU0VJI1WRGlZWqOlTzXdELCGky4zQE3R8XvWDV3o2aBQ5qToHunig81vUdSYopdJ0xvFRG8bovZWkJObBVen6w7yene4LUrw==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000008",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000008",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA4CmFnZW50X2lkPWFnZW50LTk5OTkKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1hZ2VudC0wMDA4CmtleV9pZD0xYzU1ODc2N2FmNmY3OTgyCmFsZz1yc2EtcGtjczF2MTUtc2hhMjU2CmRlbGVnYXRpb249CnBheWxvYWQ9ZTMwPQ==",
+          "signature": "kQMzdo+SdsM9yO7XYn1brzl/fZHFrlSOhcoeTtRGcc6Z7ofEKcHC89+XljLCYPfgHenYVnp5lxQAblGyYQHOm1B16qsQVC2DUChZOIVaU4M1wkGo0kG4vO5ZJYFZxM0aowGcMDgUSXc24ScACWRMQb/2WI7gqjL5gAU1+0J3oGEZqCl/LLefYtyBtel4T+ISbvz+vmPU8bo0XICowgU+lC4ksZhe7aUtnX6lku3uHQKEydpKLgNYf2yU0VJI1WRGlZWqOlTzXdELCGky4zQE3R8XvWDV3o2aBQ5qToHunig81vUdSYopdJ0xvFRG8bovZWkJObBVen6w7yene4LUrw=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "agent_mismatch",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 8
+      }
+    },
+    {
+      "name": "reject_unknown_key_id",
+      "description": "key_id matches no anchor (signature made with the fixture key).",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000009",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-key-0009",
+        "key_id": "ffffffffffffffff",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA5CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1rZXktMDAwOQprZXlfaWQ9ZmZmZmZmZmZmZmZmZmZmZgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+      "envelope_sha256": "f6d1dfe18caa9fd907edd5d2856325a86449b076d7085f2b70166acd4abd37b0",
+      "key_id": "ffffffffffffffff",
+      "signature_b64": "nO0Ddd76r6At8CaH0BHkiFj+q4c94zkOErpMCW4hVatoKpFORD+Rcbpf/HpMzxz92AC2FTvyTWXxkDNZIwgTfnmsjRznIAU8QpgYfouRK8iqgxe8G11b5woXBGuiPtmbWao+5ZN9nrX62pYTextXXFxsBn94SmfWXBR8YWrl5QDhD2fegwliKszL8h2Pb43qzSU/3l9XH6L28xqMyGWVN5CrR6l+uxcI1RogdO/so0E2WtevMdScm9Udeaihi4h8en0CxE8X2wBM/LMULc3kGT4CG+bTiUyoBGal7KCC/Pj4EBPwDnujZbgnC1tUiLiZNtFpFN6AIbPizAIPTbZCjg==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000009",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000009",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "ffffffffffffffff",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDA5CmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1rZXktMDAwOQprZXlfaWQ9ZmZmZmZmZmZmZmZmZmZmZgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWUzMD0=",
+          "signature": "nO0Ddd76r6At8CaH0BHkiFj+q4c94zkOErpMCW4hVatoKpFORD+Rcbpf/HpMzxz92AC2FTvyTWXxkDNZIwgTfnmsjRznIAU8QpgYfouRK8iqgxe8G11b5woXBGuiPtmbWao+5ZN9nrX62pYTextXXFxsBn94SmfWXBR8YWrl5QDhD2fegwliKszL8h2Pb43qzSU/3l9XH6L28xqMyGWVN5CrR6l+uxcI1RogdO/so0E2WtevMdScm9Udeaihi4h8en0CxE8X2wBM/LMULc3kGT4CG+bTiUyoBGal7KCC/Pj4EBPwDnujZbgnC1tUiLiZNtFpFN6AIbPizAIPTbZCjg=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "key_unknown",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 5
+      }
+    },
+    {
+      "name": "reject_flipped_byte",
+      "description": "One byte of signed_bytes changed after signing (last nonce char 0 -> 1); signature is the original.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000010",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-flip-0010",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1mbGlwLTAwMTEKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+      "envelope_sha256": "b222158515fab2e4d742b10524ce7a03667af7536e0b1c6f8e7f23d44b104847",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "A6gaNbGibGmcWrsVr7IaH448Vyrfl+zOVESn/DhV7N6kPdn6y8xYoPRAZ4NvdDpxu5iZrJwdvWl1hJle+4S7PYOb4H76BxhLiE0+09pFEwqGQDJ3hNL+ulouC23WpEO4xiE2qDRJE5tgQvdtdkBfPQkr6ZWtmJU04905FqC6qeMasvrThzm1iUmji/2r7kv+JFtC9Y0k3SECVW/SZBvw50V8lCaJ0kagOxv8469X/cdlKVj+2Ctc4XzyvDL6pOPPd0bfXepyQFkxzdf5dyXg/wJpRUxNFaaIEg2/iShNKHQXK45dzQhoSwkMAsGGFet62IAT8ndom0f5l2wP9AYqMA==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000010",
+        "type": "ping",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000010",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEwCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1mbGlwLTAwMTEKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+          "signature": "A6gaNbGibGmcWrsVr7IaH448Vyrfl+zOVESn/DhV7N6kPdn6y8xYoPRAZ4NvdDpxu5iZrJwdvWl1hJle+4S7PYOb4H76BxhLiE0+09pFEwqGQDJ3hNL+ulouC23WpEO4xiE2qDRJE5tgQvdtdkBfPQkr6ZWtmJU04905FqC6qeMasvrThzm1iUmji/2r7kv+JFtC9Y0k3SECVW/SZBvw50V8lCaJ0kagOxv8469X/cdlKVj+2Ctc4XzyvDL6pOPPd0bfXepyQFkxzdf5dyXg/wJpRUxNFaaIEg2/iShNKHQXK45dzQhoSwkMAsGGFet62IAT8ndom0f5l2wP9AYqMA=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "signature_invalid",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 6
+      }
+    },
+    {
+      "name": "reject_outer_signed_mismatch",
+      "description": "Outer type is collect_facts, signed type is ping.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000011",
+        "agent_id": "agent-0001",
+        "type": "ping",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-mism-0011",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDExCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1taXNtLTAwMTEKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+      "envelope_sha256": "0416861e16b78396a732f96c398dfd91442ef90c38404cb51e132769aab2279d",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "Cus+dBhzW9HDxNEkH5D9Zq0tK0mP0FSLvSDLrqLr0vRGchs/6IuTh7ROwBbbrDrvvL0KzAPgygRfztlP56F+zjYzxsaUXMFvykFq/Yf052gfRD992KOPI9qUJOtOhsdvecdqoJeESqJ2ADOR+gW8epl7Jf55RxrKkwH2gWDymG1hDnq2eN62GCTOM6KJKdDytjq96qw5L90kkmrcsYrzUeEF8Jc6tlVZ4v+g3165SGMlNQf9LGQtNVNSu6x7nSAeluhGIpVD/XUySYkIimRYeRbrr0alHC0hC60Otgien4NP23w/NGzetsj+uaLLRzgnq7lNP/WXjzaC7t2lgxwXCw==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000011",
+        "type": "collect_facts",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000011",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDExCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1waW5nCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1taXNtLTAwMTEKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+          "signature": "Cus+dBhzW9HDxNEkH5D9Zq0tK0mP0FSLvSDLrqLr0vRGchs/6IuTh7ROwBbbrDrvvL0KzAPgygRfztlP56F+zjYzxsaUXMFvykFq/Yf052gfRD992KOPI9qUJOtOhsdvecdqoJeESqJ2ADOR+gW8epl7Jf55RxrKkwH2gWDymG1hDnq2eN62GCTOM6KJKdDytjq96qw5L90kkmrcsYrzUeEF8Jc6tlVZ4v+g3165SGMlNQf9LGQtNVNSu6x7nSAeluhGIpVD/XUySYkIimRYeRbrr0alHC0hC60Otgien4NP23w/NGzetsj+uaLLRzgnq7lNP/WXjzaC7t2lgxwXCw=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "envelope_mismatch",
+        "ack_sent": true,
+        "ack_decision": "rejected",
+        "step": 9
+      }
+    },
+    {
+      "name": "reject_type_not_allowed",
+      "description": "Signed type is not allowed in the server profile.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000012",
+        "agent_id": "agent-0001",
+        "type": "run_script",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-type-0012",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEyCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1ydW5fc2NyaXB0Cmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS10eXBlLTAwMTIKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+      "envelope_sha256": "14b4e261835c5622bfb262b4069a4084d19bfc54f2a16b794cabf00ceeb3bf07",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "UgjXZi1m+VbQVJLPnT1JtduO3t0b/T5X+cP5uaqNClzwWrIwzIt8fLMFQdueSiRrXJ9DjQ9aksTKju3BPmDq4W3dPMFFy8LShnxokEckHb60HRDD0rhSy4AyJ5Cfy5fWxxydv0ekqzgsc/IzEvkOnhQLxkPlx8+0pYK44uJdvdA2BcYb0WOsYPSERAOmWI70IycRMY4W2MaS6xr/rF4uJ0+T+hshMgLkOyXSuUYa/ztT0dTY65NQvMLOD2piyUhGhTn+G18CZmWFbc3wiC5ZUer88WWF1QVb717BeFDwcEGjvJeJUox/MlM8k8OsAeSmUpUy2BO2HphyZAM6ayidug==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000012",
+        "type": "run_script",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000012",
+        "payload": {},
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEyCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1ydW5fc2NyaXB0Cmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS10eXBlLTAwMTIKa2V5X2lkPTFjNTU4NzY3YWY2Zjc5ODIKYWxnPXJzYS1wa2NzMXYxNS1zaGEyNTYKZGVsZWdhdGlvbj0KcGF5bG9hZD1lMzA9",
+          "signature": "UgjXZi1m+VbQVJLPnT1JtduO3t0b/T5X+cP5uaqNClzwWrIwzIt8fLMFQdueSiRrXJ9DjQ9aksTKju3BPmDq4W3dPMFFy8LShnxokEckHb60HRDD0rhSy4AyJ5Cfy5fWxxydv0ekqzgsc/IzEvkOnhQLxkPlx8+0pYK44uJdvdA2BcYb0WOsYPSERAOmWI70IycRMY4W2MaS6xr/rF4uJ0+T+hshMgLkOyXSuUYa/ztT0dTY65NQvMLOD2piyUhGhTn+G18CZmWFbc3wiC5ZUer88WWF1QVb717BeFDwcEGjvJeJUox/MlM8k8OsAeSmUpUy2BO2HphyZAM6ayidug=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "type_not_allowed",
+        "ack_sent": true,
+        "ack_decision": "rejected",
+        "step": 11
+      }
+    },
+    {
+      "name": "reject_payload_duplicate_key",
+      "description": "Signed payload JSON repeats the key sections.",
+      "input": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000013",
+        "agent_id": "agent-0001",
+        "type": "collect_facts",
+        "issued_at": 1790000000,
+        "expires_at": 1790000120,
+        "nonce": "nonce-dup-0013",
+        "key_id": "1c558767af6f7982",
+        "alg": "rsa-pkcs1v15-sha256",
+        "delegation": "",
+        "payload_json": "{\"sections\":[\"sessions\"],\"sections\":[\"hardware\"]}"
+      },
+      "signed_bytes_b64": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEzCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1jb2xsZWN0X2ZhY3RzCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1kdXAtMDAxMwprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWV5SnpaV04wYVc5dWN5STZXeUp6WlhOemFXOXVjeUpkTENKelpXTjBhVzl1Y3lJNld5Sm9ZWEprZDJGeVpTSmRmUT09",
+      "envelope_sha256": "78f266de87ac84c940339a7ec151cd2a320f91f75679316a7f70750cd623595d",
+      "key_id": "1c558767af6f7982",
+      "signature_b64": "JFZT3d/Xm6sSPgrVYysDrUJemBSGZhgMSjz/iMYBAX3Kz+X7sLYOH39jnu6EKcgpTBfPflVXNHOdt3iRbeEr2urCCsSGZP5CAgrHgQQgWWbCnbbLs5vA16eAQU0AqL1hiZqx7Z+DhF1X0A8joJU943JrDOmku43XdsqjklPjdnUi5tvxwnyqtwSEI8yNbH8UmioMteEAFnbpFeIS7MBZ6QRhRxVVM30k40TQ3hnPodteU6j48BkI5DsbDJjEuabXm80whxLcgJhZzib/2J24zk5/QDGUrqrn+zALC9/urF/LZ2XBdw4FvgfUo7S+wqbUky8NwdXkHUEoKOo9LIVbXA==",
+      "pending_command": {
+        "id": "a1b2c3d4-0001-4aaa-8bbb-000000000013",
+        "type": "collect_facts",
+        "idempotency_key": "a1b2c3d4-0001-4aaa-8bbb-000000000013",
+        "payload": {
+          "sections": [
+            "sessions"
+          ]
+        },
+        "envelope": {
+          "v": 1,
+          "alg": "rsa-pkcs1v15-sha256",
+          "key_id": "1c558767af6f7982",
+          "delegation": null,
+          "signed_bytes": "Y2VyYmVydXMtYWdlbnQtZW52ZWxvcGUudjEKaWQ9YTFiMmMzZDQtMDAwMS00YWFhLThiYmItMDAwMDAwMDAwMDEzCmFnZW50X2lkPWFnZW50LTAwMDEKdHlwZT1jb2xsZWN0X2ZhY3RzCmlzc3VlZF9hdD0xNzkwMDAwMDAwCmV4cGlyZXNfYXQ9MTc5MDAwMDEyMApub25jZT1ub25jZS1kdXAtMDAxMwprZXlfaWQ9MWM1NTg3NjdhZjZmNzk4MgphbGc9cnNhLXBrY3MxdjE1LXNoYTI1NgpkZWxlZ2F0aW9uPQpwYXlsb2FkPWV5SnpaV04wYVc5dWN5STZXeUp6WlhOemFXOXVjeUpkTENKelpXTjBhVzl1Y3lJNld5Sm9ZWEprZDJGeVpTSmRmUT09",
+          "signature": "JFZT3d/Xm6sSPgrVYysDrUJemBSGZhgMSjz/iMYBAX3Kz+X7sLYOH39jnu6EKcgpTBfPflVXNHOdt3iRbeEr2urCCsSGZP5CAgrHgQQgWWbCnbbLs5vA16eAQU0AqL1hiZqx7Z+DhF1X0A8joJU943JrDOmku43XdsqjklPjdnUi5tvxwnyqtwSEI8yNbH8UmioMteEAFnbpFeIS7MBZ6QRhRxVVM30k40TQ3hnPodteU6j48BkI5DsbDJjEuabXm80whxLcgJhZzib/2J24zk5/QDGUrqrn+zALC9/urF/LZ2XBdw4FvgfUo7S+wqbUky8NwdXkHUEoKOo9LIVbXA=="
+        }
+      },
+      "expected": {
+        "outcome": "reject",
+        "code": "envelope_malformed",
+        "ack_sent": false,
+        "ack_decision": null,
+        "step": 7
+      }
+    }
+  ],
+  "sample_ack": {
+    "body": "{\"envelope_sha256\":\"175878cdd899cf74ce5baeab8b3c5a53d4b7a24ca6ba3f1acd0ef9e0b78c2bc1\",\"decision\":\"accepted\",\"reason\":null}",
+    "sha256": "5e1814f122858a79b8853c6dae6e83f267467422e36090b9fa591be472c4a2f0",
+    "for_case": "accept_ping"
+  },
+  "sample_result": {
+    "body": "{\"status\":\"DONE\",\"exit_code\":0,\"stdout\":null,\"stderr\":null,\"post_verify\":{\"schema\":\"agent.ping.v1\",\"agent_version\":\"1.0.0\",\"build_id\":\"test-build\",\"agent_time\":1790000001,\"uptime_seconds\":42},\"envelope_sha256\":\"175878cdd899cf74ce5baeab8b3c5a53d4b7a24ca6ba3f1acd0ef9e0b78c2bc1\"}",
+    "sha256": "80838df61a65a631cdd26e8451c578abcf5319b4639d5315c31783687824aaaf",
+    "for_case": "accept_ping"
+  }
+}
