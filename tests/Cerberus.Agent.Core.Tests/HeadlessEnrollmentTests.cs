@@ -297,6 +297,26 @@ public sealed class HeadlessEnrollmentTests
     }
 
     [Fact]
+    public async Task Cancellation_while_reading_a_2xx_body_is_reported_as_a_spent_proof_without_retry()
+    {
+        var log = new CaptureLog();
+        using var cts = new CancellationTokenSource();
+        var handler = new FakeHandler().ReplyCancellingBody(cts);
+        var store = new MemoryStore();
+
+        var result = await Run(handler, store, log: log, ct: cts.Token);
+
+        Assert.Equal(4, result.ExitCode);
+        Assert.Equal("response_not_read", result.Code);
+        Assert.Single(handler.Requests);
+        Assert.Null(store.Saved);
+        Assert.Equal(0, store.SaveCount);
+        Assert.Contains("OperationCanceledException", log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(Proof(), log.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain("rt-secret", log.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Cancellation_before_the_request_completes_still_escapes_without_a_spent_proof()
     {
         using var cts = new CancellationTokenSource();
@@ -373,6 +393,13 @@ public sealed class HeadlessEnrollmentTests
                     response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(delay);
                 return response;
             });
+            return this;
+        }
+
+        /// <summary>A 200 whose body read cancels <paramref name="cts"/> and then observes the cancellation.</summary>
+        public FakeHandler ReplyCancellingBody(CancellationTokenSource cts)
+        {
+            _script.Enqueue(() => new HttpResponseMessage(HttpStatusCode.OK) { Content = new CancellingBodyContent(cts) });
             return this;
         }
 

@@ -216,7 +216,18 @@ public sealed class HeadlessEnrollment
                     .ConfigureAwait(false);
                 var status = (int)response.StatusCode;
                 if (response.IsSuccessStatusCode)
-                    return await ParseSuccessAsync(response, deadline.Token).ConfigureAwait(false);
+                {
+                    try
+                    {
+                        return await ParseSuccessAsync(response, deadline.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        // The 2xx already spent the proof, so a cancelled or timed-out body read must not retry or exit as cancelled.
+                        _log.Error($"Headless enrollment response could not be read ({ex.GetType().Name}).");
+                        return (new(HeadlessEnrollmentExit.NewProofRequired, "response_not_read"), null);
+                    }
+                }
 
                 var code = await ReadDetailCodeAsync(response, deadline.Token).ConfigureAwait(false);
                 if (status != 429 && status < 500)
