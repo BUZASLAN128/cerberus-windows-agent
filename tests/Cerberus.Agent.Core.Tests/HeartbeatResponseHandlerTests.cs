@@ -35,6 +35,7 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.False(secrets.Cleared);
     }
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task HandleAsync_SkipsCommands_WhenQuarantined()
     {
@@ -48,7 +49,9 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.Equal(HeartbeatControlAction.SkipCommands, action);
         Assert.False(secrets.Cleared);
     }
+#endif
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task HandleAsync_KnownConfirmedRevocationClearsOnlyAfterQuiescence()
     {
@@ -67,6 +70,7 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.True(quiesced);
         Assert.True(secrets.Cleared);
     }
+#endif
 
     [Fact]
     public async Task HandleAsync_DormantNeverStagesUpgrade()
@@ -80,6 +84,7 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.False(updates.Called);
     }
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task HandleAsync_StagesUpdate_WhenUpgradeRequired()
     {
@@ -99,7 +104,9 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.Equal(HeartbeatControlAction.SkipCommands, action);
         Assert.True(updates.Called);
     }
+#endif
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task HandleAsync_ReportsUpdateFailure_WhenCoordinatorThrows()
     {
@@ -125,7 +132,63 @@ public sealed class HeartbeatResponseHandlerTests
         Assert.Equal(HeartbeatControlAction.SkipCommands, action);
         Assert.True(reported);
     }
+#endif
 
+#if CERBERUS_SERVER_PROFILE
+    [Fact]
+    public async Task Server_UnsignedHeartbeatFieldsHaveNoEffect()
+    {
+        var secrets = new CaptureSecretStore();
+        var state = new InMemoryAgentLifecycleStateStore();
+        var updates = new CaptureUpdateCoordinator();
+        var quiesced = false;
+        var fetches = 0;
+        var policy = new ManagedAccountManifestPolicy(new AgentIdentity("a1", "t1"), state,
+            _ => { fetches++; throw new InvalidOperationException("manifest must not be fetched"); },
+            new NoReconciler());
+        var handler = new HeartbeatResponseHandler(secrets, updates: updates, lifecycleState: state,
+            quiesce: _ => { quiesced = true; return Task.CompletedTask; }, managedAccounts: policy);
+
+        var revoke = Response(revoke:
+            """{"revoked":true,"clear_local_credentials":true,"reason_code":"agent_revoked","clear_local_credentials_confirmation":"cerberus-agent-clear-local-credentials-v1"}""");
+        var unsigned = Response(quarantine: """{"active":true}""",
+            update: """{"required":true,"manifest_url":"https://releases.example/manifest.json"}""",
+            lifecycle: "upgrading", agentStatus: "upgrade_required") with
+        {
+            ManifestVersion = "4f53cda18c2baa0c",
+            ManagedAccountManifestHash = new string('a', 64),
+            RequireManifestBeforeUnlock = true,
+            TenantName = "Unsigned Tenant",
+        };
+
+        Assert.Equal(HeartbeatControlAction.Continue, await handler.HandleAsync(revoke, default));
+        Assert.Equal(HeartbeatControlAction.Continue, await handler.HandleAsync(unsigned, default));
+        Assert.False(secrets.Cleared);
+        Assert.False(quiesced);
+        Assert.False(updates.Called);
+        Assert.Equal(0, fetches);
+        Assert.Equal(0, secrets.Loads);
+        Assert.Equal(AgentLifecycleState.Active, (await state.LoadAsync(default)).State);
+    }
+
+    [Fact]
+    public async Task Server_GenerationMismatchAndDormantStateStillStop()
+    {
+        var state = new InMemoryAgentLifecycleStateStore();
+        var handler = new HeartbeatResponseHandler(new CaptureSecretStore(), lifecycleState: state);
+        var current = await state.LoadAsync(default);
+        await state.TrySaveAsync(current with { State = AgentLifecycleState.AuthSuspect }, current.Revision, default);
+
+        Assert.Equal(HeartbeatControlAction.Stop, await handler.HandleAsync(Response(), default));
+    }
+
+    private sealed class NoReconciler : IManagedAccountReconciler
+    {
+        public Task ReconcileAsync(AgentIdentity identity, IReadOnlyList<ManagedAccountEntry> allowed, CancellationToken ct)
+            => Task.CompletedTask;
+    }
+
+#endif
     private static HeartbeatResponse Response(
         string? revoke = null,
         string? quarantine = null,
@@ -164,6 +227,8 @@ public sealed class HeartbeatResponseHandlerTests
     {
         public bool Cleared { get; private set; }
 
+        public int Loads { get; private set; }
+
         public Task SaveAsync(
             AgentIdentity identity,
             string refreshToken,
@@ -178,6 +243,7 @@ public sealed class HeartbeatResponseHandlerTests
 
         public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
         {
+            Loads++;
             throw new NotSupportedException();
         }
 

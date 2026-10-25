@@ -166,12 +166,15 @@ internal sealed class AgentLocalControlService
             capabilities = Array.Empty<string>(),
         };
 
+    // Server: a heartbeat 200 counts as claimed; unsigned registration_state, lifecycle_state and revoke are not read.
     internal static bool Claimed(HeartbeatResponse response)
-        => (AgentBuildProfile.IsServer
-            ? AgentClaimGate.IsClaimed(response)
-            : response.RegistrationState == "claimed" && !response.ClaimRequired) &&
+#if CERBERUS_SERVER_PROFILE
+        => AgentClaimGate.IsClaimed(response);
+#else
+        => response.RegistrationState == "claimed" && !response.ClaimRequired &&
             response.LifecycleState is not ("revoked" or "quarantined") &&
             !(response.Revoke?.TryGetValue("revoked", out var revoked) == true && revoked.ValueKind == System.Text.Json.JsonValueKind.True);
+#endif
 
     private static AgentLocalControlResponse StateResponse(bool success, string code, AgentLifecycleSnapshot state)
         => new(success, code, LifecycleState: state.State.ToString(), LifecycleGeneration: state.Generation);

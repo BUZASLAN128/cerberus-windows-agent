@@ -40,7 +40,7 @@ public sealed class HeartbeatLoopTests
         await runTask;
 
         Assert.True(handler.SnapshotSubmitted);
-        Assert.False(handler.CommandResultSubmitted);
+        Assert.Equal(AgentBuildProfile.IsServer, handler.CommandResultSubmitted); // server: the unsigned quarantine does not skip commands
     }
 
     [Fact]

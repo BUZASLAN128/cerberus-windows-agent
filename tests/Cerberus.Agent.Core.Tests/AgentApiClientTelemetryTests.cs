@@ -9,9 +9,8 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentApiClientTelemetryTests
 {
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+#if !CERBERUS_SERVER_PROFILE
+    [Theory, InlineData(false), InlineData(true)]
     public async Task ManifestHeadersStall_DeadlineReconcilesButCallerCancellationPropagates(bool callerCancels)
     {
         var now = DateTimeOffset.UtcNow;
@@ -47,6 +46,7 @@ public sealed class AgentApiClientTelemetryTests
         }
         Assert.Equal(1, transport.ManifestFetches);
     }
+#endif
 
     private sealed class ManifestOwnedAccountStore : IManagedLocalAccountStore
     {
