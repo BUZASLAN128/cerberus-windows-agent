@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <WixLocalization Culture="tr-tr" Codepage="1254" xmlns="http://wixtoolset.org/schemas/v4/wxl">
   <String Id="ServerEnrollmentDlgTitle" Value="{\WixUI_Font_Title}Bu sunucuyu kaydet" />
-  <String Id="ServerEnrollmentDlgDescription" Value="Cerberus'tan aldığınız kayıt kodunu girin." />
+  <String Id="ServerEnrollmentDlgDescription" Value="Panelden aldığınız kayıt kodunu girin." />
   <String Id="ServerEnrollmentDlgCodeLabel" Value="Kayıt kodu" />
   <String Id="ServerEnrollmentRequiredText" Value="Devam etmek için kayıt kodunu girin." />
-  <String Id="ServerExitDialogNote" Value="Onaylamadan önce ajan anahtarı parmak izini bekleyen kayıtla karşılaştırın." />
-  <String Id="ServerExitDialogShowFingerprint" Value="Ajan anahtarı parmak izini göster" />
+  <String Id="ServerExitDialogNote" Value="Son adım: bu sunucuyu panelde onaylayın." />
   <String Id="ServerCustomActionFailed" Value="Kurulum adımı [2] başarısız oldu ve kurulum geri alınacak. Sunucu kaydediliyorsa, kurulumu yeniden çalıştırmadan önce yeni bir kayıt kodu isteyin. Ayrıntılar: C:\ProgramData\CerberusServerAgent\logs" />
 </WixLocalization>

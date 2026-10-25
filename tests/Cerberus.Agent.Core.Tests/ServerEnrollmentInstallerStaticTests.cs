@@ -13,7 +13,7 @@ public sealed class ServerEnrollmentInstallerStaticTests
     private static readonly string[] LocKeys =
     {
         "ServerEnrollmentDlgTitle", "ServerEnrollmentDlgDescription", "ServerEnrollmentDlgCodeLabel",
-        "ServerEnrollmentRequiredText", "ServerExitDialogNote", "ServerExitDialogShowFingerprint", "ServerCustomActionFailed",
+        "ServerEnrollmentRequiredText", "ServerExitDialogNote", "ServerCustomActionFailed",
     };
 
     private static XDocument Dialogs(string profile) =>
@@ -102,27 +102,30 @@ public sealed class ServerEnrollmentInstallerStaticTests
     }
 
     [Fact]
-    public void ExitDialog_OffersTheFingerprintFileOnFreshInstallsOnly()
+    public void ExitDialog_ShowsOnlyTheNextStepNoteOnFreshInstalls()
     {
         var doc = Dialogs("server");
-        var finish = doc.Descendants(Wix + "Publish").Single(p => (string?)p.Attribute("Dialog") == "ExitDialog");
-        Assert.Equal("Finish", (string)finish.Attribute("Control")!);
-        Assert.Equal("DoAction", (string)finish.Attribute("Event")!);
-        Assert.Equal("ServerShowFingerprint", (string)finish.Attribute("Value")!);
-        var condition = (string)finish.Attribute("Condition")!;
-        Assert.Contains("WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1", condition);
-        Assert.Contains(Fresh, condition);
+        Assert.DoesNotContain(doc.Descendants(Wix + "Publish"), p => (string?)p.Attribute("Dialog") == "ExitDialog");
+        Assert.DoesNotContain(doc.Descendants(Wix + "CustomAction"), a => (string?)a.Attribute("Id") == "ServerShowFingerprint");
+        Assert.DoesNotContain(doc.Descendants(Wix + "Property"), p => ((string?)p.Attribute("Id"))?.StartsWith("WIXUI_EXITDIALOGOPTIONALCHECKBOX", StringComparison.Ordinal) == true);
+        Assert.DoesNotContain(doc.Descendants(Wix + "SetProperty"), s => ((string?)s.Attribute("Id"))?.StartsWith("WIXUI_EXITDIALOGOPTIONALCHECKBOX", StringComparison.Ordinal) == true);
 
-        Assert.Equal("1", (string)doc.Descendants(Wix + "Property").Single(p => (string?)p.Attribute("Id") == "WIXUI_EXITDIALOGOPTIONALCHECKBOX").Attribute("Value")!);
-        var setters = doc.Descendants(Wix + "SetProperty").ToDictionary(s => (string)s.Attribute("Id")!);
-        Assert.Equal("!(loc.ServerExitDialogNote)", (string)setters["WIXUI_EXITDIALOGOPTIONALTEXT"].Attribute("Value")!);
-        Assert.Equal("!(loc.ServerExitDialogShowFingerprint)", (string)setters["WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"].Attribute("Value")!);
-        Assert.All(setters.Values, s => Assert.Equal(Fresh, (string)s.Attribute("Condition")!));
+        var text = File.ReadAllText(Installer("ServerEnrollmentDlg.wxs"));
+        Assert.DoesNotContain("notepad", text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("enrollment-fingerprint.txt", text);
 
-        var action = doc.Descendants(Wix + "CustomAction").Single(a => (string?)a.Attribute("Id") == "ServerShowFingerprint");
-        Assert.Equal("immediate", (string)action.Attribute("Execute")!);
-        Assert.Equal("asyncNoWait", (string)action.Attribute("Return")!);
-        Assert.Equal("\"[SystemFolder]notepad.exe\" \"[SERVERDATADIR]enrollment-fingerprint.txt\"", (string)action.Attribute("ExeCommand")!);
+        var note = doc.Descendants(Wix + "SetProperty").Single(s => (string?)s.Attribute("Id") == "WIXUI_EXITDIALOGOPTIONALTEXT");
+        Assert.Equal("!(loc.ServerExitDialogNote)", (string)note.Attribute("Value")!);
+        Assert.Equal("ui", (string)note.Attribute("Sequence")!);
+        var condition = (string)note.Attribute("Condition")!;
+        Assert.Contains("NOT Installed", condition);
+        Assert.Contains("NOT WIX_UPGRADE_DETECTED", condition);
+
+        Assert.Equal("Last step: approve this server in the panel.", Strings("Server.en-us.wxl")["ServerExitDialogNote"]);
+        Assert.Equal("Son adım: bu sunucuyu panelde onaylayın.", Strings("Server.tr-tr.wxl")["ServerExitDialogNote"]);
+        Assert.Equal("Enter the enrollment code from the panel.", Strings("Server.en-us.wxl")["ServerEnrollmentDlgDescription"]);
+        Assert.Equal("Panelden aldığınız kayıt kodunu girin.", Strings("Server.tr-tr.wxl")["ServerEnrollmentDlgDescription"]);
+        Assert.All(new[] { "Server.en-us.wxl", "Server.tr-tr.wxl" }, f => Assert.DoesNotContain("ServerExitDialogShowFingerprint", Strings(f).Keys));
     }
 
     [Fact]

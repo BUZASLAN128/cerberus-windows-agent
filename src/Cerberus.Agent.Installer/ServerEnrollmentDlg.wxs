@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <?if $(var.AgentBuildProfile) = server ?>
-  <!-- Server MSI only: the enrollment code step of the full UI and the fingerprint prompt on the exit dialog. -->
+  <!-- Server MSI only: the enrollment code step of the full UI and the next-step note on the exit dialog. -->
   <Fragment>
     <UI Id="ServerEnrollmentUI">
       <Dialog Id="ServerEnrollmentDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
@@ -38,19 +38,9 @@
       <!-- Stock InstallDirDlg Next opens VerifyReadyDlg at Order 4 and VerifyReadyDlg Back opens InstallDirDlg at Order 1; the last NewDialog wins. -->
       <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ServerEnrollmentDlg" Order="5" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ServerEnrollmentDlg" Order="3" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
-
-      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="ServerShowFingerprint" Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
     </UI>
 
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
     <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="!(loc.ServerExitDialogNote)" Sequence="ui" After="FindRelatedProducts" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.ServerExitDialogShowFingerprint)" Sequence="ui" After="FindRelatedProducts" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
-    <CustomAction
-        Id="ServerShowFingerprint"
-        Directory="SERVERDATADIR"
-        ExeCommand='"[SystemFolder]notepad.exe" "[SERVERDATADIR]enrollment-fingerprint.txt"'
-        Execute="immediate"
-        Return="asyncNoWait" />
   </Fragment>
   <?endif ?>
 </Wix>
