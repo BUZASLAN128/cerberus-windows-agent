@@ -13,7 +13,7 @@ namespace Cerberus.Agent.Core;
 /// Client for communicating with the CERBERUS agent API backend.
 /// Handles authentication, request signing, and API operations.
 /// </summary>
-public sealed class AgentApiClient
+public sealed partial class AgentApiClient
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
