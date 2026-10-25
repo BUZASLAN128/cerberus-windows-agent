@@ -324,7 +324,7 @@ internal static class AgentServiceProvisioning
         }
         try
         {
-            if (!userRegistrationAvailable)
+            if (!userRegistrationAvailable && !AgentBuildProfile.IsServer)
                 AgentClaimGate.RequireClaimedForServiceInstall(machineStore, cts.Token);
             AgentLegalConsent.EnsureMachineConsentForInstall();
             InstallPreparedRegistrationAsync(registrationState, userStore, userRegistrationAvailable,

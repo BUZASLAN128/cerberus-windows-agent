@@ -29,8 +29,7 @@ public sealed class ScopedAdCommandHandlerTests
                 return Task.FromResult(new AdCommandAuthority("tenant", "agent", Start.AddSeconds(20), command));
             }, provider, () => Start);
             var dispatcher = new CommandDispatcher(handlers, cache);
-            // Supplied payload is intentionally invalid; only the fresh backend payload can reach the provider.
-            var supplied = command with { Payload = new { username = "foreign" } };
+            var supplied = command;
             Assert.Equal("ad_disabled", Code(await dispatcher.DispatchAsync(supplied, default)));
             Assert.Equal("cerb_test", provider.Target!.Binding.Username);
             Assert.Equal("tenant", provider.Target.Binding.TenantId);
@@ -54,6 +53,10 @@ public sealed class ScopedAdCommandHandlerTests
     [InlineData("lease")]
     [InlineData("expired")]
     [InlineData("generation")]
+    [InlineData("id")]
+    [InlineData("type")]
+    [InlineData("key")]
+    [InlineData("payload")]
     public async Task WrongOrStaleAuthority_DoesNotInvokeProvider(string mutation)
     {
         var provider = new Provider();
@@ -63,12 +66,58 @@ public sealed class ScopedAdCommandHandlerTests
         {
             if (mutation == "generation") await lifecycle.SaveAsync(new(AgentLifecycleState.Retired), default);
             return new(mutation == "tenant" ? "other" : "tenant", mutation == "agent" ? "other" : "agent",
-                mutation == "expired" ? Start : Start.AddSeconds(20), mutation == "lease" ? command with { LeaseId = "other" } : command);
+                mutation == "expired" ? Start : Start.AddSeconds(20), mutation switch
+                {
+                    "lease" => command with { LeaseId = "other" },
+                    "id" => command with { Id = "other" },
+                    "type" => command with { Type = "windows.ad_user.delete" },
+                    "key" => command with { IdempotencyKey = "other" },
+                    "payload" => command with { Payload = WithPayload(command, "username", "other") },
+                    _ => command
+                });
         }, provider, () => Start);
         var denied = await handlers.Single(h => h.Type == command.Type).HandleAsync(command, default);
         Assert.Equal("FAILED", denied.Status);
         Assert.Equal("ad_authority_required", Code(denied));
         Assert.Null(provider.Target);
+    }
+
+    [Theory]
+    [InlineData("username")]
+    [InlineData("audit_correlation_id")]
+    [InlineData("reason")]
+    [InlineData("unparseable")]
+    public async Task SuppliedPayloadDifferingFromAuthority_FailsClosedWithoutProvider(string field)
+    {
+        var provider = new Provider();
+        var lifecycle = new InMemoryAgentLifecycleStateStore();
+        var command = Command("windows.ad_user.disable");
+        var supplied = field == "unparseable"
+            ? command with { Payload = new { username = "foreign" } }
+            : command with { Payload = WithPayload(command, field, "foreign") };
+        var handlers = ScopedAdCommandHandlers.CreateHandlers(Identity, lifecycle,
+            (_, _) => Task.FromResult(new AdCommandAuthority("tenant", "agent", Start.AddSeconds(20), command)), provider, () => Start);
+        var denied = await handlers.Single(h => h.Type == command.Type).HandleAsync(supplied, default);
+        Assert.Equal("FAILED", denied.Status);
+        Assert.Equal("ad_authority_required", Code(denied));
+        Assert.Null(provider.Target);
+        Assert.Equal(0, provider.DisableCount);
+        Assert.Equal(AgentLifecycleState.Active, (await lifecycle.LoadAsync(default)).State);
+    }
+
+    [Fact]
+    public async Task SuppliedPayloadWithReorderedProperties_IsSemanticallyEqual_AndExecutes()
+    {
+        var provider = new Provider();
+        var command = Command("windows.ad_user.disable");
+        var reordered = ((Dictionary<string, object?>)command.Payload!).Reverse().ToDictionary(kv => kv.Key, kv => kv.Value);
+        var supplied = command with { Payload = reordered };
+        var handlers = ScopedAdCommandHandlers.CreateHandlers(Identity, new InMemoryAgentLifecycleStateStore(),
+            (_, _) => Task.FromResult(new AdCommandAuthority("tenant", "agent", Start.AddSeconds(20), command)), provider, () => Start);
+        var result = await handlers.Single(h => h.Type == command.Type).HandleAsync(supplied, default);
+        Assert.Equal("DONE", result.Status);
+        Assert.Equal("ad_disabled", Code(result));
+        Assert.Equal(1, provider.DisableCount);
     }
 
     [Fact]
@@ -152,6 +201,9 @@ public sealed class ScopedAdCommandHandlerTests
         if (phase == "activate") payload["credential_profile_id"] = Guid.NewGuid().ToString();
         return new("command", type, "idempotency", payload, LeaseId: "lease");
     }
+
+    private static Dictionary<string, object?> WithPayload(AgentCommand command, string key, object? value)
+        => new((Dictionary<string, object?>)command.Payload!) { [key] = value };
 
     private static string Code(CommandResult result) => (string)((Dictionary<string, object?>)result.PostVerify!)["code"]!;
 

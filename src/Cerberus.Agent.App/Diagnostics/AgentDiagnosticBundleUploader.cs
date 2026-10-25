@@ -38,6 +38,8 @@ internal sealed class AgentDiagnosticBundleUploader
         AgentDiagnosticRequestContext context,
         CancellationToken ct)
     {
+        if (AgentBuildProfile.IsServer)
+            throw new InvalidOperationException("Diagnostic bundles are not available in this build profile.");
         if (_upload is not null)
             return await _upload(context, ct).ConfigureAwait(false);
         var request = await BuildRequestAsync(_metadata, context, ct).ConfigureAwait(false);

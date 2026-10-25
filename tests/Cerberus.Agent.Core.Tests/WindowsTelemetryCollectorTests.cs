@@ -10,6 +10,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class WindowsTelemetryCollectorTests
 {
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task BuildSnapshotAsync_ReturnsAllowedSectionsOnly()
     {
@@ -43,7 +44,9 @@ public sealed class WindowsTelemetryCollectorTests
         Assert.Equal(expected.Length, snapshot.SectionHashes.Count);
         Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= AgentTelemetryLimits.MaxJsonBytes);
     }
+#endif
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task BuildSnapshotAsync_HonorsTelemetrySectionAllowlist()
     {
@@ -61,6 +64,7 @@ public sealed class WindowsTelemetryCollectorTests
 
         Assert.Equal(new[] { "clock", "identity" }, snapshot.Sections.Keys.OrderBy(x => x));
     }
+#endif
 
     [Fact]
     public async Task CapabilitiesTelemetry_OmitsLocalUserCreateWhenPolicyDisabled()

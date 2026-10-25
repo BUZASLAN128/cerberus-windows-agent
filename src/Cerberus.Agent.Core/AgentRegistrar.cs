@@ -157,6 +157,8 @@ public sealed class AgentRegistrar
         await WriteTailscaleProofFileAsync(identity, parsed.TailscaleLoginServer, parsed.TailscaleAuthkey, ct).ConfigureAwait(false);
 
         _log.Info($"Registered agent_id={identity.AgentId} tenant_id={identity.TenantId}");
+        if (AgentKeyFingerprint.TryFromPrivateKeyPem(privPem) is { } keyFingerprint)
+            _log.Info($"Agent key fingerprint={keyFingerprint}");
         return identity;
     }
 

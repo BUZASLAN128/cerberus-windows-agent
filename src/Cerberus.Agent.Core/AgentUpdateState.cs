@@ -604,6 +604,9 @@ public static class AgentUpdateSequenceStore
 {
     private const string SequenceFileName = "highest-sequence.json";
 
+    /// <summary>Largest accepted distance between a manifest sequence and the current Unix-millisecond clock (24 hours).</summary>
+    public const long MaxSequenceLeadMilliseconds = 24L * 60 * 60 * 1000;
+
     private sealed record AcceptedManifest(
         [property: JsonPropertyName("schema_version")] string SchemaVersion,
         [property: JsonPropertyName("highest_sequence")] long HighestSequence,
@@ -629,10 +632,13 @@ public static class AgentUpdateSequenceStore
     }
 
     /// <summary>Accept the signed canonical payload before using it. A same-sequence payload may only resume byte-identical semantics.</summary>
-    public static void Accept(string root, long sequence, string digest)
+    public static void Accept(string root, long sequence, string digest, DateTimeOffset? utcNow = null)
     {
         if (sequence <= 0 || digest.Length != 64 || !digest.All(Uri.IsHexDigit))
             throw new InvalidOperationException("Update manifest acceptance is invalid.");
+        // Release sequences are Unix milliseconds at signing time; a value far ahead of the clock is not a valid release.
+        if (sequence > (utcNow ?? DateTimeOffset.UtcNow).ToUnixTimeMilliseconds() + MaxSequenceLeadMilliseconds)
+            throw new InvalidOperationException("Update manifest sequence is out of range.");
         using var gate = AgentUpdateSecurity.AcquireGlobalLock(root);
         var path = Path.Combine(AgentUpdateSecurity.NormalizeRoot(root), SequenceFileName);
         var current = ReadHighest(root);

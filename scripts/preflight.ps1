@@ -33,6 +33,15 @@ try {
     -p:BaseOutputPath=bin\\_testout_preflight\\ `
     --disable-build-servers
 
+  Write-Host "== test (server profile) =="
+  $serverInt = "obj\\_int\\preflight-server\\$ts\\"
+  dotnet test tests\\Cerberus.Agent.Core.Tests\\Cerberus.Agent.Core.Tests.csproj -c $Configuration `
+    -p:AgentBuildProfile=server `
+    -p:UseSharedCompilation=false `
+    -p:IntermediateOutputPath=$serverInt `
+    -p:BaseOutputPath=bin\\_testout_preflight_server\\ `
+    --disable-build-servers
+
   if (-not $SkipPublish) {
     Write-Host "== publish =="
     $pubDir = Join-Path $runDir "publish"
