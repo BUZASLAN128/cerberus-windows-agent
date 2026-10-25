@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
 /// <summary>
-/// Time budget for the server fact sections: 20 s per collection run shared by all wrapped sections, at most
+/// Time budget for the server profile sections: 20 s per collection run shared by all wrapped sections, at most
 /// 5 s each. The run is identified by its <see cref="WindowsTelemetryContext"/> instance, so a new context
 /// starts a new budget. A section that runs over, or starts after the budget is spent, reports
 /// <c>status: unavailable</c>.

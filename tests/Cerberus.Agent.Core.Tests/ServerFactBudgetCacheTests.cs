@@ -181,6 +181,36 @@ public sealed partial class ServerFactSectionsTests
         Assert.All(wrapped, s => Assert.IsType<ServerSectionBudget>(s));
     }
 
+    [Fact]
+    public void Catalog_ServerProfileBudgetsCoreSectionsToo_SoTheRunClockStartsAtTheFirstSection()
+    {
+        var sections = WindowsTelemetrySectionCatalog.CreateDefault((string?)null);
+
+        Assert.All(sections, s => Assert.IsType<ServerSectionBudget>(s));
+        Assert.Contains(sections, s => s.SectionName == "security");
+        Assert.Contains(sections, s => s.SectionName == "identity");
+    }
+
+    [Fact]
+    public async Task Budget_SlowFirstCoreSectionStartsTheRunClockAndIsCutAtFiveSeconds()
+    {
+        var time = new ManualTimeProvider(T0);
+        var context = Context();
+        var blocked = new TaskCompletionSource<object>();
+        var core = new ServerSectionBudget(new StubSection("security", _ => new ValueTask<object>(blocked.Task)), time);
+        var run = core.CollectAsync(context, CancellationToken.None);
+
+        time.Advance(TimeSpan.FromSeconds(5));
+        Assert.Equal("unavailable", (string)Obj(await run.AsTask().WaitAsync(Guard))["status"]!);
+
+        time.Advance(TimeSpan.FromSeconds(15));
+        var late = new StubSection("software", _ => new ValueTask<object>(Ok));
+        var lateNode = Obj(await new ServerSectionBudget(late, time).CollectAsync(context, CancellationToken.None));
+        Assert.Equal("unavailable", (string)lateNode["status"]!);
+        Assert.Equal(0, late.Calls);
+        blocked.SetResult(Ok);
+    }
+
     private static Dictionary<string, object?> BigSections()
         => new(StringComparer.Ordinal)
         {
@@ -259,6 +289,7 @@ public sealed partial class ServerFactSectionsTests
         var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
 
         Assert.Equal(11, names.Length);
+        Assert.DoesNotContain(WindowsTelemetrySectionCatalog.CreateDefault((string?)null), s => s is ServerSectionBudget);
         Assert.Empty(names.Intersect(SixSections));
         Assert.Equal(AgentTelemetryLimits.MaxJsonBytes, AgentTelemetryLimits.MaxSnapshotBytes);
         Assert.Equal(64 * 1024, AgentTelemetryLimits.MaxSnapshotBytes);

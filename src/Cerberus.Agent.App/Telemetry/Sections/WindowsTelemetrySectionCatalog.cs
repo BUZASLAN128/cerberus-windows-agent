@@ -54,7 +54,11 @@ internal static class WindowsTelemetrySectionCatalog
     {
         var sections = CreateCoreSections(publishServiceObservation);
 #if CERBERUS_SERVER_PROFILE
-        return sections.Concat(CreateServerFactSections(TimeProvider.System)).ToArray();
+        // Core sections run under the same run budget, so a slow core collector cannot start outside it.
+        return sections
+            .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
+            .Concat(CreateServerFactSections(TimeProvider.System))
+            .ToArray();
 #else
         return sections;
 #endif
