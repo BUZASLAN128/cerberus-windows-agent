@@ -71,7 +71,8 @@ public static class HeadlessEnrollmentProof
 
     /// <summary>
     /// Reads the string <c>agent_id</c> of the unverified proof payload into <paramref name="agentId"/> (null when absent,
-    /// not a string or the payload is not JSON). Returns false only when the claim is a JSON string that cannot be read.
+    /// not a string or the payload is not JSON). Returns false only when the payload contains a JSON string
+    /// (claim value or property name) that cannot be decoded.
     /// </summary>
     public static bool TryReadAgentId(string proof, out string? agentId)
     {
@@ -84,18 +85,19 @@ public static class HeadlessEnrollmentProof
             var payload = parts[1].Replace('-', '+').Replace('_', '/');
             payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
             using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
-            if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                document.RootElement.TryGetProperty("agent_id", out var id) &&
-                id.ValueKind == JsonValueKind.String)
+            try
             {
-                try
+                if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                    document.RootElement.TryGetProperty("agent_id", out var id) &&
+                    id.ValueKind == JsonValueKind.String)
                 {
                     agentId = id.GetString();
                 }
-                catch (InvalidOperationException)
-                {
-                    return false;
-                }
+            }
+            catch (InvalidOperationException)
+            {
+                agentId = null;
+                return false;
             }
             return true;
         }

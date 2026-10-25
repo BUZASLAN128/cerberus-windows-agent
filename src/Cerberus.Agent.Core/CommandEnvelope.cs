@@ -83,6 +83,21 @@ public static class CommandEnvelope
     /// <summary>Steps 2 and 3: sizes, base64, <c>v == 1</c>, <c>alg</c>, then the outer delegation.</summary>
     public static bool TryReadWire(JsonElement envelope, out EnvelopeWire? wire, out string? code)
     {
+        try
+        {
+            return ReadWire(envelope, out wire, out code);
+        }
+        catch (InvalidOperationException)
+        {
+            // Undecodable property name or string value in the unsigned outer envelope.
+            wire = null;
+            code = EnvelopeCodes.Malformed;
+            return false;
+        }
+    }
+
+    private static bool ReadWire(JsonElement envelope, out EnvelopeWire? wire, out string? code)
+    {
         wire = null;
         code = EnvelopeCodes.Malformed;
         if (envelope.ValueKind != JsonValueKind.Object)

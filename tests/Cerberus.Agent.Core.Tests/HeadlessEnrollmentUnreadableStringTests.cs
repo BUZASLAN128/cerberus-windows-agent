@@ -34,11 +34,15 @@ public sealed class HeadlessEnrollmentUnreadableStringTests
         Assert.Equal(0, store.SaveCount);
     }
 
-    [Fact]
-    public async Task Proof_with_unreadable_agent_id_claim_exits_two_without_a_request()
+    [Theory]
+    [InlineData("{\"agent_id\":\"\\ud800\",\"sub\":\"x\"}")]
+    [InlineData("{\"sub\":\"x\",\"agent_\\ud800\":1}")]
+    [InlineData("{\"agent_id\":\"agent-0001\",\"agent_\\ud800\":1}")]
+    public async Task Proof_with_unreadable_string_in_payload_exits_two_without_a_request(string payload)
     {
         static string B64(string s) => Convert.ToBase64String(Encoding.UTF8.GetBytes(s)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        var proof = B64("{\"alg\":\"HS256\"}") + "." + B64("{\"agent_id\":\"\\ud800\",\"sub\":\"x\"}") + ".c2lnbmF0dXJl";
+        var proof = B64("{\"alg\":\"HS256\"}") + "." + B64(payload) + ".c2lnbmF0dXJl";
+        Assert.True(HeadlessEnrollmentProof.TryNormalize(proof, out _));
         var handler = new HeadlessEnrollmentTests.FakeHandler();
         var store = new HeadlessEnrollmentTests.MemoryStore();
 
