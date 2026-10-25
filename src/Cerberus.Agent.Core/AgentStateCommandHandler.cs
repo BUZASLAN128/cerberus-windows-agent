@@ -119,14 +119,34 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
 
     /// <summary>
     /// After the DONE result is final: record the signed revoke, clear it from the store, then cancel the
-    /// queue. Ids without a stored pending revoke are ignored. Uses <paramref name="agentId"/>, not the
-    /// current credential, which the revoke clears.
+    /// queue. Ids without a stored pending revoke are ignored. The pending revoke is looked up by
+    /// <paramref name="agentId"/>, because the revoke clears the current credential. A revoke applies only to
+    /// the registration it was issued for: when the current credential belongs to a different agent id (a
+    /// re-enrollment landed first), the pending revoke is cleared without retiring or cancelling anything. If
+    /// the current agent id is unavailable (credential already cleared), the revoke is recorded as before.
     /// </summary>
     public async Task OnResultFinalAsync(string agentId, string commandId, CancellationToken ct)
     {
         if (_store.Load(agentId).PendingRevoke is not { } pending
             || !string.Equals(pending.CommandId, commandId, StringComparison.Ordinal))
             return;
+
+        string? currentId = null;
+        try
+        {
+            currentId = await _currentAgentId(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Credential already cleared by an interrupted earlier run: keep the idempotent path.
+        }
+
+        if (!string.IsNullOrEmpty(currentId) && !string.Equals(currentId, agentId, StringComparison.Ordinal))
+        {
+            _log.Warn($"agent_state id={commandId} signed revoke skipped: the registration it was issued for is no longer current.");
+            _store.TryClearPendingRevoke(agentId, commandId);
+            return;
+        }
 
         var reasonCode = pending.ReasonCode;
         try

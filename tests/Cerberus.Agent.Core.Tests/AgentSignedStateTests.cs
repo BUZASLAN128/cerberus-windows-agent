@@ -135,6 +135,54 @@ public sealed class AgentSignedStateTests : IDisposable
     }
 
     [Fact]
+    public async Task OnResultFinal_ForARevokeIssuedToAnOlderRegistration_DoesNotRetireTheCurrentOne()
+    {
+        var f = new Fixture(StatePath);
+        await f.Handle("c1", P(1, Revoke(Revoked)));
+        f.AgentId = "agent-b";
+
+        await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
+
+        Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.False(f.Secrets.Cleared);
+        Assert.Equal(0, f.Quiesces);
+        Assert.Equal(0, f.Cancels);
+        Assert.Null(f.Store.Load("agent-a").PendingRevoke);
+        Assert.False(f.Store.IsQuarantined("agent-a"));
+    }
+
+    [Fact]
+    public async Task OnResultFinal_WhenTheCredentialIdIsUnavailable_StillRecordsTheRevoke()
+    {
+        var f = new Fixture(StatePath);
+        await f.Handle("c1", P(1, Revoke(Revoked)));
+        f.AgentIdUnavailable = true;
+
+        await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
+
+        Assert.Equal(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(1, f.Cancels);
+        Assert.Null(f.Store.Load("agent-a").PendingRevoke);
+    }
+
+    [Fact]
+    public async Task Recovery_ForARevokeIssuedToAnOlderRegistration_DoesNotRetireTheCurrentOne()
+    {
+        var f = new Fixture(StatePath);
+        await f.Handle("c1", P(1, Revoke(Revoked)));
+        f.AgentId = "agent-b";
+        var replay = new CommandReplayStore(Path.Combine(_dir, CommandReplayStore.FileName), TimeProvider.System);
+        Assert.True(replay.IsAvailable);
+
+        await f.Handler.RecoverPendingRevokeAsync(replay, default);
+
+        Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(0, f.Cancels);
+        Assert.Equal(0, f.Quiesces);
+        Assert.False(f.Store.IsQuarantined());
+    }
+
+    [Fact]
     public async Task InvalidPayload_IsRefusedByTheHandler()
     {
         var f = new Fixture(StatePath);
@@ -234,7 +282,7 @@ public sealed class AgentSignedStateTests : IDisposable
         public Fixture(string statePath, bool failQuiesce = false)
         {
             Store = new AgentSignedStateStore(statePath);
-            _track = Store.Track(_ => Task.FromResult(AgentId));
+            _track = Store.Track(_ => AgentIdUnavailable ? throw new InvalidOperationException("credential cleared") : Task.FromResult(AgentId));
             Lifecycle = new AgentLifecycleController(new InMemoryAgentLifecycleStateStore(), Secrets, quiesce: _ =>
             {
                 Quiesces++;
@@ -244,6 +292,7 @@ public sealed class AgentSignedStateTests : IDisposable
         }
 
         public string AgentId { get; set; } = "agent-a";
+        public bool AgentIdUnavailable { get; set; }
         public AgentSignedStateStore Store { get; }
         public AgentStateCommandHandler Handler { get; }
         public AgentLifecycleController Lifecycle { get; }
