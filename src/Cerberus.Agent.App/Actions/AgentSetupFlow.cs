@@ -57,7 +57,7 @@ internal sealed class AgentSetupFlow
         }
 
         var currentService = AgentStatus.GetService();
-        if (!currentService.Installed)
+        if (!AgentBuildProfile.IsServer && !currentService.Installed)
         {
             try
             {

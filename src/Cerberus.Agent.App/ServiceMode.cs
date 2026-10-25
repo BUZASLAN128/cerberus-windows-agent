@@ -40,6 +40,8 @@ internal static class ServiceMode
         var controller = new AgentLifecycleController(lifecycle,
             new DpapiSecretStore(SecretStoreScope.Machine), log, QuiesceAsync);
         var control = new AgentLocalControlService(lifecycle, QuiesceAsync);
+        var recovery = AgentBuildProfile.IsServer ? new DormantRecoverySupervisor(lifecycle, controller,
+            new DpapiSecretStore(SecretStoreScope.Machine), control.ManualGate, log) : null;
         var pipeTask = new AgentLocalControlServer(control.HandleAsync).RunAsync(lifetime.Token);
         Task? schedulerTask = null;
         try
@@ -71,6 +73,8 @@ internal static class ServiceMode
                     cleanupDelaySeconds = 10;
                 var promotion = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
                 var awaitingAdoption = AgentEnrollmentPromotion.IsAwaitingAdoption(promotion, snapshot);
+                if (recovery is not null)
+                    snapshot = await recovery.TickAsync(snapshot, awaitingAdoption, lifetime.Token).ConfigureAwait(false);
                 if (AgentLifecycleStates.AllowsAutomaticNetwork(snapshot.State) && snapshot.QuiescenceComplete && !awaitingAdoption)
                 {
                     if (worker is null || worker.IsCompleted)
@@ -217,39 +221,42 @@ internal static class ServiceMode
 
         var privateKeyPem = loadedSecrets.PrivateKeyPem;
         var storedBackendUrl = loadedSecrets.BackendUrl;
-        var backendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL") ?? storedBackendUrl;
+        var environmentBackendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
+        if (AgentBuildProfile.IsServer && ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
+        {
+            try
+            {
+                var migration = await ServerBackendMigration.MigrateIfCurrentAsync(lifecycleState, persistedLifecycle.Generation,
+                    secrets, AgentBuildConfig.BackendUrl, environmentBackendUrl, log, ct).ConfigureAwait(false);
+                if (migration == ServerBackendMigration.Result.Superseded)
+                    return; // The lifecycle generation changed; the supervisor starts a worker for the new one.
+                if (migration == ServerBackendMigration.Result.Migrated)
+                    storedBackendUrl = AgentBuildConfig.BackendUrl.Trim();
+            }
+            catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
+            {
+                log.Warn($"Registered backend address could not be updated ({ex.GetType().Name}).");
+            }
+        }
+        var backendUrl = environmentBackendUrl ?? storedBackendUrl;
 
-        if (!Uri.TryCreate(backendUrl.Trim().TrimEnd('/'), UriKind.Absolute, out var baseAddress) ||
-            (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
+        var blockReason = BackendConfigCheck.BlockReason(environmentBackendUrl, storedBackendUrl, AgentBuildConfig.BackendUrl);
+        if (blockReason is not null)
         {
             await lifecycleState.TransitionAsync(
                 AgentLifecycleState.BlockedConfig,
-                reasonCode: "backend_url_invalid",
+                reasonCode: blockReason,
                 requestId: null,
                 nextAttemptUtc: null,
                 genericAuthFailureCount: null,
                 ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; configured backend URL is invalid.");
+            log.Warn(blockReason == BackendConfigCheck.UrlInvalid
+                ? "Service starting dormant; configured backend URL is invalid."
+                : "Service starting dormant; deployment differs from registered credentials. Use the matching package or explicitly re-enroll. Existing registration was preserved.");
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-
-        // Never send registered credentials to an environment selected by a different package or override.
-        if (!AgentBuildConfig.SameEndpoint(backendUrl, storedBackendUrl) ||
-            (!string.IsNullOrWhiteSpace(AgentBuildConfig.BackendUrl) &&
-             !AgentBuildConfig.SameEndpoint(storedBackendUrl, AgentBuildConfig.BackendUrl)))
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.BlockedConfig,
-                reasonCode: "backend_environment_mismatch",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; deployment differs from registered credentials. Use the matching package or explicitly re-enroll. Existing registration was preserved.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
+        var baseAddress = new Uri(backendUrl.Trim().TrimEnd('/'));
 
         using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
         using var updateHttp = new HttpClient
@@ -286,14 +293,15 @@ internal static class ServiceMode
             maxBytes: 512 * 1024,
             ttl: TimeSpan.FromHours(24));
 
-        var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var handlers = new List<ICommandHandler>
         {
             new HealthSnapshotHandler(),
             new RdpQuickTestHandler(),
             new TailscaleEnsureConnectedHandler(),
-            new DiagnosticBundleCollectCommandHandler(diagnosticUploader),
         };
+        var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
+        if (!AgentBuildProfile.IsServer)
+            handlers.Add(new DiagnosticBundleCollectCommandHandler(diagnosticUploader));
         var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
             api.GetManagedAccountManifestAsync, LocalUserCommandHandlers.CreateManifestReconciler(log), log);
         handlers.AddRange(LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts));
@@ -341,8 +349,9 @@ internal static class ServiceMode
             lifecycleState: lifecycleState);
 
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var diagnosticScheduler = new DiagnosticBundleScheduler(diagnosticUploader, log);
-        var diagnosticSchedulerTask = diagnosticScheduler.RunAsync(serviceCts.Token);
+        var diagnosticSchedulerTask = AgentBuildProfile.IsServer
+            ? Task.CompletedTask
+            : new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
 
         try
         {

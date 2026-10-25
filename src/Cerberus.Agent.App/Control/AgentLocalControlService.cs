@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
@@ -10,10 +11,14 @@ internal sealed class AgentLocalControlService
 {
     private readonly IAgentLifecycleStateStore _lifecycle;
     private readonly Func<CancellationToken, Task> _quiesce;
+    private readonly ISecretStore _retrySecrets;
     private readonly SemaphoreSlim _manual = new(1, 1);
 
-    internal AgentLocalControlService(IAgentLifecycleStateStore lifecycle, Func<CancellationToken, Task> quiesce)
-        => (_lifecycle, _quiesce) = (lifecycle, quiesce);
+    internal AgentLocalControlService(IAgentLifecycleStateStore lifecycle, Func<CancellationToken, Task> quiesce, ISecretStore? retrySecrets = null)
+        => (_lifecycle, _quiesce, _retrySecrets) = (lifecycle, quiesce, retrySecrets ?? new DpapiSecretStore(SecretStoreScope.Machine));
+
+    /// <summary>Held by retry, enrollment-adopt and unregister; the server-profile recovery probe takes it too.</summary>
+    internal SemaphoreSlim ManualGate => _manual;
 
     internal async Task<AgentLocalControlResponse> HandleAsync(AgentLocalControlRequest request, CancellationToken ct)
     {
@@ -55,14 +60,16 @@ internal sealed class AgentLocalControlService
 
     private async Task<AgentLocalControlResponse> RetryAsync(CancellationToken ct)
     {
-        var store = new DpapiSecretStore(SecretStoreScope.Machine);
+        var store = _retrySecrets;
         var controller = new AgentLifecycleController(_lifecycle, store, quiesce: _quiesce);
         var snapshot = await controller.CompletePendingQuiescenceAsync(ct).ConfigureAwait(false);
         if (!snapshot.QuiescenceComplete)
             return StateResponse(false, "cleanup_pending", snapshot);
         if (snapshot.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment)
             return StateResponse(false, snapshot.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode ? "contact_admin" : "reenrollment_required", snapshot);
-        if (snapshot.NextAttemptUtc > DateTimeOffset.UtcNow)
+        // On the server profile NextAttemptUtc of a dormant state is the recovery schedule; a manual retry ignores it.
+        var scheduleOnly = AgentBuildProfile.IsServer && AgentLifecycleStates.IsDormant(snapshot.State);
+        if (!scheduleOnly && snapshot.NextAttemptUtc > DateTimeOffset.UtcNow)
             return StateResponse(false, "retry_deferred", snapshot);
         if (snapshot.State == AgentLifecycleState.Active)
             return StateResponse(true, "already_active", snapshot);
@@ -130,7 +137,7 @@ internal sealed class AgentLocalControlService
         return StateResponse(true, "enrollment_adopted", adopted);
     }
 
-    private static async Task<HeartbeatResponse> ProbeAsync(ISecretStore store, IAgentLifecycleStateStore lifecycle,
+    internal static async Task<HeartbeatResponse> ProbeAsync(ISecretStore store, IAgentLifecycleStateStore lifecycle,
         Func<CancellationToken, Task>? quiesce, CancellationToken ct)
     {
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
@@ -159,8 +166,10 @@ internal sealed class AgentLocalControlService
             capabilities = Array.Empty<string>(),
         };
 
-    private static bool Claimed(HeartbeatResponse response)
-        => response.RegistrationState == "claimed" && !response.ClaimRequired &&
+    internal static bool Claimed(HeartbeatResponse response)
+        => (AgentBuildProfile.IsServer
+            ? AgentClaimGate.IsClaimed(response)
+            : response.RegistrationState == "claimed" && !response.ClaimRequired) &&
             response.LifecycleState is not ("revoked" or "quarantined") &&
             !(response.Revoke?.TryGetValue("revoked", out var revoked) == true && revoked.ValueKind == System.Text.Json.JsonValueKind.True);
 

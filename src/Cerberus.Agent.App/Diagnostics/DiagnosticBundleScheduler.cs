@@ -46,6 +46,9 @@ internal sealed class DiagnosticBundleScheduler
 
     public async Task RunAsync(CancellationToken ct)
     {
+        if (AgentBuildProfile.IsServer)
+            return;
+
         while (!ct.IsCancellationRequested)
         {
             try

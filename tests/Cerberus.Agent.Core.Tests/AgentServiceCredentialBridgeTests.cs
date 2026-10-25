@@ -320,6 +320,7 @@ public sealed class AgentServiceCredentialBridgeTests
                 CancellationToken.None));
     }
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public void AgentClaimGate_IsClaimed_RequiresClaimedStateAndNoClaimRequired()
     {
@@ -328,6 +329,7 @@ public sealed class AgentServiceCredentialBridgeTests
         Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: true, registrationState: "pending_claim")));
         Assert.False(AgentClaimGate.IsClaimed(Heartbeat(claimRequired: false, registrationState: "deactivated")));
     }
+#endif
 
     [Fact]
     public void AgentClaimGate_TreatsRateLimitAsTransientDuringClaimPolling()

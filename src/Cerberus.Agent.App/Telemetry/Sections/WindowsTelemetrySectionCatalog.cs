@@ -1,3 +1,4 @@
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
@@ -5,6 +6,12 @@ namespace Cerberus.Agent.App.Telemetry.Sections;
 internal static class WindowsTelemetrySectionCatalog
 {
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
+
+    // Sections sent in the server build profile; the environment allowlist is not consulted there.
+    private static readonly HashSet<string> ServerProfileSections = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
+    };
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
         => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);
@@ -20,6 +27,9 @@ internal static class WindowsTelemetrySectionCatalog
         bool publishServiceObservation)
     {
         var sections = CreateAll(publishServiceObservation);
+        if (AgentBuildProfile.IsServer)
+            return sections.Where(section => ServerProfileSections.Contains(section.SectionName)).ToArray();
+
         if (string.IsNullOrWhiteSpace(configured))
             return sections;
 

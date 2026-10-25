@@ -77,9 +77,8 @@ internal static class AgentEnrollmentPromotion
 
     private static string PublicKeyDigest(string privateKey)
     {
-        using var rsa = RSA.Create();
-        rsa.ImportFromPem(privateKey);
-        return Convert.ToHexString(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo()));
+        // Marker format (uppercase hex, no prefix) is local-only and compared as stored.
+        return AgentKeyFingerprint.FromPrivateKeyPem(privateKey)[AgentKeyFingerprint.Prefix.Length..].ToUpperInvariant();
     }
 
     private static void RequireSafeFile()

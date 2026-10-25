@@ -27,6 +27,7 @@ public sealed class AgentDiagnosticsBundleTests
         Assert.Contains("[REDACTED]", redacted);
     }
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task ExportAsync_WithExplicitLogDirectory_CollectsOnlyOverrideAndRedactsContent()
     {
@@ -59,6 +60,7 @@ public sealed class AgentDiagnosticsBundleTests
                 Directory.Delete(root, recursive: true);
         }
     }
+#endif
 
     [Fact]
     public void ExportAsync_DefaultLogCollectionReferencesBothUserAndServiceDirectories()
@@ -71,6 +73,7 @@ public sealed class AgentDiagnosticsBundleTests
         Assert.Contains("logDir is null", source);
     }
 
+#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task DiagnosticBundleCollectCommandHandler_UploadsAndReturnsDone()
     {
@@ -110,6 +113,7 @@ public sealed class AgentDiagnosticsBundleTests
         Assert.Equal("cmd-1", captured.RequestCommandId);
         Assert.Equal("unit", captured.Reason);
     }
+#endif
 
     [Fact]
     public async Task DiagnosticBundleScheduler_CreatesInitialFutureStateWithJitter()
