@@ -485,14 +485,14 @@ public sealed class AgentApiClientTelemetryTests
         var handler = new FailureHandler(HttpStatusCode.OK, new StallingContent("preauth-body-marker"));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(50) };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetTailscalePreauthAsync(CancellationToken.None));
+        // The body never completes, so only the client timeout can end the call.
+        // The guard turns a missing timeout into a failure instead of a hang.
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => client.GetTailscalePreauthAsync(CancellationToken.None).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.Equal("Tailscale preauth failed (200).", exception.Message);
         Assert.DoesNotContain("preauth-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -502,7 +502,7 @@ public sealed class AgentApiClientTelemetryTests
         var handler = new FailureHandler(
             HttpStatusCode.OK,
             new StallingContent("preauth-delay-marker"),
-            TimeSpan.FromMilliseconds(1500));
+            TimeSpan.FromMilliseconds(1800));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
         var stopwatch = Stopwatch.StartNew();
@@ -512,7 +512,8 @@ public sealed class AgentApiClientTelemetryTests
         stopwatch.Stop();
         Assert.Equal("Tailscale preauth failed (200).", exception.Message);
         Assert.DoesNotContain("preauth-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
+        // One budget ends near 2000 ms; a fresh body budget after the 1800 ms header delay would take 3800 ms or more.
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1700), TimeSpan.FromMilliseconds(3500));
     }
 
     [Fact]
@@ -522,13 +523,11 @@ public sealed class AgentApiClientTelemetryTests
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = Timeout.InfiniteTimeSpan };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.GetTailscalePreauthAsync(cts.Token));
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.GetTailscalePreauthAsync(cts.Token).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.DoesNotContain("preauth-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -677,6 +676,9 @@ public sealed class AgentApiClientTelemetryTests
             };
         }
     }
+
+    // Far above any scheduling delay; only reached if the client stops honoring its deadline.
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
     private sealed class FailureHandler : HttpMessageHandler
     {

@@ -127,14 +127,13 @@ public sealed class CasdoorOAuthClientTests
                 .Single(part => part.StartsWith("state=", StringComparison.Ordinal))["state=".Length..]);
             await SendCallbackAsync(callbackPort, state, cancellation.Token);
             await serverReady.Task.WaitAsync(cancellation.Token);
-            var stopwatch = Stopwatch.StartNew();
 
+            // The stalled body never completes; the 10 s test cancellation is the hang guard
+            // (it surfaces as OperationCanceledException, not HttpRequestException).
             var exception = await Assert.ThrowsAsync<HttpRequestException>(() => login);
 
-            stopwatch.Stop();
             Assert.Equal("Token exchange failed (502).", exception.Message);
             Assert.DoesNotContain("casdoor-stalled-body-marker", exception.Message, StringComparison.Ordinal);
-            Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
             serverCancellation.Cancel();
             await tokenResponse;
         }

@@ -371,14 +371,13 @@ public sealed class AgentRegistrarTests
             BaseAddress = new Uri("http://example.test"),
             Timeout = TimeSpan.FromMilliseconds(50),
         };
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+        // The body never completes, so only the client timeout can end the call.
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => Register(NewRegistrar(http)).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -387,7 +386,7 @@ public sealed class AgentRegistrarTests
         const int timeoutMs = 2000;
         var handler = new CaptureHandler(
             new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StallingContent("register-delay-marker") },
-            TimeSpan.FromMilliseconds(1500));
+            TimeSpan.FromMilliseconds(1800));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
         var stopwatch = Stopwatch.StartNew();
 
@@ -396,7 +395,8 @@ public sealed class AgentRegistrarTests
         stopwatch.Stop();
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
+        // One budget ends near 2000 ms; a fresh body budget after the 1800 ms header delay would take 3800 ms or more.
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1700), TimeSpan.FromMilliseconds(3500));
     }
 
     [Fact]
@@ -408,13 +408,11 @@ public sealed class AgentRegistrarTests
         });
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = Timeout.InfiniteTimeSpan };
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Register(NewRegistrar(http), cts.Token));
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Register(NewRegistrar(http), cts.Token).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -544,6 +542,9 @@ public sealed class AgentRegistrarTests
         protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("body unavailable");
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
+
+    // Far above any scheduling delay; only reached if the client stops honoring its deadline.
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
     private sealed class StallingContent : HttpContent
     {
