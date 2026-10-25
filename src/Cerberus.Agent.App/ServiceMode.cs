@@ -30,6 +30,7 @@ internal static class ServiceMode
         CancellationTokenSource? automatic = null;
         Task? worker = null;
         long? workerGeneration = null;
+        var finalRevokes = new AgentRevokeFinalResults();
         var nextCleanupUtc = DateTimeOffset.MinValue;
         var cleanupDelaySeconds = 10;
         async Task QuiesceAsync(CancellationToken _)
@@ -87,7 +88,7 @@ internal static class ServiceMode
                         automatic?.Dispose();
                         automatic = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                         workerGeneration = snapshot.Generation;
-                        worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync);
+                        worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync, finalRevokes);
                     }
                 }
                 else
@@ -119,7 +120,7 @@ internal static class ServiceMode
     }
 
     private static async Task RunAutomaticAsync(CancellationToken ct, IAgentLifecycleStateStore lifecycleState,
-        Func<CancellationToken, Task> quiesce)
+        Func<CancellationToken, Task> quiesce, AgentRevokeFinalResults finalRevokes)
     {
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         log.Info("Service mode starting.");
@@ -290,11 +291,14 @@ internal static class ServiceMode
 
         var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPath(), log);
         var currentAgentId = signedState.Track(EnvelopeWiring.CurrentAgentId(secrets));
+        // Declared before the queue so it is disposed after the queue worker has drained.
+        using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         EnvelopeExecutionQueue? queue = null;
 #if CERBERUS_SERVER_PROFILE
         ManagedAccountManifestPolicy? managedAccounts = null;
         var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
-            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log);
+            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log,
+            stopAutomaticNetwork: serviceCts.Cancel, finalResults: finalRevokes);
         var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
 #else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
@@ -308,6 +312,9 @@ internal static class ServiceMode
         queue = envelopeQueue;
 #if CERBERUS_SERVER_PROFILE
         await agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, ct).ConfigureAwait(false);
+        // Revoke not recorded: the supervisor restarts the worker, which retries it before any request.
+        if (serviceCts.IsCancellationRequested)
+            return;
 #endif
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
@@ -341,7 +348,6 @@ internal static class ServiceMode
             lifecycleState: lifecycleState,
             commandProcessor: EnvelopeWiring.CreateProcessor(api, envelopeQueue, dispatcher, log));
 
-        using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;
 #else

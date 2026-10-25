@@ -22,24 +22,34 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     private readonly AgentLifecycleController _lifecycle;
     private readonly Action _cancelExecution;
     private readonly IAgentLogger _log;
+    private readonly Action? _stopAutomaticNetwork;
+    private readonly AgentRevokeFinalResults? _finalResults;
 
     /// <param name="currentAgentId">The current credential's agent id, read per call (pass the provider wrapped by <see cref="AgentSignedStateStore.Track"/>).</param>
     /// <param name="lifecycle">Records the revoke. Its quiesce delegate runs on the queue worker, so it must not await
     /// the queue's <c>StopAsync</c> or <c>DisposeAsync</c>.</param>
     /// <param name="cancelExecution">Cancels the execution queue; pass <c>queue.CancelAll</c>, never <c>StopAsync</c>
     /// (the follow-up runs on the queue worker).</param>
+    /// <param name="stopAutomaticNetwork">Called when the revoke could not be recorded, so heartbeat and telemetry stop
+    /// under the revoked registration; the supervisor restarts the worker, which retries the pending revoke first.</param>
+    /// <param name="finalResults">Process-lifetime record shared across worker restarts. A result marked there counts as
+    /// final at recovery even when the replay record could not be written or read.</param>
     public AgentStateCommandHandler(
         AgentSignedStateStore store,
         Func<CancellationToken, Task<string>> currentAgentId,
         AgentLifecycleController lifecycle,
         Action cancelExecution,
-        IAgentLogger? log = null)
+        IAgentLogger? log = null,
+        Action? stopAutomaticNetwork = null,
+        AgentRevokeFinalResults? finalResults = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _currentAgentId = currentAgentId ?? throw new ArgumentNullException(nameof(currentAgentId));
         _lifecycle = lifecycle ?? throw new ArgumentNullException(nameof(lifecycle));
         _cancelExecution = cancelExecution ?? throw new ArgumentNullException(nameof(cancelExecution));
         _log = log ?? NullAgentLogger.Instance;
+        _stopAutomaticNetwork = stopAutomaticNetwork;
+        _finalResults = finalResults;
     }
 
     public string Type => EnvelopeTypes.AgentState;
@@ -92,7 +102,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// Startup recovery for a crash after the DONE result was delivered and marked submitted, but before the
     /// revoke ran: run the follow-up now. A result still waiting in the outbox is left to the outbox, which
     /// needs the credential. A missing record (retention ended) with a readable store can never be delivered, so
-    /// the signed revoke is applied.
+    /// the signed revoke is applied. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
+    /// is applied whatever the replay record says.
     /// </summary>
     public async Task RecoverPendingRevokeAsync(CommandReplayStore replay, CancellationToken ct)
     {
@@ -111,7 +122,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         if (_store.Load(agentId).PendingRevoke is not { } pending)
             return;
         var record = replay.Find(agentId, pending.CommandId);
-        var settled = record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
+        var settled = _finalResults?.Contains(agentId, pending.CommandId) == true
+                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
                       || (record is null && replay.IsAvailable);
         if (settled)
             await OnResultFinalAsync(agentId, pending.CommandId, ct).ConfigureAwait(false);
@@ -124,6 +136,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// the registration it was issued for: when the current credential belongs to a different agent id (a
     /// re-enrollment landed first), the pending revoke is cleared without retiring or cancelling anything. If
     /// the current agent id is unavailable (credential already cleared), the revoke is recorded as before.
+    /// The result is marked final in the process-lifetime record before the first attempt. If recording fails,
+    /// the pending revoke stays stored and the automatic network is stopped.
     /// </summary>
     public async Task OnResultFinalAsync(string agentId, string commandId, CancellationToken ct)
     {
@@ -149,6 +163,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
 
         var reasonCode = pending.ReasonCode;
+        _finalResults?.Mark(agentId, commandId);
         try
         {
             try
@@ -166,7 +181,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            _log.Error($"agent_state id={commandId} revoke not recorded: {ex.GetType().Name}.");
+            _log.Error($"agent_state id={commandId} revoke not recorded: {ex.GetType().Name}; automatic network stops and the record is retried at the next worker start.");
+            _stopAutomaticNetwork?.Invoke();
         }
         finally
         {
