@@ -18,22 +18,28 @@ internal static class FailedLogonProtocolProbe
     {
         var services = ReadServiceNames();
         var tcp = ReadTcpPorts();
-        var sqlOwned = AnySqlListener(ct);
+        var owners = ListenerProcessNames(ct);
 
         var rdp = new ProtocolPresence(
             services.Contains("TermService"),
             tcp.Contains(ReadRdpPort()));
         var ssh = new ProtocolPresence(
             services.Contains("sshd"),
-            tcp.Contains(DefaultSshPort));
+            // Any sshd-owned listener counts whatever its port; port 22 only when the owners cannot be read.
+            owners?.Contains("sshd") ?? tcp.Contains(DefaultSshPort));
         var sqlPresent = services.Any(FailedLogonEventReader.IsSqlProvider);
         var sql = new ProtocolPresence(
             sqlPresent,
-            sqlPresent && (tcp.Contains(DefaultSqlPort) || sqlOwned));
+            sqlPresent && (tcp.Contains(DefaultSqlPort) || owners?.Contains("sqlservr") == true));
         return (rdp, ssh, sql);
     }
 
+    /// <summary>Presence reporting: an unreadable service list counts as no services.</summary>
     internal static HashSet<string> ReadServiceNames()
+        => TryReadServiceNames() ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Service names, or null when the service list cannot be read.</summary>
+    internal static HashSet<string>? TryReadServiceNames()
     {
         try
         {
@@ -45,7 +51,7 @@ internal static class FailedLogonProtocolProbe
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return null;
         }
     }
 
@@ -61,17 +67,19 @@ internal static class FailedLogonProtocolProbe
         }
     }
 
-    /// <summary>True when any TCP listener is owned by the sqlservr process.</summary>
-    private static bool AnySqlListener(CancellationToken ct)
+    /// <summary>Process names that own a TCP listener; null when the owner lookup fails.</summary>
+    private static HashSet<string>? ListenerProcessNames(CancellationToken ct)
     {
         try
         {
-            return PortsNative.Read(ct).Any(p =>
-                p.Protocol == "tcp" && string.Equals(p.ProcessName, "sqlservr", StringComparison.OrdinalIgnoreCase));
+            return PortsNative.Read(ct)
+                .Where(p => p.Protocol == "tcp" && p.ProcessName is not null)
+                .Select(p => p.ProcessName!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            return false;
+            return null;
         }
     }
 

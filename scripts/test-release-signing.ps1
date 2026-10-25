@@ -254,6 +254,13 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $helperDir "Cerberus.Agent.Installer.Helper.exe"), [byte[]](1, 2, 3))
     Throws { Assert-FirstPartyPeFilesSigned $helperDir } "Unsigned first-party file\(s\).*Cerberus\.Agent\.Installer\.Helper\.exe"
   }
+  Check "an undecodable test-anchor fixture fails closed" {
+    $fakeRoot = Join-Path $work "fixture-root"; New-Item -ItemType Directory -Path (Join-Path $fakeRoot "scripts"), (Join-Path $fakeRoot "tests/fixtures") -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "release-profile-lib.ps1") -Destination (Join-Path $fakeRoot "scripts")
+    Set-Content -LiteralPath (Join-Path $fakeRoot "tests/fixtures/agent-command-test-anchors.b64") -Value "!!not-base64!!"
+    . (Join-Path $fakeRoot "scripts/release-profile-lib.ps1")
+    Throws { Test-CommandAnchorsAreTestFixture "QQ==" } "cannot be decoded"
+  }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
   Check "finalize removes the pending payload and state" {
     -not (Test-Path -LiteralPath (Join-Path $good.Publish $payloadName)) -and -not (Test-Path -LiteralPath (Join-Path $good.Publish $pendingName))

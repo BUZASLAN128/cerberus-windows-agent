@@ -157,4 +157,33 @@ public sealed class FailedLogonCommitBindingTests
         Assert.Equal(expected, FailedLogonEventReader.IsInstalledSqlProvider(provider, installed));
         Assert.False(FailedLogonEventReader.IsInstalledSqlProvider(provider, new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
     }
+
+    [Fact]
+    public void ScanCap_StopsAtLastScannedRecord_AndNextReadResumesBehindIt()
+    {
+        static IEnumerable<FailedLogonEventReader.ScannedRecord> Floods(long first, long last)
+            => Enumerable.Range(0, (int)(last - first + 1)).Select(i => new FailedLogonEventReader.ScannedRecord(first + i, null));
+
+        var read = FailedLogonEventReader.Scan("Application", 100, Floods(101, 60100));
+        Assert.True(read.Capped);
+        Assert.Empty(read.Events);
+        Assert.Equal(100 + FailedLogonEventReader.MaxScannedPerChannel, read.LastRecordId);
+
+        var saved = FailedLogonCursorLogic.NextSaved(read.LastRecordId, read.Capped, newestBeforeRead: 60100);
+        Assert.Equal(read.LastRecordId, saved);
+        Assert.Equal(ChannelStart.Resume, FailedLogonCursorLogic.Decide(saved, 101, 60100, false));
+
+        var next = FailedLogonEventReader.Scan("Application", saved, Floods(saved + 1, 60100));
+        Assert.False(next.Capped);
+        Assert.Equal(60100, next.LastRecordId);
+    }
+
+    [Fact]
+    public void ApplicationChannel_FailsWhenTheServiceListCannotBeRead()
+    {
+        var read = FailedLogonEventReader.Read(FailedLogonEventReader.Application, 42, CancellationToken.None, () => null);
+        Assert.True(read.Failed);
+        Assert.Equal(42, read.LastRecordId);
+        Assert.Empty(read.Events);
+    }
 }

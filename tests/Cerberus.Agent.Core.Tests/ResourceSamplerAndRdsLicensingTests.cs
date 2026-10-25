@@ -91,6 +91,35 @@ public sealed class ResourceSamplerAndRdsLicensingTests
         Assert.Equal(99.0, window.CpuMaxPct);
     }
 
+    [Theory]
+    [InlineData(1, null, true)]
+    [InlineData(1, 0, true)]
+    [InlineData(null, 1, true)]
+    [InlineData(0, 0, false)]
+    [InlineData(null, null, false)]
+    public void IsRdshInstalled_UsesServerManagerInstallStateWithTsAppCompatFallback(object? installState, object? tsAppCompat, bool expected)
+        => Assert.Equal(expected, RdsLicensingProbe.IsRdshInstalled(installState, tsAppCompat));
+
+    [Fact]
+    public void Read_RdshRoleWithTsAppCompatUnset_IsApplicable()
+    {
+        const string component = @"SOFTWARE\Microsoft\ServerManager\ServicingStorage\ServerComponentCache\RDS-RD-Server";
+        var info = RdsLicensingProbe.Read(Registry((component, "InstallState", 1)));
+        Assert.Equal("ok", info.Status);
+    }
+
+    [Theory]
+    [InlineData(30)]
+    [InlineData(10)]
+    [InlineData(7200)]
+    public void SharedRing_HoldsAtLeastTheMinimumWindow(int snapshotCeiling)
+    {
+        var seconds = ResourceSampler.SharedBufferSeconds(snapshotCeiling);
+        Assert.InRange(seconds, ResourceSampler.MinWindowSeconds, ResourceSampler.MaxBufferSeconds);
+        var sampler = new ResourceSampler(TimeProvider.System, ResourceSampler.DefaultInterval, seconds);
+        Assert.True(sampler.Capacity >= ResourceSampler.MinWindowSeconds / ResourceSampler.DefaultInterval.TotalSeconds);
+    }
+
     [Fact]
     public void WindowSeconds_UsesEffectiveSnapshotDelayClampedToMinimumAndCeiling()
     {

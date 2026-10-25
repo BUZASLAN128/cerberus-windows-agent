@@ -128,10 +128,11 @@ function Test-CommandAnchorsAreTestFixture([string]$AnchorsB64) {
   if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) {
     throw "The command trust anchor test fixture is missing ($fixtureFile); cannot verify that a preview or stable build does not use it."
   }
+  $lines = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Trim())).Split("`n") |
+    ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } }
+  try { $fixture = @(& $lines (Get-Content -LiteralPath $fixtureFile -Raw)) } catch { $fixture = @() }
+  if ($fixture.Count -eq 0) { throw "The command trust anchor test fixture cannot be decoded ($fixtureFile); cannot verify that a preview or stable build does not use it." }
   try {
-    $lines = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Trim())).Split("`n") |
-      ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } }
-    $fixture = @(& $lines (Get-Content -LiteralPath $fixtureFile -Raw))
     foreach ($line in @(& $lines $AnchorsB64)) { if ($fixture -contains $line) { return $true } }
   } catch { return $false }
   return $false

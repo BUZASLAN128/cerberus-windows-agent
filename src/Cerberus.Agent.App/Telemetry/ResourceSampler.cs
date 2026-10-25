@@ -17,7 +17,7 @@ internal sealed class ResourceSampler
     internal static ResourceSampler Shared { get; } = new(
         TimeProvider.System,
         DefaultInterval,
-        Math.Min(AgentTimingPolicy.Current.Bounds.SnapshotCeiling, MaxBufferSeconds));
+        SharedBufferSeconds(AgentTimingPolicy.Current.Bounds.SnapshotCeiling));
 
     private readonly object _gate = new();
     private readonly TimeProvider _time;
@@ -38,6 +38,9 @@ internal sealed class ResourceSampler
         _cpu = new double[capacity];
         _memMb = new long[capacity];
     }
+
+    /// <summary>Ring length in seconds: the snapshot ceiling, but never less than the minimum window a reader may ask for.</summary>
+    internal static int SharedBufferSeconds(int snapshotCeiling) => Math.Clamp(snapshotCeiling, MinWindowSeconds, MaxBufferSeconds);
 
     internal int Capacity => _at.Length;
 

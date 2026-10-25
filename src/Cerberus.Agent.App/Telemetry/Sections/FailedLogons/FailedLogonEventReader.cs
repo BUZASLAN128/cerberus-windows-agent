@@ -18,6 +18,8 @@ internal sealed record ChannelRead(
 internal static class FailedLogonEventReader
 {
     internal const int MaxEventsPerChannel = 20000;
+    // Bounds records scanned per read, matching or not: a flood of rejected records cannot stall the section.
+    internal const int MaxScannedPerChannel = 50000;
     internal const string Security = "Security";
     internal const string RdpCore = "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational";
     internal const string OpenSsh = "OpenSSH/Operational";
@@ -64,43 +66,79 @@ internal static class FailedLogonEventReader
         return record?.RecordId ?? 0;
     }
 
-    public static ChannelRead Read(string channel, long after, CancellationToken ct)
+    /// <summary>One scanned record: its id and the classified event (null when the record is not a failed logon).</summary>
+    internal readonly record struct ScannedRecord(long? RecordId, FailedLogonEvent? Event);
+
+    /// <param name="serviceLookup">Installed service names for the Application channel (null result = lookup failed); defaults to the live list.</param>
+    public static ChannelRead Read(string channel, long after, CancellationToken ct, Func<HashSet<string>?>? serviceLookup = null)
     {
-        var events = new List<FailedLogonEvent>();
-        var last = after;
-        var capped = false;
         try
         {
-            // Application-log providers are only trusted when the matching SQL Server service is installed.
-            var sqlServices = channel == Application ? FailedLogonProtocolProbe.ReadServiceNames() : null;
-            using var reader = new EventLogReader(new EventLogQuery(channel, PathType.LogName, Query(channel, after)));
-            while (true)
+            // Application-log providers are only trusted when the matching SQL Server service is installed. When the
+            // service list cannot be read the channel fails (cursor untouched) instead of silently dropping SQL events.
+            HashSet<string>? sqlServices = null;
+            if (channel == Application)
             {
-                ct.ThrowIfCancellationRequested();
-                using var record = reader.ReadEvent();
-                if (record is null)
-                    break;
-                if (events.Count >= MaxEventsPerChannel)
-                {
-                    capped = true;
-                    break;
-                }
-                if (record.RecordId is { } id && id > last)
-                    last = id;
-                var parsed = Parse(channel, record, sqlServices);
-                if (parsed is not null)
-                    events.Add(parsed);
+                sqlServices = (serviceLookup ?? FailedLogonProtocolProbe.TryReadServiceNames)();
+                if (sqlServices is null)
+                    return new ChannelRead(channel, Array.Empty<FailedLogonEvent>(), after, false, Present: true, Failed: true);
             }
-            return new ChannelRead(channel, events, last, capped, Present: true, Failed: false);
+            using var reader = new EventLogReader(new EventLogQuery(channel, PathType.LogName, Query(channel, after)));
+            return Scan(channel, after, Records(reader, channel, sqlServices), ct: ct);
         }
         catch (EventLogNotFoundException)
         {
-            return new ChannelRead(channel, events, after, false, Present: false, Failed: false);
+            return new ChannelRead(channel, Array.Empty<FailedLogonEvent>(), after, false, Present: false, Failed: false);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
         {
-            return new ChannelRead(channel, events, after, false, Present: true, Failed: true);
+            return new ChannelRead(channel, Array.Empty<FailedLogonEvent>(), after, false, Present: true, Failed: true);
         }
+    }
+
+    private static IEnumerable<ScannedRecord> Records(EventLogReader reader, string channel, HashSet<string>? sqlServices)
+    {
+        while (true)
+        {
+            using var record = reader.ReadEvent();
+            if (record is null)
+                yield break;
+            yield return new ScannedRecord(record.RecordId, Parse(channel, record, sqlServices));
+        }
+    }
+
+    /// <summary>
+    /// Walks records in id order. Stops, marked capped, after <paramref name="maxEvents"/> accepted events or
+    /// <paramref name="maxScanned"/> scanned records of any kind; the returned position is then the last scanned
+    /// record, so the next window continues right behind it even when none of the scanned records matched.
+    /// </summary>
+    internal static ChannelRead Scan(
+        string channel,
+        long after,
+        IEnumerable<ScannedRecord> records,
+        int maxEvents = MaxEventsPerChannel,
+        int maxScanned = MaxScannedPerChannel,
+        CancellationToken ct = default)
+    {
+        var events = new List<FailedLogonEvent>();
+        var last = after;
+        var scanned = 0;
+        var capped = false;
+        foreach (var record in records)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (events.Count >= maxEvents || scanned >= maxScanned)
+            {
+                capped = true;
+                break;
+            }
+            scanned++;
+            if (record.RecordId is { } id && id > last)
+                last = id;
+            if (record.Event is not null)
+                events.Add(record.Event);
+        }
+        return new ChannelRead(channel, events, last, capped, Present: true, Failed: false);
     }
 
     private static FailedLogonEvent? Parse(string channel, EventRecord record, HashSet<string>? sqlServices)

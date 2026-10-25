@@ -15,6 +15,7 @@ internal static class RdsLicensingProbe
     private const string PolicyKey = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
     private const string TermServiceParametersKey = @"SYSTEM\CurrentControlSet\Services\TermService\Parameters\LicenseServers";
     private const string GracePeriodKey = TerminalServerKey + @"\RCM\GracePeriod";
+    private const string RdshComponentKey = @"SOFTWARE\Microsoft\ServerManager\ServicingStorage\ServerComponentCache\RDS-RD-Server";
     private const int GracePeriodDays = 120;
     // Runs inside the 5 s server section budget of the sessions section, next to the WTS enumeration.
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(2);
@@ -42,7 +43,7 @@ internal static class RdsLicensingProbe
         Func<DateTime?>? readGraceLastWriteUtc = null,
         TimeProvider? time = null)
     {
-        if (getValue(TerminalServerKey, "TSAppCompat") is not 1)
+        if (!IsRdshInstalled(getValue(RdshComponentKey, "InstallState"), getValue(TerminalServerKey, "TSAppCompat")))
             return RdsLicensingInfo.NotApplicable;
 
         var mode = MapLicensingMode(
@@ -57,6 +58,10 @@ internal static class RdsLicensingProbe
             graceStartUtc?.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture),
             graceStartUtc is { } start ? EstimateGraceDaysLeft(start, now) : null);
     }
+
+    // The RDSH role is installed when Server Manager's component cache says so (InstallState 1); TSAppCompat is the
+    // application compatibility mode and stays as a fallback only.
+    internal static bool IsRdshInstalled(object? installState, object? tsAppCompat) => installState is 1 || tsAppCompat is 1;
 
     // WMI counts a started day as used: 120 - ceil(elapsed days), clamped to [0, 120].
     internal static int EstimateGraceDaysLeft(DateTime startUtc, DateTime nowUtc)
