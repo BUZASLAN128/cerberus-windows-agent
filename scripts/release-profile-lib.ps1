@@ -63,6 +63,48 @@ function Assert-ServerCommandAnchors([string]$AnchorsB64) {
   return ,$keyIds.ToArray()
 }
 
+# The runtime drops a command anchor that equals an update manifest public key
+# (AgentProfileMetadata.ParseAnchors), so such an anchor would authorize nothing. Rejects any
+# overlap, comparing RSA modulus and exponent as the runtime does. Run after Assert-ServerCommandAnchors.
+# $ManifestKeyListB64 holds base64 of each manifest public key PEM. Messages carry key ids only.
+function Assert-CommandAnchorsNotManifestKeys([string]$AnchorsB64, [string[]]$ManifestKeyListB64) {
+  $manifestKeys = [System.Collections.Generic.List[object]]::new()
+  foreach ($item in @($ManifestKeyListB64)) {
+    if ([string]::IsNullOrWhiteSpace($item)) { continue }
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+      $rsa.ImportFromPem([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($item.Trim())))
+      $manifestKeys.Add($rsa.ExportParameters($false))
+    } catch {
+      throw "A manifest public key could not be read for the command trust anchor overlap check."
+    } finally { $rsa.Dispose() }
+  }
+  $text = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($AnchorsB64.Trim()))
+  $overlaps = [System.Collections.Generic.List[string]]::new()
+  foreach ($rawLine in $text.Split("`n")) {
+    $line = $rawLine.Trim()
+    if ($line.Length -eq 0) { continue }
+    $spki = [Convert]::FromBase64String($line)
+    $rsa = [System.Security.Cryptography.RSA]::Create()
+    try {
+      $read = 0
+      $rsa.ImportSubjectPublicKeyInfo($spki, [ref]$read)
+      $anchor = $rsa.ExportParameters($false)
+    } finally { $rsa.Dispose() }
+    foreach ($manifestKey in $manifestKeys) {
+      if ([System.Linq.Enumerable]::SequenceEqual([byte[]]$manifestKey.Modulus, [byte[]]$anchor.Modulus) -and
+          [System.Linq.Enumerable]::SequenceEqual([byte[]]$manifestKey.Exponent, [byte[]]$anchor.Exponent)) {
+        $keyId = ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($spki)).Replace("-", "").ToLowerInvariant()).Substring(0, 16)
+        if (-not $overlaps.Contains($keyId)) { $overlaps.Add($keyId) }
+        break
+      }
+    }
+  }
+  if ($overlaps.Count -gt 0) {
+    throw "Command trust anchor(s) $($overlaps -join ', ') equal an update manifest public key; the agent drops them. Use a separate command signing key."
+  }
+}
+
 $script:ReleaseTimingKeys = @(
   "AgentPollFloorSeconds", "AgentPollCeilingSeconds",
   "AgentSnapshotFloorSeconds", "AgentSnapshotCeilingSeconds", "AgentSnapshotDefaultSeconds")
@@ -110,6 +152,7 @@ function Get-ReleaseProfileBuild(
   return [pscustomobject]@{
     MsBuildArgs = $shared
     MsiArgs = $msi
+    AnchorsB64 = $anchors
     AssetSuffix = $(if ($BuildProfile -eq "server") { "-server" } else { "" })
   }
 }

@@ -161,6 +161,9 @@ $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifest
 $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
 $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 }
+if ($BuildProfile -eq "server") {
+  Assert-CommandAnchorsNotManifestKeys $releaseProfile.AnchorsB64 $(if ($tokenMode) { $tokenKeyListB64 } else { @($manifestPublicKeyB64) })
+}
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = if ($Channel -eq "stable") {
