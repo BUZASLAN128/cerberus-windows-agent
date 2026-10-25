@@ -380,6 +380,8 @@ internal static class ServiceMode
         var diagnosticSchedulerTask = new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
 #endif
 
+        var resourceSamplerTask = ResourceSampler.Shared.RunAsync(serviceCts.Token);
+
         try
         {
             await loop.RunAsync(serviceCts.Token);
@@ -387,6 +389,7 @@ internal static class ServiceMode
         finally
         {
             serviceCts.Cancel();
+            await resourceSamplerTask.ConfigureAwait(false);
             try
             {
                 await diagnosticSchedulerTask.ConfigureAwait(false);

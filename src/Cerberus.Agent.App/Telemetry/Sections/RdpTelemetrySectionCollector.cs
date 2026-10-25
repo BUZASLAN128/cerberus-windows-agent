@@ -26,6 +26,7 @@ internal sealed class RdpTelemetrySectionCollector : IWindowsTelemetrySectionCol
         var portProbe = await ProbeLocalRdpPortAsync(
             portNumber.HasValue ? checked((int)portNumber.Value) : null,
             ct).ConfigureAwait(false);
+        var licensing = await RdsLicensingProbe.ReadAsync(ct).ConfigureAwait(false);
 
         return new
         {
@@ -39,6 +40,7 @@ internal sealed class RdpTelemetrySectionCollector : IWindowsTelemetrySectionCol
             port_probe_status = portProbe.Status,
             port_listening_local = portProbe.Reachable,
             port_probe_latency_ms = portProbe.LatencyMs,
+            licensing = licensing.ToPayload(),
         };
     }
 
