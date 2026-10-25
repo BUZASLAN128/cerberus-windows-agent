@@ -84,6 +84,16 @@ public sealed class FailedLogonClassifierTests
     }
 
     [Fact]
+    public void Sql18456_ReadsOnlyThePositionalClientField()
+    {
+        // %1 account and %2 reason are attacker-controlled text: a crafted [CLIENT: ...] there is ignored.
+        Assert.Equal("203.0.113.1", FailedLogonClassifier.SqlClientIpFromFields(
+            new[] { "bob [CLIENT: 198.51.100.9]", "reason [CLIENT: 198.51.100.10]", "[CLIENT: 203.0.113.1]", "[CLIENT: 192.0.2.1]" }));
+        Assert.Null(FailedLogonClassifier.SqlClientIpFromFields(new[] { "bob [CLIENT: 198.51.100.9]", "reason" }));
+        Assert.Null(FailedLogonClassifier.SqlClientIpFromFields(new[] { "bob", "[CLIENT: 198.51.100.9]", "no client here" }));
+    }
+
+    [Fact]
     public void Other_AndUnusableAddresses_CountButAreNotGrouped()
     {
         var t = FailedLogonClassifier.Tally(new[]
@@ -240,6 +250,17 @@ public sealed class FailedLogonClassifierTests
             File.WriteAllText(path, "{ not json");
             store.Load(out invalid);
             Assert.True(invalid);
+
+            File.WriteAllText(path, "{\"version\":2,\"channels\":{}}");
+            store.Load(out invalid);
+            Assert.True(invalid);
+
+            // A corrupt cursor is never trusted: the window reports cursor_reset and the file is not rewritten by a peek.
+            File.WriteAllText(path, "{ not json");
+            var report = JsonDocument.Parse(JsonSerializer.Serialize(
+                FailedLogonSection.Collect(store, T0, commit: false, CancellationToken.None))).RootElement;
+            Assert.True(report.GetProperty("cursor_reset").GetBoolean());
+            Assert.Equal("{ not json", File.ReadAllText(path));
         }
         finally
         {

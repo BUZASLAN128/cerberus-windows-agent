@@ -78,6 +78,13 @@ internal static partial class FailedLogonClassifier
         return m.Success ? m.Groups[1].Value : null;
     }
 
+    /// <summary>
+    /// Client address of an 18456 event from its fixed third data field (%3, "[CLIENT: x]"). The other fields carry the
+    /// account name and reason, which a caller writing to the Application log controls, so they are never scanned.
+    /// </summary>
+    internal static string? SqlClientIpFromFields(IReadOnlyList<string> fields)
+        => ParseSqlClientIp(fields.Count > 2 ? fields[2] : null);
+
     /// <summary>Canonical address text, or null for missing, unparsable, loopback and unspecified addresses.</summary>
     internal static string? NormalizeIp(string? raw)
     {

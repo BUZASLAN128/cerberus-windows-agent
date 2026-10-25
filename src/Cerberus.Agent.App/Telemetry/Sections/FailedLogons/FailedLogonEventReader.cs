@@ -104,7 +104,7 @@ internal static class FailedLogonEventReader
     private static FailedLogonEvent? Parse(string channel, EventRecord record)
     {
         var time = record.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : DateTimeOffset.UtcNow;
-        Dictionary<string, string> data;
+        EventData data;
         try
         {
             data = ReadData(record.ToXml());
@@ -126,26 +126,28 @@ internal static class FailedLogonEventReader
                 return new FailedLogonEvent(
                     FailedLogonSource.Security4625,
                     time,
-                    data.GetValueOrDefault("IpAddress"),
-                    int.TryParse(data.GetValueOrDefault("LogonType"), out var type) ? type : null,
-                    data.GetValueOrDefault("ProcessName"));
+                    data.Named.GetValueOrDefault("IpAddress"),
+                    int.TryParse(data.Named.GetValueOrDefault("LogonType"), out var type) ? type : null,
+                    data.Named.GetValueOrDefault("ProcessName"));
             case RdpCore:
-                var ip = data.GetValueOrDefault("IPString") ?? data.Values.FirstOrDefault(v => FailedLogonClassifier.NormalizeIp(v) is not null);
-                return new FailedLogonEvent(FailedLogonSource.RdpCore140, time, ip);
+                // Fixed manifest field only: no scan of other values.
+                return new FailedLogonEvent(FailedLogonSource.RdpCore140, time, data.Named.GetValueOrDefault("IPString"));
             case OpenSsh:
-                foreach (var value in data.Values)
+                foreach (var value in data.Positional)
                     if (FailedLogonClassifier.ParseSshFailedIp(value) is { } sshIp)
                         return new FailedLogonEvent(FailedLogonSource.OpenSsh, time, sshIp);
                 return null;
             case Application:
                 if (!IsSqlProvider(record.ProviderName))
                     return null;
-                // The client address is the last value; the account name (earlier) is attacker-controlled text.
-                foreach (var value in data.Values.Reverse())
-                    if (FailedLogonClassifier.ParseSqlClientIp(value) is { } sqlIp)
-                        return new FailedLogonEvent(FailedLogonSource.Sql18456, time, sqlIp);
-                // 18456 without a client address is still a failed SQL logon.
-                return new FailedLogonEvent(FailedLogonSource.Sql18456, time, null);
+                // 18456 template: %1 account, %2 reason, %3 "[CLIENT: x]". The Application log accepts writes from
+                // non-admin callers, so only the third data field is read: no scan of the other values. A failed
+                // SQL logon without a usable address is still counted. (Not filtered by event UserId: the service
+                // account differs per install and is not reliably known to the agent.)
+                return new FailedLogonEvent(
+                    FailedLogonSource.Sql18456,
+                    time,
+                    FailedLogonClassifier.SqlClientIpFromFields(data.Positional));
             default:
                 return null;
         }
@@ -155,21 +157,26 @@ internal static class FailedLogonEventReader
         => string.Equals(provider, "MSSQLSERVER", StringComparison.OrdinalIgnoreCase)
            || (provider is not null && provider.StartsWith("MSSQL$", StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Event data values by name (unnamed values get "#n"). Values stay in memory only for classification.</summary>
-    private static Dictionary<string, string> ReadData(string xml)
+    private sealed record EventData(Dictionary<string, string> Named, List<string> Positional);
+
+    /// <summary>
+    /// Event data values by name (unnamed values get "#n") and in template order. Values stay in memory only for
+    /// classification; account-name fields are dropped from the named set.
+    /// </summary>
+    private static EventData ReadData(string xml)
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var named = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var positional = new List<string>();
         var doc = XDocument.Parse(xml);
-        var n = 0;
         foreach (var d in doc.Descendants(Ns + "Data"))
         {
-            var name = (string?)d.Attribute("Name") ?? $"#{n}";
-            n++;
+            var name = (string?)d.Attribute("Name") ?? $"#{positional.Count}";
+            positional.Add(d.Value);
             if (string.Equals(name, "TargetUserName", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(name, "SubjectUserName", StringComparison.OrdinalIgnoreCase))
                 continue;
-            result[name] = d.Value;
+            named[name] = d.Value;
         }
-        return result;
+        return new EventData(named, positional);
     }
 }

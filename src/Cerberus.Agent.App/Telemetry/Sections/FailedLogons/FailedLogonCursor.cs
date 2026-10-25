@@ -62,64 +62,75 @@ internal static class FailedLogonCursorLogic
     internal static bool IsReset(ChannelStart decision) => decision is ChannelStart.Reset or ChannelStart.Gap;
 }
 
-/// <summary>Cursor file in the agent data directory (<c>failed-logons-cursor.v1.json</c>), written atomically.</summary>
+/// <summary>
+/// Cursor file <c>&lt;DataDir&gt;\Privilegedailed-logons-cursor.v1.json</c>, kept through <see cref="ProtectedMachineFile"/>:
+/// trusted directory chain, owner and DACL, no reparse point, new files created with a SYSTEM/Administrators-only DACL
+/// under a unique temp name and moved over the target. Anything that fails validation or parsing is never trusted.
+/// </summary>
 internal sealed class FailedLogonCursorStore
 {
     internal const string FileName = "failed-logons-cursor.v1.json";
+    private const long MaxFileBytes = 64 * 1024;
 
     private readonly string _path;
+    private readonly ProtectedMachineFile _file;
 
     public FailedLogonCursorStore(string? path = null)
     {
-        _path = path ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            AgentInstallIdentity.DataDirName,
-            FileName);
+        _path = path ?? ProtectedMachineFile.DefaultPath(FileName);
+        _file = new ProtectedMachineFile(_path);
     }
 
-    /// <summary>Missing file gives a fresh state (first run); an unreadable or malformed file gives <paramref name="invalid"/>=true.</summary>
+    /// <summary>Missing file gives a fresh state (first run); an untrusted, unreadable or malformed file gives <paramref name="invalid"/>=true.</summary>
     public FailedLogonCursorState Load(out bool invalid)
     {
         invalid = false;
         try
         {
-            if (!File.Exists(_path))
+            _file.ValidateDirectory();
+            if (!_file.Exists())
                 return new FailedLogonCursorState();
-            var info = new FileInfo(_path);
-            if (info.Length > 64 * 1024)
+            _file.ValidateFile();
+            if (new FileInfo(_path).Length <= MaxFileBytes
+                && JsonSerializer.Deserialize<FailedLogonCursorState>(File.ReadAllBytes(_path)) is { Version: 1, Channels: not null } state)
             {
-                invalid = true;
-                return new FailedLogonCursorState();
+                state.Channels = new Dictionary<string, long>(state.Channels, StringComparer.OrdinalIgnoreCase);
+                return state;
             }
-            var state = JsonSerializer.Deserialize<FailedLogonCursorState>(File.ReadAllText(_path));
-            if (state is null || state.Version != 1 || state.Channels is null)
-            {
-                invalid = true;
-                return new FailedLogonCursorState();
-            }
-            state.Channels = new Dictionary<string, long>(state.Channels, StringComparer.OrdinalIgnoreCase);
-            return state;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex) || ex is JsonException)
         {
-            invalid = true;
-            return new FailedLogonCursorState();
         }
+        invalid = true;
+        return new FailedLogonCursorState();
     }
 
     /// <summary>Returns false when the state could not be written (the next window then repeats; never throws).</summary>
     public bool Save(FailedLogonCursorState state)
     {
+        var tempPath = $"{_path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            var temp = _path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(state));
-            File.Move(temp, _path, overwrite: true);
+            _file.EnsureDirectory();
+            using (var stream = _file.CreateTemp(tempPath))
+            {
+                stream.Write(JsonSerializer.SerializeToUtf8Bytes(state));
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(tempPath, _path, overwrite: true);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
         {
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+            {
+                // The temp name is unique; a leftover file is never read.
+            }
             return false;
         }
     }
