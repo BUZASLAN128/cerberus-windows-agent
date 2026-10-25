@@ -34,7 +34,7 @@ internal static class AgentLegalConsent
 
     private const string SchemaVersion = "cerberus-agent-legal-consent.v1";
     private const string FileName = "legal-consent.json";
-    private const string MsiConsentRegistryPath = @"Software\Cerberus\WindowsAgent\LegalConsent";
+    private const string MsiConsentRegistryPath = AgentInstallIdentity.LegalConsentRegistryPath;
     private const string MsiConsentSource = "msi_eula_dialog";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {

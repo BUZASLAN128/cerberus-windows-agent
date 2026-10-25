@@ -207,7 +207,7 @@ internal static class AgentUpdateTrustFactory
 
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(@"Software\Cerberus\WindowsAgent", writable: false);
+            using var key = Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath, writable: false);
             if (key is null)
                 return values;
 

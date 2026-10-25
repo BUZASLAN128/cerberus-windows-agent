@@ -145,7 +145,7 @@ internal sealed class DiagnosticBundleScheduler
     private static string DefaultStatePath()
         => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "state",
             "diagnostic-scheduler.json");
 }

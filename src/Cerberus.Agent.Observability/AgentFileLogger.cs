@@ -44,7 +44,7 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
     private static string GetLogDirectory(Environment.SpecialFolder folder)
         => Path.Combine(
             Environment.GetFolderPath(folder),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "logs");
 
     public void Info(string message) => Write("INFO", message, null);

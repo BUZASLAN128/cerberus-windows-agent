@@ -3,14 +3,15 @@ using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.App;
 
 internal static class Program
 {
-    private const string UiMutexName = "Global\\CerberusAgent.Ui.SingleInstance";
-    private const string UiPipeName = "CerberusAgent.Ui.SingleInstancePipe";
+    private const string UiMutexName = AgentInstallIdentity.UiMutexName;
+    private const string UiPipeName = AgentInstallIdentity.UiPipeName;
     [STAThread]
     public static int Main(string[] args)
     {

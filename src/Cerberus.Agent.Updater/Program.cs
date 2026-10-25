@@ -286,8 +286,8 @@ internal static class Program
 
     private static string ResolveRuntimeRoot()
     {
-        var runtimeRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "runtimeRoot");
-        var installRoot = ReadRegistryString(@"Software\Cerberus\WindowsAgent", "installRoot");
+        var runtimeRoot = ReadRegistryString(AgentInstallIdentity.RegistryPath, "runtimeRoot");
+        var installRoot = ReadRegistryString(AgentInstallIdentity.RegistryPath, "installRoot");
         var resolvedRuntimeRoot = AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(runtimeRoot, installRoot);
 
         AgentUpdateSecurity.ValidateTrustedPath(

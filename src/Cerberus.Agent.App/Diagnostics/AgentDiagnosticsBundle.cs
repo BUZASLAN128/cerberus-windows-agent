@@ -22,7 +22,7 @@ internal static class AgentDiagnosticsBundle
 
         outputDir ??= Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "diagnostics");
         Directory.CreateDirectory(outputDir);
 

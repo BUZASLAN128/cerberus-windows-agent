@@ -2,14 +2,15 @@ using System.IO;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
 
 internal static class SingleInstanceGuard
 {
     // Tray-only: keep this stable so all versions compete on the same single-instance lock.
-    private const string MutexName = "Global\\CerberusAgent.Tray.SingleInstance";
-    private const string PipeName = "CerberusAgent.Tray.SingleInstancePipe";
+    private const string MutexName = AgentInstallIdentity.TrayMutexName;
+    private const string PipeName = AgentInstallIdentity.TrayPipeName;
 
     private static Mutex? _mutex;
     private static CancellationTokenSource? _serverCts;

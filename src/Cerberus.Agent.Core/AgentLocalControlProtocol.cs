@@ -23,7 +23,7 @@ public sealed record AgentLocalControlResponse(
 public static class AgentLocalControlProtocol
 {
     public const string SchemaVersion = "agent.local-control.v1";
-    public const string PipeName = "CerberusAgent.Control.v1";
+    public const string PipeName = AgentInstallIdentity.ControlPipeName;
     public const int MaxFrameBytes = 16 * 1024;
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {

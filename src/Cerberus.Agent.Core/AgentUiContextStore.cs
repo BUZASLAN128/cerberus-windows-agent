@@ -112,11 +112,11 @@ public static class AgentUiContextStore
     {
         yield return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "ui-context.json");
         yield return Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "ui-context.json");
     }
 

@@ -4,7 +4,7 @@ public static class HeartbeatBackoffResetSignal
 {
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "CerberusAgent",
+        AgentInstallIdentity.DataDirName,
         "heartbeat-backoff-reset.signal");
 
     public static bool TryRequest(string reason)

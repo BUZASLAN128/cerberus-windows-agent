@@ -1312,7 +1312,7 @@ internal static class AgentUpdateLocalService
         var directory = Path.GetDirectoryName(AgentUpdateCoordinator.ResolveUpdaterPath())!;
         var expected = Path.Combine(directory, "Cerberus.Agent.Service.exe");
         if (!string.Equals(Environment.ProcessPath, expected, StringComparison.OrdinalIgnoreCase)) return false;
-        using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"Software\Cerberus\WindowsAgent", writable: false);
+        using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath, writable: false);
         foreach (var (file, name) in new[] { (expected, "serviceExeSha256"), (Path.Combine(directory, "Cerberus.Agent.Service.dll"), "serviceAssemblySha256") })
         {
             var digest = key?.GetValue(name)?.ToString();
