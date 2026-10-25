@@ -150,7 +150,8 @@ public sealed class HeartbeatLoop
                 {
                     _log.Warn(
                         $"Agent version blocked by server policy: version={_agentVersion}, reason={hb.VersionPolicy?.Reason ?? "unknown"}");
-                    var blockedDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20), 300);
+                    _commandProcessor.SignalOutbox();
+                    var blockedDelay =_timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20), 300);
                     await Task.Delay(TimeSpan.FromSeconds(blockedDelay), ct);
                     continue;
                 }
@@ -209,6 +210,7 @@ public sealed class HeartbeatLoop
 
                 if (skipCommands)
                 {
+                    _commandProcessor.SignalOutbox();
                     var controlDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 60), 0.20), 60);
                     await Task.Delay(TimeSpan.FromSeconds(controlDelay), ct);
                     continue;

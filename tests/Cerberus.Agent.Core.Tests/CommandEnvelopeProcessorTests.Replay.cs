@@ -232,6 +232,26 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal(1, h.Ping.Calls);
     }
 
+    [Fact]
+    public async Task SignalOutbox_ResendsAFailedResultWithoutProcessingAnyCommand()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Backend.Respond = (r, _) => Status(r.Leaf == "result" ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK);
+        var cmd = h.Cmd();
+        await h.Process(cmd);
+        await Wait.UntilAsync(() => h.Backend.Results.Count >= 1 && h.Queue.QueuedCount == 0, "first attempt");
+        Assert.False(h.Record(cmd)!.ResultSubmitted);
+        var before = h.Backend.Results.Count;
+
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Processor.SignalOutbox();
+        await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "result confirmed by the signal alone");
+
+        Assert.True(h.Backend.Results.Count > before);
+        Assert.Equal(1, h.Ping.Calls);
+        Assert.Single(h.Backend.Acks);
+    }
+
     /// <summary>Leaves a <c>started</c> record on disk, as a process killed mid-run would, then restarts.</summary>
     private static async Task<AgentCommand> CrashWhileRunningAsync(EnvelopeHarness h)
     {

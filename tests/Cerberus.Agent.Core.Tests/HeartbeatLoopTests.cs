@@ -44,6 +44,132 @@ public sealed class HeartbeatLoopTests
     }
 
     [Fact]
+    public async Task RunAsync_SignalsOutboxWithoutRunningCommands_WhenResponseSkipsCommands()
+    {
+        var handler = new LoopCaptureHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
+        var processor = new OutboxRecordingProcessor();
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            responseHandler: new HeartbeatResponseHandler(new StaticSecretStore(), NullAgentLogger.Instance),
+            log: NullAgentLogger.Instance,
+            commandProcessor: processor);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await processor.FirstCall.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        // Desktop: the quarantine skips commands but still requests the result outbox pass.
+        // Server: the unsigned quarantine is not a skip, so commands run as usual.
+        if (AgentBuildProfile.IsServer)
+        {
+            Assert.True(processor.ProcessCalls >= 1);
+            Assert.Equal(0, processor.SignalCalls);
+        }
+        else
+        {
+            Assert.True(processor.SignalCalls >= 1);
+            Assert.Equal(0, processor.ProcessCalls);
+        }
+    }
+
+#if !CERBERUS_SERVER_PROFILE
+    [Fact]
+    public async Task RunAsync_SignalsOutboxWithoutRunningCommands_WhenVersionUpgradeRequired()
+    {
+        using var http = new HttpClient(new UpgradeRequiredHandler()) { BaseAddress = new Uri("http://backend.test") };
+        var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(
+            Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
+        var processor = new OutboxRecordingProcessor();
+        var loop = new HeartbeatLoop(
+            client,
+            dispatcher,
+            minDelayOnError: TimeSpan.FromMilliseconds(10),
+            responseHandler: new HeartbeatResponseHandler(new StaticSecretStore(), NullAgentLogger.Instance),
+            log: NullAgentLogger.Instance,
+            commandProcessor: processor);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var runTask = loop.RunAsync(cts.Token);
+        await processor.FirstCall.WaitAsync(cts.Token);
+        cts.Cancel();
+        await runTask;
+
+        // A version-blocked agent runs no commands but must still retry a result whose POST failed earlier.
+        Assert.True(processor.SignalCalls >= 1);
+        Assert.Equal(0, processor.ProcessCalls);
+    }
+
+    private sealed class UpgradeRequiredHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/heartbeat", StringComparison.Ordinal))
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "pending_commands": [
+                        {"id": "cmd-1", "type": "test.command", "idempotency_key": "cmd-1", "payload": {}}
+                      ],
+                      "next_poll_seconds": 60,
+                      "server_time": 1,
+                      "server_time_utc": "2026-05-08T00:00:00Z",
+                      "command_batch_size": 1,
+                      "next_snapshot_seconds": 60,
+                      "config_version": "agent-config.v1",
+                      "lifecycle_state": "connected",
+                      "version_policy": {"decision": "upgrade_required", "reason": "blocked_version"},
+                      "update": null,
+                      "revoke": null,
+                      "quarantine": null
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json"),
+            });
+        }
+    }
+#endif
+
+    private sealed class OutboxRecordingProcessor : IHeartbeatCommandProcessor
+    {
+        private int _process;
+        private int _signal;
+        private readonly TaskCompletionSource _first = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int ProcessCalls => Volatile.Read(ref _process);
+        public int SignalCalls => Volatile.Read(ref _signal);
+        public Task FirstCall => _first.Task;
+
+        public Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _process);
+            _first.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public void SignalOutbox()
+        {
+            Interlocked.Increment(ref _signal);
+            _first.TrySetResult();
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_SubmitsRefreshSnapshotOnNextHeartbeat_AndKeepsChangeMadeDuringCollectionPending()
     {
         var provider = new RefreshableTelemetryProvider();

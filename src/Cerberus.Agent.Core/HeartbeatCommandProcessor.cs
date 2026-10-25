@@ -7,6 +7,14 @@ namespace Cerberus.Agent.Core;
 public interface IHeartbeatCommandProcessor
 {
     Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct);
+
+    /// <summary>
+    /// Wakes the result outbox without accepting or running any command. The loop calls it
+    /// when the server's control state skips commands. Default: nothing to drain.
+    /// </summary>
+    void SignalOutbox()
+    {
+    }
 }
 
 /// <summary>Inline ack, dispatch and result for every entry, as the loop always did.</summary>

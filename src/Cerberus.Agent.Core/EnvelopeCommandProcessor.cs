@@ -83,6 +83,8 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         }
     }
 
+    public void SignalOutbox() => _queue.SignalHeartbeat();
+
     private async Task ProcessEnvelopesAsync(List<AgentCommand> envelopes, CancellationToken ct)
     {
         var agentId = await _queue.CurrentAgentIdAsync(ct).ConfigureAwait(false);
