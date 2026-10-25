@@ -81,4 +81,52 @@ public sealed class SanitizerTests
             Assert.Contains("\"client_secret\":\"[REDACTED]\"", redacted);
         }
     }
+    private const string Hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private const string Hex63 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde";
+    private static readonly string FpA = "sha256:" + string.Concat(Enumerable.Repeat("0123456789abcdef", 4));
+    private static readonly string FpB = "sha256:" + new string('b', 64);
+
+    [Theory]
+    [InlineData("Agent key fingerprint={A}")]
+    [InlineData("Agent key fingerprint replaced old={A} new={B}")]
+    [InlineData("reenrollment_proof_required fingerprint={A}")]
+    public void Redact_KeepsTheSha256KeyFingerprintInOperatorLogLines(string template)
+    {
+        var line = template.Replace("{A}", FpA).Replace("{B}", FpB);
+
+        Assert.Equal(line, Sanitizer.Redact(line));
+    }
+
+    [Fact]
+    public void Redact_StillRedactsSecretsNextToAFingerprint()
+    {
+        var bareHex = string.Concat(Enumerable.Repeat("0123456789abcdef", 4));
+        var base64 = Convert.ToBase64String(Enumerable.Range(1, 36).Select(i => (byte)(i * 7)).ToArray());
+        Assert.Equal(48, base64.Length);
+
+        var redacted = Sanitizer.Redact($"fingerprint={FpA} bare={bareHex} upper={bareHex.ToUpperInvariant()} blob={base64}");
+
+        Assert.Contains(FpA, redacted);
+        Assert.Equal(1, redacted.Split(FpA).Length - 1);
+        Assert.DoesNotContain(bareHex, redacted.Replace(FpA, ""));
+        Assert.DoesNotContain(bareHex.ToUpperInvariant(), redacted);
+        Assert.DoesNotContain(base64, redacted);
+        Assert.Equal(3, redacted.Split("[REDACTED_SECRET]").Length - 1);
+    }
+
+    [Theory]
+    [InlineData("sha256:" + Hex + "0")]
+    [InlineData("xsha256:" + Hex)]
+    [InlineData("sha256:" + Hex + "=")]
+    [InlineData("SHA256:" + Hex)]
+    [InlineData("sha256:0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF")]
+    [InlineData("sha256:" + Hex63)]
+    [InlineData(Hex)]
+    public void Redact_DoesNotExemptValuesThatAreNotTheExactFingerprintForm(string value)
+    {
+        var redacted = Sanitizer.Redact("fingerprint=" + value);
+
+        Assert.DoesNotContain("0123456789abcdef0123456789abcdef", redacted, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[REDACTED_SECRET]", redacted);
+    }
 }

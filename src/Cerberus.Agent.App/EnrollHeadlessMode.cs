@@ -390,8 +390,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
     {
         try
         {
-            using var reader = new StreamReader(FingerprintPath, Encoding.UTF8);
-            var first = reader.ReadLine()?.Trim();
+            var first = ProtectedFingerprintFile.ReadFirstLine(FingerprintPath)?.Trim();
             return first is not null && FingerprintLine.IsMatch(first) ? first : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -406,7 +405,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         var temporary = FingerprintPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, content, new UTF8Encoding(false));
+            ProtectedFingerprintFile.Write(temporary, content);
             File.Move(temporary, FingerprintPath, overwrite: true);
         }
         finally

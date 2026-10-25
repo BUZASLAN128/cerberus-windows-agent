@@ -1,4 +1,6 @@
 using Cerberus.Agent.App;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -127,6 +129,46 @@ public sealed class EnrollHeadlessModeTests
         Assert.DoesNotContain(Proof, host.Log.Text, StringComparison.Ordinal);
         Assert.DoesNotContain(Proof, stdout + stderr, StringComparison.Ordinal);
         Assert.DoesNotContain(Proof, host.FingerprintFile ?? "", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Fingerprint_file_that_a_standard_user_could_write_reads_as_no_fingerprint()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "cerberus-fp-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            File.WriteAllText(path, "Agent key fingerprint=sha256:" + new string('c', 64) + Environment.NewLine);
+            var acl = new FileInfo(path).GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.WriteData, AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(acl);
+
+            Assert.Null(ProtectedFingerprintFile.ReadFirstLine(path));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Protected_fingerprint_file_round_trips_with_a_protected_dacl_that_gives_users_read_only()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        // Setting the SYSTEM/Administrators owner needs an elevated token; the unelevated case is not covered here.
+        if (!identity.IsSystem && !new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) return;
+        var path = Path.Combine(Path.GetTempPath(), "cerberus-fp-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            var line = "Agent key fingerprint=sha256:" + new string('d', 64);
+            ProtectedFingerprintFile.Write(path, line + Environment.NewLine + "agent_id=a1" + Environment.NewLine);
+
+            Assert.Equal(line, ProtectedFingerprintFile.ReadFirstLine(path));
+            var acl = new FileInfo(path).GetAccessControl();
+            Assert.True(acl.AreAccessRulesProtected);
+            var users = acl.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
+                .Where(r => ((SecurityIdentifier)r.IdentityReference).IsWellKnown(WellKnownSidType.BuiltinUsersSid)).ToList();
+            Assert.Single(users);
+            Assert.Equal(FileSystemRights.Read, users[0].FileSystemRights & ~FileSystemRights.Synchronize);
+        }
+        finally { File.Delete(path); }
     }
 
 #if CERBERUS_SERVER_PROFILE

@@ -55,6 +55,11 @@ public static class Sanitizer
         "\\b(?:[A-Za-z0-9+/]{48,}={0,2}|[A-Za-z0-9_-]{48,})\\b",
         RegexOptions.Compiled);
 
+    // The public key fingerprint ("sha256:" + 64 lowercase hex) is operator-visible. Bare 64-hex stays redacted.
+    private static readonly Regex KeyFingerprint = new(
+        "(?<![A-Za-z0-9+/_-])sha256:[0-9a-f]{64}(?![A-Za-z0-9+/_=-])",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     public static string Redact(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -62,6 +67,23 @@ public static class Sanitizer
         if (!MayContainSecret(value))
             return value;
 
+        List<string>? kept = null;
+        var v = KeyFingerprint.Replace(value, m =>
+        {
+            (kept ??= []).Add(m.Value);
+            return "fp" + (kept.Count - 1) + "";
+        });
+        v = RedactSecrets(v);
+        if (kept is not null)
+        {
+            for (var i = 0; i < kept.Count; i++)
+                v = v.Replace("fp" + i + "", kept[i], StringComparison.Ordinal);
+        }
+        return v;
+    }
+
+    private static string RedactSecrets(string value)
+    {
         var v = value;
         v = RedactStructuredJson(v);
         v = SecretLike.Replace(v, "$1=[REDACTED]");

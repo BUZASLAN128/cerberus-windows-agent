@@ -276,7 +276,7 @@ public sealed class HeadlessEnrollmentTests
 
         Assert.Equal(4, result.ExitCode);
         Assert.Equal("credentials_not_saved", result.Code);
-        Assert.DoesNotContain(log.Text, Proof(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Proof(), log.Text, StringComparison.Ordinal);
     }
 
     [Fact]
