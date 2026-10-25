@@ -25,6 +25,8 @@ internal interface IHeadlessHost
     HeadlessEnrollmentOptions BuildOptions(string backendUrl);
     bool HasMachineCredentials();
     Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct);
+    /// <summary>Delay between state re-reads; tests replace it.</summary>
+    Task DelayAsync(TimeSpan delay, CancellationToken ct) => Task.Delay(delay, ct);
     ISecretStore OpenDestination(bool userScope);
     HttpClient CreateHttpClient(Uri backend);
     /// <summary>Hands the saved pending credentials to the service (<c>false</c>) or commits them directly (<c>true</c>). Null on success, otherwise a code.</summary>
@@ -33,6 +35,8 @@ internal interface IHeadlessHost
     void WriteFingerprintFile(string content);
     Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct);
     IAgentLogger OpenLog();
+    /// <summary>Removes the staged pending credentials and the adopt marker. Server profile only; the desktop keeps them.</summary>
+    Task DiscardPendingEnrollmentAsync(CancellationToken ct) => Task.CompletedTask;
 #if !CERBERUS_SERVER_PROFILE
     void InstallDesktopService();
 #endif
@@ -146,18 +150,9 @@ internal static class EnrollHeadlessMode
         if (string.IsNullOrWhiteSpace(backend))
             return new(HeadlessEnrollmentExit.BadInput, "backend_not_configured");
 
-        AgentLifecycleSnapshot state;
-        bool hasCredentials;
-        try
-        {
-            state = await host.LoadLifecycleAsync(ct).ConfigureAwait(false);
-            hasCredentials = host.HasMachineCredentials();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            log.Error($"Local enrollment state could not be read ({ex.GetType().Name}).");
+        var loaded = await EnrollHeadlessState.LoadAsync(host, serviceState != HeadlessServiceState.NotInstalled, log, ct).ConfigureAwait(false);
+        if (loaded is not var (state, hasCredentials))
             return new(HeadlessEnrollmentExit.Refused, "state_unreadable");
-        }
 
         var oldFingerprint = host.ReadFingerprintLine();
         using var http = host.CreateHttpClient(new Uri(backend));
@@ -173,6 +168,7 @@ internal static class EnrollHeadlessMode
             if (failure is not null)
             {
                 log.Error($"Enrolled credentials were not activated ({failure}).");
+                await DiscardPendingAsync(host, log).ConfigureAwait(false);
                 return new(HeadlessEnrollmentExit.NewProofRequired, failure);
             }
         }
@@ -180,6 +176,7 @@ internal static class EnrollHeadlessMode
         {
             // Cancellation counts too: the proof is already spent.
             log.Error($"Enrolled credentials were not activated ({ex.GetType().Name}).");
+            await DiscardPendingAsync(host, log).ConfigureAwait(false);
             return new(HeadlessEnrollmentExit.NewProofRequired, "activation_failed");
         }
 
@@ -189,12 +186,38 @@ internal static class EnrollHeadlessMode
         if (oldFingerprint is not null && !string.Equals(oldFingerprint, line, StringComparison.Ordinal))
             log.Info($"Agent key fingerprint replaced old={oldFingerprint["Agent key fingerprint=".Length..]} new={result.Fingerprint}");
         try { host.WriteFingerprintFile(line + "\n" + "agent_id=" + result.Identity!.AgentId + "\n"); }
+#if CERBERUS_SERVER_PROFILE
+        catch (Exception ex)
+#else
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+#endif
         {
+            // Server: the credentials are already active; a diagnostic file must not turn this into a failed run.
             log.Warn($"Fingerprint file could not be written ({ex.GetType().Name}).");
         }
         await host.WriteTenantContextAsync(result.Identity!, result.TenantName, ct).ConfigureAwait(false);
         return result;
+    }
+
+    // Server profile: the installer rolls back on a non-zero exit, so staged credentials and the adopt marker must not outlive it.
+    private static async Task DiscardPendingAsync(IHeadlessHost host, IAgentLogger log)
+    {
+#if CERBERUS_SERVER_PROFILE
+        try
+        {
+            // Own token: the run token may be the reason activation failed.
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await host.DiscardPendingEnrollmentAsync(cleanup.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            log.Error($"Pending enrollment could not be removed ({ex.GetType().Name}).");
+        }
+#else
+        _ = host;
+        _ = log;
+        await Task.CompletedTask.ConfigureAwait(false);
+#endif
     }
 
     private static async Task<string?> ActivateAsync(IHeadlessHost host, bool userScope, bool fromInstaller, bool installService, CancellationToken ct)
@@ -428,7 +451,21 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         }
     }
 
-#if !CERBERUS_SERVER_PROFILE
+#if CERBERUS_SERVER_PROFILE
+    public async Task DiscardPendingEnrollmentAsync(CancellationToken ct)
+    {
+        using var fence = await AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await AgentEnrollmentPromotion.OpenPendingStore().ClearAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            AgentCredentialPublication.ValidateProtectedItem(AgentCredentialPublication.MarkerPath, allowMissing: true);
+            File.Delete(AgentCredentialPublication.MarkerPath);
+        }
+    }
+#else
     public void InstallDesktopService() => AgentServiceProvisioning.InstallOrThrow();
 #endif
 

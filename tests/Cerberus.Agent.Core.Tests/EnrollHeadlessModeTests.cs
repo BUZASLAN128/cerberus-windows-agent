@@ -5,7 +5,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class EnrollHeadlessModeTests
+public sealed partial class EnrollHeadlessModeTests
 {
     private static readonly string Proof = HeadlessEnrollmentTests.Proof();
 
@@ -187,12 +187,103 @@ public sealed class EnrollHeadlessModeTests
         Assert.Equal(0, host.Store.SaveCount);
     }
 
+    [Theory]
+    [InlineData("not_running")]
+    [InlineData("adopt_code")]
+    [InlineData("adopt_throws")]
+    [InlineData("cancelled")]
+    public async Task Server_profile_removes_the_staged_credentials_when_activation_fails(string scenario)
+    {
+        using var cts = new CancellationTokenSource();
+        var host = scenario switch
+        {
+            "not_running" => new FakeHost { State = HeadlessServiceState.Stopped, StateAfterEnsure = HeadlessServiceState.Stopped },
+            "adopt_code" => new FakeHost { State = HeadlessServiceState.Running, ActivateResult = "enrollment_identity_mismatch" },
+            "adopt_throws" => new FakeHost { State = HeadlessServiceState.Running, ActivateThrows = true },
+            _ => new FakeHost { CancelOnActivate = cts },
+        };
+        host.RunToken = cts.Token;
+
+        var (exit, stdout, stderr) = await Execute(host, installService: false, ct: cts.Token);
+
+        Assert.Equal(4, exit);
+        Assert.Equal(1, host.DiscardCalls);
+        Assert.False(host.DiscardTokenWasTheRunToken);
+        Assert.Equal("", stdout);
+        Assert.Null(host.FingerprintFile);
+        Assert.Contains(scenario switch
+        {
+            "not_running" => "service_not_running",
+            "adopt_code" => "enrollment_identity_mismatch",
+            _ => "activation_failed",
+        }, stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Server_profile_keeps_the_original_exit_when_removing_the_staged_credentials_fails()
+    {
+        var host = new FakeHost { ActivateResult = "adopt_failed", DiscardThrows = true };
+
+        var (exit, _, stderr) = await Execute(host, installService: false);
+
+        Assert.Equal(4, exit);
+        Assert.Contains("adopt_failed", stderr, StringComparison.Ordinal);
+        Assert.Equal(1, host.DiscardCalls);
+        Assert.Contains("could not be removed (IOException)", host.Log.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Server_profile_does_not_remove_anything_on_success_or_before_the_credentials_are_saved()
+    {
+        var ok = new FakeHost();
+        var rejected = new FakeHost { Http = new HeadlessEnrollmentTests.FakeHandler().Reply(401, "") };
+        var notAdmin = new FakeHost { Admin = false };
+
+        Assert.Equal(0, (await Execute(ok, false)).Exit);
+        Assert.Equal(4, (await Execute(rejected, false)).Exit);
+        Assert.Equal(2, (await Execute(notAdmin, false)).Exit);
+
+        Assert.Equal(0, ok.DiscardCalls);
+        Assert.Equal(0, rejected.DiscardCalls);
+        Assert.Equal(0, notAdmin.DiscardCalls);
+    }
+
+    [Fact]
+    public async Task Server_profile_fingerprint_file_failure_of_any_kind_does_not_fail_an_activated_run()
+    {
+        var host = new FakeHost { FingerprintWriteThrows = true };
+
+        var (exit, stdout, _) = await Execute(host, installService: false);
+
+        Assert.Equal(0, exit);
+        Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
+        Assert.Equal(0, host.DiscardCalls);
+        Assert.Contains("Fingerprint file could not be written (InvalidOperationException)", host.Log.Text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Server_profile_has_no_service_install_seam()
     {
         Assert.Null(typeof(IHeadlessHost).GetMethod("InstallDesktopService"));
     }
 #else
+    [Fact]
+    public async Task Desktop_keeps_the_staged_credentials_when_activation_fails()
+    {
+        var host = new FakeHost { ActivateResult = "state_refused" };
+
+        Assert.Equal(4, (await Execute(host, installService: false)).Exit);
+        Assert.Equal(0, host.DiscardCalls);
+    }
+
+    [Fact]
+    public async Task Desktop_fingerprint_file_filter_still_names_only_io_errors()
+    {
+        var host = new FakeHost { FingerprintWriteThrows = true };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Execute(host, installService: false));
+    }
+
     [Fact]
     public async Task Desktop_without_a_service_saves_to_the_user_store_and_installs_only_when_asked()
     {
@@ -260,6 +351,12 @@ public sealed class EnrollHeadlessModeTests
         public string? OldFingerprintLine { get; init; }
         public string? ActivateResult { get; init; }
         public CancellationTokenSource? CancelOnActivate { get; init; }
+        public bool ActivateThrows { get; init; }
+        public bool DiscardThrows { get; init; }
+        public bool FingerprintWriteThrows { get; init; }
+        public int DiscardCalls { get; private set; }
+        public bool DiscardTokenWasTheRunToken { get; private set; }
+        public CancellationToken RunToken { get; set; }
 
         public HeadlessEnrollmentTests.FakeHandler Http { get; set; } = new HeadlessEnrollmentTests.FakeHandler()
             .Reply(200, "{\"agent_id\":\"agent-0001\",\"tenant_id\":\"tenant-1\",\"agent_refresh_token\":\"rt-secret\"}");
@@ -285,8 +382,29 @@ public sealed class EnrollHeadlessModeTests
         public HeadlessEnrollmentOptions BuildOptions(string backendUrl) => HeadlessEnrollmentTests.Options();
         public bool HasMachineCredentials() => HasCredentials;
 
+        public IReadOnlyList<AgentLifecycleSnapshot>? LifecycleSequence { get; init; }
+        public CancellationTokenSource? CancelOnDelay { get; init; }
+        public int LifecycleReads { get; private set; }
+        public int DelayCalls { get; private set; }
+
         public Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct)
-            => LifecycleThrows ? throw new IOException("locked") : Task.FromResult(Lifecycle);
+        {
+            if (LifecycleThrows)
+                throw new IOException("locked");
+            var read = LifecycleReads++;
+            return Task.FromResult(LifecycleSequence is { Count: > 0 } seq ? seq[Math.Min(read, seq.Count - 1)] : Lifecycle);
+        }
+
+        public Task DelayAsync(TimeSpan delay, CancellationToken ct)
+        {
+            DelayCalls++;
+            if (CancelOnDelay is { } cts)
+            {
+                cts.Cancel();
+                ct.ThrowIfCancellationRequested();
+            }
+            return Task.CompletedTask;
+        }
 
         public ISecretStore OpenDestination(bool userScope)
         {
@@ -299,6 +417,8 @@ public sealed class EnrollHeadlessModeTests
         public Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
         {
             ActivateCalls.Add(commitDirectly);
+            if (ActivateThrows)
+                throw new InvalidOperationException("pipe broke");
             if (CancelOnActivate is { } cts)
             {
                 cts.Cancel();
@@ -308,7 +428,20 @@ public sealed class EnrollHeadlessModeTests
         }
 
         public string? ReadFingerprintLine() => OldFingerprintLine;
-        public void WriteFingerprintFile(string content) => FingerprintFile = content;
+        public void WriteFingerprintFile(string content)
+        {
+            if (FingerprintWriteThrows)
+                throw new InvalidOperationException("fingerprint file");
+            FingerprintFile = content;
+        }
+
+        public Task DiscardPendingEnrollmentAsync(CancellationToken ct)
+        {
+            DiscardCalls++;
+            DiscardTokenWasTheRunToken = ct == RunToken;
+            return DiscardThrows ? throw new IOException("locked") : Task.CompletedTask;
+        }
+
         public Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct) => Task.CompletedTask;
         public IAgentLogger OpenLog() => Log;
 
