@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Cerberus.Agent.Core;
@@ -27,6 +28,11 @@ public static class AgentTelemetryLimits
 {
     public const int MaxJsonBytes = 64 * 1024;
     public const int MaxDiagnosticBundleBytes = 256 * 1024;
+#if CERBERUS_SERVER_PROFILE
+    public const int MaxSnapshotBytes = 262144;
+#else
+    public const int MaxSnapshotBytes = MaxJsonBytes;
+#endif
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
@@ -130,6 +136,14 @@ public static class AgentSnapshotFactory
         "clock",
         "runtime",
         "capabilities",
+#if CERBERUS_SERVER_PROFILE
+        "sessions",
+        "hardware",
+        "services",
+        "listening_ports",
+        "updates",
+        "software",
+#endif
     };
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
@@ -145,12 +159,31 @@ public static class AgentSnapshotFactory
                 throw new InvalidOperationException($"Unknown agent snapshot section: {section}");
         }
 
+        var request = Build(metadata, collectedAtUtc, sections);
+#if CERBERUS_SERVER_PROFILE
+        while (AgentTelemetryLimits.EstimateJsonBytes(request) > AgentTelemetryLimits.MaxSnapshotBytes
+               && ServerSnapshotFit.TryHalve(sections, out var smaller))
+        {
+            sections = smaller;
+            request = Build(metadata, collectedAtUtc, sections);
+        }
+#endif
+
+        AgentTelemetryLimits.ThrowIfTooLarge(request, AgentTelemetryLimits.MaxSnapshotBytes);
+        return request;
+    }
+
+    private static AgentSnapshotRequest Build(
+        AgentBuildMetadata metadata,
+        DateTimeOffset collectedAtUtc,
+        IReadOnlyDictionary<string, object?> sections)
+    {
         var hashes = sections.ToDictionary(
             pair => pair.Key,
             pair => HashSection(pair.Value),
             StringComparer.Ordinal);
 
-        var request = new AgentSnapshotRequest(
+        return new AgentSnapshotRequest(
             SchemaVersion: AgentSchemaVersions.Snapshot,
             AgentVersion: metadata.AgentVersion,
             BuildId: metadata.BuildId,
@@ -159,9 +192,6 @@ public static class AgentSnapshotFactory
             CollectedAt: collectedAtUtc.ToString("O"),
             SectionHashes: hashes,
             Sections: sections);
-
-        AgentTelemetryLimits.ThrowIfTooLarge(request);
-        return request;
     }
 
     public static string HashSection(object? section)
@@ -171,6 +201,51 @@ public static class AgentSnapshotFactory
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }
+
+#if CERBERUS_SERVER_PROFILE
+/// <summary>
+/// Server-profile snapshot fitting (contract section e): when the body is over the cap, the largest list is
+/// halved, in the order software, services, listening_ports, and the section's <c>truncated</c> is set.
+/// </summary>
+public static class ServerSnapshotFit
+{
+    private static readonly (string Section, string List)[] Order =
+    {
+        ("software", "software"),
+        ("services", "services"),
+        ("listening_ports", "ports"),
+    };
+
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+
+    public static bool TryHalve(IReadOnlyDictionary<string, object?> sections, out IReadOnlyDictionary<string, object?> smaller)
+    {
+        foreach (var (section, list) in Order)
+        {
+            if (!sections.TryGetValue(section, out var value) || value is null)
+                continue;
+            if (JsonSerializer.SerializeToNode(value, JsonOpts) is not JsonObject node
+                || node[list] is not JsonArray items
+                || items.Count == 0)
+                continue;
+
+            var keep = items.Count / 2;
+            var halved = new JsonArray();
+            for (var i = 0; i < keep; i++)
+                halved.Add(items[i]!.DeepClone());
+            node[list] = halved;
+            node["truncated"] = true;
+
+            var copy = new Dictionary<string, object?>(sections, StringComparer.Ordinal) { [section] = node };
+            smaller = copy;
+            return true;
+        }
+
+        smaller = sections;
+        return false;
+    }
+}
+#endif
 
 public static class AgentTelemetryFactory
 {
