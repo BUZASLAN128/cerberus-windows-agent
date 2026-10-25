@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -42,6 +43,10 @@ internal sealed class AgentLocalControlServer
     public AgentLocalControlServer(Func<AgentLocalControlRequest, CancellationToken, Task<AgentLocalControlResponse>> handle)
         => _handle = handle;
 
+    private static readonly TimeSpan WriteDeadline = TimeSpan.FromSeconds(5);
+
+    internal TimeSpan RequestDeadline { get; init; } = TimeSpan.FromSeconds(40);
+
     public async Task RunAsync(CancellationToken ct)
     {
         if (!WindowsIdentity.GetCurrent().IsSystem)
@@ -52,10 +57,10 @@ internal sealed class AgentLocalControlServer
         {
             while (!ct.IsCancellationRequested)
             {
-                active.RemoveAll(task => task.IsCompletedSuccessfully);
+                ReapCompleted(active);
                 if (active.Count >= 4)
-                    await await Task.WhenAny(active).ConfigureAwait(false);
-                active.RemoveAll(task => task.IsCompletedSuccessfully);
+                    await Task.WhenAny(active).ConfigureAwait(false);
+                ReapCompleted(active);
                 await listener.WaitForConnectionAsync(ct).ConfigureAwait(false);
                 var connected = listener;
                 // Keep the pipe name owned across accept/close; clients cannot
@@ -69,8 +74,31 @@ internal sealed class AgentLocalControlServer
         {
             if (listener is not null)
                 await listener.DisposeAsync().ConfigureAwait(false);
-            await Task.WhenAll(active).ConfigureAwait(false);
+            // A connection-level failure must not surface as a listener failure.
+            try { await Task.WhenAll(active).ConfigureAwait(false); }
+            catch (Exception) when (ct.IsCancellationRequested) { }
         }
+    }
+
+    /// <summary>
+    /// Removes every finished handler (including faulted or canceled). Canceled tasks and cancellation
+    /// faults are discarded; any other handler exception is rethrown after removal so a defect still ends RunAsync.
+    /// </summary>
+    internal static void ReapCompleted(List<Task> active)
+    {
+        Exception? defect = null;
+        active.RemoveAll(task =>
+        {
+            if (!task.IsCompleted)
+                return false;
+            var fault = task.Exception;
+            var inner = fault?.InnerExceptions.Count == 1 ? fault.InnerException : fault;
+            if (inner is not null and not OperationCanceledException)
+                defect ??= inner;
+            return true;
+        });
+        if (defect is not null)
+            ExceptionDispatchInfo.Capture(defect).Throw();
     }
 
     internal async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken serviceCt)
@@ -78,7 +106,7 @@ internal sealed class AgentLocalControlServer
         await using (pipe)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(serviceCt))
         {
-            timeout.CancelAfter(TimeSpan.FromSeconds(40));
+            timeout.CancelAfter(RequestDeadline);
             AgentLocalControlRequest request;
             bool privileged;
             try
@@ -108,15 +136,23 @@ internal sealed class AgentLocalControlServer
                     ? await _handle(request, timeout.Token).ConfigureAwait(false)
                     : new AgentLocalControlResponse(false, "invalid_request");
             }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested) { return; }
+            catch (OperationCanceledException) when (serviceCt.IsCancellationRequested) { return; }
+            catch (OperationCanceledException)
+            {
+                // Request-level timeout (for example a backend HTTP timeout) answers this client only.
+                response = new AgentLocalControlResponse(false, "service_timeout");
+            }
 
+            // The request deadline may already have fired (service_timeout), so the reply gets its own bounded write.
+            using var write = CancellationTokenSource.CreateLinkedTokenSource(serviceCt);
+            write.CancelAfter(WriteDeadline);
             try
             {
-                await AgentLocalControlProtocol.WriteAsync(pipe, response, timeout.Token).ConfigureAwait(false);
+                await AgentLocalControlProtocol.WriteAsync(pipe, response, write.Token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException)
             {
-                // The authenticated peer may disconnect or exceed this connection's deadline.
+                // The authenticated peer may disconnect, stall past the write deadline, or the service may stop.
             }
         }
     }
