@@ -24,6 +24,9 @@ public sealed record AgentSignedState(
     /// <summary>The <see cref="Reset"/> value of a quarantined replacement written after a corrupt file was set aside.</summary>
     public const string ResetUnreadable = "unreadable";
 
+    /// <summary>The <see cref="AgentId"/> of a reset marker written before any agent id was known; it matches every agent id.</summary>
+    public const string UnknownAgentId = "unknown";
+
     /// <summary>The state of a registration that has no signed state yet.</summary>
     public static AgentSignedState Empty(string agentId) => new(agentId, 0, false, null);
 }
@@ -33,8 +36,10 @@ public sealed record AgentSignedState(
 /// <c>agent_id</c> it was written for. A record of another agent id reads as empty and the next
 /// write replaces it, so a re-enrolled agent starts at <c>state_seq</c> 0 without quarantine.
 /// An unreadable or corrupt file is set aside and replaced by a quarantined state carrying
-/// <c>"reset": "unreadable"</c>, so the quarantine survives a restart; it reads as quarantined until a
-/// signed write succeeds (fail closed). If the replacement cannot be written, the quarantine lasts for the process. On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
+/// <c>"reset": "unreadable"</c>, so the quarantine survives a restart. The marker is bound to the agent id that was
+/// current when the file was set aside: a re-enrolled agent (another id) is not quarantined by it, while a marker
+/// with <see cref="AgentSignedState.UnknownAgentId"/> quarantines any agent until a signed write succeeds
+/// (fail closed). If the replacement cannot be written, the quarantine lasts for the process. On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
 /// directory, owner, DACL, directory or reparse point at the path reads as quarantined as well and is
 /// never parsed; the next signed write replaces the object.
 /// </summary>
@@ -94,6 +99,8 @@ public sealed class AgentSignedStateStore
         {
             EnsureLoaded();
             if (_unreadable)
+                return true;
+            if (_currentAgentId is null && _state is { Reset: not null })
                 return true;
             var agentId = _currentAgentId ?? _state?.AgentId;
             return agentId is not null && IsQuarantinedLocked(agentId);
@@ -167,8 +174,10 @@ public sealed class AgentSignedStateStore
     }
 
     private bool IsQuarantinedLocked(string agentId)
-        => _state is { } state && string.Equals(state.AgentId, agentId, StringComparison.Ordinal)
-           && (state.QuarantineActive || state.PendingRevoke is not null);
+        => _state is { } state
+           && (string.Equals(state.AgentId, agentId, StringComparison.Ordinal)
+               ? state.QuarantineActive || state.PendingRevoke is not null
+               : state.Reset is not null && state.AgentId == AgentSignedState.UnknownAgentId);
 
     private void EnsureLoaded()
     {
@@ -192,9 +201,8 @@ public sealed class AgentSignedStateStore
 
         if (TryRead(out var state))
         {
+            // A reset marker quarantines through its own agent id (IsQuarantinedLocked), not process-wide.
             _state = state;
-            // A reset marker quarantines whatever agent id is current until a signed write replaces it.
-            _unreadable = state!.Reset is not null;
             return;
         }
 
@@ -205,7 +213,7 @@ public sealed class AgentSignedStateStore
             File.Move(_path, corruptPath, overwrite: true);
             _log.Warn($"Signed agent state was unreadable; moved to {Path.GetFileName(corruptPath)}; quarantined until the next signed state.");
             // Without a file a restart would lose the quarantine; on failure the in-memory quarantine stays.
-            TryPersist(new AgentSignedState(_currentAgentId ?? "unknown", 0, true, null, null, AgentSignedState.ResetUnreadable));
+            TryPersist(new AgentSignedState(_currentAgentId ?? AgentSignedState.UnknownAgentId, 0, true, null, null, AgentSignedState.ResetUnreadable));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
