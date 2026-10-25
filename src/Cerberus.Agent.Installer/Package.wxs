@@ -324,10 +324,12 @@
   </Fragment>
 
   <Fragment>
-    <!-- Uninstall deletes the whole data directory, credentials included. A major upgrade keeps it: the component is shared with the new package. -->
+    <!-- Uninstall deletes the whole data directory, credentials included. A major upgrade keeps it: the component is shared with the new package.
+         Wix4RemoveFoldersEx runs before CostInitialize, where Directory ids are unresolved, so it gets a plain path property built from a system folder. -->
+    <SetProperty Id="SERVERDATAPATH" Value="[CommonAppDataFolder]CerberusServerAgent\" Before="Wix4RemoveFoldersEx_X64" Sequence="execute" />
     <Component Id="ServerDataCleanupComponent" Directory="INSTALLFOLDER" Guid="{1A8485C8-A5AC-4C0D-94E2-D17390941535}">
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="dataCleanup" Type="integer" Value="1" KeyPath="yes" />
-      <util:RemoveFolderEx On="uninstall" Property="SERVERDATADIR" />
+      <util:RemoveFolderEx On="uninstall" Property="SERVERDATAPATH" />
     </Component>
   </Fragment>
   <?else ?>

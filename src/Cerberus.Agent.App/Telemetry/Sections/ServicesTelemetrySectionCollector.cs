@@ -8,7 +8,10 @@ internal sealed class ServicesTelemetrySectionCollector : IWindowsTelemetrySecti
 {
     internal const int MaxServices = 400;
 
-    internal sealed record RawService(string? Name, string? DisplayName, string State, string StartType);
+    internal sealed record RawService(string? Name, string? DisplayName, string State, string StartType, int ServiceType = 0);
+
+    /// <summary>SERVICE_USERSERVICE_INSTANCE: per-logon copies such as CDPUserSvc_xxxx; templates (0x40) stay.</summary>
+    private const int UserServiceInstance = 0x80;
 
     public string SectionName => "services";
 
@@ -18,6 +21,7 @@ internal sealed class ServicesTelemetrySectionCollector : IWindowsTelemetrySecti
     internal static object Build(IEnumerable<RawService> raw)
     {
         var services = raw
+            .Where(s => (s.ServiceType & UserServiceInstance) == 0)
             .Select(s => new
             {
                 name = ServerFactText.Clean(s.Name, 64),
@@ -51,7 +55,8 @@ internal sealed class ServicesTelemetrySectionCollector : IWindowsTelemetrySecti
                     service.ServiceName,
                     service.DisplayName,
                     MapState(service.Status),
-                    ReadStartType(service)));
+                    ReadStartType(service),
+                    (int)service.ServiceType));
             }
         }
 

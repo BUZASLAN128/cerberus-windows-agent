@@ -75,7 +75,15 @@ public sealed class ServerPackageStaticTests
 
         var cleanup = doc.Descendants(Util + "RemoveFolderEx").Single();
         Assert.Equal("uninstall", (string)cleanup.Attribute("On")!);
-        Assert.Equal("SERVERDATADIR", (string)cleanup.Attribute("Property")!);
+        // Wix4RemoveFoldersEx_X64 runs before CostInitialize, so the property must be a plain path set before it, never a Directory id.
+        var cleanupProperty = (string)cleanup.Attribute("Property")!;
+        Assert.Equal("SERVERDATAPATH", cleanupProperty);
+        Assert.DoesNotContain(cleanupProperty, directories.Keys);
+        var setPath = doc.Descendants(Wix + "SetProperty").Single(p => (string?)p.Attribute("Id") == cleanupProperty);
+        Assert.Equal("Wix4RemoveFoldersEx_X64", (string)setPath.Attribute("Before")!);
+        Assert.Equal("execute", (string)setPath.Attribute("Sequence")!);
+        Assert.Null(setPath.Attribute("Condition"));
+        Assert.Equal($"[CommonAppDataFolder]{directories["SERVERDATADIR"]}\\", (string)setPath.Attribute("Value")!);
 
         // Side by side: no element Id may collide with the desktop package.
         var desktopIds = Ids(XDocument.Parse(Evaluate("desktop", channel)));

@@ -112,6 +112,26 @@ public sealed partial class ServerFactSectionsTests
         Assert.Equal("s0399", (string)over["services"]![399]!["name"]!);
     }
 
+    [Fact]
+    public void Services_PerUserInstancesAreDroppedBeforeTheCap()
+    {
+        // 0x10 own process, 0x40 user-service template (kept), 0xD0 = 0x10|0x40|0x80 per-logon instance (dropped).
+        var raw = new List<ServicesTelemetrySectionCollector.RawService>
+        {
+            new("Spooler", "Spooler", "running", "auto", 0x10),
+            new("CDPUserSvc", "template", "stopped", "manual", 0x50),
+            new("CDPUserSvc_1a2b3", "instance", "running", "auto", 0xD0),
+            new("OneSyncSvc_9f", "instance", "running", "auto", 0x80),
+        };
+        raw.AddRange(Enumerable.Range(0, 400).Select(i => new ServicesTelemetrySectionCollector.RawService($"a{i:D4}", "d", "running", "auto", 0xD0)));
+
+        var node = Obj(ServicesTelemetrySectionCollector.Build(raw));
+
+        Assert.Equal(new[] { "CDPUserSvc", "Spooler" }, node["services"]!.AsArray().Select(s => (string)s!["name"]!));
+        Assert.Equal(2, (int)node["service_count"]!);
+        Assert.False((bool)node["truncated"]!);
+    }
+
     [Theory]
     [InlineData(ServiceControllerStatus.Running, "running")]
     [InlineData(ServiceControllerStatus.Stopped, "stopped")]
