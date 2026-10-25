@@ -31,6 +31,31 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
+    public async Task SignedQuarantine_IsAppliedAndAcceptedWhileTheUnsubmittedResultBudgetIsFull()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), CommandReplayStore.FileName);
+        var body = new string('A', 349524); // 262143 bytes: 24 of them leave no room for one more maximal result
+        StoreFileWriter.Write(path, 0, Enumerable.Range(0, 24).Select(i =>
+            StoreFileWriter.Record(EnvelopeHarness.DefaultAgent, $"held-{i}", $"held-n-{i}", EnvelopeRecordStates.Done,
+                EnvelopeHarness.T0, EnvelopeHarness.T0 + 120, body, submitted: false)));
+        await using var h = EnvelopeHarness.Create(o => o.StorePath = path);
+        h.State.Body = (_, _) =>
+        {
+            h.Quarantined = true;
+            return Task.FromResult(FakeCommandHandler.Done());
+        };
+        var state = h.Cmd(p => { p.Type = "agent_state"; p.PayloadJson = "{\"state_seq\":1,\"quarantine\":{\"active\":true}}"; });
+
+        await h.Process(state);
+
+        Assert.Equal(0, h.Rejections("replay_store_full"));
+        Assert.Equal("accepted", Assert.Single(h.Backend.Acks).Json.GetProperty("decision").GetString());
+        Assert.Equal(1, h.State.Calls);
+        Assert.True(h.Quarantined);
+        Assert.NotNull(h.Record(state));
+    }
+
+    [Fact]
     public async Task ReservedRecordPastItsWindow_BecomesRejectedAfterReserveAndLaterRedeliveriesOnlyResendTheRejectedAck()
     {
         await using var h = EnvelopeHarness.Create();

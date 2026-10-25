@@ -91,6 +91,32 @@ public sealed class CommandReplayStoreBudgetTests : IDisposable
     }
 
     [Fact]
+    public void UnsubmittedBytesAtTheBudget_StillReserveAnAgentStateAndRefuseAQueuedType()
+    {
+        var store = StoreWithUnsubmitted(24);
+
+        Assert.Equal(ReplayReserveOutcome.Full, store.TryReserve(Fresh() with { Type = EnvelopeTypes.CollectFacts }));
+        Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(Fresh() with { Type = EnvelopeTypes.AgentState }));
+
+        Assert.Equal(EnvelopeRecordStates.Reserved, new CommandReplayStore(StorePath, _time).Find(Agent, "id-new")!.State);
+        Assert.Equal(25, store.Records(Agent).Count);
+    }
+
+    [Fact]
+    public void StoreAtMaxRecordsOfUnsubmittedResults_StillReservesAnAgentStateAndRefusesAQueuedType()
+    {
+        // Unexpired done records with an unsubmitted result are never evictable; the small bodies keep the byte budget out of play.
+        StoreFileWriter.Write(StorePath, 0, Enumerable.Range(0, CommandReplayStore.MaxRecords).Select(i => Held(i, body: "AAAA")));
+        var store = new CommandReplayStore(StorePath, _time);
+        Assert.Equal(CommandReplayStore.MaxRecords, store.Records(Agent).Count);
+
+        Assert.Equal(ReplayReserveOutcome.Full, store.TryReserve(Fresh() with { Type = EnvelopeTypes.CollectFacts }));
+        Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(Fresh() with { Type = EnvelopeTypes.AgentState }));
+
+        Assert.Equal(CommandReplayStore.MaxRecords + 1, new CommandReplayStore(StorePath, _time).Records(Agent).Count);
+    }
+
+    [Fact]
     public void OneResultBelowTheBudget_StillReserves()
     {
         // 23 * 262143 + 262144 fits in 6 MiB.

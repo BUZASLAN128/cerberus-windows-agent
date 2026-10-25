@@ -66,6 +66,7 @@ public sealed class CommandReplayStore
     /// Budget for result bytes held unsubmitted plus one maximal result for every in-flight (reserved or started,
     /// no result yet) record and for the envelope being reserved. Worst case on disk (base64, no JSON escaping):
     /// 1024 records at 1 KiB + 4 MiB submitted cap * 4/3 + this budget * 4/3 = 14.4 MiB, under <see cref="MaxFileBytes"/>.
+    /// <c>agent_state</c> reservations are exempt from this budget and from <see cref="MaxRecords"/>; their results are small.
     /// </summary>
     public const long MaxUnsubmittedResultBytes = 6L * 1024 * 1024;
     internal const long MaxFileBytes = 16L * 1024 * 1024;
@@ -156,7 +157,10 @@ public sealed class CommandReplayStore
         }
     }
 
-    /// <summary>Step 18: the durable reservation. Live records are never evicted to make room.</summary>
+    /// <summary>
+    /// Step 18: the durable reservation. Live records are never evicted to make room. An <c>agent_state</c> envelope skips
+    /// the record-count gate and the unsubmitted-bytes budget (the reader has no count limit); the file size guard still applies.
+    /// </summary>
     public ReplayReserveOutcome TryReserve(CommandReplayRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);
@@ -167,7 +171,9 @@ public sealed class CommandReplayStore
 
             var now = NowUnix();
             var next = Purge(_records, now);
-            if (next.Count >= MaxRecords)
+            // A signed agent_state (quarantine, revoke) always reserves: its result is small and fixed-schema.
+            var exempt = record.Type == EnvelopeTypes.AgentState;
+            if (!exempt && next.Count >= MaxRecords)
             {
                 var evictable = next.Where(r => IsEvictable(r, now))
                     .OrderBy(r => r.ExpiresAt).ThenBy(r => r.Id, StringComparer.Ordinal)
@@ -177,8 +183,8 @@ public sealed class CommandReplayStore
                     return ReplayReserveOutcome.Full;
             }
 
-            var unsubmitted = next.Where(r => !r.ResultSubmitted).Sum(r => ExposureBytes(r, now));
-            if (unsubmitted + EnvelopeExecutionQueue.MaxResultBodyBytes > MaxUnsubmittedResultBytes)
+            var unsubmitted = exempt ? 0 : next.Where(r => !r.ResultSubmitted).Sum(r => ExposureBytes(r, now));
+            if (!exempt && unsubmitted + EnvelopeExecutionQueue.MaxResultBodyBytes > MaxUnsubmittedResultBytes)
                 return ReplayReserveOutcome.Full;
 
             next.Add(record with { State = EnvelopeRecordStates.Reserved });
