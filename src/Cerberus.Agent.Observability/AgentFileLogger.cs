@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Observability;
@@ -12,6 +14,9 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
     private readonly bool _alsoConsole;
     private readonly long _maxBytes;
     private readonly int _retentionFiles;
+    private static readonly TimeSpan MutexWait = TimeSpan.FromSeconds(2);
+
+    private readonly Mutex? _mutex;
     private StreamWriter _writer;
 
     public AgentFileLogger(
@@ -28,6 +33,7 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
         _alsoConsole = alsoConsole;
         _maxBytes = Math.Max(64 * 1024, maxBytes);
         _retentionFiles = Math.Clamp(retentionFiles, 1, 20);
+        _mutex = CreateMutex(logFilePath);
         _writer = OpenWriter(logFilePath);
     }
 
@@ -60,12 +66,53 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
 
         lock (_gate)
         {
-            RotateIfNeeded();
-            _writer.WriteLine(line);
+            var held = Acquire();
+            try
+            {
+                RotateIfNeeded();
+                // Another handle or process may have appended since the last write: this handle's offset is stale.
+                _writer.BaseStream.Seek(0, SeekOrigin.End);
+                _writer.WriteLine(line);
+            }
+            finally
+            {
+                if (held)
+                    _mutex!.ReleaseMutex();
+            }
         }
 
         if (_alsoConsole && Environment.UserInteractive)
             Console.WriteLine(line);
+    }
+
+    private static Mutex? CreateMutex(string logFilePath)
+    {
+        try
+        {
+            var path = Path.GetFullPath(logFilePath).ToUpperInvariant();
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(path)));
+            return new Mutex(false, $"Global\\Cerberus.AgentLog.{hash[..32]}");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or WaitHandleCannotBeOpenedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Takes the cross-process log mutex; false when unavailable or timed out (the write proceeds anyway).</summary>
+    private bool Acquire()
+    {
+        if (_mutex is null)
+            return false;
+
+        try
+        {
+            return _mutex.WaitOne(MutexWait);
+        }
+        catch (AbandonedMutexException)
+        {
+            return true;
+        }
     }
 
     private void RotateIfNeeded()
@@ -128,6 +175,7 @@ public sealed class AgentFileLogger : IAgentLogger, IDisposable
         lock (_gate)
         {
             _writer.Dispose();
+            _mutex?.Dispose();
         }
     }
 }
