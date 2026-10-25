@@ -157,4 +157,14 @@ public sealed class ResourceSamplerAndRdsLicensingTests
         Assert.Equal("unavailable", unavailable.RootElement.GetProperty("status").GetString());
         Assert.Equal(JsonValueKind.Null, unavailable.RootElement.GetProperty("rdsh_installed").ValueKind);
     }
+
+    [Fact]
+    public void SessionsSection_CarriesRdsLicensing()
+    {
+        using var sessions = JsonDocument.Parse(JsonSerializer.Serialize(
+            SessionsTelemetrySectionCollector.Build(Array.Empty<SessionsTelemetrySectionCollector.RawSession>(), RdsLicensingInfo.NotApplicable)));
+        var licensing = sessions.RootElement.GetProperty("rds_licensing");
+        Assert.Equal("not_applicable", licensing.GetProperty("status").GetString());
+        Assert.False(licensing.GetProperty("rdsh_installed").GetBoolean());
+    }
 }

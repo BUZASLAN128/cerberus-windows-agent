@@ -11,7 +11,8 @@ internal static class RdsLicensingProbe
 {
     private const string Namespace = @"root\cimv2\TerminalServices";
     private const string PolicyKeyPath = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
-    private static readonly TimeSpan WmiTimeout = TimeSpan.FromSeconds(4);
+    // Runs inside the 5 s server section budget of the sessions section, next to the WTS enumeration.
+    private static readonly TimeSpan WmiTimeout = TimeSpan.FromSeconds(2);
 
     public static async Task<RdsLicensingInfo> ReadAsync(CancellationToken ct)
     {
