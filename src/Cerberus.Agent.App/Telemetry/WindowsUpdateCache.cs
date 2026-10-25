@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App.Telemetry;
 
@@ -38,11 +39,15 @@ internal sealed class WindowsUpdateCache : IWindowsUpdateCacheReader, IDisposabl
     private WindowsUpdateCacheEntry? _entry;
     private CancellationTokenSource? _cts;
     private Task? _loop;
+    private Task? _inFlight;
+    private bool _skipLogged;
+    private IAgentLogger _log;
 
-    public WindowsUpdateCache(IWindowsUpdateSearcher searcher, TimeProvider time)
+    public WindowsUpdateCache(IWindowsUpdateSearcher searcher, TimeProvider time, IAgentLogger? log = null)
     {
         _searcher = searcher;
         _time = time;
+        _log = log ?? NullAgentLogger.Instance;
     }
 
     public WindowsUpdateCacheEntry? TryGet()
@@ -53,26 +58,55 @@ internal sealed class WindowsUpdateCache : IWindowsUpdateCacheReader, IDisposabl
         }
     }
 
-    public void Start()
+    public void Start(IAgentLogger? log = null)
     {
         lock (_gate)
         {
             if (_cts is not null)
                 return;
+            if (log is not null)
+                _log = log;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
             _loop = Task.Run(() => RunAsync(token));
         }
     }
 
-    /// <summary>One search bounded by the 60 s timeout. Returns false on timeout or failure; the old entry is kept until its TTL.</summary>
+    /// <summary>
+    /// One search bounded by the 60 s timeout. Returns false on timeout, failure, or when the previous search is still
+    /// running (the COM call ignores cancellation, so a timed-out search is never followed by a second one until it
+    /// ends). The old entry is kept until its TTL.
+    /// </summary>
     internal async Task<bool> RefreshAsync(CancellationToken ct)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task<WindowsUpdateScan>? started = null;
+        var logSkip = false;
+        lock (_gate)
+        {
+            if (_inFlight is { IsCompleted: false })
+            {
+                logSkip = !_skipLogged;
+                _skipLogged = true;
+            }
+            else
+            {
+                _skipLogged = false;
+                _inFlight = started = Task.Run(() => _searcher.SearchAsync(linked.Token), CancellationToken.None);
+            }
+        }
+
+        if (started is null)
+        {
+            if (logSkip)
+                _log.Warn("Windows Update search skipped: the previous search is still running.");
+            return false;
+        }
+
+        var search = started;
         try
         {
-            var search = Task.Run(() => _searcher.SearchAsync(linked.Token), CancellationToken.None);
             var timeout = Task.Delay(SearchTimeout, _time, delayCts.Token);
             if (await Task.WhenAny(search, timeout).ConfigureAwait(false) != search)
             {

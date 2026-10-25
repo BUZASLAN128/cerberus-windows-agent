@@ -47,7 +47,7 @@ internal static class ServiceMode
         try
         {
 #if CERBERUS_SERVER_PROFILE
-            WindowsUpdateCache.Shared.Start();
+            WindowsUpdateCache.Shared.Start(log);
 #endif
             await AgentUpdateLocalService.ReconcileOnServiceStartAsync(lifetime.Token).ConfigureAwait(false);
             schedulerTask = AgentUpdateLocalService.RunScheduledAsync(lifetime.Token);
