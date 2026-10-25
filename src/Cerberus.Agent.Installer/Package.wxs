@@ -2,11 +2,16 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <?if $(var.AgentBuildProfile) = server ?>
+  <?define UpgradeCodeValue = "{686EF4F7-AC5C-4459-B2B9-540920991AAF}" ?>
+  <?else ?>
+  <?define UpgradeCodeValue = "{8F7E4C22-4D3E-4D50-9B31-0D969B3D0D1E}" ?>
+  <?endif ?>
   <Package
-      Name="Cerberus Windows Agent"
+      Name="$(var.ProductName)"
       Manufacturer="Cerberus"
       Version="$(var.MsiProductVersion)"
-      UpgradeCode="{8F7E4C22-4D3E-4D50-9B31-0D969B3D0D1E}"
+      UpgradeCode="$(var.UpgradeCodeValue)"
       Scope="perMachine"
       Compressed="yes">
 
@@ -16,9 +21,15 @@
         Schedule="afterInstallExecute"
         AllowDowngrades="yes" />
     <?else ?>
+    <?if $(var.AgentBuildProfile) = server ?>
+    <MajorUpgrade
+        Schedule="afterInstallExecute"
+        DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed." />
+    <?else ?>
     <MajorUpgrade
         Schedule="afterInstallExecute"
         DowngradeErrorMessage="A newer version of Cerberus Windows Agent is already installed." />
+    <?endif ?>
     <?endif ?>
     <MediaTemplate EmbedCab="yes" />
     <Binary Id="CerberusInstallerHelper" SourceFile="$(var.InstallerHelperPath)" />
@@ -35,15 +46,24 @@
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_URL" Value="$(var.UpdateManifestUrl)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES" Value="$(var.UpdateAllowedArtifactPrefixes)" Secure="yes" />
+    <?if $(var.AgentBuildProfile) = server ?>
+    <Property Id="CERBERUS_ENROLLMENT_PROOF" Secure="yes" Hidden="yes" />
+    <?else ?>
     <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
     <Property Id="START_TRAY_ON_LOGIN" Value="1" Secure="yes" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="!(loc.LaunchAgentAfterInstall)" />
+    <?endif ?>
     <WixVariable Id="WixUIBannerBmp" Value="$(var.ProjectDir)Assets\cerberus-wix-banner.png" />
     <WixVariable Id="WixUIDialogBmp" Value="$(var.ProjectDir)Assets\cerberus-wix-dialog.png" />
+    <?if $(var.AgentBuildProfile) = server ?>
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.EulaRtf)" />
+    <?else ?>
     <WixVariable Id="WixUILicenseRtf" Value="$(var.ProjectDir)Assets\EULA.rtf" />
+    <?endif ?>
     <UI>
       <ui:WixUI Id="WixUI_InstallDir" />
+      <?if $(var.AgentBuildProfile) != server ?>
       <Publish
           Dialog="ExitDialog"
           Control="Finish"
@@ -51,9 +71,11 @@
           Value="LaunchAgentUi"
           Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE"
           Order="1" />
+      <?endif ?>
     </UI>
     <Icon Id="CerberusAgentIcon" SourceFile="$(var.ProjectDir)..\Assets\cerberus-favicon.ico" />
     <Property Id="ARPPRODUCTICON" Value="CerberusAgentIcon" />
+    <?if $(var.AgentBuildProfile) != server ?>
     <util:CloseApplication
         Id="CloseRunningAgentUi"
         Target="Cerberus.Agent.exe"
@@ -86,7 +108,15 @@
         TerminateProcess="1"
         RebootPrompt="no"
         Timeout="15" />
+    <?endif ?>
 
+    <?if $(var.AgentBuildProfile) = server ?>
+    <Feature Id="ServerMainFeature" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="ServerAgentComponents" />
+      <ComponentRef Id="ServerLegalConsentRegistryComponent" />
+      <ComponentRef Id="ServerDataCleanupComponent" />
+    </Feature>
+    <?else ?>
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
       <ComponentGroupRef Id="AgentComponents" />
       <ComponentRef Id="StartMenuShortcutComponent" />
@@ -101,9 +131,10 @@
         ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --open'
         Execute="immediate"
         Return="asyncNoWait" />
+    <?endif ?>
     <CustomAction
         Id="BlockInstallWithoutEula"
-        Error="Cerberus Windows Agent setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
+        Error="$(var.ProductName) setup requires accepting the EULA. Use the installer UI, or pass CERBERUS_EULA_ACCEPTED=1 for approved managed deployment." />
     <CustomAction
         Id="BlockUpgradeWithoutRollback"
         Error="Cerberus upgrades require Windows Installer rollback to be enabled." />
@@ -114,6 +145,17 @@
         Execute="deferred"
         Impersonate="no"
         Return="check" />
+    <?if $(var.AgentBuildProfile) = server ?>
+    <!-- The enrollment proof is hidden in the log and only read from the secure, hidden property. -->
+    <CustomAction
+        Id="ServerEnrollFromInstaller"
+        Directory="APPFOLDER"
+        ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --enroll-headless --proof-from-installer "[CERBERUS_ENROLLMENT_PROOF]" --install-service'
+        Execute="deferred"
+        Impersonate="no"
+        HideTarget="yes"
+        Return="ignore" />
+    <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
         BinaryRef="CerberusInstallerHelper"
@@ -156,23 +198,45 @@
         Execute="deferred"
         Impersonate="yes"
         Return="ignore" />
+    <?endif ?>
     <InstallExecuteSequence>
       <Custom Action="BlockUpgradeWithoutRollback" Before="InstallInitialize" Condition="WIX_UPGRADE_DETECTED AND RollbackDisabled" />
+      <?if $(var.AgentBuildProfile) != server ?>
       <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" Condition="NOT REMOVE" />
+      <?endif ?>
       <Custom
           Action="BlockInstallWithoutEula"
           Before="InstallValidate"
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
       <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
+      <?if $(var.AgentBuildProfile) = server ?>
+      <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND CERBERUS_ENROLLMENT_PROOF" />
+      <?else ?>
       <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RepairExistingCerberusServicePath" After="RemoveExistingProducts" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="StopCerberusServiceOnRollback" Before="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="CheckCerberusServiceHealth" After="RepairExistingCerberusServicePath" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RemoveLegacyUserStartupShortcut" After="CheckCerberusServiceHealth" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <?endif ?>
     </InstallExecuteSequence>
   </Package>
 
+  <?if $(var.AgentBuildProfile) = server ?>
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="Cerberus">
+        <Directory Id="INSTALLFOLDER" Name="Server Agent">
+          <Directory Id="APPFOLDER" Name="app" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="SERVERDATADIR" Name="CerberusServerAgent" />
+    </StandardDirectory>
+  </Fragment>
+  <?else ?>
   <Fragment>
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="CompanyFolder" Name="Cerberus">
@@ -186,7 +250,87 @@
       <Directory Id="ApplicationProgramsFolder" Name="Cerberus" />
     </StandardDirectory>
   </Fragment>
+  <?endif ?>
 
+  <?if $(var.AgentBuildProfile) = server ?>
+  <Fragment>
+    <ComponentGroup Id="ServerAgentComponents" Directory="APPFOLDER">
+      <Files Include="$(var.AgentPublishDir)\**">
+        <Exclude Files="$(var.AgentPublishDir)\**\*.pdb" />
+        <Exclude Files="$(var.AgentPublishDir)\**\*.wixpdb" />
+        <Exclude Files="$(var.AgentPublishDir)\Cerberus.Agent.Service.exe" />
+      </Files>
+      <Component Id="ServerServiceExeComponent" Guid="*">
+        <File Id="ServerServiceExe" Source="$(var.AgentPublishDir)\Cerberus.Agent.Service.exe" KeyPath="yes" />
+        <ServiceInstall
+            Id="ServerAgentServiceInstall"
+            Name="CerberusServerAgent"
+            DisplayName="Cerberus Server Agent"
+            Description="Cerberus Server Agent"
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Vital="yes">
+          <util:ServiceConfig
+              FirstFailureActionType="restart"
+              SecondFailureActionType="restart"
+              ThirdFailureActionType="restart"
+              RestartServiceDelayInSeconds="60"
+              ResetPeriodInDays="1" />
+        </ServiceInstall>
+      </Component>
+      <Component Id="ServerAgentInstallRegistryComponent" Guid="{0C98AA33-79C6-4E21-AD39-E50C2B895B21}">
+        <ServiceControl
+            Id="ServerAgentServiceControl"
+            Name="CerberusServerAgent"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+        <RemoveFolder Id="ServerRemoveAppFolder" Directory="APPFOLDER" On="uninstall" />
+        <RemoveFolder Id="ServerRemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="ServerRemoveCompanyFolder" Directory="CompanyFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="agentExeInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="installRoot" Type="string" Value="[INSTALLFOLDER]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="runtimeRoot" Type="string" Value="[APPFOLDER]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="ProductCode" Type="string" Value="[ProductCode]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="productVersion" Type="string" Value="$(var.ReleaseVersion)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateChannel" Type="string" Value="[CERBERUS_CHANNEL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateProtocolBaseline" Type="integer" Value="2" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="serviceExeSha256" Type="string" Value="$(var.ServiceExeSha256)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="serviceAssemblySha256" Type="string" Value="$(var.ServiceAssemblySha256)" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="backendUrl" Type="string" Value="[CERBERUS_BACKEND_URL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="ssoBaseUrl" Type="string" Value="[CERBERUS_SSO_BASE_URL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="ssoClientId" Type="string" Value="[CERBERUS_SSO_CLIENT_ID]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="ssoScope" Type="string" Value="[CERBERUS_SSO_SCOPE]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="language" Type="string" Value="[CERBERUS_LANGUAGE]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateManifestUrl" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_URL]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateManifestPublicKeyB64" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64]" />
+        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateAllowedArtifactPrefixes" Type="string" Value="[CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES]" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!-- The consent product value is the legal-document identifier the agent validates (AgentLegalConsent.ProductName), not the installer display name. -->
+    <Component Id="ServerLegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{D3741C30-B58B-4F95-940E-F51B5BA80F84}">
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="accepted" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Windows Agent" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_eula_dialog" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <!-- Uninstall deletes the whole data directory, credentials included. A major upgrade keeps it: the component is shared with the new package. -->
+    <Component Id="ServerDataCleanupComponent" Directory="INSTALLFOLDER" Guid="{1A8485C8-A5AC-4C0D-94E2-D17390941535}">
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="dataCleanup" Type="integer" Value="1" KeyPath="yes" />
+      <util:RemoveFolderEx On="uninstall" Property="SERVERDATADIR" />
+    </Component>
+  </Fragment>
+  <?else ?>
   <Fragment>
     <ComponentGroup Id="AgentComponents" Directory="APPFOLDER">
       <Files Include="$(var.AgentPublishDir)\**">
@@ -289,4 +433,5 @@
       <RegistryValue Root="HKCU" Key="Software\Cerberus\WindowsAgent" Name="desktopAgentShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
+  <?endif ?>
 </Wix>

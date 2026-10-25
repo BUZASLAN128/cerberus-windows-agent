@@ -13,6 +13,10 @@
     <UpdateManifestUrl Condition="'$(UpdateManifestUrl)' == '' and '$(Channel)' != 'stable'">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/$(Channel)-latest/Cerberus.Agent.Bundle-$(Channel)-latest.update-manifest.v2.json</UpdateManifestUrl>
     <UpdateManifestPublicKeyB64 Condition="'$(UpdateManifestPublicKeyB64)' == ''">IA==</UpdateManifestPublicKeyB64>
     <UpdateAllowedArtifactPrefixes Condition="'$(UpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</UpdateAllowedArtifactPrefixes>
+    <AgentBuildProfile Condition="'$(AgentBuildProfile)' == ''">desktop</AgentBuildProfile>
+    <ProductName Condition="'$(ProductName)' == '' and '$(AgentBuildProfile)' == 'server'">Cerberus Server Agent</ProductName>
+    <ProductName Condition="'$(ProductName)' == ''">Cerberus Windows Agent</ProductName>
+    <EulaRtf Condition="'$(EulaRtf)' == ''">$(MSBuildThisFileDirectory)Assets\EULA.rtf</EulaRtf>
     <OutputName>$(InstallerAssetBase)</OutputName>
     <SuppressIces>ICE91</SuppressIces>
     <SuppressIces Condition="'$(Channel)' == 'dev'">$(SuppressIces);ICE61</SuppressIces>
@@ -21,6 +25,9 @@
       InstallerHelperPath=$(InstallerHelperPath);
       ServiceExeSha256=$(ServiceExeSha256);
       ServiceAssemblySha256=$(ServiceAssemblySha256);
+      AgentBuildProfile=$(AgentBuildProfile);
+      ProductName=$(ProductName);
+      EulaRtf=$(EulaRtf);
       ReleaseVersion=$(Version);
       MsiProductVersion=$(MsiProductVersion);
       ReleaseChannel=$(Channel);
