@@ -105,19 +105,33 @@ public sealed partial class AgentApiClientTelemetryTests
         private readonly HttpStatusCode _statusCode;
         private readonly HttpContent _content;
 
-        public FailureHandler(HttpStatusCode statusCode, HttpContent content, TimeSpan? headerDelay = null)
+        public FailureHandler(HttpStatusCode statusCode, HttpContent content, bool headersArriveAfterDeadline = false)
         {
             _statusCode = statusCode;
             _content = content;
-            _headerDelay = headerDelay ?? TimeSpan.Zero;
+            _headersArriveAfterDeadline = headersArriveAfterDeadline;
         }
 
-        private readonly TimeSpan _headerDelay;
+        private readonly bool _headersArriveAfterDeadline;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            if (_headerDelay > TimeSpan.Zero)
-                await Task.Delay(_headerDelay, cancellationToken);
+            if (_headersArriveAfterDeadline)
+            {
+                // A transport that ignores cancellation: the headers come back only once the deadline has fired.
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                // HttpClient's timeout and the caller's deadline are separate timers with no guaranteed order;
+                // wait out any skew so the deadline has fired before the headers are returned.
+                await Task.Delay(TimeSpan.FromMilliseconds(500), CancellationToken.None);
+            }
+
             return new HttpResponseMessage(_statusCode) { Content = _content };
         }
     }
@@ -128,9 +142,8 @@ public sealed partial class AgentApiClientTelemetryTests
 
         public StallingContent(string? prefix = null) => _prefix = Encoding.UTF8.GetBytes(prefix ?? string.Empty);
 
-        /// <summary>Stopwatch timestamps of when the read began to stall and when its token was cancelled (0 = not yet).</summary>
-        public long StallStartedAt { get; private set; }
-        public long CancelledAt { get; private set; }
+        /// <summary>A body read began with a token that was not yet cancelled.</summary>
+        public bool ReadStartedWithLiveToken { get; private set; }
 
         protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
         protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(this, _prefix));
@@ -168,8 +181,7 @@ public sealed partial class AgentApiClientTelemetryTests
                     return count;
                 }
 
-                _owner.StallStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
-                using var mark = cancellationToken.Register(() => _owner.CancelledAt = System.Diagnostics.Stopwatch.GetTimestamp());
+                _owner.ReadStartedWithLiveToken |= !cancellationToken.IsCancellationRequested;
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return 0;
             }

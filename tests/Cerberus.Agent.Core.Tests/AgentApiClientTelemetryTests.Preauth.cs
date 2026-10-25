@@ -95,10 +95,9 @@ public sealed partial class AgentApiClientTelemetryTests
     [Fact]
     public async Task GetTailscalePreauthAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
     {
-        const int timeoutMs = 2000;
         var content = new StallingContent("preauth-delay-marker");
-        var handler = new FailureHandler(HttpStatusCode.OK, content, TimeSpan.FromMilliseconds(1000));
-        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
+        var handler = new FailureHandler(HttpStatusCode.OK, content, headersArriveAfterDeadline: true);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://backend.test"), Timeout = TimeSpan.FromMilliseconds(50) };
         var client = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
 
         var exception = await Assert.ThrowsAsync<HttpRequestException>(
@@ -106,13 +105,9 @@ public sealed partial class AgentApiClientTelemetryTests
 
         Assert.Equal("Tailscale preauth failed (200).", exception.Message);
         Assert.DoesNotContain("preauth-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.NotEqual(0, content.StallStartedAt);
-        Assert.NotEqual(0, content.CancelledAt);
-        // The body read starts after the 1000 ms header delay. Cancellation is relative to the body read start:
-        // a fresh body budget cannot cancel before the full 2000 ms has passed, while one shared budget leaves
-        // about 1000 ms. The 1750 ms bound separates them with no dependence on total elapsed time.
-        var bodyWait = Stopwatch.GetElapsedTime(content.StallStartedAt, content.CancelledAt);
-        Assert.True(bodyWait < TimeSpan.FromMilliseconds(timeoutMs - 250), $"body read was cancelled after {bodyWait}");
+        // One budget: the deadline had already fired when the headers arrived, so no body read may start with a live token.
+        // A fresh body budget would hand the read a token that is not cancelled yet.
+        Assert.False(content.ReadStartedWithLiveToken);
     }
 
     [Fact]
