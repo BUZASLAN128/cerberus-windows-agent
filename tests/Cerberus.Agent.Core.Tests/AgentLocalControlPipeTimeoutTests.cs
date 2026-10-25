@@ -55,6 +55,23 @@ public sealed class AgentLocalControlPipeTimeoutTests
     }
 
     [Fact]
+    public async Task ConnectionDeadline_CancelsHandler_StillDeliversServiceTimeout()
+    {
+        var server = new AgentLocalControlServer(async (_, ct) =>
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return new AgentLocalControlResponse(true, "ok");
+        })
+        { RequestDeadline = TimeSpan.FromMilliseconds(200) };
+
+        var response = await RoundTripAsync(server, CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.False(response!.Success);
+        Assert.Equal("service_timeout", response.Code);
+    }
+
+    [Fact]
     public async Task ReapCompleted_RemovesFaultedAndCanceledTasks_AndKeepsRunningOnes()
     {
         var running = new TaskCompletionSource();

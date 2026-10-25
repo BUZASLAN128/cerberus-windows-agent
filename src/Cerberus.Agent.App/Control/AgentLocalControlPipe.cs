@@ -43,6 +43,10 @@ internal sealed class AgentLocalControlServer
     public AgentLocalControlServer(Func<AgentLocalControlRequest, CancellationToken, Task<AgentLocalControlResponse>> handle)
         => _handle = handle;
 
+    private static readonly TimeSpan WriteDeadline = TimeSpan.FromSeconds(5);
+
+    internal TimeSpan RequestDeadline { get; init; } = TimeSpan.FromSeconds(40);
+
     public async Task RunAsync(CancellationToken ct)
     {
         if (!WindowsIdentity.GetCurrent().IsSystem)
@@ -102,7 +106,7 @@ internal sealed class AgentLocalControlServer
         await using (pipe)
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(serviceCt))
         {
-            timeout.CancelAfter(TimeSpan.FromSeconds(40));
+            timeout.CancelAfter(RequestDeadline);
             AgentLocalControlRequest request;
             bool privileged;
             try
@@ -139,13 +143,16 @@ internal sealed class AgentLocalControlServer
                 response = new AgentLocalControlResponse(false, "service_timeout");
             }
 
+            // The request deadline may already have fired (service_timeout), so the reply gets its own bounded write.
+            using var write = CancellationTokenSource.CreateLinkedTokenSource(serviceCt);
+            write.CancelAfter(WriteDeadline);
             try
             {
-                await AgentLocalControlProtocol.WriteAsync(pipe, response, timeout.Token).ConfigureAwait(false);
+                await AgentLocalControlProtocol.WriteAsync(pipe, response, write.Token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException)
             {
-                // The authenticated peer may disconnect or exceed this connection's deadline.
+                // The authenticated peer may disconnect, stall past the write deadline, or the service may stop.
             }
         }
     }
