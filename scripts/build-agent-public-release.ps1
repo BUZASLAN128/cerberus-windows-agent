@@ -77,7 +77,7 @@ $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)
 if ($signingPlan.Finalize) {
   Complete-ExternalManifestSigning `
     -PublishDir $publishDir -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile
+    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile
   return
 }
 Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -164,9 +164,9 @@ $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = if ($Channel -eq "stable") {
-    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json"
+    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json".Replace("-latest.update", "-latest$($releaseProfile.AssetSuffix).update")
   } else {
-    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json"
+    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json".Replace("-latest.update", "-latest$($releaseProfile.AssetSuffix).update")
   }
 }
 if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
@@ -484,6 +484,6 @@ $legacyManifest["signature"] = Sign-ManifestPayload -CanonicalPayload $legacyCan
 Publish-ReleaseOutputs `
   -PublishDir $publishDir -Channel $Channel -AssetBase $assetBase -InstallerBase $installerBase `
   -Manifest $manifest -LegacyManifest $legacyManifest `
-  -AllowUnsignedBuildMetadata $allowUnsignedBuildMetadata -Signed $signed
+  -AllowUnsignedBuildMetadata $allowUnsignedBuildMetadata -Signed $signed -BuildProfile $BuildProfile
 
 Write-Step "Release bundle ready: $publishDir"

@@ -1,3 +1,4 @@
+using Cerberus.Agent.App.Legal;
 using System.Text.RegularExpressions;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -43,6 +44,19 @@ public sealed class AgentInstallIdentityTests
         Assert.Equal("CerberusServerAgent.Control.v1", AgentInstallIdentity.ControlPipeName);
     }
 #endif
+
+    [Fact]
+    public void ConsentProduct_FollowsTheBuildProfileInTheValueAndTheBlockedMessage()
+    {
+#if CERBERUS_SERVER_PROFILE
+        const string expected = "Cerberus Server Agent";
+#else
+        const string expected = "Cerberus Windows Agent";
+#endif
+        Assert.Equal(expected, AgentInstallIdentity.ConsentProductName);
+        Assert.Equal(expected, AgentLegalConsent.ProductName);
+        Assert.StartsWith(expected + " cannot continue until", AgentLegalConsent.ConsentRequiredMessage, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void NoDesktopIdentityLiteralOutsideIdentityFileAndDesktopOnlyExemptions()

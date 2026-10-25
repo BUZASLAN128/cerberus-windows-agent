@@ -129,10 +129,67 @@ public sealed class ServerPackageStaticTests
             .Where(r => (string?)r.Attribute("Key") == @"Software\Cerberus\ServerAgent\LegalConsent")
             .ToDictionary(r => (string)r.Attribute("Name")!, r => (string)r.Attribute("Value")!);
 
-        Assert.Equal("Cerberus Windows Agent", consent["product"]);
+        Assert.Equal("Cerberus Server Agent", consent["product"]);
         Assert.Equal("1", consent["accepted"]);
         Assert.Contains("BlockInstallWithoutEula", Evaluate("server", "stable"));
         Assert.Contains("CERBERUS_EULA_ACCEPTED = 1", Evaluate("server", "stable"));
+    }
+
+    [Theory]
+    [InlineData("desktop", "", true)]
+    [InlineData("server", "-server", false)]
+    public void ReleasePublish_AliasNamesAndGateFollowTheProfile(string profile, string suffix, bool shipsUninstall)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"publish-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var lib = Path.Combine(FindRepoRoot(), "scripts", "release-publish-lib.ps1");
+            var command =
+                $". '{lib}'; $d = '{dir}'; " +
+                "foreach ($n in 'Agent.msi','Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') { Set-Content -LiteralPath (Join-Path $d $n) -Value $n }; " +
+                "$m = [ordered]@{ sha256 = 'abc'; sequence = 1; expires_at_utc = 'x'; signer_key_identity = 'k' }; " +
+                $"Publish-ReleaseOutputs -PublishDir $d -Channel dev -AssetBase Bundle -InstallerBase Agent -Manifest $m -LegacyManifest $null -AllowUnsignedBuildMetadata $true -Signed $false -BuildProfile {profile}";
+            var run = RunPwsh(command);
+            Assert.True(run.ExitCode == 0, run.Output);
+
+            var names = Directory.GetFiles(dir).Select(Path.GetFileName).Where(n => n!.Contains("-latest", StringComparison.Ordinal)).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+            var expected = new[]
+            {
+                $"Cerberus.Agent-dev-latest{suffix}.msi",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.provenance.json",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.sbom.json",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.update-manifest.v2.json",
+                $"Cerberus.Agent.Bundle-dev-latest{suffix}.zip",
+            }.OrderBy(n => n, StringComparer.Ordinal).ToArray();
+            Assert.Equal(expected, names);
+
+            var gate = File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json"));
+            Assert.Equal(shipsUninstall, gate.Contains("uninstall_binary", StringComparison.Ordinal));
+            Assert.DoesNotContain("Uninstall", shipsUninstall ? "" : gate);
+            Assert.Contains("\"updater_binary\": \"app/Cerberus.Agent.Updater.exe\"", gate);
+            Assert.DoesNotContain("tray", gate, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("desktop", "Cerberus.Agent.Uninstall.exe", 4)]
+    [InlineData("server", "Cerberus.Agent.Uninstall.exe", 3)]
+    public void ReleaseSigningList_ServerOmitsTheDesktopUninstaller(string profile, string uninstall, int count)
+    {
+        var lib = Path.Combine(FindRepoRoot(), "scripts", "release-publish-lib.ps1");
+        var run = RunPwsh($". '{lib}'; (Get-ReleaseRuntimeExecutableNames '{profile}') -join '|'");
+        Assert.Equal(0, run.ExitCode);
+        var names = run.Output.Trim().Split('|');
+        Assert.Equal(count, names.Length);
+        Assert.Equal(profile == "desktop", names.Contains(uninstall));
+        Assert.Contains("Cerberus.Agent.Service.exe", names);
     }
 
     [Fact]
@@ -262,6 +319,34 @@ public sealed class ServerPackageStaticTests
     }
 
     private static string PackagePath() => Path.Combine(FindRepoRoot(), "src", "Cerberus.Agent.Installer", "Package.wxs");
+
+    private static (int ExitCode, string Output) RunPwsh(string command)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "pwsh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (var argument in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $"$ErrorActionPreference='Stop'; {command}" })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("Could not start pwsh.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(120_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("pwsh check did not finish within 2 minutes.");
+        }
+
+        Task.WaitAll(stdout, stderr);
+        return (process.ExitCode, stdout.Result + stderr.Result);
+    }
 
     private static (int ExitCode, string Output) RunProfileLib(string arguments)
     {
