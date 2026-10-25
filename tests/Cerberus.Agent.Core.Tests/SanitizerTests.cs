@@ -114,6 +114,31 @@ public sealed class SanitizerTests
         Assert.Equal(3, redacted.Split("[REDACTED_SECRET]").Length - 1);
     }
 
+    [Fact]
+    public void Redact_StructuredJsonStillRedactsSensitiveKeysNextToAFingerprint()
+    {
+        var redacted = Sanitizer.Redact($"{{\"fingerprint\":\"{FpA}\",\"password\":\"hunter2\"}}");
+
+        Assert.Contains(FpA, redacted);
+        Assert.Contains("\"password\":\"[REDACTED]\"", redacted);
+        Assert.DoesNotContain("hunter2", redacted);
+    }
+
+    [Fact]
+    public void Redact_StructuredJsonKeepsFingerprintInsideALogLineAndRedactsSensitiveKeys()
+    {
+        var input = $"{{\"log\":\"Agent key fingerprint={FpA}\",\"nested\":[{{\"client_secret\":\"s3cr3t-value\"}}],\"token\":\"abc123\"}}";
+
+        var redacted = Sanitizer.Redact(input);
+
+        Assert.Equal(1, redacted.Split(FpA).Length - 1);
+        Assert.Contains("\"token\":\"[REDACTED]\"", redacted);
+        Assert.Contains("\"client_secret\":\"[REDACTED]\"", redacted);
+        Assert.DoesNotContain("s3cr3t-value", redacted);
+        Assert.DoesNotContain("abc123", redacted);
+        Assert.DoesNotContain('\u0001', redacted);
+    }
+
     [Theory]
     [InlineData("sha256:" + Hex + "0")]
     [InlineData("xsha256:" + Hex)]

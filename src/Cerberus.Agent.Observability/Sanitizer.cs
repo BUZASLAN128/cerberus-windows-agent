@@ -67,17 +67,20 @@ public static class Sanitizer
         if (!MayContainSecret(value))
             return value;
 
+        // Structured JSON runs on the original value: the placeholder below holds
+        // control characters, which are invalid inside a JSON string.
+        var json = RedactStructuredJson(value);
         List<string>? kept = null;
-        var v = KeyFingerprint.Replace(value, m =>
+        var v = KeyFingerprint.Replace(json, m =>
         {
             (kept ??= []).Add(m.Value);
-            return "fp" + (kept.Count - 1) + "";
+            return "\u0001fp" + (kept.Count - 1) + "\u0001";
         });
         v = RedactSecrets(v);
         if (kept is not null)
         {
             for (var i = 0; i < kept.Count; i++)
-                v = v.Replace("fp" + i + "", kept[i], StringComparison.Ordinal);
+                v = v.Replace("\u0001fp" + i + "\u0001", kept[i], StringComparison.Ordinal);
         }
         return v;
     }
@@ -85,7 +88,6 @@ public static class Sanitizer
     private static string RedactSecrets(string value)
     {
         var v = value;
-        v = RedactStructuredJson(v);
         v = SecretLike.Replace(v, "$1=[REDACTED]");
         v = HeadscaleKeyLike.Replace(v, "hskey-$1-[REDACTED]");
         v = TailscaleKeyLike.Replace(v, "tskey-$1-[REDACTED]");
