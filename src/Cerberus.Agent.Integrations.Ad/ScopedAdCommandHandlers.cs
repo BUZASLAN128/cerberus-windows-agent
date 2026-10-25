@@ -45,6 +45,11 @@ public static class ScopedAdCommandHandlers
                     return Early("ad_authority_required");
                 var command = authority.Command with { Payload = JsonSerializer.SerializeToElement(authority.Command.Payload) };
                 parsed = ScopedAdCommandPayload.Parse(command, identity);
+                // Neither command is signed: the heartbeat payload must match the authority payload before anything executes.
+                ScopedAdCommandPayload suppliedPayload;
+                try { suppliedPayload = ScopedAdCommandPayload.Parse(supplied, identity); }
+                catch (Exception) { return Early("ad_authority_required"); }
+                if (suppliedPayload != parsed) return Early("ad_authority_required");
                 CommandResult result = Failure(parsed, "ad_authority_required");
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 var remaining = authority.ExpiresAt - now();
