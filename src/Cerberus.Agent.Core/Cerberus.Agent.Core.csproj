@@ -4,6 +4,68 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AgentCommandTrustAnchorsB64 Condition="'$(AgentCommandTrustAnchorsB64)' == ''"></AgentCommandTrustAnchorsB64>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentPollFloorSeconds</_Parameter1>
+      <_Parameter2>$(AgentPollFloorSeconds)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentPollCeilingSeconds</_Parameter1>
+      <_Parameter2>$(AgentPollCeilingSeconds)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentSnapshotFloorSeconds</_Parameter1>
+      <_Parameter2>$(AgentSnapshotFloorSeconds)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentSnapshotCeilingSeconds</_Parameter1>
+      <_Parameter2>$(AgentSnapshotCeilingSeconds)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentSnapshotDefaultSeconds</_Parameter1>
+      <_Parameter2>$(AgentSnapshotDefaultSeconds)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentCommandTrustAnchorsB64</_Parameter1>
+      <_Parameter2>$(AgentCommandTrustAnchorsB64)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <Target Name="ValidateAgentProfileMetadata" BeforeTargets="CoreCompile;GenerateAssemblyInfo;GetAssemblyAttributes">
+    <PropertyGroup>
+      <_TimingValid>true</_TimingValid>
+      <_TimingValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AgentPollFloorSeconds)', '^[0-9]{1,9}$'))">false</_TimingValid>
+      <_TimingValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AgentPollCeilingSeconds)', '^[0-9]{1,9}$'))">false</_TimingValid>
+      <_TimingValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AgentSnapshotFloorSeconds)', '^[0-9]{1,9}$'))">false</_TimingValid>
+      <_TimingValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AgentSnapshotCeilingSeconds)', '^[0-9]{1,9}$'))">false</_TimingValid>
+      <_TimingValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(AgentSnapshotDefaultSeconds)', '^[0-9]{1,9}$'))">false</_TimingValid>
+    </PropertyGroup>
+    <Error Condition="'$(_TimingValid)' != 'true'"
+           Code="CERBAGENT001"
+           Text="Agent timing metadata must be non-negative integers (AgentPollFloorSeconds, AgentPollCeilingSeconds, AgentSnapshotFloorSeconds, AgentSnapshotCeilingSeconds, AgentSnapshotDefaultSeconds)." />
+    <Error Condition="'$(_TimingValid)' == 'true' and ($(AgentPollFloorSeconds) &lt; 1 or $(AgentSnapshotFloorSeconds) &lt; 1)"
+           Code="CERBAGENT002"
+           Text="Agent timing floors must be at least 1 second." />
+    <Error Condition="'$(_TimingValid)' == 'true' and ($(AgentPollFloorSeconds) &gt; $(AgentPollCeilingSeconds) or $(AgentSnapshotFloorSeconds) &gt; $(AgentSnapshotCeilingSeconds))"
+           Code="CERBAGENT003"
+           Text="Agent timing floor must not exceed its ceiling." />
+    <Error Condition="'$(_TimingValid)' == 'true' and ($(AgentSnapshotDefaultSeconds) &lt; $(AgentSnapshotFloorSeconds) or $(AgentSnapshotDefaultSeconds) &gt; $(AgentSnapshotCeilingSeconds))"
+           Code="CERBAGENT004"
+           Text="AgentSnapshotDefaultSeconds must lie within the snapshot floor and ceiling." />
+    <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
+      <_AnchorsValue>$([System.String]::Copy('$(AgentCommandTrustAnchorsB64)').Trim())</_AnchorsValue>
+      <_AnchorsValid>true</_AnchorsValid>
+      <_AnchorsValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_AnchorsValue)', '^[A-Za-z0-9+/]{500,}={0,2}$'))">false</_AnchorsValid>
+      <_AnchorsValid Condition="'$(_AnchorsValid)' == 'true' and $([MSBuild]::Modulo($(_AnchorsValue.Length), 4)) != 0">false</_AnchorsValid>
+    </PropertyGroup>
+    <Error Condition="'$(AgentBuildProfile)' == 'server' and '$(_AnchorsValid)' != 'true'"
+           Code="CERBAGENT005"
+           Text="The server profile requires AgentCommandTrustAnchorsB64: padded base64 (one line, at least 500 characters) of one base64 RSA SPKI per line; pass -p:AgentCommandTrustAnchorsB64=&lt;value&gt;." />
+  </Target>
+
+  <Import Project="AgentCommandAnchors.targets" />
 
 </Project>

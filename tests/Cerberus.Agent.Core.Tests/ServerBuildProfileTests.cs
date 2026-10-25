@@ -55,7 +55,10 @@ public sealed class ServerBuildProfileTests
     // ---- Server profile only ------------------------------------------------------------
 
     private static readonly string[] ServerSections =
-        { "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity" };
+        {
+            "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
+            "sessions", "hardware", "services", "listening_ports", "updates", "software",
+        };
 
     [Theory]
     [InlineData(null)]
@@ -73,22 +76,27 @@ public sealed class ServerBuildProfileTests
     }
 
     [Fact]
-    public void Item1_Claim_PendingClaimIsAcceptedButRejectedStatesAreNot()
+    public void Item1_Claim_HeartbeatOkCountsAsClaimedWhateverTheUnsignedStatesSay()
     {
-        Assert.True(AgentClaimGate.IsClaimed(Heartbeat("pending_claim", claimRequired: true)));
-        Assert.True(AgentClaimGate.IsClaimed(Heartbeat(null, claimRequired: true)));
-        Assert.True(AgentClaimGate.IsClaimed(Heartbeat("claimed")));
-        foreach (var state in new[] { "rejected", "deactivated", "revoked" })
-            Assert.False(AgentClaimGate.IsClaimed(Heartbeat(state)), state);
-    }
-
-    [Fact]
-    public void Item1_Claim_LocalControlAcceptsPendingClaimButKeepsRevokedAndQuarantinedChecks()
-    {
-        Assert.True(AgentLocalControlService.Claimed(Heartbeat("pending_claim", claimRequired: true)));
-        Assert.False(AgentLocalControlService.Claimed(Heartbeat("pending_claim", lifecycle: "revoked")));
-        Assert.False(AgentLocalControlService.Claimed(Heartbeat("claimed", lifecycle: "quarantined")));
-        Assert.False(AgentLocalControlService.Claimed(Heartbeat("revoked")));
+        var revoked = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>("""{"revoked":true}""");
+        var quarantined = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>("""{"active":true}""");
+        var responses = new[]
+        {
+            Heartbeat("pending_claim", claimRequired: true),
+            Heartbeat(null, claimRequired: true),
+            Heartbeat("claimed"),
+            Heartbeat("rejected"),
+            Heartbeat("deactivated"),
+            Heartbeat("revoked"),
+            Heartbeat("pending_claim", lifecycle: "revoked"),
+            Heartbeat("claimed", lifecycle: "quarantined"),
+            Heartbeat("claimed") with { Revoke = revoked, Quarantine = quarantined },
+        };
+        foreach (var response in responses)
+        {
+            Assert.True(AgentClaimGate.IsClaimed(response));
+            Assert.True(AgentLocalControlService.Claimed(response));
+        }
     }
 
     [Fact]

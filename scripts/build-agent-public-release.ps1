@@ -33,7 +33,14 @@ param(
   [string]$ManifestSigningCertThumbprint = "",
   [string]$ManifestSigningPublicKeyFile = "",
   [string]$ManifestSignatureFile = "",
-  [string[]]$ExtraManifestPublicKeyFiles = @()
+  [string[]]$ExtraManifestPublicKeyFiles = @(),
+
+  # Build profile. The server profile needs the file holding AgentCommandTrustAnchorsB64.
+  [ValidateSet("desktop", "server")][string]$BuildProfile = "desktop",
+  [string]$AgentCommandTrustAnchorsFile = "",
+  [hashtable]$TimingOverrides = @{},
+  [string]$ProductName = "",
+  [string]$EulaRtf = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,6 +53,7 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 . (Join-Path $PSScriptRoot "release-trust-lib.ps1")
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
+. (Join-Path $PSScriptRoot "release-profile-lib.ps1")
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -60,39 +68,16 @@ $signingPlan = Assert-ReleaseSigningInputs `
   -AllowEphemeralManifestKey ([bool]$AllowEphemeralManifestKey)
 $tokenMode = ($signingPlan.Mode -eq "Token")
 
-function ConvertTo-Base64Utf8([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) {
-    return ""
-  }
-  return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value.Trim()))
-}
-
-function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem) {
-  $rsa = [System.Security.Cryptography.RSA]::Create()
-  $rsa.ImportFromPem($PrivateKeyPem)
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($CanonicalPayload)
-  $sig = $rsa.SignData(
-    $bytes,
-    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-  return [Convert]::ToBase64String($sig)
-}
-
-function Get-ManifestPublicKeyPem([string]$PrivateKeyPem) {
-  $rsa = [System.Security.Cryptography.RSA]::Create()
-  $rsa.ImportFromPem($PrivateKeyPem)
-  return $rsa.ExportSubjectPublicKeyInfoPem()
-}
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
-$assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
-$installerBase = "Cerberus.Agent-$Channel-$Version"
+$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf
+$assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
+$installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
 if ($signingPlan.Finalize) {
   Complete-ExternalManifestSigning `
     -PublishDir $publishDir -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile
+    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile
   return
 }
 Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -176,12 +161,15 @@ $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifest
 $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
 $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 }
+if ($BuildProfile -eq "server") {
+  Assert-CommandAnchorsNotManifestKeys $releaseProfile.AnchorsB64 $(if ($tokenMode) { $tokenKeyListB64 } else { @($manifestPublicKeyB64) })
+}
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = if ($Channel -eq "stable") {
-    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json"
+    "https://github.com/$manifestRepo/releases/latest/download/Cerberus.Agent.Bundle-stable-latest.update-manifest.v2.json".Replace("-latest.update", "-latest$($releaseProfile.AssetSuffix).update")
   } else {
-    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json"
+    "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json".Replace("-latest.update", "-latest$($releaseProfile.AssetSuffix).update")
   }
 }
 if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
@@ -203,20 +191,8 @@ if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
 
 $signerKeyIdentity = if ($Channel -eq "dev" -and $AllowUnsignedDevBuild) { "unsigned-dev" } else { "" }
 $allowUnsignedBuildMetadata = ($Channel -eq "dev" -and $AllowUnsignedDevBuild)
-$certBase64ForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
-$certPasswordForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
-if (-not [string]::IsNullOrWhiteSpace($certBase64ForMetadata)) {
-  try {
-    $certificateForMetadata = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-      [Convert]::FromBase64String($certBase64ForMetadata),
-      $certPasswordForMetadata,
-      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
-    $signerKeyIdentity = "sha256:" + [Convert]::ToHexString(
-      [System.Security.Cryptography.SHA256]::HashData($certificateForMetadata.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant()
-  } catch {
-    throw "Windows signing certificate identity could not be read."
-  }
-}
+$pfxSignerIdentity = Get-PfxSignerKeyIdentity ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")) ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD"))
+if ($pfxSignerIdentity) { $signerKeyIdentity = $pfxSignerIdentity }
 $signerPinsForBuild = $signerKeyIdentity
 if ($tokenMode) {
   # The manifest carries the pin of the certificate that signs this release; the build embeds every accepted pin.
@@ -234,8 +210,17 @@ Assert-ManifestSequenceInRange $ManifestSequence
 
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
-  dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
-  if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
+  if ($BuildProfile -eq "server") {
+    # Server-only code is compiled in only with the profile; the tests need the test signing key's anchor, not the release anchors.
+    $testAnchors = (Get-Content -LiteralPath (Join-Path $repoRoot "tests/fixtures/agent-command-test-anchors.b64") -Raw).Trim()
+    dotnet test (Join-Path $repoRoot "tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj") -c $Configuration `
+      -p:AgentBuildProfile=server "-p:AgentCommandTrustAnchorsB64=$testAnchors" `
+      -p:IntermediateOutputPath=obj/release-server-tests/ -p:BaseOutputPath=bin/release-server-tests/
+    if ($LASTEXITCODE -ne 0) { throw "Release tests (server profile) failed." }
+  } else {
+    dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
+  }
 }
 
 function Publish-AgentProject([string]$Project) {
@@ -265,7 +250,7 @@ function Publish-AgentProject([string]$Project) {
       "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
       "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
       "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
-  )
+  ) + $releaseProfile.MsBuildArgs
   dotnet @args
   if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
 }
@@ -274,7 +259,7 @@ Write-Step "Publishing split agent runtime"
 Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj"
 Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
 Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj"
-Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj"
+if ($BuildProfile -ne "server") { Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" }
 
 $versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
@@ -293,6 +278,10 @@ $allowedRuntimeExeNames = @(
   "Cerberus.Agent.Updater.exe",
   "Cerberus.Agent.Uninstall.exe"
 )
+if ($BuildProfile -eq "server") { # the server package has no desktop uninstaller
+  $runtimeExecutables = @($runtimeExecutables | Where-Object { $_ -notlike "*Uninstall.exe" })
+  $allowedRuntimeExeNames = @($allowedRuntimeExeNames | Where-Object { $_ -ne "Cerberus.Agent.Uninstall.exe" })
+}
 Remove-Item -LiteralPath (Join-Path $runtimePublishDir "createdump.exe") -Force -ErrorAction SilentlyContinue
 foreach ($runtimeExe in $runtimeExecutables) {
   if (-not (Test-Path -LiteralPath $runtimeExe)) {
@@ -344,7 +333,7 @@ Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
 dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:Version=$Version -o $installerHelperOutput
+  -p:Version=$Version @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
@@ -366,7 +355,7 @@ dotnet build $installerProject `
   -p:InstallerAssetBase=$installerBuildBase `
   -p:UpdateManifestUrl=$UpdateManifestUrl `
   -p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64 `
-  -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
+  @($releaseProfile.MsBuildArgs) @($releaseProfile.MsiArgs) `
   -p:OutputPath="$publishDir\"
 if ($LASTEXITCODE -ne 0) { throw "MSI package build failed." }
 
@@ -494,6 +483,6 @@ $legacyManifest["signature"] = Sign-ManifestPayload -CanonicalPayload $legacyCan
 Publish-ReleaseOutputs `
   -PublishDir $publishDir -Channel $Channel -AssetBase $assetBase -InstallerBase $installerBase `
   -Manifest $manifest -LegacyManifest $legacyManifest `
-  -AllowUnsignedBuildMetadata $allowUnsignedBuildMetadata -Signed $signed
+  -AllowUnsignedBuildMetadata $allowUnsignedBuildMetadata -Signed $signed -BuildProfile $BuildProfile
 
 Write-Step "Release bundle ready: $publishDir"

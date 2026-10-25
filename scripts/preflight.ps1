@@ -25,6 +25,7 @@ try {
     -p:BaseOutputPath=$baseOut `
     -p:IntermediateOutputPath=$intOut `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
   Write-Host "== test =="
   dotnet test Cerberus.WindowsAgent.slnx -c $Configuration `
@@ -32,15 +33,23 @@ try {
     -p:IntermediateOutputPath=$intOut `
     -p:BaseOutputPath=bin\\_testout_preflight\\ `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
 
   Write-Host "== test (server profile) =="
   $serverInt = "obj\\_int\\preflight-server\\$ts\\"
+  $anchorsFile = Join-Path $repoRoot "tests\fixtures\agent-command-test-anchors.b64"
+  if (-not (Test-Path $anchorsFile)) {
+    throw "Missing test anchors fixture: $anchorsFile"
+  }
+  $testAnchors = (Get-Content -Raw -Path $anchorsFile).Trim()
   dotnet test tests\\Cerberus.Agent.Core.Tests\\Cerberus.Agent.Core.Tests.csproj -c $Configuration `
     -p:AgentBuildProfile=server `
+    -p:AgentCommandTrustAnchorsB64=$testAnchors `
     -p:UseSharedCompilation=false `
     -p:IntermediateOutputPath=$serverInt `
     -p:BaseOutputPath=bin\\_testout_preflight_server\\ `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Tests (server profile) failed." }
 
   if (-not $SkipPublish) {
     Write-Host "== publish =="
@@ -55,6 +64,7 @@ try {
       -p:IncludeNativeLibrariesForSelfExtract=true `
       -p:EnableCompressionInSingleFile=true `
       --disable-build-servers
+    if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
   }
 
   if (-not $SkipSelfTest) {

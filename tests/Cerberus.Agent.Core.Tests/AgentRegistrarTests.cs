@@ -7,7 +7,7 @@ using Cerberus.Agent.App;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class AgentRegistrarTests
+public sealed partial class AgentRegistrarTests
 {
     [Theory]
     [InlineData("http://100.101.130.51:8000", false)]
@@ -371,32 +371,31 @@ public sealed class AgentRegistrarTests
             BaseAddress = new Uri("http://example.test"),
             Timeout = TimeSpan.FromMilliseconds(50),
         };
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+        // The body never completes, so only the client timeout can end the call.
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => Register(NewRegistrar(http)).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
-    public async Task RegisterAsync_WhenHeadersConsumeMostTimeout_BodyDeadlineUsesOneBudget()
+    public async Task RegisterAsync_WhenHeadersConsumeTheWholeTimeout_BodyGetsNoFreshBudget()
     {
-        const int timeoutMs = 2000;
-        var handler = new CaptureHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StallingContent("register-delay-marker") },
-            TimeSpan.FromMilliseconds(1500));
-        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(timeoutMs) };
-        var stopwatch = Stopwatch.StartNew();
+        var content = new StallingContent("register-delay-marker");
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = content }, headersArriveAfterDeadline: true);
+        // HttpClient's own timer and the registrar's deadline both fire after 50 ms, in either order. The handler
+        // returns only after a settle period far above that skew, so the shared deadline is certain to have fired.
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(50) };
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-delay-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(1200), TimeSpan.FromSeconds(3));
+        // One budget: the deadline had already fired when the headers arrived, so no body read may start with a live token.
+        // A fresh body budget would hand the read a token that is not cancelled yet.
+        Assert.False(content.ReadStartedWithLiveToken);
     }
 
     [Fact]
@@ -408,13 +407,11 @@ public sealed class AgentRegistrarTests
         });
         using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = Timeout.InfiniteTimeSpan };
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        var stopwatch = Stopwatch.StartNew();
 
-        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Register(NewRegistrar(http), cts.Token));
+        var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Register(NewRegistrar(http), cts.Token).WaitAsync(HangGuard));
 
-        stopwatch.Stop();
         Assert.DoesNotContain("register-body-marker", exception.Message, StringComparison.Ordinal);
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -425,216 +422,5 @@ public sealed class AgentRegistrarTests
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Register(NewRegistrar(http), cts.Token));
-    }
-
-    private static AgentRegistrar NewRegistrar(HttpClient http) => new(
-        http,
-        new CaptureSecretStore(),
-        new StubKeyPairs("priv-pem", "pub-pem"),
-        log: NullAgentLogger.Instance);
-
-    private static Task<AgentIdentity> Register(AgentRegistrar registrar) => registrar.RegisterAsync(
-        oauthToken: "Bearer tok",
-        backendUrlForStorage: "http://backend",
-        deviceFingerprint: "fp",
-        agentVersion: "1.2.3",
-        buildId: "build-abc",
-        buildChannel: "dev",
-        ct: CancellationToken.None);
-
-    private static Task<AgentIdentity> Register(AgentRegistrar registrar, CancellationToken ct) => registrar.RegisterAsync(
-        oauthToken: "Bearer tok",
-        backendUrlForStorage: "http://backend",
-        deviceFingerprint: "fp",
-        agentVersion: "1.2.3",
-        buildId: "build-abc",
-        buildChannel: "dev",
-        ct: ct);
-
-    private static string RegisterResponseJson() =>
-        "{\"agent_id\":\"a1\",\"tenant_id\":\"t1\",\"agent_refresh_token\":\"rt1\",\"jwt_public_key_pem\":null,\"telemetry_base_url\":\"http://telemetry.test\"}";
-
-    private static string PadToLength(string value, int length)
-    {
-        var current = Encoding.UTF8.GetByteCount(value);
-        Assert.True(current <= length);
-        return value + new string(' ', length - current);
-    }
-
-    private sealed class CaptureHandler : HttpMessageHandler
-    {
-        private readonly HttpResponseMessage _response;
-
-        public HttpRequestMessage? CapturedRequest { get; private set; }
-        public string? CapturedBody { get; private set; }
-        public HttpResponseMessage Response => _response;
-
-        public CaptureHandler(HttpResponseMessage response, TimeSpan? headerDelay = null)
-        {
-            _response = response;
-            _headerDelay = headerDelay ?? TimeSpan.Zero;
-        }
-
-        private readonly TimeSpan _headerDelay;
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            CapturedRequest = request;
-            if (request.Content is not null)
-                CapturedBody = await request.Content.ReadAsStringAsync(cancellationToken);
-            if (_headerDelay > TimeSpan.Zero)
-                await Task.Delay(_headerDelay, cancellationToken);
-            return _response;
-        }
-    }
-
-    private sealed class CountingContent : HttpContent
-    {
-        private readonly byte[] _bytes;
-
-        public CountingContent(byte[] bytes) => _bytes = bytes;
-        public int BytesRead { get; private set; }
-
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
-
-        protected override Task<Stream> CreateContentReadStreamAsync() =>
-            Task.FromResult<Stream>(new CountingStream(_bytes, this));
-
-        protected override bool TryComputeLength(out long length)
-        {
-            length = 0;
-            return false;
-        }
-
-        private sealed class CountingStream : MemoryStream
-        {
-            private readonly byte[] _bytes;
-            private readonly CountingContent _owner;
-            public CountingStream(byte[] bytes, CountingContent owner) : base(bytes, writable: false)
-            {
-                _bytes = bytes;
-                _owner = owner;
-            }
-
-            public override int Read(byte[] buffer, int offset, int count)
-            {
-                var read = base.Read(buffer, offset, count);
-                _owner.BytesRead += read;
-                return read;
-            }
-
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                var remaining = _bytes.Length - (int)Position;
-                var read = Math.Min(buffer.Length, Math.Max(remaining, 0));
-                if (read > 0)
-                {
-                    _bytes.AsMemory((int)Position, read).CopyTo(buffer);
-                    Position += read;
-                }
-                _owner.BytesRead += read;
-                return ValueTask.FromResult(read);
-            }
-        }
-    }
-
-    private sealed class ThrowingContent : HttpContent
-    {
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new IOException("body unavailable");
-        protected override Task<Stream> CreateContentReadStreamAsync() => throw new IOException("body unavailable");
-        protected override bool TryComputeLength(out long length) { length = 0; return false; }
-    }
-
-    private sealed class StallingContent : HttpContent
-    {
-        private readonly byte[] _prefix;
-
-        public StallingContent(string? prefix = null) => _prefix = Encoding.UTF8.GetBytes(prefix ?? string.Empty);
-
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new NotSupportedException();
-        protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StallingStream(_prefix));
-        protected override bool TryComputeLength(out long length) { length = 0; return false; }
-
-        private sealed class StallingStream : Stream
-        {
-            private readonly byte[] _prefix;
-            private int _offset;
-
-            public StallingStream(byte[] prefix) => _prefix = prefix;
-
-            public override bool CanRead => true;
-            public override bool CanSeek => false;
-            public override bool CanWrite => false;
-            public override long Length => 0;
-            public override long Position { get => 0; set => throw new NotSupportedException(); }
-            public override void Flush() => throw new NotSupportedException();
-            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-            public override void SetLength(long value) => throw new NotSupportedException();
-            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                if (_offset < _prefix.Length)
-                {
-                    var count = Math.Min(buffer.Length, _prefix.Length - _offset);
-                    _prefix.AsSpan(_offset, count).CopyTo(buffer.Span);
-                    _offset += count;
-                    return count;
-                }
-
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                return 0;
-            }
-        }
-    }
-
-    private sealed class CaptureSecretStore : ISecretStore
-    {
-        public CancellationTokenSource? CancelAfterSave { get; init; }
-        public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? Existing { get; init; }
-        public (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)? LastSaved { get; private set; }
-
-        public Task SaveAsync(
-            AgentIdentity identity,
-            string refreshToken,
-            string privateKeyPem,
-            string backendUrl,
-            string? tailscaleLoginServer,
-            string? tailscaleAuthkey,
-            CancellationToken ct)
-        {
-            LastSaved = (identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey);
-            CancelAfterSave?.Cancel();
-            return Task.CompletedTask;
-        }
-
-        public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
-        {
-            return Existing is { } existing
-                ? Task.FromResult(existing)
-                : throw new FileNotFoundException("No stored test registration.");
-        }
-
-        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
-    }
-
-    private sealed class StubKeyPairs : IKeyPairGenerator
-    {
-        private readonly string _priv;
-        private readonly string _pub;
-
-        public int GenerateCount { get; private set; }
-
-        public StubKeyPairs(string priv, string pub)
-        {
-            _priv = priv;
-            _pub = pub;
-        }
-
-        public (string PrivateKeyPem, string PublicKeyPem) GenerateKeyPair(int keySize)
-        {
-            GenerateCount++;
-            return (_priv, _pub);
-        }
     }
 }

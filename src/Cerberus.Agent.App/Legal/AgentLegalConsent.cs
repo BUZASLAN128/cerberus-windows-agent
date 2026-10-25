@@ -27,14 +27,14 @@ internal sealed record AgentLegalConsentRecord(
 
 internal static class AgentLegalConsent
 {
-    public const string ProductName = "Cerberus Windows Agent";
+    public const string ProductName = AgentInstallIdentity.ConsentProductName;
     public const string EulaVersion = "agent-eula-2026-06-02.v2";
     public const string PrivacyNoticeVersion = "agent-privacy-2026-06-02.v2";
     public const string SecurityDisclosureVersion = "agent-security-2026-05-23.v1";
 
     private const string SchemaVersion = "cerberus-agent-legal-consent.v1";
     private const string FileName = "legal-consent.json";
-    private const string MsiConsentRegistryPath = @"Software\Cerberus\WindowsAgent\LegalConsent";
+    private const string MsiConsentRegistryPath = AgentInstallIdentity.LegalConsentRegistryPath;
     private const string MsiConsentSource = "msi_eula_dialog";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -45,7 +45,7 @@ internal static class AgentLegalConsent
         $"{ProductName} EULA {EulaVersion}, Privacy Notice {PrivacyNoticeVersion}, Security Disclosure {SecurityDisclosureVersion}";
 
     public static string ConsentRequiredMessage =>
-        "Cerberus Windows Agent cannot continue until the current EULA, Privacy Notice, and Security Disclosure are accepted. "
+        $"{ProductName} cannot continue until the current EULA, Privacy Notice, and Security Disclosure are accepted. "
         + "Run with --accept-eula, or accept the legal package in the tray control center.";
 
     public static string GetDefaultPath(LegalConsentScope scope)

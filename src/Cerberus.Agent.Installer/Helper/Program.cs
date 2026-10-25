@@ -12,7 +12,7 @@ namespace Cerberus.Agent.Installer.Helper;
 /// <summary>MSI transaction actions, extracted from the signed package. No network, credential, RDP or Tailscale operations.</summary>
 internal static class Program
 {
-    private const string ServiceName = "CerberusAgent";
+    private const string ServiceName = AgentInstallIdentity.ServiceName;
     // OpenService reports an optional service absence only with this exact SCM code.
     // Access denied and every other SCM error must remain a hard installer failure.
     private const int ErrorServiceDoesNotExist = 1060; // ERROR_SERVICE_DOES_NOT_EXIST

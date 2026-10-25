@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using Cerberus.Agent.Core;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App;
@@ -32,7 +33,7 @@ internal static class UiConfigStore
 
     private static string ConfigDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "CerberusAgent");
+        AgentInstallIdentity.DataDirName);
 
     private static string ConfigPath => Path.Combine(ConfigDir, "ui-config.json");
 
@@ -168,7 +169,7 @@ internal static class UiConfigStore
     {
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Cerberus\WindowsAgent");
+            using var key = Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath);
             if (key is null)
                 return new Dictionary<string, string?>();
 

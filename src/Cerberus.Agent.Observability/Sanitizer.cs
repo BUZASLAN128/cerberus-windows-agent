@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -55,6 +56,18 @@ public static class Sanitizer
         "\\b(?:[A-Za-z0-9+/]{48,}={0,2}|[A-Za-z0-9_-]{48,})\\b",
         RegexOptions.Compiled);
 
+    // The public key fingerprint ("sha256:" + 64 lowercase hex) is operator-visible. Bare 64-hex stays redacted.
+    private static readonly Regex KeyFingerprint = new(
+        "(?<![A-Za-z0-9+/_-])sha256:[0-9a-f]{64}(?![A-Za-z0-9+/_=-])",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    // The default encoder writes '+' as +, which breaks the base64 and fingerprint patterns that run afterwards.
+    // Control characters stay escaped.
+    private static readonly JsonSerializerOptions RedactedJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     public static string Redact(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -62,8 +75,27 @@ public static class Sanitizer
         if (!MayContainSecret(value))
             return value;
 
+        // Structured JSON runs on the original value: the placeholder below holds
+        // control characters, which are invalid inside a JSON string.
+        var json = RedactStructuredJson(value);
+        List<string>? kept = null;
+        var v = KeyFingerprint.Replace(json, m =>
+        {
+            (kept ??= []).Add(m.Value);
+            return "\u0001fp" + (kept.Count - 1) + "\u0001";
+        });
+        v = RedactSecrets(v);
+        if (kept is not null)
+        {
+            for (var i = 0; i < kept.Count; i++)
+                v = v.Replace("\u0001fp" + i + "\u0001", kept[i], StringComparison.Ordinal);
+        }
+        return v;
+    }
+
+    private static string RedactSecrets(string value)
+    {
         var v = value;
-        v = RedactStructuredJson(v);
         v = SecretLike.Replace(v, "$1=[REDACTED]");
         v = HeadscaleKeyLike.Replace(v, "hskey-$1-[REDACTED]");
         v = TailscaleKeyLike.Replace(v, "tskey-$1-[REDACTED]");
@@ -101,7 +133,7 @@ public static class Sanitizer
             if (node is null)
                 return value;
             RedactNode(node);
-            return node.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return node.ToJsonString(RedactedJsonOptions);
         }
         catch (JsonException)
         {

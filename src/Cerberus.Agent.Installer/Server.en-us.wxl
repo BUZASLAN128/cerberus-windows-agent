@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="en-us" Codepage="1252" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <String Id="ServerEnrollmentDlgTitle" Value="{\WixUI_Font_Title}Enroll this server" />
+  <String Id="ServerEnrollmentDlgDescription" Value="Enter the enrollment code from the panel." />
+  <String Id="ServerEnrollmentDlgCodeLabel" Value="Enrollment code" />
+  <String Id="ServerEnrollmentRequiredText" Value="Enter the enrollment code to continue." />
+  <String Id="ServerExitDialogNote" Value="Last step: approve this server in the panel." />
+  <String Id="ServerCustomActionFailed" Value="Setup step [2] failed and the installation will be rolled back. If this server was enrolling, request a new enrollment code before you run setup again. Details: C:\ProgramData\CerberusServerAgent\logs" />
+</WixLocalization>

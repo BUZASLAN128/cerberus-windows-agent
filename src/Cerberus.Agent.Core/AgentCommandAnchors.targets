@@ -1,0 +1,173 @@
+<Project>
+
+  <!--
+    Server builds only: every command trust anchor must be a usable RSA SPKI of at least 2048 bits (same minimum as
+    Assert-ServerCommandAnchors in scripts/release-profile-lib.ps1 and AgentProfileMetadata.ParseAnchors).
+    Optional AgentUpdateManifestPublicKeysB64 (base64 of each manifest key PEM, ',' or ';' separated):
+    an anchor equal to one of them is rejected, as the runtime would drop it.
+    The inline task compiles against netstandard2.0, which has no RSA SPKI import, so it reads the DER itself.
+    Messages carry anchor line numbers and key ids only, never key material.
+  -->
+  <UsingTask TaskName="ValidateCommandAnchors"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs"><![CDATA[
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+
+public class ValidateCommandAnchors : Microsoft.Build.Utilities.Task
+{
+    [Microsoft.Build.Framework.Required]
+    public string Anchors { get; set; }
+    public string ManifestKeys { get; set; }
+
+    public override bool Execute()
+    {
+        var manifestKeys = new List<byte[][]>();
+        var manifestIndex = 0;
+        foreach (var item in (ManifestKeys ?? string.Empty).Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            manifestIndex++;
+            byte[][] key = null;
+            try
+            {
+                var pem = Encoding.UTF8.GetString(Convert.FromBase64String(item.Trim()));
+                var body = string.Concat(pem.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("-----")));
+                key = ReadRsaSpki(Convert.FromBase64String(body));
+            }
+            catch (FormatException) { }
+            if (key == null)
+            {
+                Fail("Update manifest public key " + manifestIndex + " could not be read for the command trust anchor overlap check.");
+                return false;
+            }
+            manifestKeys.Add(key);
+        }
+
+        string text;
+        try { text = Encoding.UTF8.GetString(Convert.FromBase64String(Anchors.Trim())); }
+        catch (FormatException)
+        {
+            Fail("Command trust anchors are not valid base64.");
+            return false;
+        }
+
+        var lineNo = 0;
+        var usable = 0;
+        var ok = true;
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            lineNo++;
+            byte[] spki = null;
+            byte[][] key = null;
+            try { spki = Convert.FromBase64String(line); key = ReadRsaSpki(spki); }
+            catch (FormatException) { }
+            if (key == null || BitLength(key[0]) < 2048)
+            {
+                Fail("Command trust anchor line " + lineNo + " is not a usable RSA public key (SPKI, at least 2048 bits).");
+                ok = false;
+                continue;
+            }
+            if (manifestKeys.Any(m => m[0].SequenceEqual(key[0]) && m[1].SequenceEqual(key[1])))
+            {
+                var id = BitConverter.ToString(SHA256.Create().ComputeHash(spki)).Replace("-", "").ToLowerInvariant().Substring(0, 16);
+                Fail("Command trust anchor " + id + " (line " + lineNo + ") equals an update manifest public key; the agent drops it. Use a separate command signing key.");
+                ok = false;
+                continue;
+            }
+            usable++;
+        }
+
+        if (usable == 0 && ok)
+        {
+            Fail("Command trust anchors contain no usable key.");
+            ok = false;
+        }
+        return ok;
+    }
+
+    private void Fail(string message)
+    {
+        Log.LogError(null, "CERBAGENT006", null, null, 0, 0, 0, 0, message);
+    }
+
+    private static int BitLength(byte[] modulus)
+    {
+        var bits = modulus.Length * 8;
+        for (var mask = 0x80; mask != 0 && (modulus[0] & mask) == 0; mask >>= 1) bits--;
+        return bits;
+    }
+
+    // SubjectPublicKeyInfo { SEQUENCE { OID rsaEncryption, NULL }, BIT STRING { SEQUENCE { INTEGER n, INTEGER e } } }
+    // with nothing left over. Returns { modulus, exponent } without leading zeros, or null.
+    private static byte[][] ReadRsaSpki(byte[] der)
+    {
+        int pos = 0;
+        int end;
+        if (!Enter(der, ref pos, der.Length, 0x30, out end) || end != der.Length) return null;
+        int algEnd;
+        if (!Enter(der, ref pos, end, 0x30, out algEnd)) return null;
+        var oid = new byte[] { 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01 };
+        if (algEnd - pos < oid.Length || !der.Skip(pos).Take(oid.Length).SequenceEqual(oid)) return null;
+        pos += oid.Length;
+        if (pos != algEnd && !(algEnd - pos == 2 && der[pos] == 0x05 && der[pos + 1] == 0x00)) return null;
+        pos = algEnd;
+        int bitsEnd;
+        if (!Enter(der, ref pos, end, 0x03, out bitsEnd) || bitsEnd != end || pos >= bitsEnd || der[pos] != 0x00) return null;
+        pos++;
+        int keyEnd;
+        if (!Enter(der, ref pos, bitsEnd, 0x30, out keyEnd) || keyEnd != bitsEnd) return null;
+        var n = Integer(der, ref pos, keyEnd);
+        var e = Integer(der, ref pos, keyEnd);
+        if (n == null || e == null || pos != keyEnd) return null;
+        return new[] { n, e };
+    }
+
+    private static byte[] Integer(byte[] der, ref int pos, int limit)
+    {
+        int end;
+        if (!Enter(der, ref pos, limit, 0x02, out end) || end == pos) return null;
+        var value = der.Skip(pos).Take(end - pos).SkipWhile((b, i) => i == 0 && b == 0).ToArray();
+        pos = end;
+        return value.Length == 0 ? null : value;
+    }
+
+    // Reads tag and length at pos; on success pos is the content start and end the content end (within limit).
+    private static bool Enter(byte[] der, ref int pos, int limit, byte tag, out int end)
+    {
+        end = 0;
+        if (pos + 2 > limit || der[pos] != tag) return false;
+        var first = der[pos + 1];
+        var p = pos + 2;
+        long length = first;
+        if ((first & 0x80) != 0)
+        {
+            var count = first & 0x7F;
+            if (count == 0 || count > 3 || p + count > limit) return false;
+            length = 0;
+            for (var i = 0; i < count; i++) length = (length << 8) | der[p++];
+        }
+        if (p + length > limit) return false;
+        pos = p;
+        end = (int)(p + length);
+        return true;
+    }
+}
+]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="ValidateAgentCommandAnchors"
+          DependsOnTargets="ValidateAgentProfileMetadata"
+          BeforeTargets="CoreCompile;GenerateAssemblyInfo;GetAssemblyAttributes"
+          Condition="'$(AgentBuildProfile)' == 'server'">
+    <ValidateCommandAnchors Anchors="$(_AnchorsValue)" ManifestKeys="$(AgentUpdateManifestPublicKeysB64)" />
+  </Target>
+
+</Project>

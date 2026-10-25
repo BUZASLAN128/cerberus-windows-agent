@@ -9,13 +9,19 @@ $script:ReleaseRuntimeExecutableNames = @(
   "Cerberus.Agent.Uninstall.exe"
 )
 
+# The server package ships no desktop uninstaller or tray; its aliases carry the -server base name.
+function Get-ReleaseRuntimeExecutableNames([string]$BuildProfile) {
+  if ($BuildProfile -eq "server") { return @($script:ReleaseRuntimeExecutableNames | Where-Object { $_ -ne "Cerberus.Agent.Uninstall.exe" }) }
+  return @($script:ReleaseRuntimeExecutableNames)
+}
+
 function Invoke-SecretScan([string]$Path) {
   $patterns = @(
     "tskey-[A-Za-z0-9_-]{20,}",
     "headscale[_-]?(api[_-]?)?key\s*[:=]\s*['""][^'""]+['""]",
     "-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----",
     "Bearer\s+[A-Za-z0-9._~+/=-]{20,}",
-    "(password|refresh_token|signing_key|private_key)\s*[:=]\s*['""][^'""]+['""]"
+    "(password|refresh_token|signing_key|private_key)['""]?\s*[:=]\s*(['""])(?!(?:yes|no)\2)[^'""]+['""]"
   )
   $hits = New-Object System.Collections.Generic.List[string]
   $files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
@@ -84,10 +90,12 @@ function Copy-ChannelLatestAliases(
   [string]$Manifest,
   [string]$Gate,
   [string]$MsiHash,
-  [string]$ZipHash
+  [string]$ZipHash,
+  [string]$BuildProfile = "desktop"
 ) {
-  $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest"
-  $aliasInstallerBase = "Cerberus.Agent-$Channel-latest"
+  $suffix = if ($BuildProfile -eq "server") { "-server" } else { "" }
+  $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest$suffix"
+  $aliasInstallerBase = "Cerberus.Agent-$Channel-latest$suffix"
   Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasInstallerBase.msi") -Force
   Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
   Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
@@ -110,8 +118,10 @@ function Publish-ReleaseOutputs(
   [System.Collections.IDictionary]$Manifest,
   [System.Collections.IDictionary]$LegacyManifest,
   [bool]$AllowUnsignedBuildMetadata,
-  [bool]$Signed
+  [bool]$Signed,
+  [string]$BuildProfile = "desktop"
 ) {
+  $suffix = if ($BuildProfile -eq "server") { "-server" } else { "" }
   $msi = Join-Path $PublishDir "$InstallerBase.msi"
   $zip = Join-Path $PublishDir "$AssetBase.zip"
   $sbom = Join-Path $PublishDir "$AssetBase.sbom.json"
@@ -126,7 +136,7 @@ function Publish-ReleaseOutputs(
     $legacyManifestPath = Join-Path $PublishDir "$AssetBase.update-manifest.json"
     $LegacyManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyManifestPath -Encoding utf8
   }
-  Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $PublishDir "Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json") -Force
+  Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $PublishDir "Cerberus.Agent.Bundle-$Channel-latest$suffix.update-manifest.v2.json") -Force
 
   $gate = [ordered]@{
     schema = "cerberus.agent.release_gate.v1"
@@ -159,6 +169,7 @@ function Publish-ReleaseOutputs(
     tenant_update_url_present = $false
     tenant_signing_key_present = $false
   }
+  if ($BuildProfile -eq "server") { $gate.installer.Remove("uninstall_binary") }
   $gatePath = Join-Path $PublishDir "$AssetBase.release-gate.json"
   $gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $gatePath -Encoding utf8
 
@@ -172,7 +183,8 @@ function Publish-ReleaseOutputs(
     -Manifest $legacyManifestPath `
     -Gate $gatePath `
     -MsiHash $msiHash `
-    -ZipHash $zipHash
+    -ZipHash $zipHash `
+    -BuildProfile $BuildProfile
 }
 
 function Complete-ExternalManifestSigning(
@@ -184,7 +196,8 @@ function Complete-ExternalManifestSigning(
   [string]$SignaturePath,
   [string]$PublicKeyPath,
   # Test seam only: build-agent-public-release.ps1 never passes it, so the real path always uses Assert-ReleaseFileSigned.
-  [scriptblock]$FileSignatureCheck = $null
+  [scriptblock]$FileSignatureCheck = $null,
+  [string]$BuildProfile = "desktop"
 ) {
   Write-Step "Verifying detached manifest signature"
   if (-not (Test-Path -LiteralPath $PublicKeyPath -PathType Leaf)) {
@@ -222,7 +235,7 @@ function Complete-ExternalManifestSigning(
   }
 
   $check = if ($null -ne $FileSignatureCheck) { $FileSignatureCheck } else { { param($Path, $AllowedPins) Assert-ReleaseFileSigned -Path $Path -AllowedPins $AllowedPins } }
-  $signedFiles = @($script:ReleaseRuntimeExecutableNames | ForEach-Object { Join-Path $runtimeDir $_ }) + @($msi)
+  $signedFiles = @(Get-ReleaseRuntimeExecutableNames $BuildProfile | ForEach-Object { Join-Path $runtimeDir $_ }) + @($msi)
   $verified = 0
   foreach ($file in $signedFiles) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected signed file was not found: $file" }
@@ -238,7 +251,7 @@ function Complete-ExternalManifestSigning(
 
   Publish-ReleaseOutputs `
     -PublishDir $PublishDir -Channel $Channel -AssetBase $AssetBase -InstallerBase $InstallerBase `
-    -Manifest $manifest -LegacyManifest $null -AllowUnsignedBuildMetadata $false -Signed $signed
+    -Manifest $manifest -LegacyManifest $null -AllowUnsignedBuildMetadata $false -Signed $signed -BuildProfile $BuildProfile
   Remove-Item -LiteralPath $payloadPath, $pendingPath -Force
   Write-Step "Release bundle ready: $PublishDir"
 }

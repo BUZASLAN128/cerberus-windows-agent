@@ -26,7 +26,13 @@ internal sealed record AgentArgs(
     string? SelfTestOutFile,
     string? CasdoorTokenFile,
     string? ApplyUpdatePlan,
-    string? ApplyUpdateTarget);
+    string? ApplyUpdateTarget,
+    bool EnrollHeadless,
+    bool ProofStdin,
+    bool ProofFromInstaller,
+    bool ShowFingerprint,
+    string? ProofFile,
+    bool EnrollRollback);
 
 internal static class Args
 {
@@ -78,6 +84,13 @@ internal static class Args
         var casdoorTokenFile = Value("--casdoor-token-file") ?? Value("--token-file");
         var applyUpdatePlan = Value("--apply-staged-update");
         var applyUpdateTarget = Value("--update-target");
+        var enrollHeadless = Has("--enroll-headless");
+        var proofStdin = Has("--proof-stdin");
+        // The installer proof value is read from the raw arguments by EnrollHeadlessMode only.
+        var proofFromInstaller = Has("--proof-from-installer") || Value("--proof-from-installer") is not null;
+        var showFingerprint = Has("--show-fingerprint");
+        var proofFile = Value("--proof-file");
+        var enrollRollback = Has("--enroll-rollback");
 
         return new AgentArgs(
             service,
@@ -105,6 +118,12 @@ internal static class Args
             selfTestOutFile,
             casdoorTokenFile,
             applyUpdatePlan,
-            applyUpdateTarget);
+            applyUpdateTarget,
+            enrollHeadless,
+            proofStdin,
+            proofFromInstaller,
+            showFingerprint,
+            proofFile,
+            enrollRollback);
     }
 }

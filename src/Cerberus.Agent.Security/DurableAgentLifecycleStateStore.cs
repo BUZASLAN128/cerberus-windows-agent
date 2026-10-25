@@ -36,7 +36,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
     public static string GetDefaultPath()
         => System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "CerberusAgent",
+            AgentInstallIdentity.DataDirName,
             "Privileged",
             "lifecycle-state.json");
 

@@ -4,4 +4,20 @@
     <!-- Build-time profile: -p:AgentBuildProfile=server selects the server profile. Default is empty. -->
     <DefineConstants Condition="'$(AgentBuildProfile)' == 'server'">$(DefineConstants);CERBERUS_SERVER_PROFILE</DefineConstants>
   </PropertyGroup>
+
+  <!-- Timing metadata (seconds), per profile. Override with -p:. Read only from Cerberus.Agent.Core assembly metadata. -->
+  <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
+    <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">30</AgentPollFloorSeconds>
+    <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">300</AgentPollCeilingSeconds>
+    <AgentSnapshotFloorSeconds Condition="'$(AgentSnapshotFloorSeconds)' == ''">300</AgentSnapshotFloorSeconds>
+    <AgentSnapshotCeilingSeconds Condition="'$(AgentSnapshotCeilingSeconds)' == ''">3600</AgentSnapshotCeilingSeconds>
+    <AgentSnapshotDefaultSeconds Condition="'$(AgentSnapshotDefaultSeconds)' == ''">3600</AgentSnapshotDefaultSeconds>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AgentBuildProfile)' != 'server'">
+    <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">1</AgentPollFloorSeconds>
+    <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">3600</AgentPollCeilingSeconds>
+    <AgentSnapshotFloorSeconds Condition="'$(AgentSnapshotFloorSeconds)' == ''">60</AgentSnapshotFloorSeconds>
+    <AgentSnapshotCeilingSeconds Condition="'$(AgentSnapshotCeilingSeconds)' == ''">86400</AgentSnapshotCeilingSeconds>
+    <AgentSnapshotDefaultSeconds Condition="'$(AgentSnapshotDefaultSeconds)' == ''">60</AgentSnapshotDefaultSeconds>
+  </PropertyGroup>
 </Project>

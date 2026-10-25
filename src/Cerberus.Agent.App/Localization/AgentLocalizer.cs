@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using System.Resources;
+using Cerberus.Agent.Core;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App.Localization;
@@ -114,7 +115,7 @@ internal static class AgentLocalizer
     {
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Cerberus\WindowsAgent");
+            using var key = Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath);
             return key?.GetValue("language")?.ToString();
         }
         catch
