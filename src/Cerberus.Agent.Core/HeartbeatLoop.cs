@@ -19,8 +19,8 @@ public sealed class HeartbeatLoop
     private readonly HeartbeatResponseHandler? _responseHandler;
     private readonly IAgentTelemetryProvider? _telemetryProvider;
     private readonly OfflineTelemetryBuffer? _telemetryBuffer;
-    private readonly TimeSpan _commandTimeout;
-    private readonly int _commandConcurrency;
+    private readonly IHeartbeatCommandProcessor _commandProcessor;
+    private readonly AgentTimingPolicy _timing;
     private readonly TimeSpan _initialSnapshotDelay;
     private readonly Func<CancellationToken, Task<bool>>? _backoffResetRequested;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
@@ -47,8 +47,11 @@ public sealed class HeartbeatLoop
         Func<CancellationToken, Task<bool>>? backoffResetRequested = null,
         AgentBuildMetadata? metadata = null,
         IAgentLifecycleStateStore? lifecycleState = null,
-        bool automaticNetwork = true)
+        bool automaticNetwork = true,
+        IHeartbeatCommandProcessor? commandProcessor = null,
+        AgentTimingPolicy? timingPolicy = null)
     {
+        _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _api = api;
         _dispatcher = dispatcher;
         _minDelayOnError = minDelayOnError <= TimeSpan.Zero
@@ -73,10 +76,11 @@ public sealed class HeartbeatLoop
         _telemetryProvider = telemetryProvider;
         _telemetryBuffer = telemetryBuffer;
         _log = log ?? NullAgentLogger.Instance;
-        _commandTimeout = commandTimeout is null || commandTimeout.Value <= TimeSpan.Zero
-            ? TimeSpan.FromSeconds(120)
-            : commandTimeout.Value;
-        _commandConcurrency = Math.Clamp(commandConcurrency, 1, 8);
+        _commandProcessor = commandProcessor ?? new LegacyHeartbeatCommandProcessor(
+            api,
+            dispatcher,
+            commandTimeout is null || commandTimeout.Value <= TimeSpan.Zero ? TimeSpan.FromSeconds(120) : commandTimeout.Value,
+            Math.Clamp(commandConcurrency, 1, 8));
         _initialSnapshotDelay = initialSnapshotDelay is null || initialSnapshotDelay.Value < TimeSpan.Zero
             ? TimeSpan.FromSeconds(60)
             : initialSnapshotDelay.Value;
@@ -141,14 +145,16 @@ public sealed class HeartbeatLoop
                 if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false))
                     return;
 
+#if !CERBERUS_SERVER_PROFILE
                 if (string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
                 {
                     _log.Warn(
                         $"Agent version blocked by server policy: version={_agentVersion}, reason={hb.VersionPolicy?.Reason ?? "unknown"}");
-                    var blockedDelay = ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20);
+                    var blockedDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20), 300);
                     await Task.Delay(TimeSpan.FromSeconds(blockedDelay), ct);
                     continue;
                 }
+#endif
 
                 var skipCommands = control == HeartbeatControlAction.SkipCommands;
 
@@ -198,20 +204,19 @@ public sealed class HeartbeatLoop
                             _log.Warn($"Snapshot refresh acknowledgement failed: {ex.GetType().Name}: {ex.Message}");
                         }
                     }
-                    var snapshotDelay = Math.Max(hb.NextSnapshotSeconds, 60);
-                    nextSnapshotAt = now.AddSeconds(snapshotDelay);
+                    nextSnapshotAt = now.AddSeconds(_timing.SnapshotDelaySeconds(hb.NextSnapshotSeconds));
                 }
 
                 if (skipCommands)
                 {
-                    var controlDelay = ApplyJitter(Math.Max(hb.NextPollSeconds, 60), 0.20);
+                    var controlDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 60), 0.20), 60);
                     await Task.Delay(TimeSpan.FromSeconds(controlDelay), ct);
                     continue;
                 }
 
-                await DispatchPendingCommandsAsync(hb.PendingCommands, ct).ConfigureAwait(false);
+                await _commandProcessor.ProcessAsync(hb.PendingCommands, ct).ConfigureAwait(false);
 
-                var delay = ApplyJitter(hb.NextPollSeconds, 0.20);
+                var delay = _timing.PollDelaySeconds(ApplyJitter(hb.NextPollSeconds, 0.20));
                 await Task.Delay(TimeSpan.FromSeconds(delay), ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -502,37 +507,6 @@ public sealed class HeartbeatLoop
         var off = RandomNumberGenerator.GetInt32(-delta, delta + 1);
         return Math.Max(1, baseSec + off);
     }
-
-    private async Task DispatchPendingCommandsAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
-    {
-        if (commands.Count == 0)
-            return;
-
-        using var gate = new SemaphoreSlim(_commandConcurrency, _commandConcurrency);
-        var tasks = commands.Select(cmd => DispatchOneCommandAsync(cmd, gate, ct)).ToArray();
-        await Task.WhenAll(tasks).ConfigureAwait(false);
-    }
-
-    private async Task DispatchOneCommandAsync(AgentCommand cmd, SemaphoreSlim gate, CancellationToken ct)
-    {
-        await gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var timeout = string.Equals(cmd.Type, "agent.update.request", StringComparison.Ordinal)
-                ? Max(_commandTimeout, TimeSpan.FromMinutes(20))
-                : _commandTimeout;
-            await _api.SubmitCommandAckAsync(cmd, ct).ConfigureAwait(false);
-            var res = await _dispatcher.DispatchAsync(cmd, timeout, ct).ConfigureAwait(false);
-            await _api.SubmitCommandResultAsync(cmd, res, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
-
-    private static TimeSpan Max(TimeSpan left, TimeSpan right)
-        => left >= right ? left : right;
 
     private async Task<bool> TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
     {

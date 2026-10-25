@@ -7,6 +7,9 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class HeartbeatLoopTests
 {
+    // The server profile floors polls at 30 s; these tests wait on the second heartbeat, so they use the desktop bounds.
+    private static readonly AgentTimingPolicy ShortPollTiming = new(new AgentTimingBounds(1, 3600, 60, 86400, 60));
+
     [Fact]
     public async Task RunAsync_SubmitsSnapshot_WhenResponseSkipsCommands()
     {
@@ -65,7 +68,8 @@ public sealed class HeartbeatLoopTests
             minDelayOnError: TimeSpan.FromMilliseconds(10),
             telemetryProvider: provider,
             log: NullAgentLogger.Instance,
-            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+            initialSnapshotDelay: TimeSpan.FromMinutes(5),
+            timingPolicy: ShortPollTiming);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = loop.RunAsync(cts.Token);
@@ -95,7 +99,8 @@ public sealed class HeartbeatLoopTests
             minDelayOnError: TimeSpan.FromMilliseconds(10),
             telemetryProvider: provider,
             log: NullAgentLogger.Instance,
-            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+            initialSnapshotDelay: TimeSpan.FromMinutes(5),
+            timingPolicy: ShortPollTiming);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = loop.RunAsync(cts.Token);
@@ -124,7 +129,8 @@ public sealed class HeartbeatLoopTests
             minDelayOnError: TimeSpan.FromMilliseconds(10),
             telemetryProvider: provider,
             log: NullAgentLogger.Instance,
-            initialSnapshotDelay: TimeSpan.FromMinutes(5));
+            initialSnapshotDelay: TimeSpan.FromMinutes(5),
+            timingPolicy: ShortPollTiming);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var runTask = loop.RunAsync(cts.Token);

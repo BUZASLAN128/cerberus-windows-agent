@@ -35,8 +35,14 @@ try {
 
   Write-Host "== test (server profile) =="
   $serverInt = "obj\\_int\\preflight-server\\$ts\\"
+  $anchorsFile = Join-Path $repoRoot "tests\fixtures\agent-command-test-anchors.b64"
+  if (-not (Test-Path $anchorsFile)) {
+    throw "Missing test anchors fixture: $anchorsFile"
+  }
+  $testAnchors = (Get-Content -Raw -Path $anchorsFile).Trim()
   dotnet test tests\\Cerberus.Agent.Core.Tests\\Cerberus.Agent.Core.Tests.csproj -c $Configuration `
     -p:AgentBuildProfile=server `
+    -p:AgentCommandTrustAnchorsB64=$testAnchors `
     -p:UseSharedCompilation=false `
     -p:IntermediateOutputPath=$serverInt `
     -p:BaseOutputPath=bin\\_testout_preflight_server\\ `
