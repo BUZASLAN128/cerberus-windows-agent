@@ -55,9 +55,15 @@
     <Error Condition="'$(_TimingValid)' == 'true' and ($(AgentSnapshotDefaultSeconds) &lt; $(AgentSnapshotFloorSeconds) or $(AgentSnapshotDefaultSeconds) &gt; $(AgentSnapshotCeilingSeconds))"
            Code="CERBAGENT004"
            Text="AgentSnapshotDefaultSeconds must lie within the snapshot floor and ceiling." />
-    <Error Condition="'$(AgentBuildProfile)' == 'server' and '$([System.String]::Copy($(AgentCommandTrustAnchorsB64)).Trim())' == ''"
+    <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
+      <_AnchorsValue>$([System.String]::Copy('$(AgentCommandTrustAnchorsB64)').Trim())</_AnchorsValue>
+      <_AnchorsValid>true</_AnchorsValid>
+      <_AnchorsValid Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_AnchorsValue)', '^[A-Za-z0-9+/]{500,}={0,2}$'))">false</_AnchorsValid>
+      <_AnchorsValid Condition="'$(_AnchorsValid)' == 'true' and $([MSBuild]::Modulo($(_AnchorsValue.Length), 4)) != 0">false</_AnchorsValid>
+    </PropertyGroup>
+    <Error Condition="'$(AgentBuildProfile)' == 'server' and '$(_AnchorsValid)' != 'true'"
            Code="CERBAGENT005"
-           Text="The server profile requires AgentCommandTrustAnchorsB64 (base64 of one base64 SPKI per line); pass -p:AgentCommandTrustAnchorsB64=&lt;value&gt;." />
+           Text="The server profile requires AgentCommandTrustAnchorsB64: padded base64 (one line, at least 500 characters) of one base64 RSA SPKI per line; pass -p:AgentCommandTrustAnchorsB64=&lt;value&gt;." />
   </Target>
 
 </Project>

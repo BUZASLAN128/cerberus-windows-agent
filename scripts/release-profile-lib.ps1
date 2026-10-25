@@ -25,6 +25,44 @@ function Get-ManifestPublicKeyPem([string]$PrivateKeyPem) {
   return $rsa.ExportSubjectPublicKeyInfoPem()
 }
 
+# Applies the runtime parser rules (AgentProfileMetadata.ParseAnchors) to the anchor value:
+# base64 of UTF-8 text, one base64 SPKI per LF-separated line, RSA of at least 2048 bits.
+# Throws when any line is unusable or none is usable; returns the key ids (first 16 hex of
+# SHA-256 over the SPKI DER). Duplicate lines collapse, as at runtime.
+function Assert-ServerCommandAnchors([string]$AnchorsB64) {
+  try {
+    $text = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($AnchorsB64.Trim()))
+  } catch {
+    throw "Command trust anchors are not valid base64."
+  }
+  $keyIds = [System.Collections.Generic.List[string]]::new()
+  $lineNo = 0
+  foreach ($rawLine in $text.Split("`n")) {
+    $line = $rawLine.Trim()
+    if ($line.Length -eq 0) { continue }
+    $lineNo++
+    $rsa = $null
+    try {
+      $spki = [Convert]::FromBase64String($line)
+      $rsa = [System.Security.Cryptography.RSA]::Create()
+      $read = 0
+      $rsa.ImportSubjectPublicKeyInfo($spki, [ref]$read)
+      if ($read -ne $spki.Length) { throw "trailing bytes" }
+      if ($rsa.KeySize -lt 2048) { throw "RSA key under 2048 bits" }
+    } catch {
+      throw "Command trust anchor line $lineNo is not a usable RSA public key (SPKI, at least 2048 bits)."
+    } finally {
+      if ($null -ne $rsa) { $rsa.Dispose() }
+    }
+    $keyId = ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData($spki)).Replace("-", "").ToLowerInvariant()).Substring(0, 16)
+    if (-not $keyIds.Contains($keyId)) { $keyIds.Add($keyId) }
+  }
+  if ($keyIds.Count -eq 0) {
+    throw "Command trust anchors contain no usable key."
+  }
+  return ,$keyIds.ToArray()
+}
+
 $script:ReleaseTimingKeys = @(
   "AgentPollFloorSeconds", "AgentPollCeilingSeconds",
   "AgentSnapshotFloorSeconds", "AgentSnapshotCeilingSeconds", "AgentSnapshotDefaultSeconds")
@@ -51,6 +89,9 @@ function Get-ReleaseProfileBuild(
     if ([string]::IsNullOrWhiteSpace($anchors)) {
       throw "The server profile requires -AgentCommandTrustAnchorsFile with at least one trust anchor."
     }
+    if ($anchors -notmatch '^[A-Za-z0-9+/=]+$') { throw "Command trust anchors must be one line of base64." }
+    $keyIds = Assert-ServerCommandAnchors $anchors
+    Write-Host "Command trust anchors: $($keyIds -join ', ')"
     $shared += "-p:AgentBuildProfile=server"
   }
   if ($anchors) {

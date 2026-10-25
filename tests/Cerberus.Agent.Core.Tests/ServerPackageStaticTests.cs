@@ -232,7 +232,8 @@ public sealed class ServerPackageStaticTests
     public void ReleaseProfileLib_ServerBuildRequiresAnchorsAndDesktopAddsNothing()
     {
         var anchors = Path.Combine(Path.GetTempPath(), $"anchors-{Guid.NewGuid():N}.b64");
-        File.WriteAllText(anchors, "QUJDREVGRw==\n");
+        var anchorValue = File.ReadAllText(Path.Combine(FindRepoRoot(), "tests", "fixtures", "agent-command-test-anchors.b64")).Trim();
+        File.WriteAllText(anchors, anchorValue + "\n");
         try
         {
             var missing = RunProfileLib("'server' '' @{} '' ''");
@@ -241,7 +242,7 @@ public sealed class ServerPackageStaticTests
 
             var server = RunProfileLib($"'server' '{anchors}' @{{ AgentPollFloorSeconds = 30 }} 'Acme Server' ''");
             Assert.Equal(0, server.ExitCode);
-            Assert.Contains("ARGS=-p:AgentBuildProfile=server|-p:AgentCommandTrustAnchorsB64=QUJDREVGRw==|-p:AgentPollFloorSeconds=30", server.Output);
+            Assert.Contains("ARGS=-p:AgentBuildProfile=server|-p:AgentCommandTrustAnchorsB64=" + anchorValue + "|-p:AgentPollFloorSeconds=30", server.Output);
             Assert.Contains("MSI=-p:ProductName=Acme Server", server.Output);
             Assert.Contains("SUFFIX=-server", server.Output);
 
@@ -356,7 +357,7 @@ public sealed class ServerPackageStaticTests
         return (process.ExitCode, stdout.Result + stderr.Result);
     }
 
-    private static (int ExitCode, string Output) RunProfileLib(string arguments)
+    internal static (int ExitCode, string Output) RunProfileLib(string arguments)
     {
         var lib = Path.Combine(FindRepoRoot(), "scripts", "release-profile-lib.ps1");
         var command =
@@ -388,7 +389,7 @@ public sealed class ServerPackageStaticTests
         return (process.ExitCode, stdout.Result + stderr.Result);
     }
 
-    private static string FindRepoRoot()
+    internal static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
