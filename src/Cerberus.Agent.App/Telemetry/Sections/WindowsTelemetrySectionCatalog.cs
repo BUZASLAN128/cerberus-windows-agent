@@ -86,7 +86,7 @@ internal static class WindowsTelemetrySectionCatalog
         new TailscaleTelemetrySectionCollector(),
         new RdpTelemetrySectionCollector(),
         new FirewallTelemetrySectionCollector(),
-        new SecurityTelemetrySectionCollector(),
+        new SecurityTelemetrySectionCollector(publishServiceObservation),
         new ClockTelemetrySectionCollector(),
         new RuntimeTelemetrySectionCollector(),
         publishServiceObservation

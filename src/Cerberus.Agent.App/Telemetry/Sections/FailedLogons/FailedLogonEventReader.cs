@@ -1,0 +1,175 @@
+using System.Diagnostics.Eventing.Reader;
+using System.Xml.Linq;
+
+namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
+
+internal sealed record ChannelRead(
+    string Channel,
+    IReadOnlyList<FailedLogonEvent> Events,
+    long LastRecordId,
+    bool Capped,
+    bool Present,
+    bool Failed);
+
+/// <summary>
+/// Reads failed-logon events from the Windows event channels by record id. Only the fields needed for
+/// classification are taken from the event XML; account-name fields are never read.
+/// </summary>
+internal static class FailedLogonEventReader
+{
+    internal const int MaxEventsPerChannel = 20000;
+    internal const string Security = "Security";
+    internal const string RdpCore = "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational";
+    internal const string OpenSsh = "OpenSSH/Operational";
+    internal const string Application = "Application";
+    internal const string SystemLog = "System";
+
+    internal static readonly string[] Channels = { Security, RdpCore, OpenSsh, Application, SystemLog };
+
+    private static readonly XNamespace Ns = "http://schemas.microsoft.com/win/2004/08/events/event";
+
+    private static string Query(string channel, long after) => channel switch
+    {
+        Security => $"*[System[(EventID=4625 or EventID=1102) and (EventRecordID > {after})]]",
+        SystemLog => $"*[System[(EventID=104) and (EventRecordID > {after})]]",
+        RdpCore => $"*[System[(EventID=140) and (EventRecordID > {after})]]",
+        Application => $"*[System[(EventID=18456) and (EventRecordID > {after})]]",
+        _ => $"*[System[(EventRecordID > {after})]]",
+    };
+
+    /// <summary>Oldest and newest record id in the channel (0 when empty); null when the channel is missing or unreadable.</summary>
+    public static (long Oldest, long Newest)? Bounds(string channel, out bool present)
+    {
+        present = true;
+        try
+        {
+            return (EdgeRecordId(channel, reverse: false), EdgeRecordId(channel, reverse: true));
+        }
+        catch (EventLogNotFoundException)
+        {
+            present = false;
+            return null;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
+        {
+            return null;
+        }
+    }
+
+    private static long EdgeRecordId(string channel, bool reverse)
+    {
+        var query = new EventLogQuery(channel, PathType.LogName, "*") { ReverseDirection = reverse };
+        using var reader = new EventLogReader(query);
+        using var record = reader.ReadEvent();
+        return record?.RecordId ?? 0;
+    }
+
+    public static ChannelRead Read(string channel, long after, CancellationToken ct)
+    {
+        var events = new List<FailedLogonEvent>();
+        var last = after;
+        var capped = false;
+        try
+        {
+            using var reader = new EventLogReader(new EventLogQuery(channel, PathType.LogName, Query(channel, after)));
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                using var record = reader.ReadEvent();
+                if (record is null)
+                    break;
+                if (events.Count >= MaxEventsPerChannel)
+                {
+                    capped = true;
+                    break;
+                }
+                if (record.RecordId is { } id && id > last)
+                    last = id;
+                var parsed = Parse(channel, record);
+                if (parsed is not null)
+                    events.Add(parsed);
+            }
+            return new ChannelRead(channel, events, last, capped, Present: true, Failed: false);
+        }
+        catch (EventLogNotFoundException)
+        {
+            return new ChannelRead(channel, events, after, false, Present: false, Failed: false);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
+        {
+            return new ChannelRead(channel, events, after, false, Present: true, Failed: true);
+        }
+    }
+
+    private static FailedLogonEvent? Parse(string channel, EventRecord record)
+    {
+        var time = record.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : DateTimeOffset.UtcNow;
+        Dictionary<string, string> data;
+        try
+        {
+            data = ReadData(record.ToXml());
+        }
+        catch (Exception ex) when (ex is System.Xml.XmlException or EventLogException)
+        {
+            return null;
+        }
+
+        switch (channel)
+        {
+            case SystemLog:
+                return string.Equals(record.ProviderName, "Microsoft-Windows-Eventlog", StringComparison.OrdinalIgnoreCase)
+                    ? new FailedLogonEvent(FailedLogonSource.LogCleared, time, null)
+                    : null;
+            case Security:
+                if (record.Id == 1102)
+                    return new FailedLogonEvent(FailedLogonSource.LogCleared, time, null);
+                return new FailedLogonEvent(
+                    FailedLogonSource.Security4625,
+                    time,
+                    data.GetValueOrDefault("IpAddress"),
+                    int.TryParse(data.GetValueOrDefault("LogonType"), out var type) ? type : null,
+                    data.GetValueOrDefault("ProcessName"));
+            case RdpCore:
+                var ip = data.GetValueOrDefault("IPString") ?? data.Values.FirstOrDefault(v => FailedLogonClassifier.NormalizeIp(v) is not null);
+                return new FailedLogonEvent(FailedLogonSource.RdpCore140, time, ip);
+            case OpenSsh:
+                foreach (var value in data.Values)
+                    if (FailedLogonClassifier.ParseSshFailedIp(value) is { } sshIp)
+                        return new FailedLogonEvent(FailedLogonSource.OpenSsh, time, sshIp);
+                return null;
+            case Application:
+                if (!IsSqlProvider(record.ProviderName))
+                    return null;
+                // The client address is the last value; the account name (earlier) is attacker-controlled text.
+                foreach (var value in data.Values.Reverse())
+                    if (FailedLogonClassifier.ParseSqlClientIp(value) is { } sqlIp)
+                        return new FailedLogonEvent(FailedLogonSource.Sql18456, time, sqlIp);
+                // 18456 without a client address is still a failed SQL logon.
+                return new FailedLogonEvent(FailedLogonSource.Sql18456, time, null);
+            default:
+                return null;
+        }
+    }
+
+    internal static bool IsSqlProvider(string? provider)
+        => string.Equals(provider, "MSSQLSERVER", StringComparison.OrdinalIgnoreCase)
+           || (provider is not null && provider.StartsWith("MSSQL$", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Event data values by name (unnamed values get "#n"). Values stay in memory only for classification.</summary>
+    private static Dictionary<string, string> ReadData(string xml)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var doc = XDocument.Parse(xml);
+        var n = 0;
+        foreach (var d in doc.Descendants(Ns + "Data"))
+        {
+            var name = (string?)d.Attribute("Name") ?? $"#{n}";
+            n++;
+            if (string.Equals(name, "TargetUserName", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "SubjectUserName", StringComparison.OrdinalIgnoreCase))
+                continue;
+            result[name] = d.Value;
+        }
+        return result;
+    }
+}

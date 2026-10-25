@@ -1,3 +1,4 @@
+using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Observability;
 
@@ -7,10 +8,35 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
 {
     public string SectionName => "security";
 
-    public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
+    private readonly FailedLogonCursorStore _cursor = new();
+    private readonly bool _commitFailedLogons;
+
+    public SecurityTelemetrySectionCollector()
+        : this(commitFailedLogons: false)
+    {
+    }
+
+    /// <param name="commitFailedLogons">True only for the scheduled snapshot path, whose upload success commits the
+    /// failed-logon cursor (<see cref="WindowsTelemetryCollector.MarkSnapshotSubmitted"/>); other callers peek.</param>
+    public SecurityTelemetrySectionCollector(bool commitFailedLogons)
+    {
+        _commitFailedLogons = commitFailedLogons;
+    }
+
+    public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
         var (domainJoined, domainName, adError) = AdStatusProbe.Probe();
-        return ValueTask.FromResult<object>(new
+        var now = DateTimeOffset.UtcNow;
+        object failedLogons;
+        try
+        {
+            failedLogons = await Task.Run(() => FailedLogonSection.Collect(_cursor, now, _commitFailedLogons, ct), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            failedLogons = FailedLogonSection.Unavailable(now);
+        }
+        return new
         {
             status = "ok",
             defender = TelemetryValue.ReadService("WinDefend"),
@@ -22,6 +48,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
                 domain_name = domainName,
                 error = Sanitizer.Redact(adError),
             },
-        });
+            failed_logons = failedLogons,
+        };
     }
 }

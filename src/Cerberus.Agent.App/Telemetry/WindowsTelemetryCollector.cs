@@ -1,5 +1,6 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.App.Telemetry.Sections;
+using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 
 namespace Cerberus.Agent.App.Telemetry;
 
@@ -30,7 +31,11 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
         => _snapshotTrigger?.IsSnapshotRefreshRequired() is true;
 
     public void MarkSnapshotSubmitted()
-        => _snapshotTrigger?.MarkSnapshotSubmitted();
+    {
+        _snapshotTrigger?.MarkSnapshotSubmitted();
+        // The upload was accepted: the failed-logon window of the last scheduled snapshot is now reported.
+        FailedLogonSection.CommitPending();
+    }
 
     public async Task<AgentSnapshotRequest> BuildSnapshotAsync(
         AgentBuildMetadata metadata,

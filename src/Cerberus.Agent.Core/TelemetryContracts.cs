@@ -191,6 +191,23 @@ public static class AgentSnapshotFactory
             Sections: sections);
     }
 
+    /// <summary>
+    /// Copy of <paramref name="request"/> without one field of one section (hash of that section recomputed); the
+    /// request itself when the field is absent. Used so a buffered snapshot never carries consume-once data
+    /// (<c>security.failed_logons</c>) that the next live snapshot re-reads and reports.
+    /// </summary>
+    public static AgentSnapshotRequest WithoutSectionField(AgentSnapshotRequest request, string section, string field)
+    {
+        if (!request.Sections.TryGetValue(section, out var value) || value is null
+            || JsonSerializer.SerializeToNode(value, JsonOpts) is not JsonObject node
+            || !node.Remove(field))
+            return request;
+
+        var sections = new Dictionary<string, object?>(request.Sections, StringComparer.Ordinal) { [section] = node };
+        var hashes = new Dictionary<string, string>(request.SectionHashes, StringComparer.Ordinal) { [section] = HashSection(node) };
+        return request with { Sections = sections, SectionHashes = hashes };
+    }
+
     public static string HashSection(object? section)
     {
         var json = JsonSerializer.Serialize(section, JsonOpts);

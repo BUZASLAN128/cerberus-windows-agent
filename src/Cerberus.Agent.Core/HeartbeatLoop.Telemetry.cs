@@ -32,7 +32,8 @@ public sealed partial class HeartbeatLoop
             {
                 await _telemetryBuffer.EnqueueAsync(
                     OfflineTelemetryKinds.Snapshot,
-                    snapshot,
+                    // The next live snapshot re-reads failed logons from the last committed cursor.
+                    AgentSnapshotFactory.WithoutSectionField(snapshot, "security", "failed_logons"),
                     idempotencyKey: "snapshot-latest",
                     priority: 1,
                     ct: ct).ConfigureAwait(false);
