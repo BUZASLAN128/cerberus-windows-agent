@@ -84,7 +84,7 @@ public sealed class CommandReplayStoreTests : IDisposable
         {
             0 => Rec("agent-A", "id-pending", "n-0", EnvelopeRecordStates.Started, expiresAt: T0 + 10),
             1 => Rec("agent-A", "id-old", "n-1", EnvelopeRecordStates.Done, expiresAt: T0 + 11, resultB64: "e30=", submitted: true),
-            _ => Rec("agent-A", $"id-{i}", $"n-{i}", expiresAt: T0 + 5000),
+            _ => Rec("agent-A", $"id-{i}", $"n-{i}", EnvelopeRecordStates.Done, expiresAt: T0 + 5000, resultB64: "e30=", submitted: true),
         }));
         var store = new CommandReplayStore(StorePath, _time);
         _time.Advance(TimeSpan.FromSeconds(100));

@@ -31,7 +31,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task ReservedRecordPastItsWindow_BecomesRejectedAfterReserveAndLaterRedeliveriesDoNothing()
+    public async Task ReservedRecordPastItsWindow_BecomesRejectedAfterReserveAndLaterRedeliveriesOnlyResendTheRejectedAck()
     {
         await using var h = EnvelopeHarness.Create();
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.ServiceUnavailable);
@@ -47,9 +47,59 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal("rejected", rejection.GetProperty("decision").GetString());
         Assert.Equal("expired", rejection.GetProperty("reason").GetString());
 
-        var requests = h.Backend.Requests.Count;
+        var acks = h.Backend.Acks.Count;
         await h.Process(cmd);
-        Assert.Equal(requests, h.Backend.Requests.Count);
+        Assert.Equal(acks + 1, h.Backend.Acks.Count);
+        Assert.Equal(rejection.ToString(), h.Backend.Acks.Last().Json.ToString());
+        Assert.Empty(h.Backend.Results);
+        Assert.Equal(0, h.Ping.Calls);
+    }
+
+    [Fact]
+    public async Task RejectedAckLostToATransientError_IsSentAgainWithTheSameReasonOnRedeliveryAndNothingRuns()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.ServiceUnavailable);
+        var cmd = h.Cmd();
+        await h.Process(cmd);
+        h.Time.Advance(TimeSpan.FromSeconds(400));
+        await h.Process(cmd);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(cmd)!.State);
+        Assert.Equal("expired", h.Record(cmd)!.RejectReason);
+        var lost = h.Backend.Acks.Last();
+        Assert.Equal("rejected", lost.Json.GetProperty("decision").GetString());
+
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        var before = h.Backend.Acks.Count;
+        await h.Process(cmd);
+
+        Assert.Equal(before + 1, h.Backend.Acks.Count);
+        Assert.Equal(lost.Body, h.Backend.Acks.Last().Body);
+        Assert.Equal(0, h.Ping.Calls);
+        Assert.Empty(h.Backend.Results);
+
+        await h.Process(cmd);
+
+        Assert.Equal(before + 2, h.Backend.Acks.Count);
+        Assert.Equal(lost.Body, h.Backend.Acks.Last().Body);
+        Assert.All(h.Backend.Acks.Skip(1), a => Assert.Equal("rejected", a.Json.GetProperty("decision").GetString()));
+        Assert.Equal(0, h.Ping.Calls);
+        Assert.Empty(h.Backend.Results);
+    }
+
+    [Fact]
+    public async Task RejectedAfterReserveRecordWithoutAStoredReason_StaysANoOpOnRedelivery()
+    {
+        await using var h = EnvelopeHarness.Create();
+        var cmd = h.Cmd();
+        var record = StoreFileWriter.Record(h.AgentId, cmd.Id, "legacy-nonce", EnvelopeRecordStates.RejectedAfterReserve, T0, T0 + 120, null, false)
+            with { EnvelopeSha256 = EnvelopeHarness.ShaOf(cmd), Type = "ping" };
+        Assert.Equal(ReplayReserveOutcome.Reserved, h.Store.TryReserve(record));
+        Assert.True(h.Store.TryUpdate(record));
+
+        await h.Process(cmd);
+
+        Assert.Empty(h.Backend.Requests);
         Assert.Equal(0, h.Ping.Calls);
     }
 

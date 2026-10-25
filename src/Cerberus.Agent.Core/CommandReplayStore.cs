@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -27,7 +28,8 @@ public sealed record CommandReplayRecord(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("result_b64")] string? ResultB64,
     [property: JsonPropertyName("result_sha256")] string? ResultSha256,
-    [property: JsonPropertyName("result_submitted")] bool ResultSubmitted)
+    [property: JsonPropertyName("result_submitted")] bool ResultSubmitted,
+    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null)
 {
     /// <summary>A result is held and has not reached a final outcome at the server yet.</summary>
     [JsonIgnore]
@@ -51,6 +53,8 @@ public enum ReplayReserveOutcome
 /// inside <c>Privileged</c>); the store resets the same way and its first write replaces the object.
 /// An untrusted directory chain makes the store unavailable.
 /// When the file cannot be written the store is unavailable and reservations fail closed.
+/// A write never produces a file the reader rejects: unsubmitted result bytes are bounded by
+/// <see cref="MaxUnsubmittedResultBytes"/> at reservation, and a serialization above the read cap fails like a failed write.
 /// </summary>
 public sealed class CommandReplayStore
 {
@@ -58,10 +62,20 @@ public sealed class CommandReplayStore
     public const int MaxRecords = 1024;
     public const long RetentionSeconds = 24 * 60 * 60;
     public const long MaxHeldResultBytes = 4L * 1024 * 1024;
-    private const long MaxFileBytes = 16L * 1024 * 1024;
+    /// <summary>
+    /// Budget for result bytes held unsubmitted plus one maximal result for every in-flight (reserved or started,
+    /// no result yet) record and for the envelope being reserved. Worst case on disk (base64, no JSON escaping):
+    /// 1024 records at 1 KiB + 4 MiB submitted cap * 4/3 + this budget * 4/3 = 14.4 MiB, under <see cref="MaxFileBytes"/>.
+    /// </summary>
+    public const long MaxUnsubmittedResultBytes = 6L * 1024 * 1024;
+    internal const long MaxFileBytes = 16L * 1024 * 1024;
     private const string Schema = "cerberus.command-envelopes.v1";
 
-    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = false,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     private readonly object _gate = new();
     private readonly string _path;
@@ -162,6 +176,10 @@ public sealed class CommandReplayStore
                 if (next.Count >= MaxRecords)
                     return ReplayReserveOutcome.Full;
             }
+
+            var unsubmitted = next.Where(r => !r.ResultSubmitted).Sum(r => ExposureBytes(r, now));
+            if (unsubmitted + EnvelopeExecutionQueue.MaxResultBodyBytes > MaxUnsubmittedResultBytes)
+                return ReplayReserveOutcome.Full;
 
             next.Add(record with { State = EnvelopeRecordStates.Reserved });
             return Commit(next) ? ReplayReserveOutcome.Reserved : ReplayReserveOutcome.Unavailable;
@@ -301,6 +319,12 @@ public sealed class CommandReplayStore
         {
             _file.EnsureDirectory();
             var bytes = JsonSerializer.SerializeToUtf8Bytes(new StoreFile(Schema, resetAt, records), JsonOpts);
+            if (bytes.LongLength > MaxFileBytes)
+            {
+                _log.Error("Command replay store write refused: the serialized store exceeds the read cap.");
+                return false;
+            }
+
             using (var stream = _file.CreateTemp(tempPath))
             {
                 stream.Write(bytes);
@@ -358,6 +382,17 @@ public sealed class CommandReplayStore
 
     private static long HeldBytes(CommandReplayRecord record)
         => record.ResultB64 is null ? 0 : record.ResultB64.Length / 4L * 3L;
+
+    /// <summary>
+    /// Held result bytes, or one maximal result for a started record, or a reserved record still inside its window,
+    /// that has none yet. A reserved record past its window never runs (the queue re-checks it), so it does not count.
+    /// </summary>
+    private static long ExposureBytes(CommandReplayRecord record, long now)
+        => record.ResultB64 is not null ? HeldBytes(record)
+            : record.State == EnvelopeRecordStates.Started
+              || (record.State == EnvelopeRecordStates.Reserved && now <= record.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds)
+                ? EnvelopeExecutionQueue.MaxResultBodyBytes
+                : 0;
 
     private static bool IsValid(CommandReplayRecord? r)
         => r is not null

@@ -146,6 +146,9 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             switch (existing.State)
             {
                 case EnvelopeRecordStates.RejectedAfterReserve:
+                    // The rejected ack may not have arrived; send it again with the stored reason. Nothing runs.
+                    if (existing.RejectReason is not null)
+                        await TrySendAckAsync(agentId, envelope, accepted: false, existing.RejectReason, ct).ConfigureAwait(false);
                     return;
                 case EnvelopeRecordStates.Started:
                     _queue.RecoverOrphan(existing);
@@ -218,7 +221,11 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
     private async Task RejectReservedOrNewAsync(CommandReplayRecord? existing, EnvelopeCheck check, string agentId, CancellationToken ct)
     {
         if (existing is not null
-            && !_queue.Store.TryUpdate(existing with { State = EnvelopeRecordStates.RejectedAfterReserve }))
+            && !_queue.Store.TryUpdate(existing with
+            {
+                State = EnvelopeRecordStates.RejectedAfterReserve,
+                RejectReason = check.AckRejected ? check.Code : null,
+            }))
             _log.Warn($"Command envelope id={existing.Id} rejection not stored.");
         await RejectAsync(check, agentId, ct).ConfigureAwait(false);
     }
