@@ -45,7 +45,7 @@ public sealed class DpapiSecretStore : ISecretStore
         var root = scope == SecretStoreScope.User
             ? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
             : Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
-        return Path.Combine(root, "CerberusAgent");
+        return Path.Combine(root, AgentInstallIdentity.DataDirName);
     }
 
     public static string GetDefaultSecretsPath(SecretStoreScope scope)

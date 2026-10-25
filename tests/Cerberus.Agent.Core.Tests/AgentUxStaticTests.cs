@@ -230,13 +230,13 @@ public sealed class AgentUxStaticTests
     public void ServiceMode_RegistersScopedAdWithProtectedPolicyAndFreshAuthority()
     {
         var repoRoot = FindRepoRoot();
-        var serviceMode = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceMode.cs"));
+        var serviceMode = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "AgentCommandRegistry.cs"));
 
         Assert.DoesNotContain("AdUserCommandHandlers.CreateDefaultHandlers", serviceMode);
         Assert.Contains("LocalUserCommandHandlers.CreateDefaultHandlers(manifest: managedAccounts)", serviceMode);
         Assert.Contains("new ProtectedAdScopePolicy()", serviceMode);
         Assert.Contains("new WindowsAdDirectoryBoundary(), new ProtectedAdOwnershipStore()", serviceMode);
-        Assert.Contains("ScopedAdCommandHandlers.CreateDefaultHandlers(loadedSecrets.Identity, lifecycleState,", serviceMode);
+        Assert.Contains("ScopedAdCommandHandlers.CreateDefaultHandlers(identity, lifecycleState,", serviceMode);
         Assert.Contains("api.GetAdCommandAuthorityAsync, adUsers", serviceMode);
     }
 

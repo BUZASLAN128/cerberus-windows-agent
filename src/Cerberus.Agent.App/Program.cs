@@ -3,14 +3,15 @@ using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.App.Localization;
 using Cerberus.Agent.App.Updates;
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.App;
 
 internal static class Program
 {
-    private const string UiMutexName = "Global\\CerberusAgent.Ui.SingleInstance";
-    private const string UiPipeName = "CerberusAgent.Ui.SingleInstancePipe";
+    private const string UiMutexName = AgentInstallIdentity.UiMutexName;
+    private const string UiPipeName = AgentInstallIdentity.UiPipeName;
     [STAThread]
     public static int Main(string[] args)
     {
@@ -27,6 +28,18 @@ internal static class Program
 
             if (IsAcceptEulaOnly(parsed))
                 return 0;
+        }
+
+        if (parsed.ShowFingerprint)
+            return EnrollHeadlessMode.ShowFingerprint();
+
+        if (parsed.EnrollRollback)
+            return EnrollRollbackMode.Run();
+
+        if (parsed.EnrollHeadless)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            return EnrollHeadlessMode.RunAsync(parsed, args ?? Array.Empty<string>(), cts.Token).GetAwaiter().GetResult();
         }
 
         if (parsed.Register)
@@ -207,6 +220,9 @@ internal static class Program
            !args.StartService &&
            !args.StopService &&
            !args.Service &&
+           !args.EnrollHeadless &&
+           !args.EnrollRollback &&
+           !args.ShowFingerprint &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
 
     private static string? ParseStartupSignal(AgentArgs args)

@@ -119,7 +119,13 @@ internal sealed class AgentLocalControlService
         // This is one explicit enrollment validation, never an automatic retry
         // through the dormant gate. Failed validation cannot rewrite machine state.
         var probeState = new InMemoryAgentLifecycleStateStore();
-        var response = await ProbeAsync(pending, probeState, quiesce: null, ct).ConfigureAwait(false);
+        HeartbeatResponse response;
+        try { response = await ProbeAsync(pending, probeState, quiesce: null, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (IsTransientProbeFailure(ex, ct))
+        {
+            // The caller may retry: the staged enrollment is untouched.
+            return StateResponse(false, "enrollment_validation_unavailable", snapshot);
+        }
         if (!Claimed(response) || AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State))
             return StateResponse(false, "enrollment_validation_failed", snapshot);
 
@@ -136,6 +142,11 @@ internal sealed class AgentLocalControlService
             cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
         return StateResponse(true, "enrollment_adopted", adopted);
     }
+
+    // The probe refreshes the staged token, and the backend may rotate it. Only a failure where the request provably
+    // never reached the server (DNS, connect) is retried; after a timeout or 5xx the old token may already be spent.
+    internal static bool IsTransientProbeFailure(Exception ex, CancellationToken ct)
+        => ex is HttpRequestException { StatusCode: null, HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.ConnectionError };
 
     internal static async Task<HeartbeatResponse> ProbeAsync(ISecretStore store, IAgentLifecycleStateStore lifecycle,
         Func<CancellationToken, Task>? quiesce, CancellationToken ct)
@@ -166,12 +177,15 @@ internal sealed class AgentLocalControlService
             capabilities = Array.Empty<string>(),
         };
 
+    // Server: a heartbeat 200 counts as claimed; unsigned registration_state, lifecycle_state and revoke are not read.
     internal static bool Claimed(HeartbeatResponse response)
-        => (AgentBuildProfile.IsServer
-            ? AgentClaimGate.IsClaimed(response)
-            : response.RegistrationState == "claimed" && !response.ClaimRequired) &&
+#if CERBERUS_SERVER_PROFILE
+        => AgentClaimGate.IsClaimed(response);
+#else
+        => response.RegistrationState == "claimed" && !response.ClaimRequired &&
             response.LifecycleState is not ("revoked" or "quarantined") &&
             !(response.Revoke?.TryGetValue("revoked", out var revoked) == true && revoked.ValueKind == System.Text.Json.JsonValueKind.True);
+#endif
 
     private static AgentLocalControlResponse StateResponse(bool success, string code, AgentLifecycleSnapshot state)
         => new(success, code, LifecycleState: state.State.ToString(), LifecycleGeneration: state.Generation);

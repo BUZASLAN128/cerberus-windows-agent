@@ -62,6 +62,9 @@ internal sealed class DormantRecoverySupervisor
         }
         snapshot = WithOwnSchedule(snapshot);
         var now = _clock();
+#if CERBERUS_SERVER_PROFILE
+        await LogReenrollmentRequiredAsync(snapshot, awaitingAdoption, now, ct).ConfigureAwait(false);
+#endif
         var migrate = now >= _nextMigrateUtc && DormantStateRecovery.CanMigrate(snapshot, awaitingAdoption);
         if (!migrate && !(now >= _nextProbeUtc && ProbeOrScheduleDue(snapshot, awaitingAdoption)))
             return snapshot;
@@ -99,6 +102,29 @@ internal sealed class DormantRecoverySupervisor
         }
         return snapshot;
     }
+
+#if CERBERUS_SERVER_PROFILE
+    private DateTimeOffset _nextReenrollLogUtc = DateTimeOffset.MinValue;
+
+    // NeedsReenrollment is never probed; tell the operator once per interval which key a new proof replaces.
+    private async Task LogReenrollmentRequiredAsync(AgentLifecycleSnapshot snapshot, bool awaitingAdoption, DateTimeOffset now, CancellationToken ct)
+    {
+        if (snapshot.State != AgentLifecycleState.NeedsReenrollment || awaitingAdoption || now < _nextReenrollLogUtc)
+            return;
+        _nextReenrollLogUtc = now + AttemptInterval;
+        string? fingerprint = null;
+        try
+        {
+            var (_, _, privateKeyPem, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+            fingerprint = AgentKeyFingerprint.TryFromPrivateKeyPem(privateKeyPem);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // No readable credentials: nothing to name.
+        }
+        _log.Warn($"reenrollment_proof_required fingerprint={fingerprint ?? "none"}");
+    }
+#endif
 
     // A dormant state can carry the transient-retry backoff (NextAttemptUtc, TransientFailureCount)
     // from before it went dormant. Until this process has started the recovery schedule for the

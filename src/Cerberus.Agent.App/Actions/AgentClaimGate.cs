@@ -156,11 +156,14 @@ internal static class AgentClaimGate
         return false;
     }
 
+    // Server: a heartbeat 200 counts as claimed; unsigned registration fields are not read.
     internal static bool IsClaimed(HeartbeatResponse response)
-        => AgentBuildProfile.IsServer
-            ? NormalizeState(response.RegistrationState) is not ("rejected" or "deactivated" or "revoked")
-            : string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
+#if CERBERUS_SERVER_PROFILE
+        => response is not null;
+#else
+        => string.Equals(NormalizeState(response.RegistrationState), "claimed", StringComparison.Ordinal)
            && !response.ClaimRequired;
+#endif
 
     private static async Task<HeartbeatResponse> CheckAsync(
         ISecretStore store,

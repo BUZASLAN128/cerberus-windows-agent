@@ -2,14 +2,15 @@ using System.IO;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
 
 internal static class SingleInstanceGuard
 {
     // Tray-only: keep this stable so all versions compete on the same single-instance lock.
-    private const string MutexName = "Global\\CerberusAgent.Tray.SingleInstance";
-    private const string PipeName = "CerberusAgent.Tray.SingleInstancePipe";
+    private const string MutexName = AgentInstallIdentity.TrayMutexName;
+    private const string PipeName = AgentInstallIdentity.TrayPipeName;
 
     private static Mutex? _mutex;
     private static CancellationTokenSource? _serverCts;
@@ -126,14 +127,18 @@ internal static class SingleInstanceGuard
     {
         try
         {
-            var createdNew = false;
             if (_mutex is null)
-                _mutex = new Mutex(initiallyOwned: true, name: MutexName, createdNew: out createdNew);
+            {
+                var state = AgentNamedMutex.Open(MutexName, out _mutex);
+                if (state == AgentNamedMutexState.ExistingUntrusted)
+                {
+                    // A mutex owned by someone else is not a tray instance; run without the lock.
+                    ProcessInstanceGuard.LogUntrustedMutex(MutexName);
+                    return true;
+                }
+            }
 
-            if (createdNew)
-                return true;
-
-            // If not created new, we didn't get initial ownership. Try to acquire quickly.
+            // The mutex is created unowned: take ownership now.
             return _mutex is not null && _mutex.WaitOne(0);
         }
         catch

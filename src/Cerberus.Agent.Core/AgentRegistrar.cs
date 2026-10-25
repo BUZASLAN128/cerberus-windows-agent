@@ -204,7 +204,7 @@ public sealed class AgentRegistrar
         // Proof file is non-sensitive, but keep it user-scope so onboarding does not require admin/UAC.
         var baseDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CerberusAgent");
+            AgentInstallIdentity.DataDirName);
         Directory.CreateDirectory(baseDir);
 
         var proofPath = Path.Combine(baseDir, "tailscale_preauth_proof.json");

@@ -49,7 +49,7 @@ public sealed class OfflineTelemetryBuffer
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Offline buffer path is required.", nameof(path)) : path;
         _maxEntries = Math.Max(1, maxEntries);
-        _maxBytes = Math.Max(AgentTelemetryLimits.MaxJsonBytes, maxBytes);
+        _maxBytes = Math.Max(AgentTelemetryLimits.MaxSnapshotBytes, maxBytes);
         _ttl = ttl ?? TimeSpan.FromHours(24);
     }
 
@@ -62,7 +62,10 @@ public sealed class OfflineTelemetryBuffer
     {
         var json = JsonSerializer.Serialize(body, JsonOpts);
         var bytes = Encoding.UTF8.GetByteCount(json);
-        if (bytes > AgentTelemetryLimits.MaxJsonBytes)
+        var maxRecordBytes = string.Equals(kind, OfflineTelemetryKinds.Snapshot, StringComparison.Ordinal)
+            ? AgentTelemetryLimits.MaxSnapshotBytes
+            : AgentTelemetryLimits.MaxJsonBytes;
+        if (bytes > maxRecordBytes)
             throw new InvalidOperationException($"Offline telemetry item too large: {bytes} bytes.");
 
         await _gate.WaitAsync(ct).ConfigureAwait(false);

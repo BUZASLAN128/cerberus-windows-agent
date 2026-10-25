@@ -9,7 +9,10 @@ param(
   [switch]$InstallService,
   [switch]$StartService,
   [switch]$StopService,
-  [switch]$UninstallService
+  [switch]$UninstallService,
+  [ValidateSet("desktop", "server")][string]$BuildProfile = "desktop",
+  # Required to publish a server executable (the file holding AgentCommandTrustAnchorsB64).
+  [string]$AgentCommandTrustAnchorsFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,7 +81,7 @@ function Write-ServiceState {
     [string]$Phase
   )
 
-  $serviceName = "CerberusAgent"
+  $serviceName = if ($BuildProfile -eq "server") { "CerberusServerAgent" } else { "CerberusAgent" }
   $logDir = Join-Path $repoRoot "out/clean-install-smoke"
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
   $safePhase = ($Phase -replace '[^A-Za-z0-9_.-]', '_')
@@ -107,6 +110,14 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($ExePath)) {
   $publishDir = Join-Path $repoRoot "out/clean-install-smoke/publish"
   Write-Step "Publishing local smoke executable"
+  $profileArgs = @()
+  if ($BuildProfile -eq "server") {
+    if (-not (Test-Path -LiteralPath $AgentCommandTrustAnchorsFile -PathType Leaf)) {
+      throw "The server profile needs -AgentCommandTrustAnchorsFile."
+    }
+    $publishDir = Join-Path $repoRoot "out/clean-install-smoke/publish-server"
+    $profileArgs = @("-p:AgentBuildProfile=server", "-p:AgentCommandTrustAnchorsB64=$((Get-Content -LiteralPath $AgentCommandTrustAnchorsFile -Raw).Trim())")
+  }
   dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj") `
     -c Release `
     -r win-x64 `
@@ -114,6 +125,7 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
+    @profileArgs `
     -o $publishDir
   $ExePath = Join-Path $publishDir "Cerberus.Agent.exe"
 }

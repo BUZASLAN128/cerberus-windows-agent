@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?if $(var.AgentBuildProfile) = server ?>
+  <!-- Server MSI only: the enrollment code step of the full UI and the next-step note on the exit dialog. -->
+  <Fragment>
+    <UI Id="ServerEnrollmentUI">
+      <Dialog Id="ServerEnrollmentDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="SpawnDialog" Value="ServerEnrollmentRequiredDlg" Order="1" Condition="NOT CERBERUS_ENROLLMENT_PROOF" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="CERBERUS_ENROLLMENT_PROOF" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.ServerEnrollmentDlgDescription)" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="!(loc.ServerEnrollmentDlgTitle)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="373" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
+        <Control Id="CodeLabel" Type="Text" X="20" Y="60" Width="320" Height="15" NoPrefix="yes" Text="!(loc.ServerEnrollmentDlgCodeLabel)" />
+        <Control Id="Code" Type="Edit" X="20" Y="78" Width="320" Height="18" Property="CERBERUS_ENROLLMENT_PROOF" Password="yes" Text="{8192}" />
+      </Dialog>
+
+      <Dialog Id="ServerEnrollmentRequiredDlg" Width="260" Height="85" Title="!(loc.InvalidDirDlg_Title)">
+        <Control Id="OK" Type="PushButton" X="102" Y="57" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIOK)">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+        <Control Id="Text" Type="Text" X="48" Y="22" Width="194" Height="30" Text="!(loc.ServerEnrollmentRequiredText)" />
+        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="!(loc.InvalidDirDlgIconTooltip)" FixedSize="yes" IconSize="32" Text="!(loc.InvalidDirDlgIcon)" />
+      </Dialog>
+
+      <!-- Replaces the stock 1722 text, which prints the command line of the failed action (the enrollment code). Only [2], the action name, is used. -->
+      <Error Id="1722" Message="!(loc.ServerCustomActionFailed)" />
+
+      <!-- Stock InstallDirDlg Next opens VerifyReadyDlg at Order 4 and VerifyReadyDlg Back opens InstallDirDlg at Order 1; the last NewDialog wins. -->
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ServerEnrollmentDlg" Order="5" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ServerEnrollmentDlg" Order="3" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+    </UI>
+
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="!(loc.ServerExitDialogNote)" Sequence="ui" After="FindRelatedProducts" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+  </Fragment>
+  <?endif ?>
+</Wix>

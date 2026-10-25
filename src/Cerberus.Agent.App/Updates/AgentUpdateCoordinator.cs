@@ -93,7 +93,7 @@ internal sealed class AgentUpdateCoordinator : IAgentUpdateCoordinator
             return null;
         try
         {
-            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"Software\Cerberus\WindowsAgent", writable: false);
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath, writable: false);
             return key?.GetValue(valueName)?.ToString();
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException)

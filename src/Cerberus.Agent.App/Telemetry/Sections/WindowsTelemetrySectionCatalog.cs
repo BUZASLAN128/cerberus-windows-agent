@@ -8,10 +8,8 @@ internal static class WindowsTelemetrySectionCatalog
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
 
     // Sections sent in the server build profile; the environment allowlist is not consulted there.
-    private static readonly HashSet<string> ServerProfileSections = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
-    };
+    private static readonly HashSet<string> ServerProfileSections =
+        new(EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
         => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);
@@ -49,7 +47,37 @@ internal static class WindowsTelemetrySectionCatalog
             : filtered;
     }
 
-    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation) => new IWindowsTelemetrySectionCollector[]
+    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation)
+    {
+        var sections = CreateCoreSections(publishServiceObservation);
+#if CERBERUS_SERVER_PROFILE
+        // Core sections run under the same run budget, so a slow core collector cannot start outside it.
+        return sections
+            .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
+            .Concat(CreateServerFactSections(TimeProvider.System))
+            .ToArray();
+#else
+        return sections;
+#endif
+    }
+
+#if CERBERUS_SERVER_PROFILE
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateServerFactSections(TimeProvider time)
+    {
+        IWindowsTelemetrySectionCollector[] facts =
+        {
+            new SessionsTelemetrySectionCollector(),
+            new HardwareTelemetrySectionCollector(),
+            new ServicesTelemetrySectionCollector(),
+            new ListeningPortsTelemetrySectionCollector(),
+            new UpdatesTelemetrySectionCollector(),
+            new SoftwareTelemetrySectionCollector(),
+        };
+        return facts.Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, time)).ToArray();
+    }
+#endif
+
+    private static IWindowsTelemetrySectionCollector[] CreateCoreSections(bool publishServiceObservation) => new IWindowsTelemetrySectionCollector[]
     {
         new IdentityTelemetrySectionCollector(),
         new OsTelemetrySectionCollector(),

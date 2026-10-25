@@ -23,7 +23,7 @@ public static class AgentUpdateSecurity
 
     public static string DefaultPrivilegedRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-        "CerberusAgent",
+        AgentInstallIdentity.DataDirName,
         PrivilegedDirectoryName,
         UpdatesDirectoryName);
 
@@ -252,7 +252,7 @@ public static class AgentUpdateSecurity
     }
 
     private static string DefaultProductRoot => Path.Combine(
-        NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)), "CerberusAgent");
+        NormalizeRoot(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData)), AgentInstallIdentity.DataDirName);
     private static string DefaultPrivilegedNamespaceRoot => Path.Combine(DefaultProductRoot, PrivilegedDirectoryName);
     private static bool IsProductRoot(string path) => string.Equals(NormalizeRoot(path), DefaultProductRoot, StringComparison.OrdinalIgnoreCase);
 

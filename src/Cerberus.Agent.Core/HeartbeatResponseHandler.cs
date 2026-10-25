@@ -46,6 +46,12 @@ public sealed class HeartbeatResponseHandler
         var current = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
         if (generation is not null && current.Generation != generation)
             return HeartbeatControlAction.Stop;
+#if CERBERUS_SERVER_PROFILE
+        // No unsigned heartbeat field changes behaviour here; signed state arrives as agent_state.
+        return AgentLifecycleStates.IsDormant(current.State) || !current.QuiescenceComplete
+            ? HeartbeatControlAction.Stop
+            : HeartbeatControlAction.Continue;
+#else
         await PersistUiContextAsync(response, ct).ConfigureAwait(false);
 
         if (response.Revoke is not null &&
@@ -101,6 +107,7 @@ public sealed class HeartbeatResponseHandler
             await _managedAccounts.RefreshAsync(response, ct).ConfigureAwait(false);
         await TryHandleUpdateAsync(response, ct).ConfigureAwait(false);
         return HeartbeatControlAction.Continue;
+#endif
     }
 
     private async Task PersistUiContextAsync(HeartbeatResponse response, CancellationToken ct)

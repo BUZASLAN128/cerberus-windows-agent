@@ -3,14 +3,15 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Principal;
 using System.ServiceProcess;
+using Cerberus.Agent.Core;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App;
 
 internal static class ServiceInstaller
 {
-    public const string ServiceName = "CerberusAgent";
-    private const string ServiceDisplayName = "CERBERUS Windows Agent";
+    public const string ServiceName = AgentInstallIdentity.ServiceName;
+    private const string ServiceDisplayName = AgentInstallIdentity.ServiceDisplayName;
     private const string ServiceDescription = "CERBERUS Windows Agent (polling orchestrator).";
 
     public static void InstallOrThrow()

@@ -23,6 +23,8 @@
   <ItemGroup>
     <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\agent-wire-vectors.v1.json" Link="fixtures\agent-wire-vectors.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-command-vectors.v1.json" Link="fixtures\agent-command-vectors.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-command-test-anchors.b64" Link="fixtures\agent-command-test-anchors.b64" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
