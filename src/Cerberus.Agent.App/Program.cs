@@ -30,6 +30,15 @@ internal static class Program
                 return 0;
         }
 
+        if (parsed.ShowFingerprint)
+            return EnrollHeadlessMode.ShowFingerprint();
+
+        if (parsed.EnrollHeadless)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            return EnrollHeadlessMode.RunAsync(parsed, args ?? Array.Empty<string>(), cts.Token).GetAwaiter().GetResult();
+        }
+
         if (parsed.Register)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -208,6 +217,8 @@ internal static class Program
            !args.StartService &&
            !args.StopService &&
            !args.Service &&
+           !args.EnrollHeadless &&
+           !args.ShowFingerprint &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
 
     private static string? ParseStartupSignal(AgentArgs args)
