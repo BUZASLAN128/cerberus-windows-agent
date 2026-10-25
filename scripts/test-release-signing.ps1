@@ -6,7 +6,7 @@ param([string]$CoreDll = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($CoreDll)) {
-  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Core/bin/Release/net8.0/Cerberus.Agent.Core.dll"
+  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Core/bin/Release/net10.0/Cerberus.Agent.Core.dll"
 }
 if (-not (Test-Path -LiteralPath $CoreDll -PathType Leaf)) {
   throw "Build the solution in Release first (agent verifier assembly not found: $CoreDll)."

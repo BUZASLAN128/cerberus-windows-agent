@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
+// SYSLIB0057: X509CertificateLoader cannot read the signer of an Authenticode-signed PE file. WinVerifyTrust checks the signature first; the extracted certificate is only used for the signer key pin and the unsigned dev-build check.
+#pragma warning disable SYSLIB0057
 namespace Cerberus.Agent.Core;
 
 public static class AgentUpdateAuthenticode
