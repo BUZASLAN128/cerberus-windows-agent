@@ -454,7 +454,7 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\"", releaseScript);
         Assert.DoesNotContain("Publish-AgentProject \"src/Cerberus.Agent.Tray/Cerberus.Agent.Tray.csproj\"", releaseScript);
         Assert.Contains("Cerberus.Agent.exe", releaseScript);
-        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", releaseScript);
+        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-publish-lib.ps1")));
         Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
         Assert.Contains("$allowedRuntimeExeNames", releaseScript);

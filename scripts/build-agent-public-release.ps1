@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Version,
 
-  [ValidateSet("dev", "preview", "stable")]
+  [ValidatePattern('^(dev|preview|stable)\z', Options = 'None', ErrorMessage = 'Channel must be lowercase dev, preview or stable.')]
   [string]$Channel = "dev",
 
   [string]$Configuration = "Release",
@@ -21,7 +21,19 @@ param(
   [long]$ManifestSequence = 0,
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild,
-  [switch]$AllowEphemeralManifestKey
+  [switch]$AllowEphemeralManifestKey,
+
+  # Pfx: WINDOWS_SIGNING_CERT_BASE64 + AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM (default, CI path).
+  # Token: certificates selected by thumbprint from CurrentUser\My (private keys stay on the token),
+  # or a two-step external manifest signature.
+  [ValidateSet("Pfx", "Token")]
+  [string]$SigningMode = "Pfx",
+  [string]$SigningCertThumbprint = "",
+  [string[]]$ExtraSignerPins = @(),
+  [string]$ManifestSigningCertThumbprint = "",
+  [string]$ManifestSigningPublicKeyFile = "",
+  [string]$ManifestSignatureFile = "",
+  [string[]]$ExtraManifestPublicKeyFiles = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,96 +42,29 @@ if ($PSVersionTable.PSEdition -ne "Core") {
   throw "PowerShell 7+ (pwsh) is required for public release signing and manifest generation."
 }
 
-function Write-Step([string]$Message) {
-  Write-Host "==> $Message"
-}
+. (Join-Path $PSScriptRoot "release-signing-lib.ps1")
+. (Join-Path $PSScriptRoot "release-trust-lib.ps1")
+. (Join-Path $PSScriptRoot "release-publish-lib.ps1")
+. (Join-Path $PSScriptRoot "release-token-lib.ps1")
+$signingPlan = Assert-ReleaseSigningInputs `
+  -Mode $SigningMode `
+  -SigningCertThumbprint $SigningCertThumbprint `
+  -ManifestSigningCertThumbprint $ManifestSigningCertThumbprint `
+  -ManifestSigningPublicKeyFile $ManifestSigningPublicKeyFile `
+  -ManifestSignatureFile $ManifestSignatureFile `
+  -ExtraSignerPins $ExtraSignerPins `
+  -ExtraManifestPublicKeyFiles $ExtraManifestPublicKeyFiles `
+  -PfxCertificatePresent (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64"))) `
+  -ManifestPrivateKeyPemPresent (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM"))) `
+  -AllowUnsignedDevBuild ([bool]$AllowUnsignedDevBuild) `
+  -AllowEphemeralManifestKey ([bool]$AllowEphemeralManifestKey)
+$tokenMode = ($signingPlan.Mode -eq "Token")
 
 function ConvertTo-Base64Utf8([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) {
     return ""
   }
   return [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Value.Trim()))
-}
-
-function Find-SignTool {
-  $candidates = @(
-    "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
-    "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\signtool.exe"
-  )
-  foreach ($pattern in $candidates) {
-    $tool = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue |
-      Sort-Object FullName -Descending |
-      Select-Object -First 1
-    if ($tool) {
-      return $tool.FullName
-    }
-  }
-  throw "signtool.exe was not found. Install Windows SDK or use windows-latest GitHub runner."
-}
-
-function Invoke-SecretScan([string]$Path) {
-  $patterns = @(
-    "tskey-[A-Za-z0-9_-]{20,}",
-    "headscale[_-]?(api[_-]?)?key\s*[:=]\s*['""][^'""]+['""]",
-    "-----BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY-----",
-    "Bearer\s+[A-Za-z0-9._~+/=-]{20,}",
-    "(password|refresh_token|signing_key|private_key)\s*[:=]\s*['""][^'""]+['""]"
-  )
-  $hits = New-Object System.Collections.Generic.List[string]
-  $files = Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch "\\(bin|obj|out|\.git|tests)\\" }
-  foreach ($file in $files) {
-    $text = Get-Content -Raw -LiteralPath $file.FullName -ErrorAction SilentlyContinue
-    if ($null -eq $text) { continue }
-    foreach ($pattern in $patterns) {
-      if ($text -match $pattern) {
-        $hits.Add($file.FullName)
-        break
-      }
-    }
-  }
-  return $hits
-}
-
-function New-MinimalSbom([string]$RepoRoot, [string]$OutputFile) {
-  $projects = Get-ChildItem -Path (Join-Path $RepoRoot "src"), (Join-Path $RepoRoot "tests") -Recurse -Filter *.csproj |
-    Where-Object { $_.FullName -notmatch "\\(bin|obj)\\" }
-  $packages = @()
-  foreach ($project in $projects) {
-    [xml]$xml = Get-Content -Raw -LiteralPath $project.FullName
-    foreach ($item in $xml.Project.ItemGroup.PackageReference) {
-      if ($item.Include) {
-        $packages += [ordered]@{
-          project = $project.FullName.Substring($RepoRoot.Length + 1)
-          name = [string]$item.Include
-          version = [string]$item.Version
-        }
-      }
-    }
-  }
-  $sbom = [ordered]@{
-    schema = "cerberus.agent.sbom.v1"
-    generated_at_utc = (Get-Date).ToUniversalTime().ToString("O")
-    packages = $packages
-  }
-  $sbom | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputFile -Encoding utf8
-}
-
-function New-Provenance([string]$RepoRoot, [string]$OutputFile, [string]$ArtifactName, [string]$ArtifactSha) {
-  $commit = (git -C $RepoRoot rev-parse HEAD 2>$null)
-  $status = (git -C $RepoRoot status --short 2>$null)
-  $provenance = [ordered]@{
-    schema = "cerberus.agent.provenance.v1"
-    generated_at_utc = (Get-Date).ToUniversalTime().ToString("O")
-    artifact = $ArtifactName
-    artifact_sha256 = $ArtifactSha
-    git_commit = $commit
-    github_run_id = $env:GITHUB_RUN_ID
-    github_run_number = $env:GITHUB_RUN_NUMBER
-    github_repository = $env:GITHUB_REPOSITORY
-    dirty_worktree = -not [string]::IsNullOrWhiteSpace(($status -join "`n"))
-  }
-  $provenance | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputFile -Encoding utf8
 }
 
 function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem) {
@@ -139,35 +84,17 @@ function Get-ManifestPublicKeyPem([string]$PrivateKeyPem) {
   return $rsa.ExportSubjectPublicKeyInfoPem()
 }
 
-function Copy-ChannelLatestAliases(
-  [string]$PublishDir,
-  [string]$Channel,
-  [string]$Msi,
-  [string]$Zip,
-  [string]$Sbom,
-  [string]$Provenance,
-  [string]$Manifest,
-  [string]$Gate,
-  [string]$MsiHash,
-  [string]$ZipHash
-) {
-  $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest"
-  $aliasInstallerBase = "Cerberus.Agent-$Channel-latest"
-  Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasInstallerBase.msi") -Force
-  Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
-  Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
-  Copy-Item -LiteralPath $Provenance -Destination (Join-Path $PublishDir "$aliasAssetBase.provenance.json") -Force
-  Copy-Item -LiteralPath $Manifest -Destination (Join-Path $PublishDir "$aliasAssetBase.update-manifest.json") -Force
-  Copy-Item -LiteralPath $Gate -Destination (Join-Path $PublishDir "$aliasAssetBase.release-gate.json") -Force
-  @(
-    "$ZipHash  $aliasAssetBase.zip",
-    "$MsiHash  $aliasInstallerBase.msi"
-  ) | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
-}
-
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
+$assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
+$installerBase = "Cerberus.Agent-$Channel-$Version"
+if ($signingPlan.Finalize) {
+  Complete-ExternalManifestSigning `
+    -PublishDir $publishDir -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
+    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile
+  return
+}
 Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 $runtimePublishDir = Join-Path $publishDir "runtime"
@@ -217,6 +144,20 @@ foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
   }
 }
 
+$manifestPrivateKey = $null
+$tokenSigning = $null
+$artifactPrefixList = @()
+if ($tokenMode) {
+  $tokenSigning = Initialize-TokenSigning `
+    -SigningPlan $signingPlan -SigningCertThumbprint $SigningCertThumbprint -ExtraSignerPins $ExtraSignerPins `
+    -ManifestSigningCertThumbprint $ManifestSigningCertThumbprint -ManifestSigningPublicKeyFile $ManifestSigningPublicKeyFile `
+    -ExtraManifestPublicKeyFiles $ExtraManifestPublicKeyFiles
+  $tokenSignerPins = $tokenSigning.SignerPins
+  $tokenKeyListB64 = $tokenSigning.KeyListB64
+  # The MSI registry value takes a single key (read on dev-channel overrides only); the full list is embedded in the binaries.
+  $UpdateManifestPublicKeyB64 = $tokenKeyListB64[0]
+  $AgentUpdateManifestPublicKeysB64 = ConvertTo-MsBuildListValue $tokenKeyListB64
+} else {
 $manifestPrivateKey = [Environment]::GetEnvironmentVariable("AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM")
 if ([string]::IsNullOrWhiteSpace($manifestPrivateKey) -and
     $Channel -eq "dev" -and
@@ -234,6 +175,7 @@ if ([string]::IsNullOrWhiteSpace($manifestPrivateKey)) {
 $manifestPublicKeyB64 = ConvertTo-Base64Utf8 (Get-ManifestPublicKeyPem $manifestPrivateKey)
 $UpdateManifestPublicKeyB64 = $manifestPublicKeyB64
 $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
+}
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = if ($Channel -eq "stable") {
@@ -246,6 +188,9 @@ if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
   $artifactRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateAllowedArtifactPrefixes = "https://github.com/$artifactRepo/releases/download/"
 }
+# The agent splits this list on ','; MSBuild -p: needs the separator and other syntax characters escaped.
+$artifactPrefixList = @($UpdateAllowedArtifactPrefixes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$UpdateAllowedArtifactPrefixes = ConvertTo-MsBuildListValue $artifactPrefixList
 
 $artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
 if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
@@ -272,12 +217,20 @@ if (-not [string]::IsNullOrWhiteSpace($certBase64ForMetadata)) {
     throw "Windows signing certificate identity could not be read."
   }
 }
+$signerPinsForBuild = $signerKeyIdentity
+if ($tokenMode) {
+  # The manifest carries the pin of the certificate that signs this release; the build embeds every accepted pin.
+  $signerKeyIdentity = $tokenSignerPins[0]
+  $signerPinsForBuild = ConvertTo-MsBuildListValue $tokenSignerPins
+  $allowUnsignedBuildMetadata = $false
+}
 if ($ManifestSequence -le 0) {
   $ManifestSequence = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 }
 if ($ManifestSequence -le 0) {
   throw "Manifest sequence must be positive."
 }
+Assert-ManifestSequenceInRange $ManifestSequence
 
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
@@ -300,7 +253,7 @@ function Publish-AgentProject([string]$Project) {
     "-p:AgentUpdateManifestUrl=$UpdateManifestUrl",
     "-p:AgentUpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes",
     "-p:AgentReleaseChannel=$Channel",
-    "-p:AgentUpdateAllowedSignerKeyIdentity=$signerKeyIdentity",
+    "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild",
     "-p:AllowUnsignedDevBuild=$($allowUnsignedBuildMetadata.ToString().ToLowerInvariant())",
     "-o", $runtimePublishDir
   )
@@ -323,8 +276,6 @@ Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
 Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj"
 Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj"
 
-$assetBase = "Cerberus.Agent.Bundle-$Channel-$Version"
-$installerBase = "Cerberus.Agent-$Channel-$Version"
 $versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
   throw "Release version '$Version' must start with a numeric major.minor.patch version for MSI ProductVersion."
@@ -358,7 +309,16 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-if (-not [string]::IsNullOrWhiteSpace($certBase64)) {
+if ($tokenMode) {
+  Write-Step "Signing runtime executables with the token certificate"
+  $signtool = Find-SignTool
+  foreach ($runtimeExe in $runtimeExecutables) {
+    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
+      -FilePath $runtimeExe -AllowedPins $tokenSignerPins
+  }
+  $signed = $true
+}
+elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
   Write-Step "Signing runtime executables"
   $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
@@ -430,17 +390,22 @@ if (-not (Test-Path -LiteralPath $msi)) {
 
 if ($signed) {
   Write-Step "Signing MSI installer"
+  $signtool = Find-SignTool
+  if ($tokenMode) {
+    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
+      -FilePath $msi -AllowedPins $tokenSignerPins
+  } else {
   $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
   }
   [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-  $signtool = Find-SignTool
   & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $msi
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   & $signtool verify /pa /v $msi
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 Write-Step "Creating checksums, SBOM, provenance, manifest"
@@ -485,6 +450,19 @@ $canonical = @(
   $artifactLength.ToString([System.Globalization.CultureInfo]::InvariantCulture),
   $signerKeyIdentity
 ) -join "`n"
+Assert-ManifestValidityWindow ([DateTimeOffset]::Parse($releasedAt)) ([DateTimeOffset]::Parse($expiresAt))
+$legacyManifest = $null
+if ($tokenMode) {
+  if ($signingPlan.ManifestSigning -eq "External") {
+    Write-PendingExternalManifest `
+      -PublishDir $publishDir -AssetBase $assetBase -Canonical $canonical -KeyListB64 $tokenKeyListB64 `
+      -ArtifactPrefixes $artifactPrefixList -SignerPins $tokenSignerPins
+    return
+  }
+  $manifest = New-CngSignedManifest `
+    -Canonical $canonical -Certificate $tokenSigning.ManifestSigningCertificate -RuntimeDir $runtimePublishDir `
+    -Channel $Channel -ArtifactPrefixes $artifactPrefixList -KeyListB64 $tokenKeyListB64 -SignerPins $tokenSignerPins
+} else {
 $manifestSignature = Sign-ManifestPayload -CanonicalPayload $canonical -PrivateKeyPem $manifestPrivateKey
 $manifest = [ordered]@{
   schema_version = "agent.update.manifest.v2"
@@ -503,8 +481,6 @@ $manifest = [ordered]@{
   signer_key_identity = $signerKeyIdentity
   signature = $manifestSignature
 }
-$manifestPath = Join-Path $publishDir "$assetBase.update-manifest.v2.json"
-$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
 # Keep the historical v1 endpoint for legacy clients; fixed clients embed the v2 endpoint.
 $legacyManifest = [ordered]@{}
@@ -513,54 +489,11 @@ foreach ($name in @("artifact_kind", "version", "channel", "artifact_url", "sha2
 }
 $legacyCanonical = ($canonical -split "`n" | Select-Object -First 9) -join "`n"
 $legacyManifest["signature"] = Sign-ManifestPayload -CanonicalPayload $legacyCanonical -PrivateKeyPem $manifestPrivateKey
-$legacyManifestPath = Join-Path $publishDir "$assetBase.update-manifest.json"
-$legacyManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyManifestPath -Encoding utf8
-Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $publishDir "Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json") -Force
-
-$gate = [ordered]@{
-  schema = "cerberus.agent.release_gate.v1"
-  channel = $Channel
-  manifest_schema = "agent.update.manifest.v2"
-  manifest_sequence = $ManifestSequence
-  manifest_expires_at_utc = $expiresAt
-  signer_key_identity = $signerKeyIdentity
-  unsigned_dev_build_allowed = $allowUnsignedBuildMetadata
-  authenticode_signature_present = $signed
-  checksum_sha256 = $msiHash
-  installer = [ordered]@{
-    name = "$installerBase.msi"
-    checksum_sha256 = $msiHash
-    authenticode_signature_present = $signed
-    eula_consent_source = "msi_eula_dialog"
-    eula_required_for_execute_sequence = $true
-    headless_eula_property = "CERBERUS_EULA_ACCEPTED=1"
-    consent_storage = "hklm_registry_imported_by_agent"
-    launches_agent_arguments = ""
-    ui_binary = "app/Cerberus.Agent.exe"
-    service_binary = "app/Cerberus.Agent.Service.exe"
-    updater_binary = "app/Cerberus.Agent.Updater.exe"
-    uninstall_binary = "app/Cerberus.Agent.Uninstall.exe"
-    powershell_custom_action_present = $false
-  }
-  sbom_present = (Test-Path -LiteralPath $sbom)
-  provenance_present = (Test-Path -LiteralPath $provenance)
-  secret_scan_hits = @()
-  tenant_update_url_present = $false
-  tenant_signing_key_present = $false
 }
-$gatePath = Join-Path $publishDir "$assetBase.release-gate.json"
-$gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $gatePath -Encoding utf8
 
-Copy-ChannelLatestAliases `
-  -PublishDir $publishDir `
-  -Channel $Channel `
-  -Msi $msi `
-  -Zip $zip `
-  -Sbom $sbom `
-  -Provenance $provenance `
-  -Manifest $legacyManifestPath `
-  -Gate $gatePath `
-  -MsiHash $msiHash `
-  -ZipHash $zipHash
+Publish-ReleaseOutputs `
+  -PublishDir $publishDir -Channel $Channel -AssetBase $assetBase -InstallerBase $installerBase `
+  -Manifest $manifest -LegacyManifest $legacyManifest `
+  -AllowUnsignedBuildMetadata $allowUnsignedBuildMetadata -Signed $signed
 
 Write-Step "Release bundle ready: $publishDir"

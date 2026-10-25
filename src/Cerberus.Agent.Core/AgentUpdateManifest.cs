@@ -34,6 +34,9 @@ public sealed record AgentUpdateManifest(
 
 public static class AgentUpdateManifestValidator
 {
+    /// <summary>Largest accepted expires_at - released_at for v2 manifests. Release tooling writes 30 days.</summary>
+    public static readonly TimeSpan MaxV2ValidityWindow = TimeSpan.FromDays(45);
+
     private static readonly Regex Sha256Regex = new("^[a-fA-F0-9]{64}$", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> DisallowedKeys = new(StringComparer.OrdinalIgnoreCase)
@@ -163,6 +166,8 @@ public static class AgentUpdateManifestValidator
             if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt) ||
                 expiresAt <= DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("Update manifest has expired.");
+            if (expiresAt - releasedAt > MaxV2ValidityWindow)
+                throw new InvalidOperationException("Update manifest validity window is too long.");
             if (manifest.ArtifactLength is null or <= 0)
                 throw new InvalidOperationException("Update manifest artifact length is invalid.");
             if (string.IsNullOrWhiteSpace(manifest.EffectiveSignerKeyIdentity))
