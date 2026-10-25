@@ -13,5 +13,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj" />
+    <Project Path="tests/Cerberus.Agent.Portable.Tests/Cerberus.Agent.Portable.Tests.csproj" />
   </Folder>
 </Solution>
