@@ -16,8 +16,14 @@ public sealed record AgentSignedState(
     [property: JsonPropertyName("registration_state")] string? RegistrationState,
     [property: JsonPropertyName("pending_revoke")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    AgentPendingRevoke? PendingRevoke = null)
+    AgentPendingRevoke? PendingRevoke = null,
+    [property: JsonPropertyName("reset")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Reset = null)
 {
+    /// <summary>The <see cref="Reset"/> value of a quarantined replacement written after a corrupt file was set aside.</summary>
+    public const string ResetUnreadable = "unreadable";
+
     /// <summary>The state of a registration that has no signed state yet.</summary>
     public static AgentSignedState Empty(string agentId) => new(agentId, 0, false, null);
 }
@@ -26,8 +32,9 @@ public sealed record AgentSignedState(
 /// Durable signed-state store: <c>&lt;DataDir&gt;\Privileged\agent-state.v1.json</c>, one record bound to the
 /// <c>agent_id</c> it was written for. A record of another agent id reads as empty and the next
 /// write replaces it, so a re-enrolled agent starts at <c>state_seq</c> 0 without quarantine.
-/// An unreadable or corrupt file is set aside and reads as quarantined until a signed write
-/// succeeds (fail closed). On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
+/// An unreadable or corrupt file is set aside and replaced by a quarantined state carrying
+/// <c>"reset": "unreadable"</c>, so the quarantine survives a restart; it reads as quarantined until a
+/// signed write succeeds (fail closed). If the replacement cannot be written, the quarantine lasts for the process. On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
 /// directory, owner, DACL, directory or reparse point at the path reads as quarantined as well and is
 /// never parsed; the next signed write replaces the object.
 /// </summary>
@@ -103,24 +110,31 @@ public sealed class AgentSignedStateStore
         }
     }
 
-    /// <summary>The persisted state of <paramref name="agentId"/>; empty when the record belongs to another agent.</summary>
+    /// <summary>
+    /// The persisted state of <paramref name="agentId"/>; empty when the record belongs to another agent or is a
+    /// reset marker (the marker quarantines through <see cref="IsQuarantined(string)"/> and is never a base for a signed write).
+    /// </summary>
     public AgentSignedState Load(string agentId)
     {
         ArgumentException.ThrowIfNullOrEmpty(agentId);
         lock (_gate)
         {
             EnsureLoaded();
-            return _state is not null && string.Equals(_state.AgentId, agentId, StringComparison.Ordinal)
+            return _state is { Reset: null } && string.Equals(_state.AgentId, agentId, StringComparison.Ordinal)
                 ? _state
                 : AgentSignedState.Empty(agentId);
         }
     }
 
-    /// <summary>Replaces the whole record (temp file, flush, atomic replace). On failure nothing changes.</summary>
+    /// <summary>
+    /// Replaces the whole record (temp file, flush, atomic replace) and clears any reset marker: a signed write
+    /// lifts the quarantine of a corrupt file. On failure nothing changes.
+    /// </summary>
     public bool TrySave(AgentSignedState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentException.ThrowIfNullOrEmpty(state.AgentId);
+        state = state with { Reset = null };
         lock (_gate)
         {
             EnsureLoaded();
@@ -179,6 +193,8 @@ public sealed class AgentSignedStateStore
         if (TryRead(out var state))
         {
             _state = state;
+            // A reset marker quarantines whatever agent id is current until a signed write replaces it.
+            _unreadable = state!.Reset is not null;
             return;
         }
 
@@ -188,6 +204,8 @@ public sealed class AgentSignedStateStore
         {
             File.Move(_path, corruptPath, overwrite: true);
             _log.Warn($"Signed agent state was unreadable; moved to {Path.GetFileName(corruptPath)}; quarantined until the next signed state.");
+            // Without a file a restart would lose the quarantine; on failure the in-memory quarantine stays.
+            TryPersist(new AgentSignedState(_currentAgentId ?? "unknown", 0, true, null, null, AgentSignedState.ResetUnreadable));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -207,7 +225,8 @@ public sealed class AgentSignedStateStore
                 || string.IsNullOrEmpty(loaded.AgentId) || loaded.StateSeq < 0
                 || loaded.RegistrationState is not (null or "pending_claim" or "claimed")
                 || (loaded.PendingRevoke is { } revoke
-                    && (string.IsNullOrEmpty(revoke.CommandId) || revoke.ReasonCode is not ("agent_revoked" or "agent_deactivated"))))
+                    && (string.IsNullOrEmpty(revoke.CommandId) || revoke.ReasonCode is not ("agent_revoked" or "agent_deactivated")))
+                || loaded.Reset is not (null or AgentSignedState.ResetUnreadable))
                 return false;
             state = loaded;
             return true;

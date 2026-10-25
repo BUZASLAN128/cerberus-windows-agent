@@ -267,12 +267,136 @@ public sealed class AgentSignedStateTests : IDisposable
         Assert.True(store.IsQuarantined());
         Assert.True(store.IsQuarantined("agent-a"));
         Assert.Equal(0, store.Load("agent-a").StateSeq);
-        Assert.False(File.Exists(StatePath));
+        Assert.Contains("\"reset\":\"unreadable\"", File.ReadAllText(StatePath));
         Assert.Single(Directory.GetFiles(_dir, AgentSignedStateStore.FileName + ".corrupt-*"));
 
         Assert.True(store.TrySave(new AgentSignedState("agent-a", 1, false, null)));
         Assert.False(store.IsQuarantined("agent-a"));
         Assert.False(new AgentSignedStateStore(StatePath).IsQuarantined("agent-a"));
+        Assert.DoesNotContain("reset", File.ReadAllText(StatePath));
+    }
+
+    [Fact]
+    public void CorruptFile_QuarantineSurvivesARestartForAnyAgentId()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(StatePath, "{not json");
+        Assert.True(new AgentSignedStateStore(StatePath).IsQuarantined("agent-a"));
+
+        var restarted = new AgentSignedStateStore(StatePath);
+
+        Assert.True(restarted.IsQuarantined("agent-a"));
+        Assert.True(restarted.IsQuarantined("agent-b"));
+        Assert.True(restarted.IsQuarantined());
+        Assert.Equal(0, restarted.Load("agent-a").StateSeq);
+        Assert.Single(Directory.GetFiles(_dir, AgentSignedStateStore.FileName + ".corrupt-*"));
+    }
+
+    [Fact]
+    public async Task CorruptFile_ASignedStateWriteClearsTheResetAcrossRestarts()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(StatePath, "{not json");
+        var f = new Fixture(StatePath);
+        await f.Track(default);
+        Assert.True(f.Store.IsQuarantined());
+
+        Assert.Equal("DONE", (await f.Handle("c1", P(1, ""","quarantine":{"active":false}"""))).Status);
+
+        Assert.False(f.Store.IsQuarantined());
+        var restarted = new AgentSignedStateStore(StatePath);
+        Assert.False(restarted.IsQuarantined("agent-a"));
+        Assert.Equal(1, restarted.Load("agent-a").StateSeq);
+        Assert.DoesNotContain("reset", File.ReadAllText(StatePath));
+    }
+
+    // Corrupt file loaded after the agent id is tracked: the persisted marker carries the real id. Returns a restarted fixture.
+    private async Task<Fixture> RestartedOverMarkerWithRealId()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(StatePath, "{not json");
+        var first = new Fixture(StatePath);
+        await first.Track(default);
+        Assert.True(first.Store.IsQuarantined());
+        Assert.Contains("\"agent_id\":\"agent-a\"", File.ReadAllText(StatePath));
+        Assert.Contains("\"reset\":\"unreadable\"", File.ReadAllText(StatePath));
+
+        var restarted = new Fixture(StatePath);
+        await restarted.Track(default);
+        return restarted;
+    }
+
+    [Fact]
+    public async Task ResetMarkerWithRealId_SignedLiftDoesNotRestoreQuarantineAfterRestart()
+    {
+        var f = await RestartedOverMarkerWithRealId();
+        Assert.True(f.Store.IsQuarantined("agent-a"));
+
+        Assert.Equal("DONE", (await f.Handle("c1", P(1, ""","quarantine":{"active":false}"""))).Status);
+
+        Assert.False(f.Store.IsQuarantined("agent-a"));
+        Assert.DoesNotContain("reset", File.ReadAllText(StatePath));
+        var second = new AgentSignedStateStore(StatePath);
+        Assert.False(second.IsQuarantined("agent-a"));
+        Assert.Equal(1, second.Load("agent-a").StateSeq);
+    }
+
+    [Fact]
+    public async Task ResetMarkerWithRealId_SignedWriteWithoutQuarantineFieldStartsFromEmptyState()
+    {
+        var f = await RestartedOverMarkerWithRealId();
+
+        Assert.Equal("DONE", (await f.Handle("c1", P(7, ""","registration_state":"claimed" """))).Status);
+
+        Assert.False(f.Store.IsQuarantined("agent-a"));
+        var second = new AgentSignedStateStore(StatePath);
+        Assert.False(second.IsQuarantined("agent-a"));
+        var state = second.Load("agent-a");
+        Assert.Equal(7, state.StateSeq);
+        Assert.Equal("claimed", state.RegistrationState);
+        Assert.False(state.QuarantineActive);
+        Assert.Null(state.Reset);
+    }
+
+    [Fact]
+    public async Task ResetMarkerWithRealId_LoadIsEmptyWhileQuarantineStaysEnforced()
+    {
+        var f = await RestartedOverMarkerWithRealId();
+
+        Assert.Equal(0, f.Store.Load("agent-a").StateSeq);
+        Assert.False(f.Store.Load("agent-a").QuarantineActive);
+        Assert.Null(f.Store.Load("agent-a").Reset);
+        Assert.True(f.Store.IsQuarantined("agent-a"));
+        Assert.True(f.Store.IsQuarantined());
+    }
+
+    [Fact]
+    public void CorruptFile_WhenTheReplacementCannotBeWritten_StaysQuarantinedInMemory()
+    {
+        Directory.CreateDirectory(_dir);
+        // The set-aside name (+19 chars) fits the 255-char file name limit; the temp name (+37 chars) does not.
+        var longPath = Path.Combine(_dir, new string('s', 230));
+        File.WriteAllText(longPath, "{not json");
+        var store = new AgentSignedStateStore(longPath);
+
+        Assert.True(store.IsQuarantined("agent-a"));
+        Assert.True(store.IsQuarantined("agent-b"));
+        Assert.False(File.Exists(longPath));
+        Assert.Single(Directory.GetFiles(_dir, "*.corrupt-*"));
+    }
+
+    [Fact]
+    public void ForeignResetValue_IsTreatedAsCorrupt()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(StatePath,
+            """{"schema":"cerberus.agent-state.v1","state":{"agent_id":"agent-a","state_seq":3,"quarantine_active":false,"registration_state":null,"reset":"other"}}""");
+
+        var store = new AgentSignedStateStore(StatePath);
+
+        Assert.True(store.IsQuarantined("agent-a"));
+        Assert.Equal(0, store.Load("agent-a").StateSeq);
+        Assert.Single(Directory.GetFiles(_dir, AgentSignedStateStore.FileName + ".corrupt-*"));
     }
 
     private sealed class Fixture
