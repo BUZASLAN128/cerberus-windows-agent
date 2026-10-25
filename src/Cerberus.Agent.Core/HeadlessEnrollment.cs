@@ -69,26 +69,39 @@ public static class HeadlessEnrollmentProof
         return true;
     }
 
-    /// <summary>Returns the string <c>agent_id</c> of the unverified proof payload, or null when absent or unreadable.</summary>
-    public static string? TryReadAgentId(string proof)
+    /// <summary>
+    /// Reads the string <c>agent_id</c> of the unverified proof payload into <paramref name="agentId"/> (null when absent,
+    /// not a string or the payload is not JSON). Returns false only when the claim is a JSON string that cannot be read.
+    /// </summary>
+    public static bool TryReadAgentId(string proof, out string? agentId)
     {
+        agentId = null;
         try
         {
             var parts = proof.Split('.');
             if (parts.Length != 3)
-                return null;
+                return true;
             var payload = parts[1].Replace('-', '+').Replace('_', '/');
             payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
             using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
-            return document.RootElement.ValueKind == JsonValueKind.Object &&
-                   document.RootElement.TryGetProperty("agent_id", out var id) &&
-                   id.ValueKind == JsonValueKind.String
-                ? id.GetString()
-                : null;
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("agent_id", out var id) &&
+                id.ValueKind == JsonValueKind.String)
+            {
+                try
+                {
+                    agentId = id.GetString();
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
         catch (Exception ex) when (ex is FormatException or JsonException or ArgumentException)
         {
-            return null;
+            return true;
         }
     }
 }
@@ -162,6 +175,8 @@ public sealed class HeadlessEnrollment
             return new(HeadlessEnrollmentExit.BadInput, "arguments_invalid");
         if (HeadlessEnrollmentGate.Refusal(state, hasMachineCredentials) is { } refusal)
             return new(HeadlessEnrollmentExit.Refused, refusal);
+        if (!HeadlessEnrollmentProof.TryReadAgentId(proof, out var expectedAgentId))
+            return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
 
         // A new key per run. Retries inside this run reuse it; it is never persisted before success.
         var (privateKeyPem, publicKeyPem) = _keys.GenerateKeyPair(2048);
@@ -171,7 +186,6 @@ public sealed class HeadlessEnrollment
         if (success is null)
             return outcome;
 
-        var expectedAgentId = HeadlessEnrollmentProof.TryReadAgentId(proof);
         if (expectedAgentId is not null && !string.Equals(expectedAgentId, success.AgentId, StringComparison.Ordinal))
             return new(HeadlessEnrollmentExit.NewProofRequired, "agent_id_mismatch");
 
@@ -290,8 +304,9 @@ public sealed class HeadlessEnrollment
                         new EnrollSuccess(agentId, tenantId, refresh, Text(root, "tenant_name", 256)));
                 }
             }
-            catch (JsonException)
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
             {
+                // InvalidOperationException: a string that parses but cannot be decoded (lone surrogate, invalid UTF-8).
             }
         }
         return (new(HeadlessEnrollmentExit.NewProofRequired, "response_invalid"), null);
@@ -320,7 +335,7 @@ public sealed class HeadlessEnrollment
                 ? text
                 : null;
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             return null;
         }

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -10,10 +11,33 @@ public sealed class HeadlessEnrollmentUnusableSuccessTests
     public async Task Oversized_success_body_exits_four_and_stores_nothing()
     {
         // No Content-Length: the size limit has to be enforced while reading the stream.
-        var (result, handler, store, log) = await Run(() => new StreamContent(new OversizedStream(64 * 1024 + 1)));
+        // A valid success body plus trailing whitespace: without the limit it would parse and enroll (exit 0).
+        var (result, handler, store, log) = await Run(() => new StreamContent(new OversizedStream(ValidBody, 64 * 1024 + 1)));
 
         AssertSpentProof(result, handler, store, log);
     }
+
+    [Fact]
+    public async Task Escaped_lone_surrogate_in_success_body_exits_four_and_stores_nothing()
+    {
+        var body = "{\"agent_id\":\"agent-0001\",\"tenant_id\":\"t\",\"agent_refresh_token\":\"\\ud800\"}";
+        var (result, handler, store, log) = await Run(() => new StringContent(body, Encoding.UTF8, "application/json"));
+
+        AssertSpentProof(result, handler, store, log);
+    }
+
+    [Fact]
+    public async Task Invalid_utf8_byte_in_success_body_exits_four_and_stores_nothing()
+    {
+        byte[] head = Encoding.UTF8.GetBytes("{\"agent_id\":\"agent-0001\",\"tenant_id\":\"t");
+        byte[] tail = Encoding.UTF8.GetBytes("\",\"agent_refresh_token\":\"rt-secret\"}");
+        var bytes = head.Append((byte)0xFF).Concat(tail).ToArray();
+        var (result, handler, store, log) = await Run(() => new ByteArrayContent(bytes));
+
+        AssertSpentProof(result, handler, store, log);
+    }
+
+    private const string ValidBody = "{\"agent_id\":\"agent-0001\",\"tenant_id\":\"tenant-1\",\"agent_refresh_token\":\"rt-secret\"}";
 
     [Fact]
     public async Task Success_body_that_throws_IOException_mid_read_exits_four_without_retry()
@@ -73,15 +97,17 @@ public sealed class HeadlessEnrollmentUnusableSuccessTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    private sealed class OversizedStream(int total) : ReadOnlyStream
+    private sealed class OversizedStream(string prefix, int total) : ReadOnlyStream
     {
-        private int _left = total;
+        private readonly byte[] _prefix = Encoding.UTF8.GetBytes(prefix);
+        private int _sent;
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            var n = Math.Min(Math.Min(buffer.Length, 4096), _left);
-            buffer.Span[..n].Fill((byte)' ');
-            _left -= n;
+            var n = Math.Min(Math.Min(buffer.Length, 4096), total - _sent);
+            for (var i = 0; i < n; i++)
+                buffer.Span[i] = _sent + i < _prefix.Length ? _prefix[_sent + i] : (byte)' ';
+            _sent += n;
             return ValueTask.FromResult(n);
         }
     }
@@ -95,8 +121,9 @@ public sealed class HeadlessEnrollmentUnusableSuccessTests
             if (!_first)
                 throw new IOException("connection reset");
             _first = false;
-            buffer.Span[0] = (byte)'{';
-            return ValueTask.FromResult(1);
+            var first = Encoding.UTF8.GetBytes("{\"agent_refresh_token\":\"rt-secret");
+            first.CopyTo(buffer.Span);
+            return ValueTask.FromResult(first.Length);
         }
     }
 }
