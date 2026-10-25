@@ -105,7 +105,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("<SuppressIces>ICE91</SuppressIces>", project);
         Assert.Contains("<SuppressIces Condition=\"'$(Channel)' == 'dev'\">$(SuppressIces);ICE61</SuppressIces>", project);
         Assert.Contains("UpdateManifestPublicKeyB64", project);
-        Assert.Contains("UpdateAllowedArtifactPrefixes", project);
+        Assert.DoesNotContain("UpdateAllowedArtifactPrefixes", project);
         Assert.Contains($"EulaVersion={AgentLegalConsent.EulaVersion}", project);
         Assert.Contains($"PrivacyNoticeVersion={AgentLegalConsent.PrivacyNoticeVersion}", project);
         Assert.Contains($"SecurityDisclosureVersion={AgentLegalConsent.SecurityDisclosureVersion}", project);
@@ -158,10 +158,10 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("CERBERUS_LANGUAGE", package);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_URL", package);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", package);
-        Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", package);
+        Assert.DoesNotContain("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", package);
         Assert.Contains("Value=\"$(var.UpdateManifestUrl)\"", package);
         Assert.Contains("Value=\"$(var.UpdateManifestPublicKeyB64)\"", package);
-        Assert.Contains("Value=\"$(var.UpdateAllowedArtifactPrefixes)\"", package);
+        Assert.DoesNotContain("Value=\"$(var.UpdateAllowedArtifactPrefixes)\"", package);
         Assert.Contains("CREATE_DESKTOP_SHORTCUT", package);
         Assert.Contains("START_TRAY_ON_LOGIN", package);
         Assert.Contains("Name=\"backendUrl\"", package);
@@ -172,7 +172,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("Name=\"language\"", package);
         Assert.Contains("Name=\"updateManifestUrl\"", package);
         Assert.Contains("Name=\"updateManifestPublicKeyB64\"", package);
-        Assert.Contains("Name=\"updateAllowedArtifactPrefixes\"", package);
+        Assert.DoesNotContain("Name=\"updateAllowedArtifactPrefixes\"", package);
         Assert.Contains("DesktopAgentShortcutComponent", package);
         Assert.Contains("DesktopFolder", package);
         Assert.Contains("DesktopAgentShortcut", package);
@@ -269,7 +269,7 @@ public sealed class AgentLegalConsentTests
         Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);
         Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
-        Assert.Contains("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
+        Assert.DoesNotContain("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", releaseScript);
         Assert.Contains("GitHub dev releases require stable AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM", releaseScript);
         Assert.Single(Regex.Matches(releaseScript, @"IsNullOrWhiteSpace\(\$UpdateAllowedArtifactPrefixes\)").Cast<Match>());

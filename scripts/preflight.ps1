@@ -25,6 +25,7 @@ try {
     -p:BaseOutputPath=$baseOut `
     -p:IntermediateOutputPath=$intOut `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
   Write-Host "== test =="
   dotnet test Cerberus.WindowsAgent.slnx -c $Configuration `
@@ -32,6 +33,7 @@ try {
     -p:IntermediateOutputPath=$intOut `
     -p:BaseOutputPath=bin\\_testout_preflight\\ `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
 
   Write-Host "== test (server profile) =="
   $serverInt = "obj\\_int\\preflight-server\\$ts\\"
@@ -47,6 +49,7 @@ try {
     -p:IntermediateOutputPath=$serverInt `
     -p:BaseOutputPath=bin\\_testout_preflight_server\\ `
     --disable-build-servers
+  if ($LASTEXITCODE -ne 0) { throw "Tests (server profile) failed." }
 
   if (-not $SkipPublish) {
     Write-Host "== publish =="
@@ -61,6 +64,7 @@ try {
       -p:IncludeNativeLibrariesForSelfExtract=true `
       -p:EnableCompressionInSingleFile=true `
       --disable-build-servers
+    if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
   }
 
   if (-not $SkipSelfTest) {

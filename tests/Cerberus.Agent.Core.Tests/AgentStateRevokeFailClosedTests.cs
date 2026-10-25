@@ -178,7 +178,9 @@ public sealed class AgentStateRevokeFailClosedTests : IDisposable
                 Store.Track(_ => Task.FromResult(AgentId)),
                 Lifecycle,
                 () => Cancels++,
-                stopAutomaticNetwork: () => Stops++);
+                null,
+                () => Stops++,
+                new AgentRevokeFinalResults());
         }
 
         // A later worker start in the same service: same stores, its own stop counter.
@@ -190,8 +192,9 @@ public sealed class AgentStateRevokeFailClosedTests : IDisposable
                 Store.Track(_ => Task.FromResult(AgentId)),
                 Lifecycle,
                 () => Cancels++,
-                stopAutomaticNetwork: () => worker.Stops++,
-                finalResults: finalResults);
+                null,
+                () => worker.Stops++,
+                finalResults);
             return worker;
         }
 

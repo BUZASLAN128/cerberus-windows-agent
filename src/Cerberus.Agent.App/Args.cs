@@ -31,7 +31,8 @@ internal sealed record AgentArgs(
     bool ProofStdin,
     bool ProofFromInstaller,
     bool ShowFingerprint,
-    string? ProofFile);
+    string? ProofFile,
+    bool EnrollRollback);
 
 internal static class Args
 {
@@ -89,6 +90,7 @@ internal static class Args
         var proofFromInstaller = Has("--proof-from-installer") || Value("--proof-from-installer") is not null;
         var showFingerprint = Has("--show-fingerprint");
         var proofFile = Value("--proof-file");
+        var enrollRollback = Has("--enroll-rollback");
 
         return new AgentArgs(
             service,
@@ -121,6 +123,7 @@ internal static class Args
             proofStdin,
             proofFromInstaller,
             showFingerprint,
-            proofFile);
+            proofFile,
+            enrollRollback);
     }
 }

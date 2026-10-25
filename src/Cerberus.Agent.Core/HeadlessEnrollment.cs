@@ -14,9 +14,9 @@ public static class HeadlessEnrollmentExit
     public const int BadInput = 2;
     /// <summary>Request or response rejected; retrying the same input cannot help.</summary>
     public const int Rejected = 3;
-    /// <summary>The proof is spent or refused, including a 2xx whose result was not stored; a new proof is required.</summary>
+    /// <summary>The proof is spent or refused (401, or 403 with any or no code), including a 2xx whose result was not stored; a new proof is required.</summary>
     public const int NewProofRequired = 4;
-    /// <summary>429, 5xx or transport failure after the last attempt.</summary>
+    /// <summary>429, 5xx, transport failure or timeout after the last attempt, or the service not ready to adopt.</summary>
     public const int Unavailable = 5;
     /// <summary>Wrong backend URL.</summary>
     public const int WrongBackend = 6;
@@ -182,6 +182,10 @@ public sealed class HeadlessEnrollment
 
         // A new key per run. Retries inside this run reuse it; it is never persisted before success.
         var (privateKeyPem, publicKeyPem) = _keys.GenerateKeyPair(2048);
+        // Validated before the request: the 2xx spends the proof, so an unusable key must fail first.
+        var fingerprint = AgentKeyFingerprint.TryFromPrivateKeyPem(privateKeyPem);
+        if (fingerprint is null)
+            return new(HeadlessEnrollmentExit.BadInput, "key_invalid");
         var body = BuildBody(proof, publicKeyPem, options);
 
         var (outcome, success) = await SendWithRetriesAsync(body, ct).ConfigureAwait(false);
@@ -192,9 +196,6 @@ public sealed class HeadlessEnrollment
             return new(HeadlessEnrollmentExit.NewProofRequired, "agent_id_mismatch");
 
         var identity = new AgentIdentity(success.AgentId, success.TenantId);
-        var fingerprint = AgentKeyFingerprint.TryFromPrivateKeyPem(privateKeyPem);
-        if (fingerprint is null)
-            return new(HeadlessEnrollmentExit.NewProofRequired, "key_invalid");
         try
         {
             // The destination store publishes atomically, so a failed save leaves the previous state intact.
@@ -280,7 +281,7 @@ public sealed class HeadlessEnrollment
         var label = code is null ? $"http_{status}" : $"http_{status}_{code}";
         return (status, code) switch
         {
-            (401, _) => new(HeadlessEnrollmentExit.NewProofRequired, label),
+            (401, _) or (403, _) => new(HeadlessEnrollmentExit.NewProofRequired, label),
             (409, "agent_proof_consumed") => new(HeadlessEnrollmentExit.NewProofRequired, label),
             (400, "agent_exists") => new(HeadlessEnrollmentExit.NewProofRequired, label),
             (404, _) or (400, "route_unavailable") => new(HeadlessEnrollmentExit.WrongBackend, label),

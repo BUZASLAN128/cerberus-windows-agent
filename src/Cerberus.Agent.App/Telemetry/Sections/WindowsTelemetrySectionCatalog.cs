@@ -8,11 +8,8 @@ internal static class WindowsTelemetrySectionCatalog
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
 
     // Sections sent in the server build profile; the environment allowlist is not consulted there.
-    private static readonly HashSet<string> ServerProfileSections = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
-        "sessions", "hardware", "services", "listening_ports", "updates", "software",
-    };
+    private static readonly HashSet<string> ServerProfileSections =
+        new(EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
         => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);

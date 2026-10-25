@@ -225,11 +225,11 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
     private async Task RejectReservedOrNewAsync(CommandReplayRecord? existing, EnvelopeCheck check, string agentId, CancellationToken ct)
     {
         if (existing is not null
-            && !_queue.Store.TryUpdate(existing with
+            && _queue.Store.TryUpdate(existing with
             {
                 State = EnvelopeRecordStates.RejectedAfterReserve,
                 RejectReason = check.AckRejected ? check.Code : null,
-            }))
+            }, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated)
             _log.Warn($"Command envelope id={existing.Id} rejection not stored.");
         await RejectAsync(check, agentId, ct).ConfigureAwait(false);
     }

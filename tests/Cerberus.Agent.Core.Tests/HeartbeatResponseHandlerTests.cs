@@ -172,7 +172,7 @@ public sealed class HeartbeatResponseHandlerTests
     }
 
     [Fact]
-    public async Task Server_GenerationMismatchAndDormantStateStillStop()
+    public async Task Server_DormantStateStops()
     {
         var state = new InMemoryAgentLifecycleStateStore();
         var handler = new HeartbeatResponseHandler(new CaptureSecretStore(), lifecycleState: state);

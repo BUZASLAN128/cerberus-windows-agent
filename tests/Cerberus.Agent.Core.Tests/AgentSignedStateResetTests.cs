@@ -42,7 +42,7 @@ public sealed class AgentSignedStateResetTests : IDisposable
 
         var track = store.Track(_ => Task.FromResult("agent-b"));
         var handler = new AgentStateCommandHandler(
-            store, track, new AgentLifecycleController(new InMemoryAgentLifecycleStateStore(), new NoSecrets()), () => { });
+            store, track, new AgentLifecycleController(new InMemoryAgentLifecycleStateStore(), new NoSecrets()), () => { }, null, () => { }, new AgentRevokeFinalResults());
         await track(default);
         Assert.False(store.IsQuarantined());
 

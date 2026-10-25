@@ -19,6 +19,21 @@ function Sign-ManifestPayload([string]$CanonicalPayload, [string]$PrivateKeyPem)
   return [Convert]::ToBase64String($sig)
 }
 
+# SPKI pin ("sha256:<hex>") of the PFX signing certificate, or "" when no certificate is configured.
+function Get-PfxSignerKeyIdentity([string]$CertBase64, [string]$CertPassword) {
+  if ([string]::IsNullOrWhiteSpace($CertBase64)) { return "" }
+  try {
+    $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+      [Convert]::FromBase64String($CertBase64),
+      $CertPassword,
+      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+    return "sha256:" + [Convert]::ToHexString(
+      [System.Security.Cryptography.SHA256]::HashData($certificate.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant()
+  } catch {
+    throw "Windows signing certificate identity could not be read."
+  }
+}
+
 function Get-ManifestPublicKeyPem([string]$PrivateKeyPem) {
   $rsa = [System.Security.Cryptography.RSA]::Create()
   $rsa.ImportFromPem($PrivateKeyPem)

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -59,6 +60,13 @@ public static class Sanitizer
     private static readonly Regex KeyFingerprint = new(
         "(?<![A-Za-z0-9+/_-])sha256:[0-9a-f]{64}(?![A-Za-z0-9+/_=-])",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    // The default encoder writes '+' as +, which breaks the base64 and fingerprint patterns that run afterwards.
+    // Control characters stay escaped.
+    private static readonly JsonSerializerOptions RedactedJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     public static string Redact(string? value)
     {
@@ -125,7 +133,7 @@ public static class Sanitizer
             if (node is null)
                 return value;
             RedactNode(node);
-            return node.ToJsonString(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return node.ToJsonString(RedactedJsonOptions);
         }
         catch (JsonException)
         {

@@ -127,14 +127,18 @@ internal static class SingleInstanceGuard
     {
         try
         {
-            var createdNew = false;
             if (_mutex is null)
-                _mutex = new Mutex(initiallyOwned: true, name: MutexName, createdNew: out createdNew);
+            {
+                var state = AgentNamedMutex.Open(MutexName, out _mutex);
+                if (state == AgentNamedMutexState.ExistingUntrusted)
+                {
+                    // A mutex owned by someone else is not a tray instance; run without the lock.
+                    ProcessInstanceGuard.LogUntrustedMutex(MutexName);
+                    return true;
+                }
+            }
 
-            if (createdNew)
-                return true;
-
-            // If not created new, we didn't get initial ownership. Try to acquire quickly.
+            // The mutex is created unowned: take ownership now.
             return _mutex is not null && _mutex.WaitOne(0);
         }
         catch

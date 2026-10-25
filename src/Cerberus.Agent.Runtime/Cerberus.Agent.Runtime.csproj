@@ -62,11 +62,13 @@
     <Compile Include="..\Cerberus.Agent.App\Localization\AgentLocalizer.cs" Link="Localization\AgentLocalizer.cs" />
     <Compile Include="..\Cerberus.Agent.App\ProcessInstanceGuard.cs" Link="ProcessInstanceGuard.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />
+    <Compile Include="..\Cerberus.Agent.App\ServerServiceStartup.cs" Link="ServerServiceStartup.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceMode.cs" Link="ServiceMode.cs" />
     <Compile Include="..\Cerberus.Agent.App\Updates\**\*.cs" LinkBase="Updates" />
     <Compile Include="..\Cerberus.Agent.App\Control\**\*.cs" LinkBase="Control" />
     <Compile Include="..\Cerberus.Agent.App\WindowsDeviceInfo.cs" Link="WindowsDeviceInfo.cs" />
     <Compile Include="..\Cerberus.Agent.App\WindowsServiceHost.cs" Link="WindowsServiceHost.cs" />
+    <Compile Include="..\Cerberus.Agent.App\WorkerRestartBackoff.cs" Link="WorkerRestartBackoff.cs" />
     <Compile Include="..\Cerberus.Agent.App\Telemetry\**\*.cs" LinkBase="Telemetry" />
   </ItemGroup>
 

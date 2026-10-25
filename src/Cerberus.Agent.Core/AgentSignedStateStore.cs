@@ -39,7 +39,8 @@ public sealed record AgentSignedState(
 /// <c>"reset": "unreadable"</c>, so the quarantine survives a restart. The marker is bound to the agent id that was
 /// current when the file was set aside: a re-enrolled agent (another id) is not quarantined by it, while a marker
 /// with <see cref="AgentSignedState.UnknownAgentId"/> quarantines any agent until a signed write succeeds
-/// (fail closed). If the replacement cannot be written, the quarantine lasts for the process. On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
+/// (fail closed). The highest accepted <c>state_seq</c> is also kept in a sidecar file (<see cref="AgentStateHighWater"/>),
+/// so <c>state_seq</c> does not start again at 0 for the same agent id after a corrupt file was set aside. If the replacement cannot be written, the quarantine lasts for the process. On a machine path (see <see cref="ProtectedMachineFile"/>) an untrusted
 /// directory, owner, DACL, directory or reparse point at the path reads as quarantined as well and is
 /// never parsed; the next signed write replaces the object.
 /// </summary>
@@ -54,11 +55,13 @@ public sealed class AgentSignedStateStore
     private readonly object _gate = new();
     private readonly string _path;
     private readonly ProtectedMachineFile _file;
+    private readonly AgentStateHighWater _highWater;
     private readonly IAgentLogger _log;
     private AgentSignedState? _state;
     private string? _currentAgentId;
     private bool _loaded;
     private bool _unreadable;
+    private (string AgentId, long Seq)? _hwm;
 
     /// <param name="enforceFileProvenance">Also demands a SYSTEM/Administrators owner and a DACL without untrusted
     /// writers on a path outside <c>Privileged</c> (always on inside it).</param>
@@ -67,6 +70,7 @@ public sealed class AgentSignedStateStore
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
         _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _log = log ?? NullAgentLogger.Instance;
+        _highWater = new AgentStateHighWater(_path, _log, enforceFileProvenance);
     }
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
@@ -120,6 +124,7 @@ public sealed class AgentSignedStateStore
     /// <summary>
     /// The persisted state of <paramref name="agentId"/>; empty when the record belongs to another agent or is a
     /// reset marker (the marker quarantines through <see cref="IsQuarantined(string)"/> and is never a base for a signed write).
+    /// The <c>StateSeq</c> is never below the high-water mark kept for this agent id.
     /// </summary>
     public AgentSignedState Load(string agentId)
     {
@@ -127,9 +132,11 @@ public sealed class AgentSignedStateStore
         lock (_gate)
         {
             EnsureLoaded();
-            return _state is { Reset: null } && string.Equals(_state.AgentId, agentId, StringComparison.Ordinal)
+            var stored = _state is { Reset: null } && string.Equals(_state.AgentId, agentId, StringComparison.Ordinal)
                 ? _state
                 : AgentSignedState.Empty(agentId);
+            var floor = HighWaterFor(agentId);
+            return stored.StateSeq >= floor ? stored : stored with { StateSeq = floor };
         }
     }
 
@@ -151,9 +158,16 @@ public sealed class AgentSignedStateStore
                 _log.Info("Signed agent state rebound to a new agent id.");
             _state = state;
             _unreadable = false;
+            // After the state write: a failed state write must not leave a mark that rejects its retry. A lagging
+            // mark only weakens the protection against a later corrupt file to what it was without the mark.
+            if (state.StateSeq > HighWaterFor(state.AgentId) && _highWater.TryWrite(state.AgentId, state.StateSeq))
+                _hwm = (state.AgentId, state.StateSeq);
             return true;
         }
     }
+
+    private long HighWaterFor(string agentId)
+        => _hwm is { } mark && string.Equals(mark.AgentId, agentId, StringComparison.Ordinal) ? mark.Seq : 0;
 
     /// <summary>
     /// Drops the pending revoke of <paramref name="commandId"/> once the lifecycle write ran, leaving every other
@@ -184,6 +198,7 @@ public sealed class AgentSignedStateStore
         if (_loaded)
             return;
         _loaded = true;
+        _hwm = _highWater.Read();
         try
         {
             _file.ValidateDirectory();

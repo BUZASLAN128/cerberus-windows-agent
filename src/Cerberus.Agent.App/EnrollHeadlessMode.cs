@@ -1,7 +1,6 @@
 using System.IO;
 using System.Net.Http;
 using System.Text;
-using System.Text.RegularExpressions;
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Core;
@@ -35,11 +34,23 @@ internal interface IHeadlessHost
     void WriteFingerprintFile(string content);
     Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct);
     IAgentLogger OpenLog();
+    /// <summary>Server profile: creates or hardens the data folder before anything is written. False when it is not trustworthy. The desktop has no such gate.</summary>
+    bool EnsureDataRootProtected() => true;
     /// <summary>Removes the staged pending credentials and the adopt marker. Server profile only; the desktop keeps them.</summary>
     Task DiscardPendingEnrollmentAsync(CancellationToken ct) => Task.CompletedTask;
+    /// <summary>Server profile: removes staged pending credentials that no committed enrollment uses (left by a killed run). True when something was removed.</summary>
+    Task<bool> DiscardStalePendingEnrollmentAsync(CancellationToken ct) => Task.FromResult(false);
+    /// <summary>Server profile: the cross-process enroll lock. Null when another run holds it after <paramref name="wait"/>. Throws UnauthorizedAccessException when the lock cannot be trusted. The desktop has no such lock.</summary>
+    IDisposable? TryAcquireEnrollLock(TimeSpan wait) => NoLock.Instance;
 #if !CERBERUS_SERVER_PROFILE
     void InstallDesktopService();
 #endif
+}
+
+internal sealed class NoLock : IDisposable
+{
+    internal static readonly NoLock Instance = new();
+    public void Dispose() { }
 }
 
 /// <summary>
@@ -94,6 +105,14 @@ internal static class EnrollHeadlessMode
         TextWriter stderr,
         CancellationToken ct)
     {
+        // The file logger writes under the data folder, so it opens only after the gate and the lock.
+        var refused = Preflight(rawProof, fromInstaller, host, out var runLock);
+        if (refused is { } early)
+        {
+            stderr.WriteLine($"Enrollment not completed: {early.Code} (exit {early.ExitCode}).{Hint(early.ExitCode)}");
+            return early.ExitCode;
+        }
+        using var lease = runLock;
         var log = host.OpenLog();
         try
         {
@@ -117,6 +136,26 @@ internal static class EnrollHeadlessMode
         }
     }
 
+    // Nothing here writes under the data folder: the gate runs first, then the lock (a file inside the gated folder).
+    // A null result hands the lock to the caller, who holds it to the end of the run, adopt included.
+    private static HeadlessEnrollmentResult? Preflight(string rawProof, bool fromInstaller, IHeadlessHost host, out IDisposable? lease)
+    {
+        lease = null;
+        if (fromInstaller && !host.IsLocalSystem)
+            return new(HeadlessEnrollmentExit.BadInput, "proof_from_installer_requires_local_system");
+        if (!host.IsAdministrator)
+            return new(HeadlessEnrollmentExit.BadInput, "administrator_required");
+        if (!HeadlessEnrollmentProof.TryNormalize(rawProof, out _))
+            return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
+        // A standard user must not have pre-created the data folder or entries in it.
+        if (!host.EnsureDataRootProtected())
+            return new(HeadlessEnrollmentExit.Refused, "data_root_untrusted");
+        // Before anything is staged or discarded: another run (or a rollback) may own the staged credentials.
+        try { lease = host.TryAcquireEnrollLock(TimeSpan.Zero); }
+        catch (UnauthorizedAccessException) { return new(HeadlessEnrollmentExit.Refused, "enroll_lock_untrusted"); }
+        return lease is null ? new(HeadlessEnrollmentExit.Unavailable, "enroll_in_progress") : null;
+    }
+
     private static string Hint(int exit) => exit switch
     {
         HeadlessEnrollmentExit.NewProofRequired => " Request a new proof.",
@@ -127,13 +166,6 @@ internal static class EnrollHeadlessMode
     private static async Task<HeadlessEnrollmentResult> RunCoreAsync(
         string rawProof, bool fromInstaller, bool installService, IHeadlessHost host, TextWriter stdout, IAgentLogger log, CancellationToken ct)
     {
-        if (fromInstaller && !host.IsLocalSystem)
-            return new(HeadlessEnrollmentExit.BadInput, "proof_from_installer_requires_local_system");
-        if (!host.IsAdministrator)
-            return new(HeadlessEnrollmentExit.BadInput, "administrator_required");
-        if (!HeadlessEnrollmentProof.TryNormalize(rawProof, out _))
-            return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
-
         var serviceState = host.GetServiceState();
         // Paused or stopping service: activation cannot start it, so keep the one-time proof unspent.
         if (serviceState == HeadlessServiceState.Other)
@@ -157,6 +189,12 @@ internal static class EnrollHeadlessMode
         if (loaded is not var (state, hasCredentials))
             return new(HeadlessEnrollmentExit.Refused, "state_unreadable");
 
+        await DiscardStalePendingAsync(host, log, ct).ConfigureAwait(false);
+
+        // Last check before the proof is sent: the service can be stopped from outside while the cleanup wait runs.
+        if (EnrollHeadlessState.ServiceNotReady(host, serviceState, state, hasCredentials) is { } notReady)
+            return new(HeadlessEnrollmentExit.Unavailable, notReady);
+
         var oldFingerprint = host.ReadFingerprintLine();
         using var http = host.CreateHttpClient(new Uri(backend));
         var result = await new HeadlessEnrollment(http, log: log)
@@ -177,10 +215,18 @@ internal static class EnrollHeadlessMode
         }
         catch (Exception ex)
         {
-            // Cancellation counts too: the proof is already spent.
-            log.Error($"Enrolled credentials were not activated ({ex.GetType().Name}).");
-            await DiscardPendingAsync(host, log).ConfigureAwait(false);
-            return new(HeadlessEnrollmentExit.NewProofRequired, "activation_failed");
+            // Cancellation counts as a failure too (the proof is spent), unless the service already committed the adoption.
+            if (ex is OperationCanceledException && await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
+            {
+                log.Warn("Enrollment adoption was committed before the run was cancelled.");
+                ct = CancellationToken.None;
+            }
+            else
+            {
+                log.Error($"Enrolled credentials were not activated ({ex.GetType().Name}).");
+                await DiscardPendingAsync(host, log).ConfigureAwait(false);
+                return new(HeadlessEnrollmentExit.NewProofRequired, "activation_failed");
+            }
         }
 
         var line = HeadlessEnrollment.FormatFingerprintLine(result.Fingerprint!);
@@ -221,6 +267,20 @@ internal static class EnrollHeadlessMode
         _ = log;
         await Task.CompletedTask.ConfigureAwait(false);
 #endif
+    }
+
+    // A killed earlier run can leave staged credentials behind. Best effort: the new run overwrites them anyway.
+    private static async Task DiscardStalePendingAsync(IHeadlessHost host, IAgentLogger log, CancellationToken ct)
+    {
+        try
+        {
+            if (await host.DiscardStalePendingEnrollmentAsync(ct).ConfigureAwait(false))
+                log.Warn("Stale pending enrollment credentials were removed.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log.Warn($"Stale pending enrollment could not be removed ({ex.GetType().Name}).");
+        }
     }
 
     private static async Task<string?> ActivateAsync(IHeadlessHost host, bool userScope, bool fromInstaller, bool installService, CancellationToken ct)
@@ -303,191 +363,5 @@ internal static class EnrollHeadlessMode
             read += n;
         }
         return read is 0 or > HeadlessEnrollmentProof.MaxSourceBytes ? null : Encoding.UTF8.GetString(buffer, 0, read);
-    }
-}
-
-/// <summary>Production host: SCM, control pipe, DPAPI stores and the protected provisioning directory.</summary>
-internal sealed class WindowsHeadlessHost : IHeadlessHost
-{
-    private static readonly Regex FingerprintLine = new(
-        "^Agent key fingerprint=sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-
-    private static string DataDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), AgentInstallIdentity.DataDirName);
-    private static string FingerprintPath => Path.Combine(DataDirectory, EnrollHeadlessMode.FingerprintFileName);
-
-    public bool IsAdministrator => Elevation.IsAdministrator();
-    public bool IsLocalSystem => AgentUpdateSecurity.IsLocalSystem();
-
-    public HeadlessServiceState GetServiceState() => AgentStatus.GetService() switch
-    {
-        { Installed: false } => HeadlessServiceState.NotInstalled,
-        { Text: "stopped" } => HeadlessServiceState.Stopped,
-        { Text: "starting" } => HeadlessServiceState.Starting,
-        { Text: "running" } => HeadlessServiceState.Running,
-        _ => HeadlessServiceState.Other,
-    };
-
-    public async Task<HeadlessServiceState> EnsureRunningAsync(bool startIfStopped, CancellationToken ct)
-    {
-        var state = GetServiceState();
-        if (state == HeadlessServiceState.Stopped && startIfStopped)
-        {
-            try { await Task.Run(ServiceInstaller.StartOrThrow, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or System.ServiceProcess.TimeoutException)
-            {
-                return GetServiceState();
-            }
-        }
-        for (var i = 0; i < 60 && (state = GetServiceState()) == HeadlessServiceState.Starting; i++)
-            await Task.Delay(500, ct).ConfigureAwait(false);
-        return state;
-    }
-
-    public string? ResolveBackendUrl()
-        => BootstrapResolver.ResolveConfiguredBackend(UiConfigStore.LoadMergedWithEnv())?.BackendUrl;
-
-    public HeadlessEnrollmentOptions BuildOptions(string backendUrl) => new(
-        backendUrl,
-        WindowsDeviceInfo.ComputeDeviceFingerprint(),
-        WindowsDeviceInfo.GetAgentVersion(),
-        WindowsDeviceInfo.GetBuildId(),
-        WindowsDeviceInfo.GetBuildChannel(),
-        Environment.MachineName);
-
-    public bool HasMachineCredentials() => File.Exists(DpapiSecretStore.GetDefaultSecretsPath(SecretStoreScope.Machine));
-
-    public Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct)
-        => new DurableAgentLifecycleStateStore().LoadAsync(ct);
-
-    public ISecretStore OpenDestination(bool userScope)
-        => userScope ? new DpapiSecretStore(SecretStoreScope.User) : new PendingCredentialStore();
-
-    // A redirect would replay the proof to another host.
-    public HttpClient CreateHttpClient(Uri backend)
-        => new(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
-
-    public async Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
-    {
-        if (commitDirectly)
-            return await CommitDirectlyAsync(ct).ConfigureAwait(false);
-
-        string? code = null;
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            // The marker binds the lifecycle generation, which can move while the service finishes starting.
-            using (await AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(ct).ConfigureAwait(false))
-            {
-                var lifecycle = await new DurableAgentLifecycleStateStore().LoadAsync(ct).ConfigureAwait(false);
-                AgentCredentialPublication.RequireNoUnresolvedPublication();
-                await AgentEnrollmentPromotion.WriteAsync(lifecycle.Generation, AgentEnrollmentPromotion.OpenPendingStore(), ct)
-                    .ConfigureAwait(false);
-            }
-            var response = await AgentLocalControlClient.SendAsync(new("enrollment-adopt"), ct).ConfigureAwait(false);
-            if (response.Success)
-                return null;
-            code = response.Code;
-            if (code is not ("enrollment_proof_required" or "enrollment_proof_stale" or "recovery_busy"))
-                break;
-            await Task.Delay(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
-        }
-        return code ?? "adopt_failed";
-    }
-
-    // LocalSystem with the service stopped: the same checks and commit the service runs for enrollment-adopt.
-    private static async Task<string?> CommitDirectlyAsync(CancellationToken ct)
-    {
-        using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
-        var durable = new DurableAgentLifecycleStateStore();
-        var current = await durable.LoadAsync(ct).ConfigureAwait(false);
-        if (!current.QuiescenceComplete || current.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode)
-            return "state_refused";
-        AgentCredentialPublication.RequireNoUnresolvedPublication();
-        var pending = AgentEnrollmentPromotion.OpenPendingStore();
-        await AgentEnrollmentPromotion.WriteAsync(current.Generation, pending, ct).ConfigureAwait(false);
-        var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
-        if (marker is null || !await AgentEnrollmentPromotion.MatchesAsync(marker, pending, ct).ConfigureAwait(false))
-            return "enrollment_identity_mismatch";
-        await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
-            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
-        return null;
-    }
-
-    public string? ReadFingerprintLine()
-    {
-        try
-        {
-            var first = ProtectedFingerprintFile.ReadFirstLine(FingerprintPath)?.Trim();
-            return first is not null && FingerprintLine.IsMatch(first) ? first : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
-
-    public void WriteFingerprintFile(string content)
-    {
-        Directory.CreateDirectory(DataDirectory);
-        var temporary = FingerprintPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try
-        {
-            ProtectedFingerprintFile.Write(temporary, content);
-            File.Move(temporary, FingerprintPath, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporary))
-                File.Delete(temporary);
-        }
-    }
-
-    public Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct)
-        => AgentUiContextStore.WriteBestEffortAsync(identity, tenantName, accountLabel: null, ct);
-
-    public IAgentLogger OpenLog()
-    {
-        try { return AgentFileLogger.CreateService(alsoConsole: false); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return NullAgentLogger.Instance;
-        }
-    }
-
-#if CERBERUS_SERVER_PROFILE
-    public async Task DiscardPendingEnrollmentAsync(CancellationToken ct)
-    {
-        using var fence = await AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await AgentEnrollmentPromotion.OpenPendingStore().ClearAsync(ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            AgentCredentialPublication.ValidateProtectedItem(AgentCredentialPublication.MarkerPath, allowMissing: true);
-            File.Delete(AgentCredentialPublication.MarkerPath);
-        }
-    }
-#else
-    public void InstallDesktopService() => AgentServiceProvisioning.InstallOrThrow();
-#endif
-
-    /// <summary>Stages credentials in the protected pending directory; the service (or the installer) commits them.</summary>
-    private sealed class PendingCredentialStore : ISecretStore
-    {
-        public async Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl,
-            string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
-        {
-            using var fence = await AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(ct).ConfigureAwait(false);
-            AgentCredentialPublication.RequireNoUnresolvedPublication();
-            await AgentEnrollmentPromotion.OpenPendingStore()
-                .SaveAsync(identity, refreshToken, privateKeyPem, backendUrl, tailscaleLoginServer, tailscaleAuthkey, ct)
-                .ConfigureAwait(false);
-        }
-
-        public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
-            => AgentEnrollmentPromotion.OpenPendingStore().LoadAsync(ct);
-
-        public Task ClearAsync(CancellationToken ct) => throw new InvalidOperationException("Pending enrollment cannot be cleared here.");
     }
 }

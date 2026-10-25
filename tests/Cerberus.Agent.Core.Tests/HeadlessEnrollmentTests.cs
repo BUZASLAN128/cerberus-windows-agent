@@ -14,6 +14,8 @@ public sealed class HeadlessEnrollmentTests
     [InlineData(401, "{\"detail\":{\"code\":\"generic\"}}", 4)]
     [InlineData(401, "{\"detail\":{\"code\":\"agent_reenroll_required\"}}", 4)]
     [InlineData(401, "", 4)]
+    [InlineData(403, "", 4)]
+    [InlineData(403, "{\"detail\":{\"code\":\"forbidden\"}}", 4)]
     [InlineData(409, "{\"detail\":{\"code\":\"agent_proof_consumed\"}}", 4)]
     [InlineData(400, "{\"detail\":{\"code\":\"agent_exists\"}}", 4)]
     [InlineData(400, "{\"detail\":{\"code\":\"key_invalid\"}}", 3)]

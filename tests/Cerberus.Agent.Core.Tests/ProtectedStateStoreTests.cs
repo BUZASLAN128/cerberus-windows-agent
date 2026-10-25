@@ -299,7 +299,7 @@ public sealed class ProtectedStateStoreTests : IDisposable
             Store = new AgentSignedStateStore(Path.Combine(dir, AgentSignedStateStore.FileName));
             var track = Store.Track(_ => Task.FromResult(Agent));
             Lifecycle = new AgentLifecycleController(lifecycleStore, new Secrets());
-            Handler = new AgentStateCommandHandler(Store, track, Lifecycle, () => Interlocked.Increment(ref _cancels));
+            Handler = new AgentStateCommandHandler(Store, track, Lifecycle, () => Interlocked.Increment(ref _cancels), null, () => { }, new AgentRevokeFinalResults());
             Replay = new CommandReplayStore(Path.Combine(dir, CommandReplayStore.FileName), time);
             _http = new HttpClient(Backend) { BaseAddress = new Uri("http://backend.test") };
             var api = new AgentApiClient(_http, new Secrets(), new Token(), new Signer());

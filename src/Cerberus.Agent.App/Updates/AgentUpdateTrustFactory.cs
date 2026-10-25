@@ -213,7 +213,6 @@ internal static class AgentUpdateTrustFactory
 
             values["updateManifestPublicKeyPem"] = key.GetValue("updateManifestPublicKeyPem")?.ToString();
             values["updateManifestPublicKeyB64"] = key.GetValue("updateManifestPublicKeyB64")?.ToString();
-            values["updateAllowedArtifactPrefixes"] = key.GetValue("updateAllowedArtifactPrefixes")?.ToString();
             values["updateManifestUrl"] = key.GetValue("updateManifestUrl")?.ToString();
             values["updateChannel"] = key.GetValue("updateChannel")?.ToString();
         }

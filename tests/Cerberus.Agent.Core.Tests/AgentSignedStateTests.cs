@@ -412,7 +412,7 @@ public sealed class AgentSignedStateTests : IDisposable
                 Quiesces++;
                 return failQuiesce ? throw new IOException("quiesce failed") : Task.CompletedTask;
             });
-            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++);
+            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++, null, () => { }, new AgentRevokeFinalResults());
         }
 
         public string AgentId { get; set; } = "agent-a";

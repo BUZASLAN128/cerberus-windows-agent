@@ -45,7 +45,6 @@
     <Property Id="CERBERUS_LANGUAGE" Value="auto" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_URL" Value="$(var.UpdateManifestUrl)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
-    <Property Id="CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES" Value="$(var.UpdateAllowedArtifactPrefixes)" Secure="yes" />
     <?if $(var.AgentBuildProfile) = server ?>
     <Property Id="CERBERUS_ENROLLMENT_PROOF" Secure="yes" Hidden="yes" />
     <?else ?>
@@ -118,6 +117,7 @@
       <ComponentGroupRef Id="ServerAgentComponents" />
       <ComponentRef Id="ServerLegalConsentRegistryComponent" />
       <ComponentRef Id="ServerDataCleanupComponent" />
+      <ComponentRef Id="ServerDataFolderComponent" />
     </Feature>
     <?else ?>
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
@@ -159,6 +159,15 @@
         Impersonate="no"
         HideTarget="yes"
         Return="check" />
+    <!-- Scheduled after the enroll action, so the rollback script holds it only when the enroll succeeded in this install. Always exits 0. -->
+    <CustomAction
+        Id="ServerEnrollRollback"
+        Directory="APPFOLDER"
+        ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --enroll-rollback'
+        Execute="rollback"
+        Impersonate="no"
+        HideTarget="yes"
+        Return="ignore" />
     <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
@@ -215,6 +224,7 @@
       <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
       <?if $(var.AgentBuildProfile) = server ?>
       <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
+      <Custom Action="ServerEnrollRollback" After="ServerEnrollFromInstaller" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <?else ?>
       <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
@@ -310,7 +320,6 @@
         <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="language" Type="string" Value="[CERBERUS_LANGUAGE]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateManifestUrl" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_URL]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateManifestPublicKeyB64" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64]" />
-        <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="updateAllowedArtifactPrefixes" Type="string" Value="[CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES]" />
       </Component>
     </ComponentGroup>
   </Fragment>
@@ -331,6 +340,12 @@
     <!-- Uninstall deletes the whole data directory, credentials included. A major upgrade keeps it: the component is shared with the new package.
          Wix4RemoveFoldersEx runs before CostInitialize, where Directory ids are unresolved, so it gets a plain path property built from a system folder. -->
     <SetProperty Id="SERVERDATAPATH" Value="[CommonAppDataFolder]CerberusServerAgent\" Before="Wix4RemoveFoldersEx_X64" Sequence="execute" />
+    <!-- Data folder DACL: SYSTEM and Administrators only, inheritance from ProgramData off. -->
+    <Component Id="ServerDataFolderComponent" Directory="SERVERDATADIR" Guid="{5E0B6A57-2C1D-4B8E-9A43-7D1F6C2E8B90}">
+      <CreateFolder>
+        <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+    </Component>
     <Component Id="ServerDataCleanupComponent" Directory="INSTALLFOLDER" Guid="{1A8485C8-A5AC-4C0D-94E2-D17390941535}">
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent" Name="dataCleanup" Type="integer" Value="1" KeyPath="yes" />
       <util:RemoveFolderEx On="uninstall" Property="SERVERDATAPATH" />
@@ -373,7 +388,6 @@
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="language" Type="string" Value="[CERBERUS_LANGUAGE]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateManifestUrl" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_URL]" />
         <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateManifestPublicKeyB64" Type="string" Value="[CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64]" />
-        <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent" Name="updateAllowedArtifactPrefixes" Type="string" Value="[CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES]" />
       </Component>
     </ComponentGroup>
   </Fragment>

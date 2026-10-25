@@ -44,13 +44,21 @@ public enum ReplayReserveOutcome
     Unavailable,
 }
 
+/// <summary>Result of a compare-and-set update: the record changed, was not in the expected state, or the write failed.</summary>
+public enum ReplayUpdateOutcome
+{
+    Updated,
+    Conflict,
+    Failed,
+}
+
 /// <summary>
 /// Replay store for signed command envelopes: <c>&lt;DataDir&gt;\Privileged\command-envelopes.v1.json</c>,
 /// written as temp file, flushed to disk, then atomically replaced. A corrupt or unreadable
-/// file is renamed <c>*.corrupt-&lt;unix&gt;</c> and a new store starts with <c>reset_at = now</c>.
-/// On a machine path (see <see cref="ProtectedMachineFile"/>) a file with an untrusted owner or DACL, a
-/// directory or a reparse point at the path is not parsed or renamed (a moved file would keep its DACL
-/// inside <c>Privileged</c>); the store resets the same way and its first write replaces the object.
+/// file is renamed <c>*.corrupt-&lt;unix&gt;</c> and a new store starts with <c>reset_at = now</c>; a missing file next to
+/// a trusted <c>*.corrupt-*</c> file resets the same way. On a machine path (see <see cref="ProtectedMachineFile"/>) a file
+/// with an untrusted owner or DACL, a directory or a reparse point at the path is not parsed or renamed (a moved file
+/// would keep its DACL inside <c>Privileged</c>); the store resets and its first write replaces the object.
 /// An untrusted directory chain makes the store unavailable.
 /// When the file cannot be written the store is unavailable and reservations fail closed.
 /// A write never produces a file the reader rejects: unsubmitted result bytes are bounded by
@@ -66,7 +74,9 @@ public sealed class CommandReplayStore
     /// Budget for result bytes held unsubmitted plus one maximal result for every in-flight (reserved or started,
     /// no result yet) record and for the envelope being reserved. Worst case on disk (base64, no JSON escaping):
     /// 1024 records at 1 KiB + 4 MiB submitted cap * 4/3 + this budget * 4/3 = 14.4 MiB, under <see cref="MaxFileBytes"/>.
-    /// <c>agent_state</c> reservations are exempt from this budget and from <see cref="MaxRecords"/>; their results are small.
+    /// <c>agent_state</c> reservations are exempt from this budget and from <see cref="MaxRecords"/> (small results, they
+    /// live in the 1.6 MiB headroom). Result bytes unsubmitted for another agent id are dropped on every write.
+    /// <c>TryPersist</c> refuses a write that would pass <see cref="MaxFileBytes"/>.
     /// </summary>
     public const long MaxUnsubmittedResultBytes = 6L * 1024 * 1024;
     internal const long MaxFileBytes = 16L * 1024 * 1024;
@@ -81,6 +91,7 @@ public sealed class CommandReplayStore
     private readonly object _gate = new();
     private readonly string _path;
     private readonly ProtectedMachineFile _file;
+    private readonly bool _enforceProvenance;
     private readonly TimeProvider _time;
     private readonly IAgentLogger _log;
     private List<CommandReplayRecord> _records = new();
@@ -94,6 +105,7 @@ public sealed class CommandReplayStore
     public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false)
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
+        _enforceProvenance = enforceFileProvenance;
         _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _time = time ?? TimeProvider.System;
         _log = log ?? NullAgentLogger.Instance;
@@ -103,26 +115,9 @@ public sealed class CommandReplayStore
     public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
 
     /// <summary>Envelopes issued before this Unix time are rejected (step 15). 0 for a store that never existed.</summary>
-    public long ResetAt
-    {
-        get
-        {
-            lock (_gate)
-            {
-                EnsureLoaded();
-                return _resetAt;
-            }
-        }
-    }
+    public long ResetAt { get { lock (_gate) { EnsureLoaded(); return _resetAt; } } }
 
-    public bool IsAvailable
-    {
-        get
-        {
-            lock (_gate)
-                return EnsureLoaded() && !_persistPending;
-        }
-    }
+    public bool IsAvailable { get { lock (_gate) return EnsureLoaded() && !_persistPending; } }
 
     /// <summary>Step 13: the record with this id among records of <paramref name="agentId"/>.</summary>
     public CommandReplayRecord? Find(string agentId, string id)
@@ -170,7 +165,7 @@ public sealed class CommandReplayStore
                 return ReplayReserveOutcome.Unavailable;
 
             var now = NowUnix();
-            var next = Purge(_records, now);
+            var next = DropForeignPending(Purge(_records, now), record.AgentId);
             // A signed agent_state (quarantine, revoke) always reserves: its result is small and fixed-schema.
             var exempt = record.Type == EnvelopeTypes.AgentState;
             if (!exempt && next.Count >= MaxRecords)
@@ -183,7 +178,7 @@ public sealed class CommandReplayStore
                     return ReplayReserveOutcome.Full;
             }
 
-            var unsubmitted = exempt ? 0 : next.Where(r => !r.ResultSubmitted).Sum(r => ExposureBytes(r, now));
+            var unsubmitted = exempt ? 0 : next.Where(r => !r.ResultSubmitted && string.Equals(r.AgentId, record.AgentId, StringComparison.Ordinal)).Sum(r => ExposureBytes(r, now));
             if (!exempt && unsubmitted + EnvelopeExecutionQueue.MaxResultBodyBytes > MaxUnsubmittedResultBytes)
                 return ReplayReserveOutcome.Full;
 
@@ -209,7 +204,39 @@ public sealed class CommandReplayStore
 
             var next = _records.ToList();
             next[index] = updated;
-            return Commit(CapHeldResults(Purge(next, NowUnix())));
+            return Commit(CapHeldResults(DropForeignPending(Purge(next, NowUnix()), updated.AgentId)));
+        }
+    }
+
+    /// <summary>
+    /// Compare-and-set: replaces the record only while it is still in <paramref name="expectedState"/> and has not
+    /// been submitted. In <c>done</c> the stored result must be the one in <paramref name="updated"/>; in any other
+    /// state the stored record must hold no result. A write failure keeps the previous content.
+    /// </summary>
+    public ReplayUpdateOutcome TryUpdate(CommandReplayRecord updated, string expectedState)
+    {
+        ArgumentNullException.ThrowIfNull(updated);
+        lock (_gate)
+        {
+            if (!EnsureLoaded())
+                return ReplayUpdateOutcome.Failed;
+            var index = _records.FindIndex(r => Same(r, updated.AgentId, updated.Id));
+            if (index < 0)
+                return ReplayUpdateOutcome.Conflict;
+
+            var current = _records[index];
+            var resultMatches = expectedState == EnvelopeRecordStates.Done
+                ? current.ResultB64 is not null && string.Equals(current.ResultSha256, updated.ResultSha256, StringComparison.Ordinal)
+                : current.ResultB64 is null;
+            if (current.State != expectedState || current.ResultSubmitted || !resultMatches
+                || !string.Equals(current.EnvelopeSha256, updated.EnvelopeSha256, StringComparison.Ordinal))
+                return ReplayUpdateOutcome.Conflict;
+
+            var next = _records.ToList();
+            next[index] = updated;
+            return Commit(CapHeldResults(DropForeignPending(Purge(next, NowUnix()), updated.AgentId)))
+                ? ReplayUpdateOutcome.Updated
+                : ReplayUpdateOutcome.Failed;
         }
     }
 
@@ -246,9 +273,11 @@ public sealed class CommandReplayStore
         _untrustedDirectoryLogged = false;
         if (!_file.Exists())
         {
-            _records = new List<CommandReplayRecord>();
-            _resetAt = 0;
-            _loaded = true;
+            // Only a set-aside file is left (reset and put-back both failed earlier): the store did exist, so reset again.
+            if (HasTrustedCorruptSibling())
+                return StartReset(NowUnix());
+
+            (_records, _resetAt, _loaded) = (new List<CommandReplayRecord>(), 0, true);
             return true;
         }
 
@@ -260,18 +289,12 @@ public sealed class CommandReplayStore
         {
             var resetNow = NowUnix();
             _log.Warn($"Command replay store failed provenance ({ex.GetType().Name}); reset at {resetNow}.");
-            _records = new List<CommandReplayRecord>();
-            _resetAt = resetNow;
-            _loaded = true;
-            _persistPending = !TryPersist(_records, _resetAt);
-            return true;
+            return StartReset(resetNow);
         }
 
         if (TryRead(out var records, out var resetAt))
         {
-            _records = Purge(records, NowUnix());
-            _resetAt = resetAt;
-            _loaded = true;
+            (_records, _resetAt, _loaded) = (Purge(records, NowUnix()), resetAt, true);
             return true;
         }
 
@@ -287,12 +310,64 @@ public sealed class CommandReplayStore
             return false;
         }
 
+        var fresh = new List<CommandReplayRecord>();
+        if (!TryPersist(fresh, now))
+        {
+            // Without a file the next start would read reset_at = 0; put the corrupt file back so the reset repeats.
+            try
+            {
+                File.Move(corruptPath, _path, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.Error($"Command replay store reset not written and the corrupt file could not be put back: {ex.GetType().Name}.");
+                // No file is left, so a later load must not see "store never existed": keep the reset in memory
+                // (reset_at = now, reservations refused) until a write succeeds.
+                return StartReset(now);
+            }
+
+            return false;
+        }
+
         _log.Warn($"Command replay store was corrupt; moved to {Path.GetFileName(corruptPath)} and reset at {now}.");
-        _records = new List<CommandReplayRecord>();
-        _resetAt = now;
-        _loaded = true;
-        _persistPending = !TryPersist(_records, _resetAt);
+        (_records, _resetAt, _loaded) = (fresh, now, true);
         return true;
+    }
+
+    /// <summary>Empty store, reset_at = now; a failed write stays pending (reservations refused until a write succeeds).</summary>
+    private bool StartReset(long now)
+    {
+        (_records, _resetAt, _loaded) = (new List<CommandReplayRecord>(), now, true);
+        _persistPending = !TryPersist(_records, now);
+        return true;
+    }
+
+    /// <summary>A <c>*.corrupt-*</c> sibling with the store's own file trust; an unlistable directory counts as present (reset).</summary>
+    private bool HasTrustedCorruptSibling()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(_path))!;
+            return Directory.Exists(directory)
+                   && Directory.EnumerateFiles(directory, $"{Path.GetFileName(_path)}.corrupt-*").Any(IsTrustedFile);
+        }
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
+        {
+            return true;
+        }
+    }
+
+    private bool IsTrustedFile(string path)
+    {
+        try
+        {
+            new ProtectedMachineFile(path, _enforceProvenance).ValidateFile();
+            return true;
+        }
+        catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
+        {
+            return false;
+        }
     }
 
     private bool TryRead(out List<CommandReplayRecord> records, out long resetAt)
@@ -343,15 +418,8 @@ public sealed class CommandReplayStore
         catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
         {
             _log.Error($"Command replay store write failed: {ex.GetType().Name}.");
-            try
-            {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
-            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
-            {
-                // The temp name is unique; a leftover file is never read.
-            }
+            try { File.Delete(tempPath); }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { } // unique temp name, never read
 
             return false;
         }
@@ -364,6 +432,14 @@ public sealed class CommandReplayStore
     /// <summary>Only records past their window and without a pending result may make room.</summary>
     private static bool IsEvictable(CommandReplayRecord record, long now)
         => now > record.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds && !record.HasPendingResult;
+
+    /// <summary>Result bytes never submitted for an agent id other than the current one can no longer be delivered.</summary>
+    private static List<CommandReplayRecord> DropForeignPending(List<CommandReplayRecord> records, string agentId)
+        => records.Any(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal))
+            ? records.Select(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal)
+                ? r with { ResultB64 = null }
+                : r).ToList()
+            : records;
 
     /// <summary>Above 4 MiB of held result bytes, the oldest submitted results drop their bytes.</summary>
     private static List<CommandReplayRecord> CapHeldResults(List<CommandReplayRecord> records)
@@ -395,6 +471,7 @@ public sealed class CommandReplayStore
     /// </summary>
     private static long ExposureBytes(CommandReplayRecord record, long now)
         => record.ResultB64 is not null ? HeldBytes(record)
+            : record.Type == EnvelopeTypes.AgentState ? 0
             : record.State == EnvelopeRecordStates.Started
               || (record.State == EnvelopeRecordStates.Reserved && now <= record.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds)
                 ? EnvelopeExecutionQueue.MaxResultBodyBytes

@@ -51,7 +51,10 @@ public sealed class AgentCommandRegistryTests
             new AgentSignedStateStore(statePath),
             _ => Task.FromResult("agent-1"),
             new AgentLifecycleController(null!),
-            () => { });
+            () => { },
+            null,
+            () => { },
+            new AgentRevokeFinalResults());
 
         var handlers = AgentCommandRegistry.CreateServer(Metadata(), agentState);
 

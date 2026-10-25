@@ -66,4 +66,6 @@
            Text="The server profile requires AgentCommandTrustAnchorsB64: padded base64 (one line, at least 500 characters) of one base64 RSA SPKI per line; pass -p:AgentCommandTrustAnchorsB64=&lt;value&gt;." />
   </Target>
 
+  <Import Project="AgentCommandAnchors.targets" />
+
 </Project>

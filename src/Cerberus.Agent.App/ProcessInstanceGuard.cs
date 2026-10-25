@@ -1,16 +1,18 @@
 using System.IO.Pipes;
 using System.Text;
+using Cerberus.Agent.Core;
+using Cerberus.Agent.Observability;
 
 namespace Cerberus.Agent.App;
 
 public sealed class ProcessInstanceGuard : IDisposable
 {
-    private readonly Mutex _mutex;
+    private readonly Mutex? _mutex;
     private readonly string _pipeName;
     private readonly CancellationTokenSource _serverCts = new();
     private bool _disposed;
 
-    private ProcessInstanceGuard(Mutex mutex, string pipeName)
+    private ProcessInstanceGuard(Mutex? mutex, string pipeName)
     {
         _mutex = mutex;
         _pipeName = pipeName;
@@ -27,7 +29,18 @@ public sealed class ProcessInstanceGuard : IDisposable
 
         try
         {
-            mutex = new Mutex(initiallyOwned: false, name: mutexName);
+            var state = AgentNamedMutex.Open(mutexName, out mutex);
+            if (state == AgentNamedMutexState.ExistingUntrusted)
+            {
+                // A mutex owned by someone else is not an agent instance; run without the lock.
+                LogUntrustedMutex(mutexName);
+                guard = new ProcessInstanceGuard(null, pipeName);
+                return true;
+            }
+
+            if (mutex is null)
+                return false;
+
             try
             {
                 if (mutex.WaitOne(0))
@@ -104,8 +117,24 @@ public sealed class ProcessInstanceGuard : IDisposable
         _disposed = true;
         try { _serverCts.Cancel(); } catch { }
         _serverCts.Dispose();
-        try { _mutex.ReleaseMutex(); } catch { }
-        _mutex.Dispose();
+        if (_mutex is not null)
+        {
+            try { _mutex.ReleaseMutex(); } catch { }
+            _mutex.Dispose();
+        }
+    }
+
+    internal static void LogUntrustedMutex(string mutexName)
+    {
+        try
+        {
+            using var log = AgentFileLogger.CreateUser(alsoConsole: false);
+            log.Warn($"Single-instance mutex {mutexName} is owned by an untrusted account; ignoring it.");
+        }
+        catch
+        {
+            // Logging is best effort.
+        }
     }
 
     private static void TrySignalExisting(string pipeName, string message)

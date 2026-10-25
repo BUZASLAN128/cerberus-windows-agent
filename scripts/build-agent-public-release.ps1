@@ -191,20 +191,8 @@ if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
 
 $signerKeyIdentity = if ($Channel -eq "dev" -and $AllowUnsignedDevBuild) { "unsigned-dev" } else { "" }
 $allowUnsignedBuildMetadata = ($Channel -eq "dev" -and $AllowUnsignedDevBuild)
-$certBase64ForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
-$certPasswordForMetadata = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
-if (-not [string]::IsNullOrWhiteSpace($certBase64ForMetadata)) {
-  try {
-    $certificateForMetadata = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
-      [Convert]::FromBase64String($certBase64ForMetadata),
-      $certPasswordForMetadata,
-      [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
-    $signerKeyIdentity = "sha256:" + [Convert]::ToHexString(
-      [System.Security.Cryptography.SHA256]::HashData($certificateForMetadata.PublicKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant()
-  } catch {
-    throw "Windows signing certificate identity could not be read."
-  }
-}
+$pfxSignerIdentity = Get-PfxSignerKeyIdentity ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")) ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD"))
+if ($pfxSignerIdentity) { $signerKeyIdentity = $pfxSignerIdentity }
 $signerPinsForBuild = $signerKeyIdentity
 if ($tokenMode) {
   # The manifest carries the pin of the certificate that signs this release; the build embeds every accepted pin.
@@ -222,8 +210,17 @@ Assert-ManifestSequenceInRange $ManifestSequence
 
 if (-not $SkipTests) {
   Write-Step "Running dotnet tests"
-  dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
-  if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
+  if ($BuildProfile -eq "server") {
+    # Server-only code is compiled in only with the profile; the tests need the test signing key's anchor, not the release anchors.
+    $testAnchors = (Get-Content -LiteralPath (Join-Path $repoRoot "tests/fixtures/agent-command-test-anchors.b64") -Raw).Trim()
+    dotnet test (Join-Path $repoRoot "tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj") -c $Configuration `
+      -p:AgentBuildProfile=server "-p:AgentCommandTrustAnchorsB64=$testAnchors" `
+      -p:IntermediateOutputPath=obj/release-server-tests/ -p:BaseOutputPath=bin/release-server-tests/
+    if ($LASTEXITCODE -ne 0) { throw "Release tests (server profile) failed." }
+  } else {
+    dotnet test (Join-Path $repoRoot "Cerberus.WindowsAgent.slnx") -c $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "Release tests failed." }
+  }
 }
 
 function Publish-AgentProject([string]$Project) {
@@ -358,7 +355,6 @@ dotnet build $installerProject `
   -p:InstallerAssetBase=$installerBuildBase `
   -p:UpdateManifestUrl=$UpdateManifestUrl `
   -p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64 `
-  -p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes `
   @($releaseProfile.MsBuildArgs) @($releaseProfile.MsiArgs) `
   -p:OutputPath="$publishDir\"
 if ($LASTEXITCODE -ne 0) { throw "MSI package build failed." }

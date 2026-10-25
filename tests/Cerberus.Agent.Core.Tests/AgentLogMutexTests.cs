@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -96,15 +95,17 @@ public sealed class AgentLogMutexTests : IDisposable
         using var held = MutexAcl.Create(true, AgentLogMutex.NameFor(path), out var createdNew, squat);
         Assert.True(createdNew);
 
-        var sw = Stopwatch.StartNew();
-        using (var logger = new AgentFileLogger(path, alsoConsole: false))
+        // No lock is handed out, so there is nothing for a write to wait on (a held lock waits up to 2 s per write).
+        Assert.Null(AgentLogMutex.Open(path));
+
+        var writes = Task.Run(() =>
         {
+            using var logger = new AgentFileLogger(path, alsoConsole: false);
             for (var i = 0; i < 5; i++)
                 logger.Info($"line {i}");
-        }
-
-        // Five locked writes against a held mutex would take 10 s; the bound is loose on purpose.
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1.5), $"writes took {sw.Elapsed}");
+        });
+        Assert.True(writes.Wait(TimeSpan.FromSeconds(30)), "log writes did not finish");
+        writes.GetAwaiter().GetResult();
         Assert.Equal(5, File.ReadAllLines(path).Length);
     }
 

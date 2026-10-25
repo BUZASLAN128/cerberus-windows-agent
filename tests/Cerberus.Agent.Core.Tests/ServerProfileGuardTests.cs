@@ -27,7 +27,6 @@ public sealed class ServerProfileGuardTests
     // Growth is not allowed; shrinking is.
     private static readonly Dictionary<string, int> LineCaps = new(StringComparer.Ordinal)
     {
-        ["src/Cerberus.Agent.Core/HeartbeatLoop.cs"] = 653,
         ["src/Cerberus.Agent.Core/AgentApiClient.cs"] = 676,
         ["src/Cerberus.Agent.App/ServiceMode.cs"] = 538,
         ["src/Cerberus.Agent.Core/AgentLifecycleState.cs"] = 645,
@@ -44,14 +43,11 @@ public sealed class ServerProfileGuardTests
         "src/Cerberus.Agent.Core/AgentUpdateState.cs",
         "src/Cerberus.Agent.Integrations.Ad/LocalUserCommandHandlers.Support.cs",
         "src/Cerberus.Agent.Integrations.Ad/LocalUserCommandHandlers.cs",
-        "tests/Cerberus.Agent.Core.Tests/AgentApiClientTelemetryTests.cs",
         "tests/Cerberus.Agent.Core.Tests/AgentLifecycleControlTests.cs",
-        "tests/Cerberus.Agent.Core.Tests/AgentRegistrarTests.cs",
         "tests/Cerberus.Agent.Core.Tests/AgentServiceCredentialBridgeTests.cs",
         "tests/Cerberus.Agent.Core.Tests/AgentUpdateDurabilityTests.cs",
         "tests/Cerberus.Agent.Core.Tests/AgentUpdateStagerTests.cs",
         "tests/Cerberus.Agent.Core.Tests/AgentUxStaticTests.cs",
-        "tests/Cerberus.Agent.Core.Tests/HeartbeatLoopTests.cs",
         "tests/Cerberus.Agent.Core.Tests/LocalUserCommandHandlersTests.cs",
     };
 

@@ -33,6 +33,9 @@ internal static class Program
         if (parsed.ShowFingerprint)
             return EnrollHeadlessMode.ShowFingerprint();
 
+        if (parsed.EnrollRollback)
+            return EnrollRollbackMode.Run();
+
         if (parsed.EnrollHeadless)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
@@ -218,6 +221,7 @@ internal static class Program
            !args.StopService &&
            !args.Service &&
            !args.EnrollHeadless &&
+           !args.EnrollRollback &&
            !args.ShowFingerprint &&
            string.IsNullOrWhiteSpace(args.ApplyUpdatePlan);
 

@@ -16,6 +16,11 @@ internal static class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
     {
+#if CERBERUS_SERVER_PROFILE
+        // Before anything writes under the data folder, the logger included. The faulted worker ends the process
+        // (WindowsServiceHost), so SCM records the failure and applies its recovery.
+        ServerServiceStartup.EnsureDataRoot(() => ServerDataRoot.EnsureProtected());
+#endif
         // Gate direct service/console startup before the logger can create machine directories.
         AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
@@ -31,6 +36,8 @@ internal static class ServiceMode
         Task? worker = null;
         long? workerGeneration = null;
         var finalRevokes = new AgentRevokeFinalResults();
+        var restartBackoff = new WorkerRestartBackoff();
+        var workerStartedUtc = DateTimeOffset.MinValue;
         var nextCleanupUtc = DateTimeOffset.MinValue;
         var cleanupDelaySeconds = 10;
         async Task QuiesceAsync(CancellationToken _)
@@ -85,10 +92,21 @@ internal static class ServiceMode
                     {
                         if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
                             await worker.ConfigureAwait(false);
-                        automatic?.Dispose();
-                        automatic = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                        workerGeneration = snapshot.Generation;
-                        worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync, finalRevokes);
+                        // Server: a worker that ends by itself after a short run (revoke not recorded) restarts with a growing delay.
+                        if (worker is not null && AgentBuildProfile.IsServer)
+                        {
+                            restartBackoff.OnWorkerEnded(workerStartedUtc, DateTimeOffset.UtcNow,
+                                planned: automatic?.IsCancellationRequested == true || workerGeneration != snapshot.Generation);
+                            worker = null;
+                        }
+                        if (restartBackoff.CanStart(DateTimeOffset.UtcNow))
+                        {
+                            automatic?.Dispose();
+                            automatic = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                            workerGeneration = snapshot.Generation;
+                            workerStartedUtc = DateTimeOffset.UtcNow;
+                            worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync, finalRevokes);
+                        }
                     }
                 }
                 else
@@ -311,10 +329,18 @@ internal static class ServiceMode
         await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log);
         queue = envelopeQueue;
 #if CERBERUS_SERVER_PROFILE
-        await agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, ct).ConfigureAwait(false);
-        // Revoke not recorded: the supervisor restarts the worker, which retries it before any request.
-        if (serviceCts.IsCancellationRequested)
+        var revokeAgentId = loadedSecrets.Identity.AgentId;
+        var startup = new ServerServiceStartup(
+            () => signedState.Load(revokeAgentId).PendingRevoke is not null,
+            envelopeQueue.DrainOutboxOnceAsync,
+            c => agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, c),
+            () => envelopeQueue.Store.IsAvailable, () => serviceCts.IsCancellationRequested, serviceCts.Cancel, log);
+        // Revoke not recorded: the supervisor restarts the worker (with a growing delay), which retries it before any request.
+        if (!await startup.RecoverPendingRevokeAsync(serviceCts.Token, ct).ConfigureAwait(false))
+        {
+            log.Info("Service mode stopped.");
             return;
+        }
 #endif
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
