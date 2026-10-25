@@ -31,7 +31,8 @@ internal static class ServerBackendMigration
     /// <summary>Secret-store and lifecycle-fence failures that leave the registration unchanged.</summary>
     internal static bool IsStoreFailure(Exception ex)
         => ex is System.IO.IOException or UnauthorizedAccessException or InvalidOperationException
-            or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException;
+            or System.Security.Cryptography.CryptographicException or System.Text.Json.JsonException
+            or System.IO.InvalidDataException;
 
     /// <summary>
     /// Re-reads the registration and moves it to the compiled address only while the durable

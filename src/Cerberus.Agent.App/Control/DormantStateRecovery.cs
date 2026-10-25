@@ -71,9 +71,10 @@ internal static class DormantStateRecovery
 
     /// <summary>
     /// Moves the registered address to the compiled one when the migration rules allow it, under
-    /// the durable generation fence. The lifecycle state is kept, except that a
-    /// backend_environment_mismatch block whose registration now points at the compiled address
-    /// returns to Active. Anything else leaves the state unchanged.
+    /// the durable generation fence. The lifecycle state is kept, except that a BlockedConfig state
+    /// caused by backend_url_invalid or backend_environment_mismatch returns to Active when the
+    /// local configuration check no longer finds a cause (no network call). Anything else leaves
+    /// the state unchanged.
     /// </summary>
     internal static async Task<AgentLifecycleSnapshot> TryMigrateBackendAsync(
         IAgentLifecycleStateStore lifecycle,
@@ -87,12 +88,12 @@ internal static class DormantStateRecovery
         if (!CanMigrate(snapshot, awaitingAdoption))
             return snapshot;
         compiledBackendUrl ??= AgentBuildConfig.BackendUrl;
+        var environmentBackendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
 
-        ServerBackendMigration.Result result;
         try
         {
-            result = await ServerBackendMigration.MigrateIfCurrentAsync(lifecycle, snapshot.Generation, secrets,
-                compiledBackendUrl, Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL"), log, ct).ConfigureAwait(false);
+            await ServerBackendMigration.MigrateIfCurrentAsync(lifecycle, snapshot.Generation, secrets,
+                compiledBackendUrl, environmentBackendUrl, log, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
         {
@@ -100,12 +101,28 @@ internal static class DormantStateRecovery
             return snapshot;
         }
 
-        if (!IsMismatchBlock(snapshot) || result is not (ServerBackendMigration.Result.Migrated or ServerBackendMigration.Result.AtTarget))
+        if (!AgentBuildProfile.IsServer || !IsLocalConfigBlock(snapshot))
             return snapshot;
+        string? storedBackendUrl = null;
+        try
+        {
+            if (!await lifecycle.ExecuteIfCurrentAsync(snapshot.Generation, async cancel =>
+                    storedBackendUrl = (await secrets.LoadAsync(cancel).ConfigureAwait(false)).BackendUrl, ct).ConfigureAwait(false))
+                return await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
+        {
+            log.Warn($"Registered backend address could not be read ({ex.GetType().Name}).");
+            return snapshot;
+        }
+        if (storedBackendUrl is null || BackendConfigCheck.BlockReason(environmentBackendUrl, storedBackendUrl, compiledBackendUrl) is not null)
+            return snapshot;
+
         var current = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
-        if (current.Generation != snapshot.Generation || !IsMismatchBlock(current) || !current.QuiescenceComplete)
+        if (current.Generation != snapshot.Generation || !IsLocalConfigBlock(current) || !current.QuiescenceComplete)
             return current;
-        return await lifecycle.TrySaveAsync(current with
+        var clearedReason = current.ReasonCode;
+        var resumed = await lifecycle.TrySaveAsync(current with
         {
             State = AgentLifecycleState.Active,
             ReasonCode = null,
@@ -113,7 +130,11 @@ internal static class DormantStateRecovery
             GenericAuthFailureCount = 0,
             TransientFailureCount = 0,
             UpdatedAtUtc = DateTimeOffset.UtcNow,
-        }, current.Revision, ct).ConfigureAwait(false) ?? await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+        }, current.Revision, ct).ConfigureAwait(false);
+        if (resumed is null)
+            return await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+        log.Info($"Backend configuration block '{clearedReason}' cleared; resuming.");
+        return resumed;
     }
 
     /// <summary>Production probe: one heartbeat with the stored machine credentials.</summary>
@@ -189,8 +210,9 @@ internal static class DormantStateRecovery
         return await lifecycle.LoadAsync(ct).ConfigureAwait(false);
     }
 
-    private static bool IsMismatchBlock(AgentLifecycleSnapshot snapshot)
-        => snapshot.State == AgentLifecycleState.BlockedConfig && snapshot.ReasonCode == "backend_environment_mismatch";
+    private static bool IsLocalConfigBlock(AgentLifecycleSnapshot snapshot)
+        => snapshot.State == AgentLifecycleState.BlockedConfig &&
+            snapshot.ReasonCode is BackendConfigCheck.UrlInvalid or BackendConfigCheck.EnvironmentMismatch;
 
     private static async Task<AgentLifecycleSnapshot> SaveScheduleAsync(
         IAgentLifecycleStateStore lifecycle,

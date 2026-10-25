@@ -42,7 +42,7 @@ public sealed class DormantRecoverySupervisorTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Supervisor_MismatchBlockThatCannotMigrate_IsNeverProbedAndReadsCredentialsOncePerInterval(bool credentialsUnreadable)
+    public async Task Supervisor_MismatchBlockThatCannotMigrate_IsNeverProbedAndReadsCredentialsOnlyInMigrateWindows(bool credentialsUnreadable)
     {
         // An environment override makes the compiled address ineligible in both builds (ShouldMigrate is false).
         var saved = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
@@ -66,7 +66,14 @@ public sealed class DormantRecoverySupervisorTests
 
             var stored = await store.LoadAsync(default);
             Assert.Equal(0, probes);
+            // Three migrate windows in 25 minutes. On the server profile a readable store is read twice per
+            // window (the migration check and the local configuration re-check); an unreadable one fails on
+            // the first read.
+#if CERBERUS_SERVER_PROFILE
+            Assert.Equal(credentialsUnreadable ? 3 : 6, secrets.Loads);
+#else
             Assert.Equal(3, secrets.Loads);
+#endif
             Assert.Equal(0, secrets.Saves);
             Assert.Equal(AgentLifecycleState.BlockedConfig, stored.State);
             Assert.Equal("backend_environment_mismatch", stored.ReasonCode);
@@ -126,7 +133,23 @@ public sealed class DormantRecoverySupervisorTests
         Assert.Equal("retry_deferred", response.Code);
     }
 
-#if !CERBERUS_SERVER_PROFILE
+#if CERBERUS_SERVER_PROFILE
+    [Fact]
+    public async Task ManualRetry_ServerProfile_DormantStateWithFutureRetryTime_IsNotDeferred()
+    {
+        var store = new InMemoryAgentLifecycleStateStore(
+            new AgentLifecycleSnapshot(AgentLifecycleState.AuthSuspect, NextAttemptUtc: DateTimeOffset.UtcNow.AddHours(1)));
+        // The credential load fails before any request is built, so the retry never reaches the network.
+        var secrets = new MemorySecretStore(OldBackend) { LoadError = new FileNotFoundException("credentials") };
+        var service = new AgentLocalControlService(store, _ => Task.CompletedTask, secrets);
+
+        var response = await service.HandleAsync(new AgentLocalControlRequest("retry"), default);
+
+        Assert.NotEqual("retry_deferred", response.Code);
+        Assert.False(response.Success);
+        Assert.True(secrets.Loads > 0);
+    }
+#else
     [Fact]
     public async Task ManualRetry_DefaultBuild_DormantStateWithFutureRetryTime_IsDeferred()
     {

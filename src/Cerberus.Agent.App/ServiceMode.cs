@@ -240,37 +240,23 @@ internal static class ServiceMode
         }
         var backendUrl = environmentBackendUrl ?? storedBackendUrl;
 
-        if (!Uri.TryCreate(backendUrl.Trim().TrimEnd('/'), UriKind.Absolute, out var baseAddress) ||
-            (baseAddress.Scheme != Uri.UriSchemeHttp && baseAddress.Scheme != Uri.UriSchemeHttps))
+        var blockReason = BackendConfigCheck.BlockReason(environmentBackendUrl, storedBackendUrl, AgentBuildConfig.BackendUrl);
+        if (blockReason is not null)
         {
             await lifecycleState.TransitionAsync(
                 AgentLifecycleState.BlockedConfig,
-                reasonCode: "backend_url_invalid",
+                reasonCode: blockReason,
                 requestId: null,
                 nextAttemptUtc: null,
                 genericAuthFailureCount: null,
                 ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; configured backend URL is invalid.");
+            log.Warn(blockReason == BackendConfigCheck.UrlInvalid
+                ? "Service starting dormant; configured backend URL is invalid."
+                : "Service starting dormant; deployment differs from registered credentials. Use the matching package or explicitly re-enroll. Existing registration was preserved.");
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-
-        // Never send registered credentials to an environment selected by a different package or override.
-        if (!AgentBuildConfig.SameEndpoint(backendUrl, storedBackendUrl) ||
-            (!string.IsNullOrWhiteSpace(AgentBuildConfig.BackendUrl) &&
-             !AgentBuildConfig.SameEndpoint(storedBackendUrl, AgentBuildConfig.BackendUrl)))
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.BlockedConfig,
-                reasonCode: "backend_environment_mismatch",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; deployment differs from registered credentials. Use the matching package or explicitly re-enroll. Existing registration was preserved.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
+        var baseAddress = new Uri(backendUrl.Trim().TrimEnd('/'));
 
         using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
         using var updateHttp = new HttpClient

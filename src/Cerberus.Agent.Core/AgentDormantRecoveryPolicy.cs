@@ -31,7 +31,7 @@ public sealed class AgentDormantRecoveryPolicy
     /// Retired and cleanup-pending states, and any terminal reason code, are never recoverable.
     /// Missing or invalid credentials and required re-enrollment need a real re-enrollment, so they are not probed.
     /// Locally detected blocks (backend_environment_mismatch, backend_url_invalid) are not answered by a heartbeat:
-    /// the address migration or a restart with a corrected setting ends them.
+    /// the server-profile supervisor re-checks the local configuration and returns the state to Active once the cause is gone.
     /// </summary>
     public static bool IsRecoverable(AgentLifecycleSnapshot snapshot)
     {

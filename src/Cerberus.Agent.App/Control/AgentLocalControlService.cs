@@ -11,10 +11,11 @@ internal sealed class AgentLocalControlService
 {
     private readonly IAgentLifecycleStateStore _lifecycle;
     private readonly Func<CancellationToken, Task> _quiesce;
+    private readonly ISecretStore _retrySecrets;
     private readonly SemaphoreSlim _manual = new(1, 1);
 
-    internal AgentLocalControlService(IAgentLifecycleStateStore lifecycle, Func<CancellationToken, Task> quiesce)
-        => (_lifecycle, _quiesce) = (lifecycle, quiesce);
+    internal AgentLocalControlService(IAgentLifecycleStateStore lifecycle, Func<CancellationToken, Task> quiesce, ISecretStore? retrySecrets = null)
+        => (_lifecycle, _quiesce, _retrySecrets) = (lifecycle, quiesce, retrySecrets ?? new DpapiSecretStore(SecretStoreScope.Machine));
 
     /// <summary>Held by retry, enrollment-adopt and unregister; the server-profile recovery probe takes it too.</summary>
     internal SemaphoreSlim ManualGate => _manual;
@@ -59,7 +60,7 @@ internal sealed class AgentLocalControlService
 
     private async Task<AgentLocalControlResponse> RetryAsync(CancellationToken ct)
     {
-        var store = new DpapiSecretStore(SecretStoreScope.Machine);
+        var store = _retrySecrets;
         var controller = new AgentLifecycleController(_lifecycle, store, quiesce: _quiesce);
         var snapshot = await controller.CompletePendingQuiescenceAsync(ct).ConfigureAwait(false);
         if (!snapshot.QuiescenceComplete)
