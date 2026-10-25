@@ -298,32 +298,36 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
+# Sign every first-party PE before anything hashes the payload (service assembly hash, MSI, zip, SBOM, manifest).
+$firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
+if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
+  Write-Step "Signing $($firstPartyPeFiles.Count) first-party files"
+}
 if ($tokenMode) {
-  Write-Step "Signing runtime executables with the token certificate"
   $signtool = Find-SignTool
-  foreach ($runtimeExe in $runtimeExecutables) {
+  foreach ($peFile in $firstPartyPeFiles) {
     Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-      -FilePath $runtimeExe -AllowedPins $tokenSignerPins
+      -FilePath $peFile -AllowedPins $tokenSignerPins
   }
   $signed = $true
 }
 elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-  Write-Step "Signing runtime executables"
   $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
   if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
     $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
   }
   [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
   $signtool = Find-SignTool
-  foreach ($runtimeExe in $runtimeExecutables) {
-    & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $runtimeExe
+  foreach ($peFile in $firstPartyPeFiles) {
+    & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-    & $signtool verify /pa /v $runtimeExe
+    & $signtool verify /pa /v $peFile
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   $signed = $true
 }
+if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir }
 
 if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
   throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."

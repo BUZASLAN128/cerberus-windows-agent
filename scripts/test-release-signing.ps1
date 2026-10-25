@@ -123,7 +123,7 @@ try {
   }
   Check "hash and timestamp flags match the PFX path" {
     $text = Get-Content -Raw -LiteralPath $mainScript
-    $text -match 'sign /fd SHA256 /td SHA256 /tr \$TimestampUrl /f \$certPath /p \$certPassword \$runtimeExe' -and
+    $text -match 'sign /fd SHA256 /td SHA256 /tr \$TimestampUrl /f \$certPath /p \$certPassword \$peFile' -and
       ((Get-SignToolTokenSignArguments -Thumbprint $thumbprint -TimestampUrl '$TimestampUrl' -FilePath 'F')[0..6] -join " ") -ceq 'sign /fd SHA256 /td SHA256 /tr $TimestampUrl'
   }
 
@@ -232,11 +232,22 @@ try {
   Check "finalize with a good detached signature writes the manifest, gate and latest alias" {
     (Test-Path -LiteralPath (Join-Path $good.Publish $manifestName)) -and (Test-Path -LiteralPath (Join-Path $good.Publish $latestName))
   }
-  Check "finalize checks the four runtime executables and the MSI" {
-    $script:checked.Count -eq 5 -and ($script:checked -contains $good.Msi) -and (@($script:checked | Where-Object { $_ -like "*runtime*" }).Count -eq 4)
+  Check "finalize checks every first-party PE (incl. satellite) in ordinal order, skips third-party, and the MSI" {
+    $runtimeChecked = @($script:checked | Where-Object { $_ -like "*runtime*" })
+    $sorted = @($runtimeChecked); [Array]::Sort($sorted, [StringComparer]::OrdinalIgnoreCase)
+    $script:checked.Count -eq 9 -and ($script:checked -contains $good.Msi) -and $runtimeChecked.Count -eq 8 -and
+      (@($runtimeChecked | Where-Object { $_ -like "*Fixture.dll" }).Count -eq 0) -and
+      (@($runtimeChecked | Where-Object { $_ -like "*resources.dll" }).Count -eq 1) -and
+      (($runtimeChecked -join "|") -ceq ($sorted -join "|"))
   }
   Check "finalize hands the embedded signer pins to every signature check" {
-    $script:checkedPins.Count -eq 5 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 5)
+    $script:checkedPins.Count -eq 9 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 9)
+  }
+  Check "payload gate rejects an unsigned first-party PE and ignores third-party files" {
+    Throws { Assert-FirstPartyPeFilesSigned (Join-Path $good.Publish "runtime") } "Unsigned first-party file\(s\).*Cerberus\.Agent\.dll" 
+  }
+  Check "payload gate lists the satellite assembly by relative path" {
+    Throws { Assert-FirstPartyPeFilesSigned (Join-Path $good.Publish "runtime") } "tr\\Cerberus\.Agent\.resources\.dll"
   }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
   Check "finalize removes the pending payload and state" {
@@ -330,9 +341,9 @@ try {
   $twoPinError = $null
   try { Invoke-Finalize (New-Fixture -Options @{ ExtraPins = @($pinB) }) $recordAll } catch { $twoPinError = $_.Exception.Message }
   Check "finalize with two embedded signer pins is accepted" { if ($twoPinError) { throw $twoPinError }; $true }
-  Check "finalize hands both embedded signer pins to each of the five signature checks" {
+  Check "finalize hands both embedded signer pins to each of the nine signature checks" {
     $want = (@($pin, $pinB) | Sort-Object) -join "|"
-    $script:checkedPins.Count -eq 5 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 5)
+    $script:checkedPins.Count -eq 9 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 9)
   }
   # Expected key that differs from an embedded key only in base64 letter case (still a valid RSA public key)
   $lines = $pemB.Trim() -split "\r?\n"

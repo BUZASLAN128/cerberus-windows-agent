@@ -15,6 +15,26 @@ function Get-ReleaseRuntimeExecutableNames([string]$BuildProfile) {
   return @($script:ReleaseRuntimeExecutableNames)
 }
 
+# Every first-party PE in the payload (including satellite resource assemblies in culture folders), in ordinal path order.
+# Third-party and Microsoft assemblies ship with their own signatures and are not listed.
+function Get-FirstPartyPeFiles([string]$Directory) {
+  $files = @(Get-ChildItem -LiteralPath $Directory -Recurse -File |
+    Where-Object { $_.Name -like "Cerberus.Agent*.dll" -or $_.Name -like "Cerberus.Agent*.exe" } |
+    ForEach-Object { $_.FullName })
+  [Array]::Sort($files, [StringComparer]::OrdinalIgnoreCase)
+  return $files
+}
+
+# Release gate: fails when any first-party PE in the final payload carries no Authenticode signature.
+function Assert-FirstPartyPeFilesSigned([string]$Directory) {
+  $unsigned = @()
+  foreach ($file in @(Get-FirstPartyPeFiles $Directory)) {
+    try { [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($file).Dispose() }
+    catch { $unsigned += $file.Substring($Directory.TrimEnd('').Length + 1) }
+  }
+  if ($unsigned.Count -gt 0) { throw "Unsigned first-party file(s) in the release payload: $($unsigned -join ', ')" }
+}
+
 function Invoke-SecretScan([string]$Path) {
   $patterns = @(
     "tskey-[A-Za-z0-9_-]{20,}",
@@ -235,7 +255,10 @@ function Complete-ExternalManifestSigning(
   }
 
   $check = if ($null -ne $FileSignatureCheck) { $FileSignatureCheck } else { { param($Path, $AllowedPins) Assert-ReleaseFileSigned -Path $Path -AllowedPins $AllowedPins } }
-  $signedFiles = @(Get-ReleaseRuntimeExecutableNames $BuildProfile | ForEach-Object { Join-Path $runtimeDir $_ }) + @($msi)
+  foreach ($name in (Get-ReleaseRuntimeExecutableNames $BuildProfile)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir $name) -PathType Leaf)) { throw "Expected signed file was not found: $(Join-Path $runtimeDir $name)" }
+  }
+  $signedFiles = @(Get-FirstPartyPeFiles $runtimeDir) + @($msi)
   $verified = 0
   foreach ($file in $signedFiles) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected signed file was not found: $file" }

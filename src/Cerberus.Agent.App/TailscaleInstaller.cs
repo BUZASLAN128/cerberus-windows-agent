@@ -1,3 +1,4 @@
+using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Tailscale;
 using Cerberus.Agent.Observability;
 using System.ComponentModel;
@@ -94,53 +95,18 @@ internal static class TailscaleInstaller
         return destPath;
     }
 
-    private static async Task RequireValidSignatureAsync(string filePath, Action<string> log, CancellationToken ct)
+    private static Task RequireValidSignatureAsync(string filePath, Action<string> log, CancellationToken ct)
     {
-        // Use PowerShell Authenticode check.
-        var escapedPath = filePath.Replace("'", "''");
-        var psArgs =
-            "-NoProfile -Command " +
-            $"\"$s=(Get-AuthenticodeSignature '{escapedPath}'); " +
-            "$status=$s.Status; $sub=$s.SignerCertificate.Subject; " +
-            "Write-Output ($status + '|' + $sub)\"";
+        ct.ThrowIfCancellationRequested();
+        if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(filePath, out var subject))
+            throw new InvalidOperationException("Installer signature is not valid.");
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = psArgs,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        using var p = Process.Start(psi);
-        if (p is null)
-            throw new InvalidOperationException("Failed to start signature check.");
-
-        var output = await p.StandardOutput.ReadToEndAsync();
-        var err = await p.StandardError.ReadToEndAsync();
-        await p.WaitForExitAsync(ct);
-
-        var line = (output ?? "").Trim();
-        var parts = line.Split('|', 2);
-        var status = parts.Length > 0 ? parts[0].Trim() : "";
-        var subject = parts.Length > 1 ? parts[1].Trim() : "";
-
-        if (!string.IsNullOrWhiteSpace(status))
-            log($"Installer signature status: {status}");
-        if (!string.IsNullOrWhiteSpace(subject))
-            log($"Installer signer: {subject}");
-
-        if (!string.Equals(status, "Valid", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.IsNullOrWhiteSpace(err))
-                log($"Signature check stderr: {Sanitizer.Redact(err)}");
-            throw new InvalidOperationException($"Installer signature is not valid ({status}).");
-        }
+        log("Installer signature status: Valid");
+        log($"Installer signer: {subject}");
 
         if (!IsTrustedSignerSubject(subject))
             throw new InvalidOperationException("Installer signer is not trusted.");
+        return Task.CompletedTask;
     }
 
     private static void StartMsiInstall(string installerPath, string msiProps, Action<string> log)
@@ -155,7 +121,7 @@ internal static class TailscaleInstaller
 
             var psi = new ProcessStartInfo
             {
-                FileName = "msiexec.exe",
+                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe"),
                 Arguments = args,
                 UseShellExecute = true,
                 Verb = "runas", // request elevation when needed
