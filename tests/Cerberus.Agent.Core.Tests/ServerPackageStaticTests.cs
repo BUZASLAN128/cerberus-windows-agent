@@ -262,6 +262,27 @@ public sealed class ServerPackageStaticTests
         }
     }
 
+    [Theory]
+    [InlineData("preview", false)]
+    [InlineData("stable", false)]
+    [InlineData("dev", true)]
+    public void ReleaseProfileLib_RefusesTestFixtureAnchorsOnPreviewAndStable(string channel, bool accepted)
+    {
+        var anchors = Path.Combine(Path.GetTempPath(), $"anchors-{Guid.NewGuid():N}.b64");
+        File.WriteAllText(anchors, File.ReadAllText(Path.Combine(FindRepoRoot(), "tests", "fixtures", "agent-command-test-anchors.b64")).Trim() + "\n");
+        try
+        {
+            var result = RunProfileLib($"'server' '{anchors}' @{{}} '' '' '{channel}'");
+            Assert.Equal(accepted, result.ExitCode == 0);
+            if (!accepted)
+                Assert.Contains("repository test fixture", result.Output);
+        }
+        finally
+        {
+            File.Delete(anchors);
+        }
+    }
+
     [Fact]
     public void SmokeScript_SelectsTheServiceNameByProfile()
     {

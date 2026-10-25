@@ -71,7 +71,7 @@ $tokenMode = ($signingPlan.Mode -eq "Token")
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
-$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf
+$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
 if ($signingPlan.Finalize) {
