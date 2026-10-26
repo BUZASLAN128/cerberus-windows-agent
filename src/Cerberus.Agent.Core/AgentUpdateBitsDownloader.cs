@@ -305,7 +305,8 @@ public sealed class AgentUpdateBitsDownloader
     {
         if (!BackendTrust.HasAnchors)
             return;
-        var options = (IBackgroundCopyJobHttpOptions)job;
+        if (job is not IBackgroundCopyJobHttpOptions options)
+            throw new InvalidOperationException("BITS HTTP options are not available.");
         Check(options.GetSecurityFlags(out var flags), "BITS security flags could not be read.");
         Check(options.SetSecurityFlags(flags | IgnoreUnknownCa), "BITS security flags could not be set.");
     }

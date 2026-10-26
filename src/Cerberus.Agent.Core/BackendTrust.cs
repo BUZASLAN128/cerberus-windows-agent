@@ -7,8 +7,8 @@ namespace Cerberus.Agent.Core;
 
 /// <summary>
 /// Backend/collector TLS trust compiled into the binary (build metadata BackendTrustAnchors: comma-separated base64
-/// DER certificates). A chain the platform rejects only for chain reasons is re-validated against these anchors alone;
-/// without anchors the platform decision stands. No certificate is ever added to a Windows store.
+/// DER certificates). A chain the platform rejects only for an unknown root or a missing issuer is re-validated against
+/// these anchors alone; without anchors the platform decision stands. No certificate is ever added to a Windows store.
 /// </summary>
 internal static class BackendTrust
 {
@@ -37,6 +37,10 @@ internal static class BackendTrust
         // Name mismatch and a missing certificate are never repaired by an anchor.
         if (errors != SslPolicyErrors.RemoteCertificateChainErrors || anchors.Count == 0 || certificate is null)
             return false;
+        // Only a missing trust decision is re-checked; explicit distrust, a revoked or out-of-date element and any
+        // other fault the platform found in the chain stand.
+        if (presented is not null && !OnlyTrustMissing(presented.ChainStatus))
+            return false;
         try
         {
             using var chain = new X509Chain();
@@ -55,6 +59,9 @@ internal static class BackendTrust
             return false;
         }
     }
+
+    internal static bool OnlyTrustMissing(X509ChainStatus[] statuses)
+        => statuses.All(status => (status.Status & ~(X509ChainStatusFlags.UntrustedRoot | X509ChainStatusFlags.PartialChain)) == 0);
 
     internal static X509Certificate2Collection ParseAnchors(string? metadata)
     {

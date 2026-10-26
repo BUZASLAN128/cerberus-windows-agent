@@ -20,6 +20,12 @@ public static class AgentUpdateAuthenticode
         bool allowUnsignedDevBuild)
     {
         var isDev = string.Equals(channel, "dev", StringComparison.Ordinal);
+        // A build with compiled backend anchors is installed without any certificate import, so its update signer may
+        // chain to a root the machine does not trust. There the manifest signature (key compiled in) plus its sha256 is
+        // the root of trust and Authenticode is a pin check: WinVerifyTrust reports digest and signature failures
+        // (TRUST_E_BAD_DIGEST, TRUST_E_NOSIGNATURE) instead of CERT_E_UNTRUSTEDROOT, so an untrusted root with a pinned
+        // signer key still proves the file is intact. Builds without anchors keep requiring a trusted chain.
+        var allowUntrustedRoot = BackendTrust.HasAnchors;
         var status = WinVerifyTrustFile(path);
         if (status != 0)
         {
@@ -27,10 +33,7 @@ public static class AgentUpdateAuthenticode
             if (isDev && allowUnsignedDevBuild && status == unchecked((int)0x800B0100) &&
                 allowedSignerKeyIdentity == "unsigned-dev" && IsActuallyUnsigned(path))
                 return;
-            // The manifest signature (key compiled in) plus its sha256 is the root of trust; Authenticode is a pin check.
-            // WinVerifyTrust reports digest and signature failures (TRUST_E_BAD_DIGEST, TRUST_E_NOSIGNATURE) instead of
-            // CERT_E_UNTRUSTEDROOT, so an untrusted root with a pinned signer key still proves the file is intact.
-            if (status != CertEUntrustedRoot)
+            if (!AcceptsStatus(status, allowUntrustedRoot))
                 throw new InvalidOperationException("Update Authenticode signature verification failed.");
         }
 
@@ -40,7 +43,7 @@ public static class AgentUpdateAuthenticode
         try
         {
             using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
-            if (!AcceptsSigner(status, PublisherSpkiSha256(certificate), allowedSignerKeyIdentity))
+            if (!AcceptsSigner(status, PublisherSpkiSha256(certificate), allowedSignerKeyIdentity, allowUntrustedRoot))
                 throw new InvalidOperationException("Update signer identity is not trusted.");
         }
         catch (CryptographicException ex)
@@ -49,9 +52,13 @@ public static class AgentUpdateAuthenticode
         }
     }
 
-    /// <summary>Accepts a clean WinVerifyTrust result, or exactly CERT_E_UNTRUSTEDROOT, only for a pinned signer key.</summary>
-    internal static bool AcceptsSigner(int status, string actualSpki, string allowedSignerKeyIdentity)
-        => (status == 0 || status == CertEUntrustedRoot) &&
+    /// <summary>Accepts a clean WinVerifyTrust result, or exactly CERT_E_UNTRUSTEDROOT when an untrusted root is allowed.</summary>
+    internal static bool AcceptsStatus(int status, bool allowUntrustedRoot)
+        => status == 0 || (allowUntrustedRoot && status == CertEUntrustedRoot);
+
+    /// <summary>The <see cref="AcceptsStatus"/> decision, and only for a pinned signer key.</summary>
+    internal static bool AcceptsSigner(int status, string actualSpki, string allowedSignerKeyIdentity, bool allowUntrustedRoot)
+        => AcceptsStatus(status, allowUntrustedRoot) &&
            allowedSignerKeyIdentity.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                .Any(identity => NormalizeIdentity(actualSpki).Equals(NormalizeIdentity(identity), StringComparison.OrdinalIgnoreCase));
 
