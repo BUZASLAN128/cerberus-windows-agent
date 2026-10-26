@@ -47,6 +47,7 @@
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
     <?if $(var.AgentBuildProfile) = server ?>
     <Property Id="CERBERUS_ENROLLMENT_PROOF" Secure="yes" Hidden="yes" />
+    <Property Id="CERBERUS_UPDATE_REQUIRE_BACKEND" Secure="yes" />
     <?else ?>
     <Property Id="CREATE_DESKTOP_SHORTCUT" Value="0" Secure="yes" />
     <Property Id="START_TRAY_ON_LOGIN" Value="1" Secure="yes" />
@@ -168,6 +169,15 @@
         Impersonate="no"
         HideTarget="yes"
         Return="ignore" />
+    <!-- Upgrade health gate inside the install transaction: a non-zero exit fails msiexec and Windows Installer rolls the new files back
+         before RemoveExistingProducts, so the previous product stays installed. CERBERUS_UPDATE_REQUIRE_BACKEND=1 also waits for backend contact. -->
+    <CustomAction
+        Id="CheckServerAgentHealth"
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_UPDATE_REQUIRE_BACKEND]"'
+        Execute="deferred"
+        Impersonate="no"
+        Return="check" />
     <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
@@ -225,6 +235,7 @@
       <?if $(var.AgentBuildProfile) = server ?>
       <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="ServerEnrollRollback" After="ServerEnrollFromInstaller" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
+      <Custom Action="CheckServerAgentHealth" After="StartServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <?else ?>
       <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />

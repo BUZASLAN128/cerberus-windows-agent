@@ -17,7 +17,9 @@ public sealed record AgentLocalControlResponse(
     string? AttemptId = null,
     string? CurrentVersion = null,
     string? TargetVersion = null,
-    long? LifecycleGeneration = null);
+    long? LifecycleGeneration = null,
+    // In-memory time of the last accepted heartbeat of the answering process; omitted until one succeeded.
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastBackendContactUtc = null);
 
 /// <summary>One bounded request and response per local connection; no file, URL, executable or credential inputs.</summary>
 public static class AgentLocalControlProtocol
@@ -41,7 +43,7 @@ public static class AgentLocalControlProtocol
         if (request.AttemptId is not null &&
             (request.Operation != "apply" || !Guid.TryParseExact(request.AttemptId, "N", out _)))
             return false;
-        return request.Operation is "status" or "check" or "apply" ||
+        return request.Operation is "status" or "readiness" or "check" or "apply" ||
             (privileged && request.Operation is "retry" or "enrollment-adopt" or "unregister");
     }
 

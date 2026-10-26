@@ -10,7 +10,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Cerberus.Agent.Installer.Helper;
 
 /// <summary>MSI transaction actions, extracted from the signed package. No network, credential, RDP or Tailscale operations.</summary>
-internal static class Program
+internal static partial class Program
 {
     private const string ServiceName = AgentInstallIdentity.ServiceName;
     // OpenService reports an optional service absence only with this exact SCM code.
@@ -27,10 +27,13 @@ internal static class Program
     {
         try
         {
-            if (!AgentUpdateSecurity.IsLocalSystem() || args.Length != 6 || !Guid.TryParse(args[1], out var product))
+            if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7) || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
             if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit"))
+                return 2;
+            // The optional seventh argument is the server upgrade's backend-contact requirement ("" or "1").
+            if (args.Length == 7 && (operation != "health" || args[6] is not ("" or "1")))
                 return 2;
             if (operation == "bootstrap")
             {
@@ -42,6 +45,18 @@ internal static class Program
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
             AgentUpdateSecurity.EnsureProtectedRoot(root);
             var snapshotPath = Path.Combine(root, product.ToString("N") + ".json");
+            var diagnosticPath = Path.Combine(root, product.ToString("N") + ".health-failure.json");
+
+            if (operation == "health" && AgentBuildProfile.IsServer)
+            {
+                // WiX owns the server service, so there is no SCM capture snapshot to require or complete.
+                using var serverManager = OpenSCManager(null, null, 1);
+                ThrowIfInvalid(serverManager);
+                using var serverService = OpenExistingService(serverManager) ?? throw new Win32Exception(ErrorServiceDoesNotExist);
+                await VerifyHealthAsync(serverService, args[2], args[3], args[4], args[5], diagnosticPath, root,
+                    HealthOptions.Server(args.Length == 7 && args[6] == "1")).ConfigureAwait(false);
+                return 0;
+            }
 
             var snapshot = AgentUpdateDurableFile.Read<Snapshot>(snapshotPath, root);
             if (operation == "capture")
@@ -126,8 +141,7 @@ internal static class Program
                     Start(service);
                     break;
                 case "health":
-                    await VerifyHealthAsync(service, args[2], args[3], args[4], args[5],
-                        Path.Combine(root, product.ToString("N") + ".health-failure.json"), root).ConfigureAwait(false);
+                    await VerifyHealthAsync(service, args[2], args[3], args[4], args[5], diagnosticPath, root, HealthOptions.Desktop).ConfigureAwait(false);
                     break;
                 case "commit":
                     var committed = snapshot
@@ -230,98 +244,6 @@ internal static class Program
         var value = new ServiceStatusProcess();
         Check(QueryServiceStatusEx(service, 0, ref value, Marshal.SizeOf<ServiceStatusProcess>(), out _));
         return value;
-    }
-
-    private static async Task VerifyHealthAsync(ServiceHandle service, string runtime, string expectedVersion, string executableHash, string assemblyHash,
-        string diagnosticPath, string diagnosticRoot)
-    {
-        var phase = AgentInstallerHealthPhase.RuntimePath;
-        string? observedVersion = null;
-        uint? serviceProcessId = null;
-        uint? pipeProcessId = null;
-        bool? responseSuccess = null;
-        try
-        {
-            runtime = Path.GetFullPath(runtime);
-            var executable = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
-            var assembly = Path.Combine(runtime, "Cerberus.Agent.Service.dll");
-            phase = AgentInstallerHealthPhase.ServiceExecutableHash;
-            VerifyHash(executable, runtime, executableHash);
-            phase = AgentInstallerHealthPhase.ServiceAssemblyHash;
-            VerifyHash(assembly, runtime, assemblyHash);
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            while (true)
-            {
-                timeout.Token.ThrowIfCancellationRequested();
-                phase = AgentInstallerHealthPhase.ServiceState;
-                observedVersion = null;
-                serviceProcessId = null;
-                pipeProcessId = null;
-                responseSuccess = null;
-                var status = Status(service);
-                serviceProcessId = status.ProcessId;
-                if (status.CurrentState == 4 && status.ProcessId != 0)
-                {
-                    try
-                    {
-                        phase = AgentInstallerHealthPhase.ServiceImage;
-                        using var process = Process.GetProcessById((int)status.ProcessId);
-                        if (!string.Equals(process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase))
-                            throw new InvalidOperationException("SCM process image identity mismatch.");
-                        phase = AgentInstallerHealthPhase.PipeConnect;
-                        using var pipe = new NamedPipeClientStream(".", AgentLocalControlProtocol.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-                        await pipe.ConnectAsync(1000, timeout.Token).ConfigureAwait(false);
-                        phase = AgentInstallerHealthPhase.PipeAuthority;
-                        Check(GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var pipeProcess));
-                        pipeProcessId = pipeProcess;
-                        if (pipeProcess != status.ProcessId)
-                            throw new InvalidOperationException("Local health pipe authority mismatch.");
-                        phase = AgentInstallerHealthPhase.StatusRequest;
-                        await AgentLocalControlProtocol.WriteAsync(pipe, new AgentLocalControlRequest("status"), timeout.Token).ConfigureAwait(false);
-                        phase = AgentInstallerHealthPhase.StatusResponse;
-                        var response = await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(pipe, timeout.Token).ConfigureAwait(false);
-                        observedVersion = response.CurrentVersion;
-                        responseSuccess = response.Success;
-                        phase = AgentInstallerHealthPhase.ResponseSuccess;
-                        if (!response.Success)
-                            throw new InvalidOperationException("Installed build readiness mismatch.");
-                        phase = AgentInstallerHealthPhase.ResponseVersion;
-                        if (!string.Equals(response.CurrentVersion, expectedVersion, StringComparison.Ordinal))
-                            throw new InvalidOperationException("Installed build readiness mismatch.");
-                        var lifecyclePath = Path.Combine(Path.GetDirectoryName(AgentUpdateSecurity.DefaultPrivilegedRoot)!, "lifecycle-state.json");
-                        phase = AgentInstallerHealthPhase.LifecycleAuthority;
-                        AgentUpdateSecurity.ValidateTrustedPath(lifecyclePath, Path.GetDirectoryName(lifecyclePath)!, allowMissing: false);
-                        phase = AgentInstallerHealthPhase.LifecycleOpen;
-                        using var lifecycle = File.OpenRead(lifecyclePath);
-                        phase = AgentInstallerHealthPhase.LifecycleLength;
-                        if (lifecycle.Length is <= 0 or > 16 * 1024)
-                            throw new InvalidOperationException("Lifecycle state is not readable.");
-                        phase = AgentInstallerHealthPhase.LifecycleJson;
-                        using var document = JsonDocument.Parse(lifecycle);
-                        phase = AgentInstallerHealthPhase.LifecycleState;
-                        if (!document.RootElement.TryGetProperty("state", out var state) || state.ValueKind != JsonValueKind.String)
-                            throw new InvalidOperationException("Lifecycle state is not readable.");
-                        return;
-                    }
-                    catch (TimeoutException) { }
-                    catch (IOException) { }
-                }
-                await Task.Delay(100, timeout.Token).ConfigureAwait(false);
-            }
-        }
-        catch (Exception error)
-        {
-            try
-            {
-                AgentUpdateDurableFile.Write(diagnosticPath, diagnosticRoot, AgentInstallerHealthDiagnostic.Capture(
-                    phase, error, expectedVersion, observedVersion, serviceProcessId, pipeProcessId, responseSuccess));
-            }
-            catch (Exception)
-            {
-                // Diagnostics cannot weaken the health failure or replace the original exception.
-            }
-            throw;
-        }
     }
 
     private static void VerifyHash(string path, string root, string expected)

@@ -769,6 +769,7 @@ internal static partial class AgentUpdateLocalService
         }
         if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
         var operationStart = active;
+        var failedInstallSequence = active.FailedInstallSequence;
         var schedulePersisted = false;
         var authorizationChanged = false;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -795,7 +796,8 @@ internal static partial class AgentUpdateLocalService
                 trust.ExpectedChannel,
                 effectiveRequired
                     ? incomingRequiredGeneration ?? lifecycle.Generation
-                    : null);
+                    : null,
+                AgentUpdateRollbackPolicy.SkipSequenceFor(automatic, failedInstallSequence));
             var stager = new AgentUpdateStager(http, trust, Root);
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);

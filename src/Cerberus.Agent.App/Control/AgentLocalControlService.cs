@@ -22,8 +22,11 @@ internal sealed class AgentLocalControlService
 
     internal async Task<AgentLocalControlResponse> HandleAsync(AgentLocalControlRequest request, CancellationToken ct)
     {
-        if (request.Operation is "status" or "check" or "apply")
+        if (request.Operation is "status" or "readiness" or "check" or "apply")
         {
+            // "readiness" is "status" plus the in-memory backend contact time; only the installer health check sends it, so the status shape stays unchanged for older readers.
+            var readiness = request.Operation == "readiness";
+            if (readiness) request = request with { Operation = "status" };
             var response = await AgentUpdateLocalService.HandleAsync(request, ct).ConfigureAwait(false);
             var snapshot = await _lifecycle.LoadAsync(ct).ConfigureAwait(false);
             var awaitingAdoption = request.Operation == "status" && AgentEnrollmentPromotion.IsAwaitingAdoption(
@@ -33,6 +36,7 @@ internal sealed class AgentLocalControlService
                 Success = response.Success && !awaitingAdoption,
                 LifecycleState = snapshot.State.ToString(),
                 LifecycleGeneration = snapshot.Generation,
+                LastBackendContactUtc = readiness ? AgentBackendContact.LastSuccessUtc : null,
                 Code = request.Operation == "status" ?
                     (!snapshot.QuiescenceComplete ? "cleanup_pending" : awaitingAdoption ? "enrollment_proof_required" : snapshot.ReasonCode ?? response.Code) : response.Code,
             };

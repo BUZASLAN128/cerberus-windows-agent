@@ -129,6 +129,7 @@ public sealed partial class HeartbeatLoop
                 };
 
                 var hb = await _api.HeartbeatAsync(hbReq, ct);
+                AgentBackendContact.MarkSuccess();
 
                 degraded = false;
                 consecutiveHeartbeatErrors = 0;

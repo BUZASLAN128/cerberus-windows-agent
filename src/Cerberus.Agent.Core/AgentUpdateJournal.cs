@@ -44,6 +44,8 @@ public sealed record AgentUpdateJournal
     public AgentUpdateReconciliationSnapshot? ReconciliationSnapshot { get; init; }
     public long HealthyInstalledSequence { get; init; }
     public string? HealthyInstalledVersion { get; init; }
+    /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback). Automatic staging skips it and older ones.</summary>
+    public long FailedInstallSequence { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
@@ -72,7 +74,7 @@ public sealed class AgentUpdateJournalStore
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
-            value.RequiredPolicyGeneration is < 0 ||
+            value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");

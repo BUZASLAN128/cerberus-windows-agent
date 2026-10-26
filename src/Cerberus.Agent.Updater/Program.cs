@@ -63,6 +63,10 @@ internal static class Program
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
+                // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
+                // Other installer failures keep the normal retry behavior.
+                FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
+                    installerResult.ErrorCode, plan.Sequence, installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed && HealthRollbackRecordedSince(before.InstallerStartedUtc, log)),
             });
             WriteInstallerResult(installerResult, log);
             log.Write("Cerberus Agent updater completed.");
@@ -231,6 +235,9 @@ internal static class Program
                 lifecycle.Generation != active.LifecycleGeneration ||
                 (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
                 throw new InvalidOperationException("Update attempt authorization changed.");
+            // Only an automatic run that started from a fully active agent must prove backend contact before the install commits.
+            if (AgentUpdateRollbackPolicy.RequiresBackendContact(active.Automatic, lifecycle.State))
+                psi.ArgumentList.Add("CERBERUS_UPDATE_REQUIRE_BACKEND=1");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with
             {
                 Phase = "install_may_have_started", InstallationBootId = AgentUpdateBootIdentity.Read(),
@@ -250,6 +257,27 @@ internal static class Program
         _ = process.StandardError.ReadToEnd();
         log.Write($"msiexec exit code: {process.ExitCode}.");
         return process.ExitCode;
+    }
+
+    /// <summary>True when the installer helper wrote a health-failure record after this attempt's msiexec started.</summary>
+    private static bool HealthRollbackRecordedSince(DateTimeOffset? installerStartedUtc, UpdaterLog log)
+    {
+        try
+        {
+            var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            foreach (var path in Directory.EnumerateFiles(root, "*.health-failure.json"))
+            {
+                var record = AgentUpdateDurableFile.Read<AgentInstallerHealthDiagnostic>(path, root);
+                if (record is not null && AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(record.RecordedAtUtc, installerStartedUtc))
+                    return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Write($"Health failure record unreadable: {ex.GetType().Name}.");
+        }
+        return false;
     }
 
     private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
