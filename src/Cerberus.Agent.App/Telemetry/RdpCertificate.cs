@@ -105,11 +105,41 @@ internal sealed record RdpCertificate(string Status, DateTimeOffset? NotAfter, b
     }
 
     internal static RdpCertificate FromCertificate(X509Certificate2 cert)
-        => new("ok", new DateTimeOffset(cert.NotAfter.ToUniversalTime(), TimeSpan.Zero), IsSelfSigned(cert.SubjectName.RawData, cert.IssuerName.RawData));
+        => new("ok", new DateTimeOffset(cert.NotAfter.ToUniversalTime(), TimeSpan.Zero), IsSelfSigned(cert));
 
     /// <summary>Hex thumbprint for a 20-byte SHA-1 hash; null for a missing, empty or all-zero value.</summary>
     internal static string? ThumbprintFromHash(byte[]? hash)
         => hash is { Length: > 0 } && hash.Any(b => b != 0) ? Convert.ToHexString(hash) : null;
+
+    /// <summary>Subject equals issuer and the certificate's signature verifies with its own public key (a copied name alone is not enough).</summary>
+    internal static bool IsSelfSigned(X509Certificate2 cert)
+    {
+        if (!IsSelfSigned(cert.SubjectName.RawData, cert.IssuerName.RawData))
+            return false;
+        try
+        {
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.CustomTrustStore.Add(cert);
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.DisableCertificateDownloads = true;
+            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeValid
+                | X509VerificationFlags.IgnoreCtlNotTimeValid
+                | X509VerificationFlags.IgnoreWrongUsage
+                | X509VerificationFlags.IgnoreInvalidBasicConstraints
+                | X509VerificationFlags.IgnoreInvalidName
+                | X509VerificationFlags.IgnoreInvalidPolicy;
+            chain.Build(cert);
+            return chain.ChainElements.Count == 1
+                   && !chain.ChainStatus.Any(s => s.Status.HasFlag(X509ChainStatusFlags.NotSignatureValid)
+                                                  || s.Status.HasFlag(X509ChainStatusFlags.PartialChain)
+                                                  || s.Status.HasFlag(X509ChainStatusFlags.UntrustedRoot));
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Subject equals issuer by encoded distinguished name.</summary>
     internal static bool IsSelfSigned(byte[] subjectRaw, byte[] issuerRaw)

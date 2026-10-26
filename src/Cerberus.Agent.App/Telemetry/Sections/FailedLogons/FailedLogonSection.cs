@@ -28,6 +28,9 @@ internal static class FailedLogonSection
     // Bumped when a committing collection starts and when KeepPendingIfReported runs: a collection that finishes
     // after either (timed out and abandoned) cannot stage a pending cursor.
     private static long _generation;
+    // First-run baseline whose cursor file could not be written: kept so the next collection counts from it instead of
+    // re-baselining at the then-current log ends. Guarded by Gate; dropped once a save succeeds.
+    private static (FailedLogonCursorStore Store, FailedLogonCursorState State)? _baseline;
 
     /// <summary>The <c>failed_logons</c> object of <see cref="CollectAll"/>.</summary>
     public static object Collect(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
@@ -108,6 +111,7 @@ internal static class FailedLogonSection
     private static SecurityLogResult CollectCore(FailedLogonCursorStore store, DateTimeOffset now, bool commit, long generation, CancellationToken ct)
     {
         var state = LoadCursor(store, out var invalid);
+        state = ApplyRetainedBaseline(store, state, invalid);
         var firstRun = !invalid && state.LastWindowEndUtc is null;
         var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
         var events = new List<FailedLogonEvent>();
@@ -183,7 +187,11 @@ internal static class FailedLogonSection
         var saveOk = true;
         // First run has nothing to lose: persist the baseline now so a failed first upload cannot skip events.
         if (commit && firstRun)
+        {
             saveOk = SaveCursor(store, state);
+            if (!saveOk)
+                RetainBaseline(store, state);
+        }
         var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
         var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
         if (commit && !firstRun)
@@ -200,6 +208,38 @@ internal static class FailedLogonSection
                 : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
             SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
     }
+
+    /// <summary>A cursor file that still has no state continues from the retained first-run baseline; a file with state supersedes it.</summary>
+    private static FailedLogonCursorState ApplyRetainedBaseline(FailedLogonCursorStore store, FailedLogonCursorState loaded, bool invalid)
+    {
+        if (invalid)
+            return loaded;
+        lock (Gate)
+        {
+            if (_baseline is not { } b || !ReferenceEquals(b.Store, store))
+                return loaded;
+            if (loaded.LastWindowEndUtc is not null)
+            {
+                _baseline = null;
+                return loaded;
+            }
+            return Copy(b.State);
+        }
+    }
+
+    private static void RetainBaseline(FailedLogonCursorStore store, FailedLogonCursorState state)
+    {
+        lock (Gate)
+            _baseline = (store, Copy(state));
+    }
+
+    private static FailedLogonCursorState Copy(FailedLogonCursorState s) => new()
+    {
+        LastWindowEndUtc = s.LastWindowEndUtc,
+        LastLogClearedUtc = s.LastLogClearedUtc,
+        LogClearedSeeded = s.LogClearedSeeded,
+        Channels = new Dictionary<string, long>(s.Channels, StringComparer.OrdinalIgnoreCase),
+    };
 
     private static List<T> Details<T>(IEnumerable<FailedLogonEvent> events, FailedLogonSource source) where T : class
         => events.Where(e => e.Source == source).Select(e => e.Detail).OfType<T>().ToList();
@@ -237,8 +277,14 @@ internal static class FailedLogonSection
             p = _pending;
             _pending = null;
         }
-        if (p is { } pending)
-            SaveCursor(pending.Store, pending.State);
+        if (p is { } pending && SaveCursor(pending.Store, pending.State))
+        {
+            lock (Gate)
+            {
+                if (_baseline is { } b && ReferenceEquals(b.Store, pending.Store))
+                    _baseline = null;
+            }
+        }
     }
 
     /// <summary>Drops the pending cursor unless <paramref name="securityPayload"/> carries the report it was produced for.</summary>
@@ -292,7 +338,7 @@ internal static class FailedLogonSection
             {
                 rdp = new { present = rdp.Present, listening = rdp.Listening, failed_count = tally.Counts["rdp"] },
                 ssh = new { present = ssh.Present, listening = ssh.Listening, failed_count = tally.Counts["ssh"] },
-                sql = new { present = sql.Present, listening = sql.Listening, failed_count = tally.Counts["sql"] },
+                sql = new { present = sql.Present, listening = sql.Listening, failed_count = tally.Counts["sql"], unverified = tally.SqlUnverified },
                 other = new { failed_count = tally.Counts["other"] },
             },
             reported_groups = groups,

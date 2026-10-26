@@ -167,4 +167,66 @@ public sealed class FailedLogonSocFixesTests
             Directory.Delete(dir, true);
         }
     }
+
+    private const string Eventlog = "Microsoft-Windows-Eventlog";
+
+    private static string ClearedXml(string? channel) =>
+        "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><UserData>"
+        + "<LogFileCleared xmlns='http://manifests.microsoft.com/win/2004/08/windows/eventlog'><SubjectUserName>x</SubjectUserName>"
+        + (channel is null ? "" : $"<Channel>{channel}</Channel>") + "<BackupPath></BackupPath></LogFileCleared></UserData></Event>";
+
+    [Theory]
+    [InlineData("System", true)]
+    [InlineData("security", true)]
+    [InlineData("Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational", true)]
+    [InlineData("Application", true)]
+    [InlineData("Microsoft-Windows-PowerShell/Operational", false)]
+    [InlineData("Setup", false)]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    public void SystemLogCleared_OnlyTrackedOrUnreadableChannelsRaiseAReset(string? channel, bool reset)
+    {
+        var ev = FailedLogonEventReader.SystemLogCleared(Eventlog, ClearedXml(channel), T0);
+        Assert.Equal(reset, ev is { Source: FailedLogonSource.LogCleared });
+    }
+
+    [Fact]
+    public void SystemLogCleared_UnparsableXmlOrOtherProvider()
+    {
+        Assert.NotNull(FailedLogonEventReader.SystemLogCleared(Eventlog, "<not xml", T0));
+        Assert.Null(FailedLogonEventReader.SystemLogCleared("Other", ClearedXml("System"), T0));
+    }
+
+    [Fact]
+    public void FirstRun_FailedCursorSave_KeepsTheBaselineForTheNextCollection()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "fl-base-" + Guid.NewGuid().ToString("N"));
+        var blocker = Path.Combine(dir, "blocker");
+        var path = Path.Combine(blocker, "state", "c.json");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(blocker, "x"); // the state directory cannot be created: Load sees no state, Save fails
+        var store = new FailedLogonCursorStore(path);
+        try
+        {
+            FailedLogonSection.Collect(store, T0, commit: true, CancellationToken.None);
+            Assert.False(FailedLogonSection.HasPending);
+
+            var second = JsonSerializer.Serialize(FailedLogonSection.Collect(store, T0.AddMinutes(10), commit: true, CancellationToken.None));
+            Assert.Contains($"\"window_start_utc\":\"{FailedLogonSection.Iso(T0)}\"", second);
+            Assert.True(FailedLogonSection.HasPending);
+
+            File.Delete(blocker);
+            FailedLogonSection.CommitPending();
+            Assert.Equal(T0.AddMinutes(10), store.Load(out var invalid).LastWindowEndUtc);
+            Assert.False(invalid);
+
+            var third = JsonSerializer.Serialize(FailedLogonSection.Collect(store, T0.AddMinutes(20), commit: false, CancellationToken.None));
+            Assert.Contains($"\"window_start_utc\":\"{FailedLogonSection.Iso(T0.AddMinutes(10))}\"", third);
+        }
+        finally
+        {
+            FailedLogonSection.KeepPendingIfReported(null);
+            Directory.Delete(dir, true);
+        }
+    }
 }
