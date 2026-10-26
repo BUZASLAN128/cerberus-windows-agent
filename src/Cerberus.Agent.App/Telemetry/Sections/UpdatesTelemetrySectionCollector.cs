@@ -46,7 +46,9 @@ internal sealed class UpdatesTelemetrySectionCollector : IWindowsTelemetrySectio
         var recentTruncated = recent.Length > MaxRecent || (cached?.Scan.RecentTruncated ?? false);
         recent = recent.Take(MaxRecent).ToArray();
 
+        // Security updates first (stable within each group), so the cap never drops them for non-security items.
         var pendingAll = (cached?.Scan.PendingItems ?? Array.Empty<WindowsUpdatePending>())
+            .OrderByDescending(p => p.Security)
             .Select(p => new
             {
                 kb = ServerFactText.CleanOrNull(p.Kb, 16),

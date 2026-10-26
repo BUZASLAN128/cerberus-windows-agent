@@ -70,18 +70,22 @@ internal static class FailedLogonEventReader
         return record?.RecordId ?? 0;
     }
 
-    /// <summary>Time of the newest Security 1102 still in the log (one reverse read); null when none or unreadable.</summary>
-    public static DateTimeOffset? LatestSecurityCleared()
+    /// <summary>
+    /// Time of the newest Security 1102 still in the log (one reverse read, stops at the first hit). <c>Ok</c> is false
+    /// when the log could not be read; <c>Time</c> is null when it was read and holds none.
+    /// </summary>
+    public static (bool Ok, DateTimeOffset? Time) LatestSecurityCleared(CancellationToken ct)
     {
         try
         {
+            ct.ThrowIfCancellationRequested();
             using var reader = new EventLogReader(new EventLogQuery(Security, PathType.LogName, "*[System[(EventID=1102)]]") { ReverseDirection = true });
             using var record = reader.ReadEvent();
-            return record?.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : null;
+            return (true, record?.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : null);
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
         {
-            return null;
+            return (false, null);
         }
     }
 

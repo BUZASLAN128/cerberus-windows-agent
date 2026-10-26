@@ -11,6 +11,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
 
     private readonly FailedLogonCursorStore? _cursor;
     private readonly bool _commitFailedLogons;
+    private readonly SecurityPostureCache _posture;
 
     public SecurityTelemetrySectionCollector()
         : this(commitFailedLogons: false)
@@ -26,10 +27,14 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
 
     /// <param name="collectFailedLogons">Only the server profile reads event logs and keeps a cursor file; the desktop
     /// payload has no <c>failed_logons</c> field.</param>
-    internal SecurityTelemetrySectionCollector(bool commitFailedLogons, bool collectFailedLogons, FailedLogonCursorStore? cursor)
+    /// <param name="posture">Background Defender/SMB1 cache; the collector only reads its last result.</param>
+    internal SecurityTelemetrySectionCollector(bool commitFailedLogons, bool collectFailedLogons, FailedLogonCursorStore? cursor, SecurityPostureCache? posture = null)
     {
+        _posture = posture ?? SecurityPostureCache.Shared;
         _commitFailedLogons = commitFailedLogons;
         _cursor = collectFailedLogons ? cursor ?? new FailedLogonCursorStore() : null;
+        if (collectFailedLogons)
+            _posture.Warm();
     }
 
     public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
@@ -57,7 +62,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
             section["log_cleared"] = log.LogCleared;
             section["local_admins"] = await CollectLocalAdminsAsync(log.AdminChanges, ct).ConfigureAwait(false);
             section["unexpected_shutdowns"] = await CollectUnexpectedShutdownsAsync(ct).ConfigureAwait(false);
-            foreach (var (key, value) in await Task.Run(() => SecurityPostureProbe.Read(ct), ct).ConfigureAwait(false))
+            foreach (var (key, value) in _posture.Current())
                 section[key] = value;
         }
         return section;

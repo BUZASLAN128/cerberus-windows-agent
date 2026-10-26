@@ -315,10 +315,11 @@ public sealed partial class ServerFactSectionsTests
         var list = pending["items"]!.AsArray();
         Assert.Equal(3, list.Count);
         Assert.Equal(Sorted("kb", "title", "security"), Keys(list[0]));
+        // Security items come first (stable within each group), so the cap never drops them.
         Assert.Equal("KB5001234", (string)list[0]!["kb"]!);
-        Assert.Null(list[1]!["kb"]);
-        Assert.Equal(Fill("K", 16), (string)list[2]!["kb"]!);
-        Assert.Equal(160, ((string)list[2]!["title"]!).Length);
+        Assert.Equal(Fill("K", 16), (string)list[1]!["kb"]!);
+        Assert.Equal(160, ((string)list[1]!["title"]!).Length);
+        Assert.Null(list[2]!["kb"]);
         Assert.False((bool)pending["truncated"]!);
         Assert.Equal((int)pending["security_count"]!, list.Count(e => (bool)e!["security"]!));
     }

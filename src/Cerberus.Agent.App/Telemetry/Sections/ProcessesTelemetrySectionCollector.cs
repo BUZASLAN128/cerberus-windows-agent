@@ -3,13 +3,16 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
 /// <summary>
 /// Running executables, one item per distinct image path with the embedded Authenticode signer. Command lines,
-/// user names, process ids and arguments are never read. The signer is the subject name of the embedded signing
-/// certificate only (no chain building, no network); catalog-signed or unsigned images report null.
+/// process ids and arguments are never read; the image path is reported as is and can contain a user profile
+/// folder name. The signer is the simple subject name of the embedded signing certificate, reported only when
+/// WinVerifyTrust accepts the signature (no network, cached revocation data only); catalog-signed, unsigned or
+/// untrusted images report null.
 /// </summary>
 internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySectionCollector
 {
@@ -122,7 +125,13 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
                 return cached;
         }
 
-        var signer = ReadSigner(path);
+        if (!TryReadSigner(path, out var signer))
+            return null; // transient I/O error: not cached, retried next cycle
+
+        // The image must be unchanged since the key was taken, otherwise the result belongs to another file version.
+        if (!SameFile(path, key))
+            return signer;
+
         lock (CacheLock)
         {
             if (SignerCache.Count >= MaxCacheEntries)
@@ -133,20 +142,46 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         return signer;
     }
 
-    private static string? ReadSigner(string path)
+    private static bool SameFile(string path, SignerKey key)
     {
         try
         {
+            var info = new FileInfo(path);
+            return info.Exists && info.LastWriteTimeUtc.Ticks == key.LastWriteTicks && info.Length == key.Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Signer subject only for an Authenticode signature that WinVerifyTrust accepts (digest and chain verified,
+    /// cache-only revocation, no network). Unsigned, catalog-signed or untrusted images report null.
+    /// Returns false on an I/O error so the caller does not cache the miss.
+    /// </summary>
+    private static bool TryReadSigner(string path, out string? signer)
+    {
+        signer = null;
+        try
+        {
+            if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(path, out _))
+                return true;
             // SYSLIB0057: X509CertificateLoader cannot read the embedded signer of a signed PE file.
 #pragma warning disable SYSLIB0057
             using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
 #pragma warning restore SYSLIB0057
             var subject = certificate.GetNameInfo(X509NameType.SimpleName, false);
-            return string.IsNullOrWhiteSpace(subject) ? null : subject;
+            signer = string.IsNullOrWhiteSpace(subject) ? null : subject;
+            return true;
         }
-        catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
+        catch (CryptographicException)
         {
-            return null;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
         }
     }
 }

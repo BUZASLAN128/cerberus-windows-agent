@@ -29,8 +29,10 @@ internal static class SecurityLogFields
     internal static readonly object Unavailable = new { status = "unavailable" };
 
     /// <summary>Latest <see cref="MaxLogons"/> logons (newest first) plus the window total.</summary>
-    internal static object SuccessfulLogons(string status, IReadOnlyList<SuccessfulLogon> logons)
-        => new
+    internal static object SuccessfulLogons(string status, IReadOnlyList<SuccessfulLogon> all)
+    {
+        var logons = DedupeLinkedLogons(all);
+        return new
         {
             status,
             count = logons.Count,
@@ -49,6 +51,42 @@ internal static class SecurityLogFields
                 })
                 .ToArray(),
         };
+    }
+
+    /// <summary>
+    /// An admin logon under UAC writes two 4624 events (limited and elevated token) that reference each other through
+    /// TargetLogonId / TargetLinkedLogonId. Of such a pair with the same user, domain, type and address only the first
+    /// in input order is kept. Input order is otherwise preserved.
+    /// </summary>
+    internal static IReadOnlyList<SuccessfulLogon> DedupeLinkedLogons(IReadOnlyList<SuccessfulLogon> logons)
+    {
+        var keptById = new Dictionary<string, SuccessfulLogon>(StringComparer.OrdinalIgnoreCase);
+        var keptByLink = new Dictionary<string, SuccessfulLogon>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<SuccessfulLogon>(logons.Count);
+        foreach (var l in logons)
+        {
+            var id = RealLogonId(l.LogonId);
+            var link = RealLogonId(l.LinkedLogonId);
+            if ((link is not null && keptById.TryGetValue(link, out var a) && SameSession(a, l))
+                || (id is not null && keptByLink.TryGetValue(id, out var b) && SameSession(b, l)))
+                continue;
+            result.Add(l);
+            if (id is not null)
+                keptById[id] = l;
+            if (link is not null)
+                keptByLink[link] = l;
+        }
+        return result;
+    }
+
+    private static string? RealLogonId(string? id)
+        => id is null || id.Trim('0', 'x', 'X').Length == 0 ? null : id;
+
+    private static bool SameSession(SuccessfulLogon a, SuccessfulLogon b)
+        => a.LogonType == b.LogonType
+           && string.Equals(a.User, b.User, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(a.Domain, b.Domain, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(a.SourceIp, b.SourceIp, StringComparison.Ordinal);
 
     internal static AdminChangeReport AdminChanges(string status, IReadOnlyList<AdminGroupChange> changes)
         => new(status, new
@@ -75,7 +113,8 @@ internal static class SecurityLogFields
 
     /// <summary>
     /// <c>local_admins</c>: ok when members and the change feed are both complete, unavailable when neither could be
-    /// read, partial otherwise (including an incomplete member list). A capped member list stays ok with truncated.
+    /// read, partial otherwise (including an incomplete member list or a change feed that is partial because the
+    /// Security log was cleared, wrapped or capped). A capped member list stays ok with truncated.
     /// </summary>
     internal static object LocalAdmins(LocalAdminsRead? members, AdminChangeReport changes)
     {

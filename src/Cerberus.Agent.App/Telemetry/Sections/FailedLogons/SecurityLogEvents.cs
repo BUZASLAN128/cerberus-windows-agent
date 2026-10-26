@@ -7,7 +7,9 @@ internal sealed record SuccessfulLogon(
     string? Domain,
     int LogonType,
     string? SourceIp,
-    string? WorkstationName);
+    string? WorkstationName,
+    string? LogonId = null,
+    string? LinkedLogonId = null);
 
 /// <summary>A membership change of a privileged group, Security 4728/4729/4732/4733/4756/4757. SIDs and names only.</summary>
 internal sealed record AdminGroupChange(
@@ -40,7 +42,9 @@ internal static class SecurityLogEventParser
             Clean(data.GetValueOrDefault("TargetDomainName")),
             type,
             FailedLogonClassifier.NormalizeIp(data.GetValueOrDefault("IpAddress")),
-            Clean(data.GetValueOrDefault("WorkstationName")));
+            Clean(data.GetValueOrDefault("WorkstationName")),
+            Clean(data.GetValueOrDefault("TargetLogonId")),
+            Clean(data.GetValueOrDefault("TargetLinkedLogonId")));
         return new FailedLogonEvent(FailedLogonSource.SuccessfulLogon4624, time, logon.SourceIp, type, Detail: logon);
     }
 

@@ -41,12 +41,22 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
             .ThenBy(s => s.user_sid, StringComparer.Ordinal)
             .ToArray();
 
+        // Cap: machine entries first, user entries fill what is left. Output keeps the sorted order above.
+        var machineLeft = MaxSoftware;
+        var userLeft = Math.Max(0, MaxSoftware - software.Count(s => s.scope != "user"));
+        var kept = software.Where(entry =>
+        {
+            if (entry.scope == "user")
+                return userLeft > 0 && userLeft-- > 0;
+            return machineLeft > 0 && machineLeft-- > 0;
+        }).ToArray();
+
         return new
         {
             status = "ok",
             software_count = software.Length,
             truncated = software.Length > MaxSoftware,
-            software = software.Take(MaxSoftware).ToArray(),
+            software = kept,
         };
     }
 

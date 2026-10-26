@@ -10,6 +10,7 @@ namespace Cerberus.Agent.App.Telemetry;
 /// Owner-requested posture facts for the security section: Microsoft Defender state and the SMB1 server flag.
 /// WMI is reached through the in-box scripting COM API (late bound, like the Windows Update probe), so the App
 /// project needs no extra package. Each key degrades on its own; one failure never drops the other key.
+/// The snapshot path never calls this inline; <see cref="SecurityPostureCache"/> runs it in the background.
 /// </summary>
 internal static class SecurityPostureProbe
 {
@@ -18,13 +19,23 @@ internal static class SecurityPostureProbe
     private const string LanmanParametersKey = @"SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters";
     private const int WbemInvalidNamespace = unchecked((int)0x8004100E);
     private const int WbemInvalidClass = unchecked((int)0x80041010);
-    private const int WbemFlagReturnImmediately = 0x10;
-    private static readonly TimeSpan WmiTimeout = TimeSpan.FromSeconds(5);
 
+    private static readonly string[] DefenderStatusProperties =
+        ["AMServiceEnabled", "RealTimeProtectionEnabled", "AntivirusSignatureLastUpdated", "QuickScanEndTime", "FullScanEndTime", "AMRunningMode"];
+
+    private static readonly string[] ThreatProperties = ["IsActive"];
+    private static readonly string[] InstallStateProperties = ["InstallState"];
+
+    internal static readonly object Unavailable = new { status = "unavailable" };
+
+    /// <summary>One WMI query: the requested properties of every returned row (null for a property that cannot be read).</summary>
+    internal delegate IReadOnlyList<IReadOnlyDictionary<string, object?>> WmiQuery(string wmiNamespace, string query, IReadOnlyList<string> properties);
+
+    // Direct, blocking read (no cache).
     internal static IReadOnlyDictionary<string, object?> Read(CancellationToken ct) => new Dictionary<string, object?>
     {
-        ["defender_av"] = Isolate("defender_av", ct, ReadDefender),
-        ["smb1"] = Isolate("smb1", ct, ReadSmb1),
+        ["defender_av"] = Isolate("defender_av", ct, token => ReadDefender(ComWmi.Query, token)),
+        ["smb1"] = Isolate("smb1", ct, token => ReadSmb1(ComWmi.Query, ReadSmb1Value, token)),
     };
 
     private static object Isolate(string key, CancellationToken ct, Func<CancellationToken, object> read)
@@ -42,77 +53,83 @@ internal static class SecurityPostureProbe
         {
             TelemetrySectionCapture.Log?.Warn(
                 $"Telemetry section security {key} {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)} at={ExceptionSite.FirstFrame(ex)}");
-            return new { status = "unavailable" };
+            return Unavailable;
         }
     }
 
     // Threat class: MSFT_MpThreat.IsActive (what Get-MpThreat reports) is a ready boolean per threat. MSFT_MpThreatDetection
     // is the per-detection history and only exposes numeric status ids that differ between Defender versions.
-    private static object ReadDefender(CancellationToken ct)
+    // A missing namespace/class on the status query means Defender is not installed (not_applicable); a missing threat
+    // class only leaves active_threats null.
+    internal static object ReadDefender(WmiQuery query, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        IReadOnlyList<IReadOnlyDictionary<string, object?>> rows;
         try
         {
-            return RunBounded(() => QueryDefender(), ct);
+            rows = query(DefenderNamespace,
+                "SELECT AMServiceEnabled, RealTimeProtectionEnabled, AntivirusSignatureLastUpdated, QuickScanEndTime, FullScanEndTime, AMRunningMode FROM MSFT_MpComputerStatus",
+                DefenderStatusProperties);
         }
         catch (COMException ex) when (IsNamespaceOrClassMissing(ex.HResult))
         {
             return DefenderNotApplicable;
         }
-    }
 
-    private static object QueryDefender()
-    {
-        var status = QueryFirst(DefenderNamespace,
-            "SELECT AMServiceEnabled, RealTimeProtectionEnabled, AntivirusSignatureLastUpdated, QuickScanEndTime, FullScanEndTime, AMRunningMode FROM MSFT_MpComputerStatus",
-            static row => new DefenderRow(
-                Prop(row, "AMServiceEnabled") as bool?,
-                Prop(row, "RealTimeProtectionEnabled") as bool?,
-                ParseDmtf(Prop(row, "AntivirusSignatureLastUpdated")),
-                ParseDmtf(Prop(row, "QuickScanEndTime")),
-                ParseDmtf(Prop(row, "FullScanEndTime")),
-                Prop(row, "AMRunningMode") as string));
-        if (status is null)
+        if (rows.Count == 0 || MapDefenderStatus(Get(rows[0], "AMRunningMode") as string) != "ok")
             return DefenderNotApplicable;
-        if (MapDefenderStatus(status.RunningMode) != "ok")
-            return DefenderNotApplicable;
+        var row = rows[0];
 
-        var active = CountActiveThreats();
+        ct.ThrowIfCancellationRequested();
+        int? active = null;
+        try
+        {
+            active = query(DefenderNamespace, "SELECT IsActive FROM MSFT_MpThreat", ThreatProperties)
+                .Count(static r => Get(r, "IsActive") is true);
+        }
+        catch (COMException ex) when (IsNamespaceOrClassMissing(ex.HResult))
+        {
+        }
+
         return new
         {
             status = "ok",
-            am_service_enabled = status.AmServiceEnabled,
-            real_time_protection = status.RealTimeProtection,
-            signature_updated_utc = ServerFactText.UtcOrNull(status.SignatureUpdated),
-            last_quick_scan_utc = ServerFactText.UtcOrNull(status.QuickScan),
-            last_full_scan_utc = ServerFactText.UtcOrNull(status.FullScan),
+            am_service_enabled = Get(row, "AMServiceEnabled") as bool?,
+            real_time_protection = Get(row, "RealTimeProtectionEnabled") as bool?,
+            signature_updated_utc = ServerFactText.UtcOrNull(ParseDmtf(Get(row, "AntivirusSignatureLastUpdated"))),
+            last_quick_scan_utc = ServerFactText.UtcOrNull(ParseDmtf(Get(row, "QuickScanEndTime"))),
+            last_full_scan_utc = ServerFactText.UtcOrNull(ParseDmtf(Get(row, "FullScanEndTime"))),
             active_threats = active,
         };
     }
 
-    private static int CountActiveThreats()
-    {
-        var count = 0;
-        ForEachRow(DefenderNamespace, "SELECT IsActive FROM MSFT_MpThreat", row =>
-        {
-            if (Prop(row, "IsActive") is true)
-                count++;
-        });
-        return count;
-    }
-
-    private static object ReadSmb1(CancellationToken ct)
+    internal static object? ReadSmb1Value()
     {
         using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
         using var key = hklm.OpenSubKey(LanmanParametersKey, writable: false);
-        var configured = MapSmb1Value(key?.GetValue("SMB1"));
-        if (configured is { } enabled)
-            return new { status = "ok", server_enabled = enabled };
-
-        var feature = RunBounded(() => QueryFirst(CimV2Namespace,
-            "SELECT InstallState FROM Win32_OptionalFeature WHERE Name = 'SMB1Protocol'",
-            static row => Prop(row, "InstallState")), ct);
-        return new { status = "ok", server_enabled = MapOptionalFeatureState(feature) };
+        return key?.GetValue("SMB1");
     }
+
+    // Registry value first. Without it, the server component feature decides; the parent feature is only a fallback when
+    // the child row is missing. No row at all is unknown, never a safe-looking false.
+    internal static object ReadSmb1(WmiQuery query, Func<object?> registryValue, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (MapSmb1Value(registryValue()) is { } configured)
+            return new { status = "ok", server_enabled = configured };
+
+        foreach (var feature in new[] { "SMB1Protocol-Server", "SMB1Protocol" })
+        {
+            ct.ThrowIfCancellationRequested();
+            var rows = query(CimV2Namespace, $"SELECT InstallState FROM Win32_OptionalFeature WHERE Name = '{feature}'", InstallStateProperties);
+            if (rows.Count > 0 && Get(rows[0], "InstallState") is { } state)
+                return new { status = "ok", server_enabled = (bool?)MapOptionalFeatureState(state) };
+        }
+
+        return new { status = "unavailable", server_enabled = (bool?)null };
+    }
+
+    private static object? Get(IReadOnlyDictionary<string, object?> row, string name) => row.TryGetValue(name, out var v) ? v : null;
 
     private static readonly object DefenderNotApplicable = new
     {
@@ -171,38 +188,18 @@ internal static class SecurityPostureProbe
     // LanmanServer SMB1: 0 = disabled, 1 = enabled; absent or any other value = not configured (null).
     internal static bool? MapSmb1Value(object? value) => value is int v ? v switch { 0 => false, 1 => true, _ => null } : null;
 
-    // Win32_OptionalFeature.InstallState: 1 = enabled; 2 = disabled, 3 = absent. No row means the feature is absent.
+    // Win32_OptionalFeature.InstallState (only called when a row exists): 1 = enabled; 2 = disabled, 3 = absent.
     internal static bool MapOptionalFeatureState(object? installState) => installState is 1 or 1u or (short)1;
+}
 
-    private sealed record DefenderRow(
-        bool? AmServiceEnabled, bool? RealTimeProtection, DateTimeOffset? SignatureUpdated,
-        DateTimeOffset? QuickScan, DateTimeOffset? FullScan, string? RunningMode);
+/// <summary>Late-bound WMI through the in-box scripting COM API. Blocking; callers run it on a background thread.</summary>
+internal static class ComWmi
+{
+    private const int WbemFlagReturnImmediately = 0x10;
 
-    // The scripting COM call has no cancellation of its own; an abandoned query finishes on the pool thread and is dropped.
-    private static T RunBounded<T>(Func<T> work, CancellationToken ct)
+    internal static IReadOnlyList<IReadOnlyDictionary<string, object?>> Query(string wmiNamespace, string query, IReadOnlyList<string> properties)
     {
-        var task = Task.Run(work, CancellationToken.None);
-        if (!task.Wait(WmiTimeout, ct))
-            throw new TimeoutException("WMI query timed out.");
-        return task.GetAwaiter().GetResult();
-    }
-
-    private static T? QueryFirst<T>(string wmiNamespace, string query, Func<object, T> map)
-    {
-        T? result = default;
-        var found = false;
-        ForEachRow(wmiNamespace, query, row =>
-        {
-            if (found)
-                return;
-            result = map(row);
-            found = true;
-        });
-        return result;
-    }
-
-    private static void ForEachRow(string wmiNamespace, string query, Action<object> onRow)
-    {
+        var result = new List<IReadOnlyDictionary<string, object?>>();
         var locatorType = Type.GetTypeFromProgID("WbemScripting.SWbemLocator")
             ?? throw new PlatformNotSupportedException("WMI scripting API is not available.");
         object? locator = null;
@@ -219,7 +216,10 @@ internal static class SecurityPostureProbe
             {
                 try
                 {
-                    onRow(row);
+                    var values = new Dictionary<string, object?>(StringComparer.Ordinal);
+                    foreach (var name in properties)
+                        values[name] = Prop(row, name);
+                    result.Add(values);
                 }
                 finally
                 {
@@ -236,6 +236,8 @@ internal static class SecurityPostureProbe
                     Marshal.FinalReleaseComObject(com);
             }
         }
+
+        return result;
     }
 
     private static object? Prop(object row, string name)
@@ -250,4 +252,11 @@ internal static class SecurityPostureProbe
             return null;
         }
     }
+}
+
+internal sealed class WmiSecurityPostureReader : ISecurityPostureReader
+{
+    public object ReadDefender(CancellationToken ct) => SecurityPostureProbe.ReadDefender(ComWmi.Query, ct);
+
+    public object ReadSmb1(CancellationToken ct) => SecurityPostureProbe.ReadSmb1(ComWmi.Query, SecurityPostureProbe.ReadSmb1Value, ct);
 }

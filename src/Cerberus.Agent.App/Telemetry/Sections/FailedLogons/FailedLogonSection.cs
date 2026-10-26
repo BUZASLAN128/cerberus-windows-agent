@@ -42,6 +42,8 @@ internal static class FailedLogonSection
             var securityEvents = new List<FailedLogonEvent>();
             var securityReadable = false;
             var securityCapped = false;
+            var securityResetOrGap = false;
+            var securityFresh = false;
             var reset = false;
             var capped = false;
             var failed = 0;
@@ -67,6 +69,11 @@ internal static class FailedLogonSection
                 long? saved = state.Channels.TryGetValue(channel, out var s) ? s : null;
                 var decision = FailedLogonCursorLogic.Decide(saved, b.Oldest, b.Newest, invalid);
                 reset |= FailedLogonCursorLogic.IsReset(decision);
+                if (channel == FailedLogonEventReader.Security)
+                {
+                    securityResetOrGap = FailedLogonCursorLogic.IsReset(decision);
+                    securityFresh = decision != ChannelStart.Resume;
+                }
                 var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
                 if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
                 {
@@ -96,7 +103,7 @@ internal static class FailedLogonSection
 
             reset |= events.Any(e => e.Source == FailedLogonSource.LogCleared);
             state.LastWindowEndUtc = now;
-            var lastCleared = securityReadable ? LatestClear(state.LastLogClearedUtc, securityEvents) : state.LastLogClearedUtc;
+            var lastCleared = securityReadable ? LatestClear(state, securityEvents, securityFresh, ct) : state.LastLogClearedUtc;
             state.LastLogClearedUtc = lastCleared;
             var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
             var auditFailure = FailedLogonAuditPolicy.ReadFailureEnabled();
@@ -110,7 +117,7 @@ internal static class FailedLogonSection
             if (commit && !firstRun)
                 _pending = (store, state, report);
 
-            var feedStatus = !securityReadable ? "unavailable" : securityCapped || !saveOk ? "partial" : "ok";
+            var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
             return new SecurityLogResult(
                 report,
                 feedStatus == "unavailable"
@@ -126,12 +133,25 @@ internal static class FailedLogonSection
     private static List<T> Details<T>(IEnumerable<FailedLogonEvent> events, FailedLogonSource source) where T : class
         => events.Where(e => e.Source == source).Select(e => e.Detail).OfType<T>().ToList();
 
-    /// <summary>Newest of the saved value, the 1102 events of this scan and the newest 1102 still in the Security log.</summary>
-    private static DateTimeOffset? LatestClear(DateTimeOffset? saved, IEnumerable<FailedLogonEvent> securityEvents)
+    /// <summary>
+    /// Newest of the saved value and the 1102 events of this scan. The reverse read for the newest 1102 still in the log
+    /// runs only to seed a cursor that never did (first run, reset, gap, or no earlier scan); afterwards the forward
+    /// scan sees every new 1102.
+    /// </summary>
+    private static DateTimeOffset? LatestClear(FailedLogonCursorState state, IEnumerable<FailedLogonEvent> securityEvents, bool fresh, CancellationToken ct)
     {
-        var latest = saved;
-        foreach (var t in securityEvents.Where(e => e.Source == FailedLogonSource.LogCleared).Select(e => (DateTimeOffset?)e.TimeUtc)
-                     .Append(FailedLogonEventReader.LatestSecurityCleared()))
+        var latest = state.LastLogClearedUtc;
+        var candidates = securityEvents.Where(e => e.Source == FailedLogonSource.LogCleared).Select(e => (DateTimeOffset?)e.TimeUtc).ToList();
+        if (fresh || !state.LogClearedSeeded)
+        {
+            var (ok, time) = FailedLogonEventReader.LatestSecurityCleared(ct);
+            if (ok)
+            {
+                state.LogClearedSeeded = true;
+                candidates.Add(time);
+            }
+        }
+        foreach (var t in candidates)
             if (t is { } time && (latest is null || time > latest))
                 latest = time;
         return latest;

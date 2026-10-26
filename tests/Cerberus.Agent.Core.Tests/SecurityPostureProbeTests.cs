@@ -110,7 +110,9 @@ public sealed class SecurityPostureProbeTests
         var dir = Path.Combine(Path.GetTempPath(), "fl-sec-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var collector = new SecurityTelemetrySectionCollector(commitFailedLogons: false, enabled, new FailedLogonCursorStore(Path.Combine(dir, "c.json")));
+            // Fake reader: the collector must never reach real WMI from a test.
+            using var cache = new SecurityPostureCache(new FakePostureReader(), new ManualTimeProvider(new DateTimeOffset(2026, 3, 1, 12, 0, 0, TimeSpan.Zero)));
+            var collector = new SecurityTelemetrySectionCollector(commitFailedLogons: false, enabled, new FailedLogonCursorStore(Path.Combine(dir, "c.json")), cache);
             var node = Obj(await collector.CollectAsync(Context(), CancellationToken.None));
 
             var added = new[] { "failed_logons", "successful_logons", "log_cleared", "local_admins", "unexpected_shutdowns", "defender_av", "smb1" };

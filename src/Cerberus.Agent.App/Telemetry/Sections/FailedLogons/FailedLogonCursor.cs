@@ -18,6 +18,10 @@ internal sealed class FailedLogonCursorState
     [JsonPropertyName("last_log_cleared_utc")]
     public DateTimeOffset? LastLogClearedUtc { get; set; }
 
+    /// <summary>True once the Security log was searched for an existing 1102 (even when none was found); additive, absent in older files.</summary>
+    [JsonPropertyName("log_cleared_seeded")]
+    public bool LogClearedSeeded { get; set; }
+
     [JsonPropertyName("channels")]
     public Dictionary<string, long> Channels { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

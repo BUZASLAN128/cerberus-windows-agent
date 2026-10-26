@@ -209,8 +209,7 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
                 }
             }
 
-            if (items.Count >= MaxPendingItems)
-                continue;
+            // Every pending item is kept here; security items are moved to the front before the cap below.
             string? kb = null;
             dynamic kbIds = update.KBArticleIDs;
             if ((int)kbIds.Count > 0)
@@ -250,7 +249,7 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
             pending,
             security,
             recent.OrderByDescending(e => e.InstalledUtc).Take(MaxRecent).ToArray(),
-            items,
+            items.OrderByDescending(p => p.Security).Take(MaxPendingItems).ToArray(),
             pending > MaxPendingItems,
             recent.Count > MaxRecent);
     }

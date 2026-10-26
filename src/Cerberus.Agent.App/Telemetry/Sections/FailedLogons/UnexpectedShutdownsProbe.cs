@@ -15,8 +15,57 @@ internal static class UnexpectedShutdownsProbe
     internal static readonly TimeSpan SameIncident = TimeSpan.FromMinutes(5);
     private const string Query = "*[System[(EventID=41 or EventID=6008) and TimeCreated[timediff(@SystemTime) <= 604800000]]]";
 
+    private static readonly TimeSpan Window = TimeSpan.FromDays(7);
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
+    private static readonly TimeSpan BootTolerance = TimeSpan.FromMinutes(1);
+    private static readonly object CacheGate = new();
+    private static DateTimeOffset? _cachedBoot;
+    private static DateTimeOffset _cachedAt;
+    private static IReadOnlyList<DateTimeOffset> _cachedTimes = Array.Empty<DateTimeOffset>();
+
     /// <exception cref="EventLogException">The System log could not be queried.</exception>
     public static UnexpectedShutdowns Read(CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var boot = now - TimeSpan.FromMilliseconds(Environment.TickCount64);
+        return ReadCached(now, boot, () => ReadTimes(ct));
+    }
+
+    /// <summary>
+    /// Both events are written at boot, so the 7-day event list only changes with a new boot. The list is reused for
+    /// the same boot time within <see cref="CacheTtl"/> (which also bounds the effect of a log clear) and the window is
+    /// re-applied on every call; a failed fetch is not cached.
+    /// </summary>
+    internal static UnexpectedShutdowns ReadCached(DateTimeOffset now, DateTimeOffset bootUtc, Func<IReadOnlyList<DateTimeOffset>> fetch)
+    {
+        IReadOnlyList<DateTimeOffset> times;
+        lock (CacheGate)
+        {
+            if (_cachedBoot is { } cached && (bootUtc - cached).Duration() <= BootTolerance && now >= _cachedAt && now - _cachedAt <= CacheTtl)
+            {
+                times = _cachedTimes;
+            }
+            else
+            {
+                times = fetch();
+                _cachedBoot = bootUtc;
+                _cachedAt = now;
+                _cachedTimes = times;
+            }
+        }
+        return Summarize(times.Where(t => now - t <= Window));
+    }
+
+    internal static void ResetCache()
+    {
+        lock (CacheGate)
+        {
+            _cachedBoot = null;
+            _cachedTimes = Array.Empty<DateTimeOffset>();
+        }
+    }
+
+    private static List<DateTimeOffset> ReadTimes(CancellationToken ct)
     {
         var times = new List<DateTimeOffset>();
         using var reader = new EventLogReader(new EventLogQuery(FailedLogonEventReader.SystemLog, PathType.LogName, Query) { ReverseDirection = true });
@@ -29,7 +78,7 @@ internal static class UnexpectedShutdownsProbe
             if (record.TimeCreated is { } t && IsExpectedProvider(record.Id, record.ProviderName))
                 times.Add(new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero));
         }
-        return Summarize(times);
+        return times;
     }
 
     internal static bool IsExpectedProvider(int eventId, string? provider) => eventId switch
