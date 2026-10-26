@@ -106,8 +106,36 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         }
     }
 
+    /// <summary>
+    /// True only for a drive-letter path on a fixed local disk. UNC, device (<c>\\?\</c>, <c>\\.\</c>), relative and
+    /// removable/network/optical paths are rejected so the service account never opens a file a user pointed it at
+    /// (an SMB open would send the machine account's NTLM credentials to that host).
+    /// </summary>
+    internal static bool IsLocalFixedPath(string? path, Func<string, DriveType>? driveTypeOf = null)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
+            return false;
+        try
+        {
+            if (!System.IO.Path.IsPathFullyQualified(path))
+                return false;
+            var root = System.IO.Path.GetPathRoot(path);
+            if (root is not { Length: >= 3 } || !char.IsAsciiLetter(root[0]) || root[1] != ':')
+                return false;
+            return (driveTypeOf ?? (r => new DriveInfo(r).DriveType))(root) == DriveType.Fixed;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     private static string? ReadSignerCached(string path)
     {
+        // Never open an image outside a local fixed disk: the path is reported, the signer stays null.
+        if (!IsLocalFixedPath(path))
+            return null;
+
         // No identity (file missing, unreadable, not NTFS-like): nothing is reported or cached.
         if (!TryGetKey(path, out var key))
             return null;

@@ -19,7 +19,8 @@ internal static class UnexpectedShutdownsProbe
     private static readonly TimeSpan Window = TimeSpan.FromDays(7);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
     private static readonly TimeSpan BootTolerance = TimeSpan.FromMinutes(1);
-    private static readonly object CacheGate = new();
+    internal static readonly TimeSpan GateWait = TimeSpan.FromSeconds(3);
+    private static readonly SemaphoreSlim CacheGate = new(1, 1);
     private static DateTimeOffset? _cachedBoot;
     private static DateTimeOffset _cachedAt;
     private static IReadOnlyList<DateTimeOffset> _cachedTimes = Array.Empty<DateTimeOffset>();
@@ -29,7 +30,7 @@ internal static class UnexpectedShutdownsProbe
     {
         var now = DateTimeOffset.UtcNow;
         var boot = now - TimeSpan.FromMilliseconds(Environment.TickCount64);
-        return ReadCached(now, boot, () => ReadTimes(ct));
+        return ReadCached(now, boot, () => ReadTimes(ct), ct: ct);
     }
 
     /// <summary>
@@ -37,21 +38,40 @@ internal static class UnexpectedShutdownsProbe
     /// the same boot time within <see cref="CacheTtl"/> (which also bounds the effect of a log clear) and the window is
     /// re-applied on every call; a failed fetch is not cached.
     /// </summary>
-    internal static UnexpectedShutdowns ReadCached(DateTimeOffset now, DateTimeOffset bootUtc, Func<IReadOnlyList<DateTimeOffset>> fetch)
+    /// <remarks>
+    /// The fetch runs under a gate that waiters give up on after <paramref name="gateWait"/> (default <see cref="GateWait"/>):
+    /// a stalled log read must not pile up later snapshots. A waiter that times out reuses the last cached list, however
+    /// old, and throws <see cref="TimeoutException"/> when there is none.
+    /// </remarks>
+    internal static UnexpectedShutdowns ReadCached(DateTimeOffset now, DateTimeOffset bootUtc, Func<IReadOnlyList<DateTimeOffset>> fetch,
+        TimeSpan? gateWait = null, CancellationToken ct = default)
     {
         IReadOnlyList<DateTimeOffset> times;
-        lock (CacheGate)
+        if (!CacheGate.Wait(gateWait ?? GateWait, ct))
         {
-            if (_cachedBoot is { } cached && (bootUtc - cached).Duration() <= BootTolerance && now >= _cachedAt && now - _cachedAt <= CacheTtl)
+            if (_cachedBoot is null)
+                throw new TimeoutException("Unexpected shutdown read is busy and nothing is cached.");
+            times = _cachedTimes;
+        }
+        else
+        {
+            try
             {
-                times = _cachedTimes;
+                if (_cachedBoot is { } cached && (bootUtc - cached).Duration() <= BootTolerance && now >= _cachedAt && now - _cachedAt <= CacheTtl)
+                {
+                    times = _cachedTimes;
+                }
+                else
+                {
+                    times = fetch();
+                    _cachedBoot = bootUtc;
+                    _cachedAt = now;
+                    _cachedTimes = times;
+                }
             }
-            else
+            finally
             {
-                times = fetch();
-                _cachedBoot = bootUtc;
-                _cachedAt = now;
-                _cachedTimes = times;
+                CacheGate.Release();
             }
         }
         // The fetch reads one matching event past the cap: seeing it inside the window means the older ones were not counted.
@@ -61,10 +81,15 @@ internal static class UnexpectedShutdownsProbe
 
     internal static void ResetCache()
     {
-        lock (CacheGate)
+        CacheGate.Wait();
+        try
         {
             _cachedBoot = null;
             _cachedTimes = Array.Empty<DateTimeOffset>();
+        }
+        finally
+        {
+            CacheGate.Release();
         }
     }
 
