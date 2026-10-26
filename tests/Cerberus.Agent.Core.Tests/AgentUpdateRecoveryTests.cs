@@ -28,8 +28,35 @@ public sealed class AgentUpdateRecoveryTests
     [Theory]
     [InlineData(null)]
     [InlineData("not-a-date")]
-    public void HealthRetry_WithoutUsableInstallerTimestampExpiresImmediately(string? recorded)
-        => Assert.True(AgentUpdateLocalService.HealthRetryExpired(HealthPending(recorded), Recorded, DateTimeOffset.MinValue));
+    public void HealthRetry_WithoutUsableInstallerTimestampCountsFromServiceStartOnly(string? recorded)
+    {
+        var started = Recorded.AddMinutes(-1);
+        var journal = HealthPending(recorded);
+        Assert.False(AgentUpdateLocalService.HealthRetryExpired(journal, Recorded, started));
+        Assert.False(AgentUpdateLocalService.HealthRetryExpired(journal, started.AddSeconds(15 * 60 - 1), started));
+        Assert.True(AgentUpdateLocalService.HealthRetryExpired(journal, started.AddMinutes(15), started));
+        Assert.True(AgentUpdateLocalService.HealthRetryExpired(journal, Recorded, DateTimeOffset.MinValue));
+    }
+
+    [Theory]
+    [InlineData(60, false)]
+    [InlineData(14 * 60 + 59, false)]
+    [InlineData(15 * 60, true)]
+    public void HealthRetry_AfterARebootCountsFifteenMinutesFromServiceStart(int secondsAfterServiceStart, bool expired)
+    {
+        var started = Recorded;
+        var journal = HealthPending(started.AddHours(-5).ToString("O"));
+        Assert.Equal(expired, AgentUpdateLocalService.HealthRetryExpired(journal, started.AddSeconds(secondsAfterServiceStart), started));
+    }
+
+    [Fact]
+    public void HealthRetry_ServiceStartBeforeTheInstallerResultKeepsTheResultAnchor()
+    {
+        var journal = HealthPending(Recorded.ToString("O"));
+        var started = Recorded.AddHours(-3);
+        Assert.False(AgentUpdateLocalService.HealthRetryExpired(journal, Recorded.AddSeconds(15 * 60 - 1), started));
+        Assert.True(AgentUpdateLocalService.HealthRetryExpired(journal, Recorded.AddMinutes(15), started));
+    }
 
     [Fact]
     public void RecoveryEvidence_IsTheLatestOfResultRunnerAndInstallerTimestamps()
@@ -98,8 +125,29 @@ public sealed class AgentUpdateRecoveryTests
     }
 
     [Fact]
-    public void RecoveryCloseDue_WithoutAnyTimestampClosesImmediately()
+    public void RecoveryCloseDue_WithoutAnyTimestampClosesWhenTheServiceStartedLongAgo()
         => Assert.True(AgentUpdateLocalService.RecoveryCloseDue(Recovery(), Recorded, DateTimeOffset.MinValue, false, false));
+
+    [Theory]
+    [InlineData(9 * 60 + 59, false)]
+    [InlineData(10 * 60, true)]
+    public void RecoveryCloseDue_AfterARebootCountsTenMinutesFromServiceStart(int secondsAfterServiceStart, bool due)
+    {
+        var started = Recorded;
+        var stale = Recovery(started.AddHours(-5)) with { InstallerStartedUtc = started.AddHours(-5), RunnerStartedUtc = started.AddHours(-5) };
+        Assert.Equal(due, AgentUpdateLocalService.RecoveryCloseDue(stale, started.AddSeconds(secondsAfterServiceStart), started, false, false));
+        var noEvidence = Recovery();
+        Assert.Equal(due, AgentUpdateLocalService.RecoveryCloseDue(noEvidence, started.AddSeconds(secondsAfterServiceStart), started, false, false));
+    }
+
+    [Fact]
+    public void RecoveryCloseDue_RecentEvidenceBeatsAnOlderServiceStart()
+    {
+        var journal = Recovery(Recorded);
+        var started = Recorded.AddHours(-3);
+        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal, Recorded.AddSeconds(9 * 60 + 59), started, false, false));
+        Assert.True(AgentUpdateLocalService.RecoveryCloseDue(journal, Recorded.AddMinutes(10), started, false, false));
+    }
 
     [Theory]
     [InlineData(AgentUpdateStates.HealthPending)]
