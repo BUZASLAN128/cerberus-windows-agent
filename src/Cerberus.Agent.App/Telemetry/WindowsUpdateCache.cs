@@ -5,7 +5,15 @@ namespace Cerberus.Agent.App.Telemetry;
 
 internal sealed record WindowsUpdateEntry(string? Kb, string Title, DateTimeOffset? InstalledUtc);
 
-internal sealed record WindowsUpdateScan(int PendingCount, int SecurityCount, IReadOnlyList<WindowsUpdateEntry> Recent);
+internal sealed record WindowsUpdatePending(string? Kb, string Title, bool Security);
+
+internal sealed record WindowsUpdateScan(
+    int PendingCount,
+    int SecurityCount,
+    IReadOnlyList<WindowsUpdateEntry> Recent,
+    IReadOnlyList<WindowsUpdatePending>? PendingItems = null,
+    bool PendingTruncated = false,
+    bool RecentTruncated = false);
 
 internal sealed record WindowsUpdateCacheEntry(WindowsUpdateScan Scan, DateTimeOffset CheckedAt);
 
@@ -167,6 +175,7 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
     private const string SecurityUpdatesCategoryId = "0fa1201d-4330-4fa8-8ae9-b877473b6441";
     private const int MaxHistoryEntries = 200;
     private const int MaxRecent = 20;
+    private const int MaxPendingItems = 50;
 
     public Task<WindowsUpdateScan> SearchAsync(CancellationToken ct) => Task.Run(() => Search(ct), ct);
 
@@ -181,20 +190,37 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
         dynamic found = searcher.Search("IsInstalled=0 and IsHidden=0");
         dynamic updates = found.Updates;
         int pending = updates.Count, security = 0;
+        var items = new List<WindowsUpdatePending>();
         for (var i = 0; i < pending; i++)
         {
             ct.ThrowIfCancellationRequested();
-            dynamic categories = updates.Item(i).Categories;
+            dynamic update = updates.Item(i);
+            dynamic categories = update.Categories;
             int categoryCount = categories.Count;
+            var isSecurity = false;
             for (var j = 0; j < categoryCount; j++)
             {
                 string id = categories.Item(j).CategoryID;
                 if (string.Equals(id, SecurityUpdatesCategoryId, StringComparison.OrdinalIgnoreCase))
                 {
+                    isSecurity = true;
                     security++;
                     break;
                 }
             }
+
+            if (items.Count >= MaxPendingItems)
+                continue;
+            string? kb = null;
+            dynamic kbIds = update.KBArticleIDs;
+            if ((int)kbIds.Count > 0)
+            {
+                string first = ((string?)kbIds.Item(0) ?? string.Empty).Trim();
+                if (first.Length > 0)
+                    kb = first.StartsWith("KB", StringComparison.OrdinalIgnoreCase) ? first.ToUpperInvariant() : "KB" + first;
+            }
+
+            items.Add(new WindowsUpdatePending(kb, (string?)update.Title ?? string.Empty, isSecurity));
         }
 
         var recent = new List<WindowsUpdateEntry>();
@@ -223,7 +249,10 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
         return new WindowsUpdateScan(
             pending,
             security,
-            recent.OrderByDescending(e => e.InstalledUtc).Take(MaxRecent).ToArray());
+            recent.OrderByDescending(e => e.InstalledUtc).Take(MaxRecent).ToArray(),
+            items,
+            pending > MaxPendingItems,
+            recent.Count > MaxRecent);
     }
 
     [GeneratedRegex(@"KB\d{4,8}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

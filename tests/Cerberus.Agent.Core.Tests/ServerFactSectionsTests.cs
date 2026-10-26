@@ -245,8 +245,9 @@ public sealed partial class ServerFactSectionsTests
             .ToArray();
         var node = Obj(UpdatesTelemetrySectionCollector.Build(true, new WindowsUpdateCacheEntry(new WindowsUpdateScan(3, 1, recent), T0)));
 
-        Assert.Equal(Sorted("status", "reboot_required", "recent", "pending"), Keys(node));
+        Assert.Equal(Sorted("status", "reboot_required", "recent", "recent_truncated", "pending"), Keys(node));
         Assert.True((bool)node["reboot_required"]!);
+        Assert.True((bool)node["recent_truncated"]!);
         var list = node["recent"]!.AsArray();
         Assert.Equal(20, list.Count);
         Assert.Equal(Fill("K", 16), (string)list[0]!["kb"]!);
@@ -256,10 +257,69 @@ public sealed partial class ServerFactSectionsTests
         Assert.All(list, e => Assert.True(((string)e!["title"]!).Length <= 160));
 
         var pending = node["pending"]!;
-        Assert.Equal(Sorted("status", "count", "security_count", "checked_at_utc"), Keys(pending));
+        Assert.Equal(Sorted("status", "count", "security_count", "checked_at_utc", "items", "truncated"), Keys(pending));
         Assert.Equal("ok", (string)pending["status"]!);
         Assert.Equal((3, 1), ((int)pending["count"]!, (int)pending["security_count"]!));
         Assert.Equal("2026-03-01T12:00:00Z", (string)pending["checked_at_utc"]!);
+        Assert.Empty(pending["items"]!.AsArray());
+        Assert.False((bool)pending["truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_RecentUnderCapIsNotTruncated()
+    {
+        var scan = new WindowsUpdateScan(0, 0, new[] { new WindowsUpdateEntry("KB1", "one", T0) });
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(scan, T0)));
+
+        Assert.False((bool)node["recent_truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemsAreCappedAtFiftyAndMarkedTruncated()
+    {
+        var items = Enumerable.Range(0, 51).Select(i => new WindowsUpdatePending($"KB{i:D7}", $"Pending {i:D2}", false)).ToArray();
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(51, 0, Array.Empty<WindowsUpdateEntry>(), items, true), T0)));
+
+        var pending = node["pending"]!;
+        var list = pending["items"]!.AsArray();
+        Assert.Equal(50, list.Count);
+        Assert.Equal("Pending 00", (string)list[0]!["title"]!);
+        Assert.Equal("Pending 49", (string)list[49]!["title"]!);
+        Assert.True((bool)pending["truncated"]!);
+        Assert.Equal(51, (int)pending["count"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemsAtCapAreNotTruncated()
+    {
+        var items = Enumerable.Range(0, 50).Select(i => new WindowsUpdatePending($"KB{i:D7}", $"Pending {i:D2}", false)).ToArray();
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(50, 0, Array.Empty<WindowsUpdateEntry>(), items), T0)));
+
+        Assert.Equal(50, node["pending"]!["items"]!.AsArray().Count);
+        Assert.False((bool)node["pending"]!["truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemShapeCapsAndSecurityFlags()
+    {
+        var items = new[]
+        {
+            new WindowsUpdatePending("KB5001234", "Security fix", true),
+            new WindowsUpdatePending(null, "No article", false),
+            new WindowsUpdatePending(Fill("K", 40), Fill("T", 300), true),
+        };
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(3, 2, Array.Empty<WindowsUpdateEntry>(), items), T0)));
+
+        var pending = node["pending"]!;
+        var list = pending["items"]!.AsArray();
+        Assert.Equal(3, list.Count);
+        Assert.Equal(Sorted("kb", "title", "security"), Keys(list[0]));
+        Assert.Equal("KB5001234", (string)list[0]!["kb"]!);
+        Assert.Null(list[1]!["kb"]);
+        Assert.Equal(Fill("K", 16), (string)list[2]!["kb"]!);
+        Assert.Equal(160, ((string)list[2]!["title"]!).Length);
+        Assert.False((bool)pending["truncated"]!);
+        Assert.Equal((int)pending["security_count"]!, list.Count(e => (bool)e!["security"]!));
     }
 
     [Fact]
@@ -292,7 +352,10 @@ public sealed partial class ServerFactSectionsTests
         Assert.Null(pending["count"]);
         Assert.Null(pending["security_count"]);
         Assert.Null(pending["checked_at_utc"]);
+        Assert.Empty(pending["items"]!.AsArray());
+        Assert.False((bool)pending["truncated"]!);
         Assert.Empty(node["recent"]!.AsArray());
+        Assert.False((bool)node["recent_truncated"]!);
         Assert.False((bool)node["reboot_required"]!);
     }
 

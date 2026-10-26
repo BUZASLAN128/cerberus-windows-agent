@@ -9,6 +9,7 @@ namespace Cerberus.Agent.App.Telemetry.Sections;
 internal sealed class UpdatesTelemetrySectionCollector : IWindowsTelemetrySectionCollector
 {
     internal const int MaxRecent = 20;
+    internal const int MaxPendingItems = 50;
 
     private readonly IWindowsUpdateCacheReader _cache;
     private readonly Func<bool?> _rebootProbe;
@@ -41,22 +42,37 @@ internal sealed class UpdatesTelemetrySectionCollector : IWindowsTelemetrySectio
                 installed_utc = ServerFactText.UtcOrNull(e.InstalledUtc),
             })
             .Distinct()
-            .Take(MaxRecent)
             .ToArray();
+        var recentTruncated = recent.Length > MaxRecent || (cached?.Scan.RecentTruncated ?? false);
+        recent = recent.Take(MaxRecent).ToArray();
+
+        var pendingAll = (cached?.Scan.PendingItems ?? Array.Empty<WindowsUpdatePending>())
+            .Select(p => new
+            {
+                kb = ServerFactText.CleanOrNull(p.Kb, 16),
+                title = ServerFactText.Clean(p.Title, 160),
+                security = p.Security,
+            })
+            .ToArray();
+        var items = pendingAll.Take(MaxPendingItems).ToArray();
+        var pendingTruncated = pendingAll.Length > MaxPendingItems || (cached?.Scan.PendingTruncated ?? false);
 
         return new
         {
             status = "ok",
             reboot_required = rebootRequired,
             recent,
+            recent_truncated = recentTruncated,
             pending = cached is null
-                ? new { status = "unavailable", count = (int?)null, security_count = (int?)null, checked_at_utc = (string?)null }
+                ? new { status = "unavailable", count = (int?)null, security_count = (int?)null, checked_at_utc = (string?)null, items, truncated = false }
                 : new
                 {
                     status = "ok",
                     count = (int?)cached.Scan.PendingCount,
                     security_count = (int?)cached.Scan.SecurityCount,
                     checked_at_utc = (string?)ServerFactText.Utc(cached.CheckedAt),
+                    items,
+                    truncated = pendingTruncated,
                 },
         };
     }
