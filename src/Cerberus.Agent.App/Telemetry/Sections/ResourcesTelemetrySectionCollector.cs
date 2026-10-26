@@ -1,9 +1,19 @@
 using System.IO;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
 internal sealed class ResourcesTelemetrySectionCollector : IWindowsTelemetrySectionCollector
 {
+    private readonly ResourceSampler _sampler;
+
+    public ResourcesTelemetrySectionCollector()
+        : this(ResourceSampler.Shared)
+    {
+    }
+
+    internal ResourcesTelemetrySectionCollector(ResourceSampler sampler) => _sampler = sampler;
+
     public string SectionName => "resources";
 
     public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
@@ -25,6 +35,9 @@ internal sealed class ResourcesTelemetrySectionCollector : IWindowsTelemetrySect
 
         var gc = GC.GetGCMemoryInfo();
         var memory = TelemetryValue.ReadPhysicalMemory();
+        var window = _sampler.GetWindow(ResourceSampler.WindowSeconds(
+            AgentTimingPolicy.Current,
+            context.LastHeartbeat?.NextSnapshotSeconds));
         return ValueTask.FromResult<object>(new
         {
             status = "ok",
@@ -34,6 +47,12 @@ internal sealed class ResourcesTelemetrySectionCollector : IWindowsTelemetrySect
             process_working_set_mb = TelemetryValue.ToMb(Environment.WorkingSet),
             gc_heap_mb = TelemetryValue.ToMb(gc.HeapSizeBytes),
             drives,
+            cpu_avg_pct = window.CpuAvgPct,
+            cpu_max_pct = window.CpuMaxPct,
+            mem_used_avg_mb = window.MemUsedAvgMb,
+            mem_used_max_mb = window.MemUsedMaxMb,
+            sample_window_s = window.SampleWindowSeconds,
+            sample_count = window.SampleCount,
         });
     }
 }

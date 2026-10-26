@@ -1,4 +1,3 @@
-using Microsoft.Win32;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -11,29 +10,17 @@ internal sealed class RdpTelemetrySectionCollector : IWindowsTelemetrySectionCol
 
     public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
-        var rdpDenied = TelemetryValue.ReadDword(
-            Registry.LocalMachine,
-            @"SYSTEM\CurrentControlSet\Control\Terminal Server",
-            "fDenyTSConnections");
-        var nla = TelemetryValue.ReadDword(
-            Registry.LocalMachine,
-            @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
-            "UserAuthentication");
-        var portNumber = TelemetryValue.ReadDword(
-            Registry.LocalMachine,
-            @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp",
-            "PortNumber");
-        var portProbe = await ProbeLocalRdpPortAsync(
-            portNumber.HasValue ? checked((int)portNumber.Value) : null,
-            ct).ConfigureAwait(false);
+        var posture = RdpPosture.Read();
+        var portNumber = posture.PortNumber;
+        var portProbe = await ProbeLocalRdpPortAsync(portNumber, ct).ConfigureAwait(false);
 
         return new
         {
             status = "ok",
             service = TelemetryValue.ReadService("TermService"),
             port_number = portNumber,
-            remote_desktop_enabled = rdpDenied.HasValue ? (bool?)(rdpDenied.Value == 0) : null,
-            nla_required = nla.HasValue ? (bool?)(nla.Value == 1) : null,
+            remote_desktop_enabled = posture.RemoteDesktopEnabled,
+            nla_required = posture.NlaRequired,
             credential_probe_performed = false,
             port_probe = portProbe,
             port_probe_status = portProbe.Status,

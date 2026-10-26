@@ -84,7 +84,7 @@ internal static class Program
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "msiexec.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "msiexec.exe"),
             Arguments = arguments,
             UseShellExecute = false,
             RedirectStandardOutput = true,

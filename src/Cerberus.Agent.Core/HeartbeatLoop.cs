@@ -243,7 +243,7 @@ public sealed partial class HeartbeatLoop
 
                 var retryDelay = CalculateRetryDelay(ex, consecutiveHeartbeatErrors);
                 await PersistRetryAsync(retryDelay, ct).ConfigureAwait(false);
-                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}. Next retry in {FormatDelay(retryDelay)}.");
+                _log.Warn($"Heartbeat loop error: {ex.GetType().Name}. Next retry in {FormatDelay(retryDelay)}. at={ExceptionSite.FirstFrame(ex)}");
                 bool resetRequested;
                 try
                 {

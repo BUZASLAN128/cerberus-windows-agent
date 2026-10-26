@@ -93,6 +93,9 @@ function New-FinalizeFixture {
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.dll") -AssemblyName "Cerberus.Agent" -Pairs $AgentPairs
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Runtime.dll") -AssemblyName "Cerberus.Agent.Runtime" -Pairs $RuntimePairs -AttributeNamespace $RuntimeNamespace
   foreach ($exe in $script:ReleaseRuntimeExecutableNames) { Set-Content -LiteralPath (Join-Path $runtime $exe) -Value "fixture $exe" }
+  New-Item -ItemType Directory -Path (Join-Path $runtime "tr") -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $runtime "tr/Cerberus.Agent.resources.dll") -Value "fixture satellite"
+  Set-Content -LiteralPath (Join-Path $runtime "Microsoft.Extensions.Fixture.dll") -Value "fixture third party"
   $msi = Join-Path $PublishDir "Cerberus.Agent-stable-9.9.9.msi"
   Set-Content -LiteralPath $msi -Value "fixture msi bytes"
   foreach ($file in @("Cerberus.Agent.Bundle-stable-9.9.9.zip", "Cerberus.Agent.Bundle-stable-9.9.9.sbom.json", "Cerberus.Agent.Bundle-stable-9.9.9.provenance.json")) {

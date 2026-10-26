@@ -72,6 +72,7 @@ internal static class WindowsTelemetrySectionCatalog
             new ListeningPortsTelemetrySectionCollector(),
             new UpdatesTelemetrySectionCollector(),
             new SoftwareTelemetrySectionCollector(),
+            new ProcessesTelemetrySectionCollector(),
         };
         return facts.Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, time)).ToArray();
     }
@@ -86,7 +87,7 @@ internal static class WindowsTelemetrySectionCatalog
         new TailscaleTelemetrySectionCollector(),
         new RdpTelemetrySectionCollector(),
         new FirewallTelemetrySectionCollector(),
-        new SecurityTelemetrySectionCollector(),
+        new SecurityTelemetrySectionCollector(publishServiceObservation),
         new ClockTelemetrySectionCollector(),
         new RuntimeTelemetrySectionCollector(),
         publishServiceObservation

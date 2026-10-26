@@ -2,6 +2,10 @@ namespace Cerberus.Agent.Core;
 
 public sealed partial class HeartbeatLoop
 {
+    /// <summary>Security fields read from the event-log cursor: reported once, never replayed from a buffered snapshot.</summary>
+    private static readonly string[] ConsumeOnceSecurityFields =
+        { "failed_logons", "successful_logons", "local_admins.changes" };
+
     private async Task<bool> TrySubmitSnapshotAsync(HeartbeatResponse heartbeat, CancellationToken ct)
     {
         if (_telemetryProvider is null)
@@ -32,7 +36,10 @@ public sealed partial class HeartbeatLoop
             {
                 await _telemetryBuffer.EnqueueAsync(
                     OfflineTelemetryKinds.Snapshot,
-                    snapshot,
+                    // The next live snapshot re-reads these from the last committed cursor.
+                    ConsumeOnceSecurityFields.Aggregate(
+                        snapshot,
+                        (current, field) => AgentSnapshotFactory.WithoutSectionField(current, "security", field)),
                     idempotencyKey: "snapshot-latest",
                     priority: 1,
                     ct: ct).ConfigureAwait(false);

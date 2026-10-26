@@ -120,6 +120,27 @@ function Assert-CommandAnchorsNotManifestKeys([string]$AnchorsB64, [string[]]$Ma
   }
 }
 
+# True when any supplied anchor line equals one in tests/fixtures/agent-command-test-anchors.b64 (the anchors
+# the test and preflight builds use). Input that does not decode is left to the later format checks. The check
+# is only called for preview/stable builds, so a missing fixture file fails closed instead of passing everything.
+function Test-CommandAnchorsAreTestFixture([string]$AnchorsB64) {
+  $fixtureFile = Join-Path $PSScriptRoot "..\tests\fixtures\agent-command-test-anchors.b64"
+  if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) {
+    throw "The command trust anchor test fixture is missing ($fixtureFile); cannot verify that a preview or stable build does not use it."
+  }
+  # Each line is compared by the SHA-256 of its decoded SPKI bytes, as the runtime decodes it (Convert.FromBase64String
+  # ignores embedded whitespace); a line that does not decode cannot be an anchor and is skipped.
+  $lines = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Trim())).Split("`n") |
+    ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } |
+    ForEach-Object { try { [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_))) } catch { } } }
+  try { $fixture = @(& $lines (Get-Content -LiteralPath $fixtureFile -Raw)) } catch { $fixture = @() }
+  if ($fixture.Count -eq 0) { throw "The command trust anchor test fixture cannot be decoded ($fixtureFile); cannot verify that a preview or stable build does not use it." }
+  try {
+    foreach ($line in @(& $lines $AnchorsB64)) { if ($fixture -contains $line) { return $true } }
+  } catch { return $false }
+  return $false
+}
+
 $script:ReleaseTimingKeys = @(
   "AgentPollFloorSeconds", "AgentPollCeilingSeconds",
   "AgentSnapshotFloorSeconds", "AgentSnapshotCeilingSeconds", "AgentSnapshotDefaultSeconds")
@@ -132,7 +153,8 @@ function Get-ReleaseProfileBuild(
   [string]$AnchorsFile,
   [System.Collections.IDictionary]$Timing,
   [string]$ProductName,
-  [string]$EulaRtf
+  [string]$EulaRtf,
+  [string]$Channel = "dev"
 ) {
   $shared = @()
   $anchors = ""
@@ -141,6 +163,9 @@ function Get-ReleaseProfileBuild(
       throw "Command trust anchors file was not found."
     }
     $anchors = (Get-Content -LiteralPath $AnchorsFile -Raw).Trim()
+  }
+  if ($Channel -in @("preview", "stable") -and $anchors -and (Test-CommandAnchorsAreTestFixture $anchors)) {
+    throw "The command trust anchors are the repository test fixture; a $Channel build needs its own command signing key."
   }
   if ($BuildProfile -eq "server") {
     if ([string]::IsNullOrWhiteSpace($anchors)) {

@@ -306,20 +306,18 @@ internal static class EnrollHeadlessMode
         return "service_not_running";
     }
 
-    private static string? ReadInstallerValue(string[] args)
+    // The MSI custom action (Package.wxs) passes exactly: --enroll-headless --proof-from-installer "<proof>" --install-service.
+    // A quote inside the property value would add arguments, so any other shape or a proof outside the JWT
+    // character set is refused; the value is never echoed.
+    internal static string? ReadInstallerValue(string[] args)
     {
-        const string Key = "--proof-from-installer";
-        for (var i = 0; i < args.Length; i++)
-        {
-            var arg = args[i];
-            if (arg is null)
-                continue;
-            if (arg.StartsWith(Key + "=", StringComparison.OrdinalIgnoreCase))
-                return arg[(Key.Length + 1)..].Trim('"');
-            if (string.Equals(arg, Key, StringComparison.OrdinalIgnoreCase))
-                return i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[i + 1].Trim('"') : null;
-        }
-        return null;
+        if (args is not { Length: 4 }
+            || args[0] != "--enroll-headless"
+            || args[1] != "--proof-from-installer"
+            || args[3] != "--install-service")
+            return null;
+        var value = args[2];
+        return value is not null && HeadlessEnrollmentProof.TryNormalize(value, out var proof) && proof == value ? value : null;
     }
 
     private static string? ReadFile(string path)

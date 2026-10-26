@@ -130,10 +130,11 @@ function Get-SignToolTokenSignArguments {
   param(
     [Parameter(Mandatory = $true)][string]$Thumbprint,
     [Parameter(Mandatory = $true)][string]$TimestampUrl,
-    [Parameter(Mandatory = $true)][string]$FilePath
+    [Parameter(Mandatory = $true)][string[]]$FilePath
   )
   # Same hash/timestamp flags as the PFX path; the certificate is selected from the user store by thumbprint.
-  return @("sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $TimestampUrl, "/sha1", (ConvertTo-NormalizedThumbprint $Thumbprint), $FilePath)
+  # Several files go to one signtool run, so the token asks for its PIN once per run instead of once per file.
+  return @("sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $TimestampUrl, "/sha1", (ConvertTo-NormalizedThumbprint $Thumbprint)) + @($FilePath)
 }
 
 function Find-CertificateByThumbprint {

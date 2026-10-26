@@ -71,7 +71,7 @@ $tokenMode = ($signingPlan.Mode -eq "Token")
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
-$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf
+$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
 if ($signingPlan.Finalize) {
@@ -298,32 +298,37 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-if ($tokenMode) {
-  Write-Step "Signing runtime executables with the token certificate"
-  $signtool = Find-SignTool
-  foreach ($runtimeExe in $runtimeExecutables) {
+function Invoke-FirstPartySigning([string[]]$Files) {
+  if ($tokenMode) {
+    $signtool = Find-SignTool
     Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-      -FilePath $runtimeExe -AllowedPins $tokenSignerPins
+      -FilePath $Files -AllowedPins $tokenSignerPins
   }
+  elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
+    $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
+    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+      $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
+    }
+    [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
+    $signtool = Find-SignTool
+    foreach ($peFile in $Files) {
+      & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
+      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
+      & $signtool verify /pa /v $peFile
+      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
+    }
+    Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
+  }
+}
+# Sign every first-party PE before anything hashes the payload (service assembly hash, MSI, zip, SBOM, manifest);
+# Invoke-FirstPartySigning also signs the installer helper below.
+$firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
+if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
+  Write-Step "Signing $($firstPartyPeFiles.Count) first-party files"
+  Invoke-FirstPartySigning $firstPartyPeFiles
   $signed = $true
 }
-elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-  Write-Step "Signing runtime executables"
-  $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
-  if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-    $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
-  }
-  [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-  $signtool = Find-SignTool
-  foreach ($runtimeExe in $runtimeExecutables) {
-    & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $runtimeExe
-    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-    & $signtool verify /pa /v $runtimeExe
-    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-  }
-  Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
-  $signed = $true
-}
+if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir }
 
 if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
   throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."
@@ -336,6 +341,8 @@ dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberu
   -p:Version=$Version @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
+# Built after the payload pass and packed into the MSI: sign and gate it here.
+if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
 $serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"

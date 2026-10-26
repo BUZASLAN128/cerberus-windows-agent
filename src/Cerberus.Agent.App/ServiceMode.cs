@@ -12,7 +12,7 @@ using System.IO;
 
 namespace Cerberus.Agent.App;
 
-internal static class ServiceMode
+internal static partial class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
     {
@@ -342,6 +342,7 @@ internal static class ServiceMode
             return;
         }
 #endif
+        TelemetrySectionCapture.Log = log;
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
         var loop = new HeartbeatLoop(
@@ -380,6 +381,8 @@ internal static class ServiceMode
         var diagnosticSchedulerTask = new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
 #endif
 
+        var resourceSamplerTask = ResourceSampler.Shared.RunAsync(serviceCts.Token);
+
         try
         {
             await loop.RunAsync(serviceCts.Token);
@@ -387,6 +390,7 @@ internal static class ServiceMode
         finally
         {
             serviceCts.Cancel();
+            await resourceSamplerTask.ConfigureAwait(false);
             try
             {
                 await diagnosticSchedulerTask.ConfigureAwait(false);
@@ -451,67 +455,5 @@ internal static class ServiceMode
         {
             // Dormant service remains healthy until SCM requests stop.
         }
-    }
-
-    private static async Task ReportUpdateFailureAsync(
-        AgentApiClient api,
-        AgentBuildMetadata metadata,
-        HeartbeatResponse response,
-        Exception exception,
-        CancellationToken ct)
-    {
-        var eventId = $"agent.update.failed:{metadata.BootId}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
-        var item = new AgentEventItem(
-            EventId: eventId,
-            Type: "agent.update.failed",
-            OccurredAt: DateTimeOffset.UtcNow.ToString("O"),
-            Severity: "warning",
-            Payload: new Dictionary<string, object?>
-            {
-                ["exception_type"] = exception.GetType().Name,
-                ["message"] = Sanitizer.Redact(exception.Message),
-                ["lifecycle_state"] = response.LifecycleState,
-                ["agent_status"] = response.AgentStatus,
-            });
-        await api.SubmitEventsAsync(
-            AgentTelemetryFactory.CreateEvents(metadata, new[] { item }),
-            ct).ConfigureAwait(false);
-    }
-
-    private sealed class TailscaleStatusProvider : IAgentStatusProvider
-    {
-        public async Task<object?> GetTailscaleAsync(CancellationToken ct)
-        {
-            var (installed, connected, snapshot, err) = await TailscaleStatusProbe.ProbeAsync(
-                timeout: TimeSpan.FromSeconds(5),
-                ct: ct);
-            return new
-            {
-                installed,
-                connected,
-                error = Sanitizer.Redact(err),
-                state = ExtractSnapshotValue(snapshot, "state"),
-                ips = ExtractSnapshotValue(snapshot, "ips") ?? Array.Empty<string>(),
-                status = snapshot,
-            };
-        }
-    }
-
-    private static object? ExtractSnapshotValue(object? snapshot, string key)
-    {
-        return snapshot is IReadOnlyDictionary<string, object?> map && map.TryGetValue(key, out var value)
-            ? value
-            : null;
-    }
-
-    private static object BuildAdStatus()
-    {
-        var (joined, domain, err) = AdStatusProbe.Probe();
-        return new
-        {
-            domain_joined = joined,
-            domain_name = domain,
-            last_error = err,
-        };
     }
 }

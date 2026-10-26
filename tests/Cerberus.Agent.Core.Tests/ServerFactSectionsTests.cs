@@ -37,7 +37,8 @@ public sealed partial class ServerFactSectionsTests
 
         var node = Obj(SessionsTelemetrySectionCollector.Build(raw));
 
-        Assert.Equal(Sorted("status", "session_count", "active_count", "disconnected_count", "truncated", "sessions"), Keys(node));
+        Assert.Equal(Sorted("status", "session_count", "active_count", "disconnected_count", "truncated", "sessions", "rds_licensing", "rdp_posture"), Keys(node));
+        Assert.Equal("unavailable", (string)node["rds_licensing"]!["status"]!);
         Assert.Equal(4, (int)node["session_count"]!);
         Assert.Equal(2, (int)node["active_count"]!);
         Assert.Equal(1, (int)node["disconnected_count"]!);
@@ -202,7 +203,8 @@ public sealed partial class ServerFactSectionsTests
         var list = node["software"]!.AsArray();
         Assert.Equal(4, (int)node["software_count"]!);
         Assert.Equal(new[] { "Alpha", "alpha", "beta" }, list.Take(3).Select(s => (string)s!["name"]!));
-        Assert.Equal(Sorted("name", "version", "publisher", "installed_on", "arch"), Keys(list[0]));
+        Assert.Equal(Sorted("name", "version", "publisher", "installed_on", "arch", "scope", "user_sid"), Keys(list[0]));
+        Assert.All(list, e => { Assert.Equal("machine", (string)e!["scope"]!); Assert.Null(e["user_sid"]); });
         Assert.Equal("2024-02-29", (string)list[2]!["installed_on"]!);
         Assert.Null(list[1]!["publisher"]);
         Assert.Null(list[1]!["installed_on"]);
@@ -244,8 +246,9 @@ public sealed partial class ServerFactSectionsTests
             .ToArray();
         var node = Obj(UpdatesTelemetrySectionCollector.Build(true, new WindowsUpdateCacheEntry(new WindowsUpdateScan(3, 1, recent), T0)));
 
-        Assert.Equal(Sorted("status", "reboot_required", "recent", "pending"), Keys(node));
+        Assert.Equal(Sorted("status", "reboot_required", "recent", "recent_truncated", "pending"), Keys(node));
         Assert.True((bool)node["reboot_required"]!);
+        Assert.True((bool)node["recent_truncated"]!);
         var list = node["recent"]!.AsArray();
         Assert.Equal(20, list.Count);
         Assert.Equal(Fill("K", 16), (string)list[0]!["kb"]!);
@@ -255,10 +258,70 @@ public sealed partial class ServerFactSectionsTests
         Assert.All(list, e => Assert.True(((string)e!["title"]!).Length <= 160));
 
         var pending = node["pending"]!;
-        Assert.Equal(Sorted("status", "count", "security_count", "checked_at_utc"), Keys(pending));
+        Assert.Equal(Sorted("status", "count", "security_count", "checked_at_utc", "items", "truncated"), Keys(pending));
         Assert.Equal("ok", (string)pending["status"]!);
         Assert.Equal((3, 1), ((int)pending["count"]!, (int)pending["security_count"]!));
         Assert.Equal("2026-03-01T12:00:00Z", (string)pending["checked_at_utc"]!);
+        Assert.Empty(pending["items"]!.AsArray());
+        Assert.False((bool)pending["truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_RecentUnderCapIsNotTruncated()
+    {
+        var scan = new WindowsUpdateScan(0, 0, new[] { new WindowsUpdateEntry("KB1", "one", T0) });
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(scan, T0)));
+
+        Assert.False((bool)node["recent_truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemsAreCappedAtFiftyAndMarkedTruncated()
+    {
+        var items = Enumerable.Range(0, 51).Select(i => new WindowsUpdatePending($"KB{i:D7}", $"Pending {i:D2}", false)).ToArray();
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(51, 0, Array.Empty<WindowsUpdateEntry>(), items, true), T0)));
+
+        var pending = node["pending"]!;
+        var list = pending["items"]!.AsArray();
+        Assert.Equal(50, list.Count);
+        Assert.Equal("Pending 00", (string)list[0]!["title"]!);
+        Assert.Equal("Pending 49", (string)list[49]!["title"]!);
+        Assert.True((bool)pending["truncated"]!);
+        Assert.Equal(51, (int)pending["count"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemsAtCapAreNotTruncated()
+    {
+        var items = Enumerable.Range(0, 50).Select(i => new WindowsUpdatePending($"KB{i:D7}", $"Pending {i:D2}", false)).ToArray();
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(50, 0, Array.Empty<WindowsUpdateEntry>(), items), T0)));
+
+        Assert.Equal(50, node["pending"]!["items"]!.AsArray().Count);
+        Assert.False((bool)node["pending"]!["truncated"]!);
+    }
+
+    [Fact]
+    public void Updates_PendingItemShapeCapsAndSecurityFlags()
+    {
+        var items = new[]
+        {
+            new WindowsUpdatePending("KB5001234", "Security fix", true),
+            new WindowsUpdatePending(null, "No article", false),
+            new WindowsUpdatePending(Fill("K", 40), Fill("T", 300), true),
+        };
+        var node = Obj(UpdatesTelemetrySectionCollector.Build(false, new WindowsUpdateCacheEntry(new WindowsUpdateScan(3, 2, Array.Empty<WindowsUpdateEntry>(), items), T0)));
+
+        var pending = node["pending"]!;
+        var list = pending["items"]!.AsArray();
+        Assert.Equal(3, list.Count);
+        Assert.Equal(Sorted("kb", "title", "security"), Keys(list[0]));
+        // Security items come first (stable within each group), so the cap never drops them.
+        Assert.Equal("KB5001234", (string)list[0]!["kb"]!);
+        Assert.Equal(Fill("K", 16), (string)list[1]!["kb"]!);
+        Assert.Equal(160, ((string)list[1]!["title"]!).Length);
+        Assert.Null(list[2]!["kb"]);
+        Assert.False((bool)pending["truncated"]!);
+        Assert.Equal((int)pending["security_count"]!, list.Count(e => (bool)e!["security"]!));
     }
 
     [Fact]
@@ -291,7 +354,10 @@ public sealed partial class ServerFactSectionsTests
         Assert.Null(pending["count"]);
         Assert.Null(pending["security_count"]);
         Assert.Null(pending["checked_at_utc"]);
+        Assert.Empty(pending["items"]!.AsArray());
+        Assert.False((bool)pending["truncated"]!);
         Assert.Empty(node["recent"]!.AsArray());
+        Assert.False((bool)node["recent_truncated"]!);
         Assert.False((bool)node["reboot_required"]!);
     }
 
@@ -310,28 +376,42 @@ public sealed partial class ServerFactSectionsTests
     public void ForbiddenFieldScan_MatchesWholeNameTokensOnly(string name, bool expected)
         => Assert.Equal(expected, HasForbiddenToken(name));
 
+    // Owner-requested SID fields of the software section. Exact names only; the token list itself is unchanged.
+    private static readonly string[] AllowedSoftwareFields = { "user_sid" };
+
+    // The processes contract carries the image path of each distinct executable (never command lines or arguments).
+    private static readonly string[] AllowedProcessFields = { "path" };
+
     [Fact]
     public async Task Sections_NeverExposeForbiddenFieldNames()
     {
         var cache = new WindowsUpdateCacheEntry(new WindowsUpdateScan(1, 1, new[] { new WindowsUpdateEntry("KB1", "t", T0) }), T0);
-        var outputs = new List<object>
+        var outputs = new List<(object Output, string[] Allowed)>
         {
-            SessionsTelemetrySectionCollector.Build(new[] { new SessionsTelemetrySectionCollector.RawSession("D", "u", "active", "rdp", T0) }),
-            ServicesTelemetrySectionCollector.Build(new[] { new ServicesTelemetrySectionCollector.RawService("n", "d", "running", "auto") }),
-            ListeningPortsTelemetrySectionCollector.Build(new[] { new ListeningPortsTelemetrySectionCollector.RawPort("tcp", "ipv4", 1, "any", "p") }),
-            SoftwareTelemetrySectionCollector.Build(new[] { new SoftwareTelemetrySectionCollector.RawSoftware("n", "1", "p", "20240101", "x64") }),
-            UpdatesTelemetrySectionCollector.Build(false, cache),
-            UpdatesTelemetrySectionCollector.Build(null, null),
-            ServerFactText.Unavailable("services", "section_timeout"),
-            await new HardwareTelemetrySectionCollector().CollectAsync(Context(), CancellationToken.None),
+            (SessionsTelemetrySectionCollector.Build(new[] { new SessionsTelemetrySectionCollector.RawSession("D", "u", "active", "rdp", T0) }), Array.Empty<string>()),
+            (ServicesTelemetrySectionCollector.Build(new[] { new ServicesTelemetrySectionCollector.RawService("n", "d", "running", "auto") }), Array.Empty<string>()),
+            (ListeningPortsTelemetrySectionCollector.Build(new[] { new ListeningPortsTelemetrySectionCollector.RawPort("tcp", "ipv4", 1, "any", "p") }), Array.Empty<string>()),
+            (SoftwareTelemetrySectionCollector.Build(new[]
+            {
+                new SoftwareTelemetrySectionCollector.RawSoftware("n", "1", "p", "20240101", "x64"),
+                new SoftwareTelemetrySectionCollector.RawSoftware("n", "1", "p", "20240101", "x64", "user", "S-1-5-21-1-2-3-1001"),
+            }), AllowedSoftwareFields),
+            (UpdatesTelemetrySectionCollector.Build(false, cache), Array.Empty<string>()),
+            (UpdatesTelemetrySectionCollector.Build(null, null), Array.Empty<string>()),
+            (ServerFactText.Unavailable("services", "section_timeout"), Array.Empty<string>()),
+            (await new HardwareTelemetrySectionCollector().CollectAsync(Context(), CancellationToken.None), Array.Empty<string>()),
+            (ProcessesTelemetrySectionCollector.Build(new[] { new ProcessesTelemetrySectionCollector.RawProcess(@"C:\Windows\app.exe") }, _ => "Signer"), AllowedProcessFields),
         };
 
-        var names = outputs.SelectMany(o => PropertyNames(Obj(o))).Distinct().ToArray();
+        var names = outputs.SelectMany(o => PropertyNames(Obj(o.Output)).Where(n => !o.Allowed.Contains(n))).Distinct().ToArray();
 
         Assert.NotEmpty(names);
         Assert.Empty(names.Where(HasForbiddenToken));
+        // The allowances cover exactly the named fields: they are still forbidden everywhere else.
+        Assert.True(HasForbiddenToken("user_sid"));
+        Assert.True(HasForbiddenToken("path"));
+        Assert.Contains("user_sid", outputs.SelectMany(o => PropertyNames(Obj(o.Output))));
     }
-
 
     private static AgentBuildMetadata Metadata() => ServerFactJson.Metadata();
 

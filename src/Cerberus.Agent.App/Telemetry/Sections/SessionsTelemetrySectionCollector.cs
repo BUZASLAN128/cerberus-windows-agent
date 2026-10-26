@@ -12,10 +12,21 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
 
     public string SectionName => "sessions";
 
-    public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
-        => ValueTask.FromResult(Build(SessionsNative.Read(ct)));
+    public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
+    {
+        var sessions = SessionsNative.Read(ct);
+        var licensing = await RdsLicensingProbe.ReadAsync(ct).ConfigureAwait(false);
+        return Build(sessions, licensing, ReadPosture());
+    }
 
-    internal static object Build(IEnumerable<RawSession> raw)
+    private static RdpPosture ReadPosture()
+    {
+        var certificate = RdpCertificate.Read();
+        try { return RdpPosture.Read() with { Certificate = certificate }; }
+        catch (Exception) { return RdpPosture.Unknown with { Certificate = certificate }; }
+    }
+
+    internal static object Build(IEnumerable<RawSession> raw, RdsLicensingInfo? licensing = null, RdpPosture? posture = null)
     {
         var sessions = raw
             .Select(s => new
@@ -41,6 +52,8 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
             disconnected_count = sessions.Count(s => s.state == "disconnected"),
             truncated = sessions.Length > MaxSessions,
             sessions = sessions.Take(MaxSessions).ToArray(),
+            rds_licensing = (licensing ?? RdsLicensingInfo.Unavailable).ToPayload(),
+            rdp_posture = (posture ?? RdpPosture.Unknown).ToSessionsPayload(),
         };
     }
 }

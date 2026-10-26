@@ -44,6 +44,24 @@ public static class AgentUpdateAuthenticode
         }
     }
 
+    /// <summary>Verifies the Authenticode signature in-process (WinVerifyTrust) and returns the signer subject.</summary>
+    public static bool TryGetValidSignerSubject(string path, out string subject)
+    {
+        subject = "";
+        if (WinVerifyTrustFile(path) != 0)
+            return false;
+        try
+        {
+            using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            subject = certificate.Subject;
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
+
     public static string PublisherSpkiSha256(X509Certificate2 certificate)
         => AgentKeyFingerprint.FromSubjectPublicKeyInfo(certificate.PublicKey.ExportSubjectPublicKeyInfo());
 

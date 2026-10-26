@@ -8,6 +8,7 @@ using System.Text.Json;
 
 namespace Cerberus.Agent.Core.Tests;
 
+[Collection("FailedLogonCursor")]
 public sealed class WindowsTelemetryCollectorTests
 {
 #if !CERBERUS_SERVER_PROFILE

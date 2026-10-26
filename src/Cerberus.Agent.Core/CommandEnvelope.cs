@@ -45,6 +45,7 @@ public static class EnvelopeTypes
     {
         "identity", "os", "resources", "network", "firewall", "security", "clock", "runtime",
         "sessions", "hardware", "services", "listening_ports", "updates", "software",
+        "processes",
     };
 }
 
