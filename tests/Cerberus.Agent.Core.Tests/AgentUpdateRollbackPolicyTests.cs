@@ -81,25 +81,27 @@ public sealed class AgentUpdateRollbackPolicyTests
 
     private const string Runtime = @"C:\Program Files\Cerberus\Agent";
 
+    private const string ServiceExe = Runtime + @"\Cerberus.Agent.Service.exe";
+    private const string ServiceDll = Runtime + @"\Cerberus.Agent.Service.dll";
+
     [Theory]
-    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, true)]
-    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, true)]
-    [InlineData(AgentInstallerHealthPhase.ServiceImage, false)]
-    [InlineData(AgentInstallerHealthPhase.ResponseVersion, false)]
-    [InlineData(AgentInstallerHealthPhase.Stability, false)]
-    [InlineData(AgentInstallerHealthPhase.BackendContact, false)]
-    [InlineData(AgentInstallerHealthPhase.ServiceState, false)]
-    [InlineData(AgentInstallerHealthPhase.PipeConnect, false)]
-    public void PendingRebootExcuses_OnlyTheServiceFileHashPhases(AgentInstallerHealthPhase phase, bool expected)
-    {
-        var pending = new[] { Runtime + @"\Cerberus.Agent.Service.exe" };
-        Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, pending, Runtime));
-    }
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, ServiceExe, true)]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, ServiceDll, false)]
+    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, ServiceDll, true)]
+    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, ServiceExe, false)]
+    public void PendingRebootExcuses_EachHashPhaseIsExcusedOnlyByItsOwnBinary(AgentInstallerHealthPhase phase, string entry, bool expected)
+        => Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [entry], Runtime));
+
+    [Theory]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash)]
+    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash)]
+    public void PendingRebootExcuses_BothBinariesQueuedExcuseBothHashPhases(AgentInstallerHealthPhase phase)
+        => Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [ServiceDll, ServiceExe], Runtime));
 
     [Fact]
     public void PendingRebootExcuses_NoOtherPhaseIsExcusedAndCancellationNeverIs()
     {
-        var pending = new[] { Runtime + @"\Cerberus.Agent.Service.exe" };
+        string[] pending = [ServiceExe, ServiceDll];
         var allowed = new[]
         {
             AgentInstallerHealthPhase.ServiceExecutableHash, AgentInstallerHealthPhase.ServiceAssemblyHash,
@@ -128,13 +130,17 @@ public sealed class AgentUpdateRollbackPolicyTests
     [InlineData(@"C:\Program Files\Cerberus\Agent\", false)]
     [InlineData(@"", false)]
     public void PendingRebootExcuses_RequiresAnExactServiceBinaryEntryUnderTheRuntime(string entry, bool expected)
-        => Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false, [entry], Runtime));
+    {
+        var phase = entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            ? AgentInstallerHealthPhase.ServiceAssemblyHash : AgentInstallerHealthPhase.ServiceExecutableHash;
+        Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [entry], Runtime));
+    }
 
     [Fact]
     public void PendingRebootExcuses_OneMatchingEntryAmongOthersIsEnoughAndAnEmptyListIsNot()
     {
-        Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false,
-            [@"C:\Windows\x.dll", Runtime + @"\Cerberus.Agent.Service.dll"], Runtime));
+        Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceAssemblyHash, false,
+            [@"C:\Windows\x.dll", ServiceDll], Runtime));
         Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false, [], Runtime));
     }
 

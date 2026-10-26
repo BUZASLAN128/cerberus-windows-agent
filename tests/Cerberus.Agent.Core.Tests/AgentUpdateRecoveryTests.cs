@@ -198,4 +198,90 @@ public sealed class AgentUpdateRecoveryTests
         Assert.Equal(AgentUpdateErrorCodes.RecoveryTimeout, closed.InstallerResult!.ErrorCode);
         Assert.Equal(AgentUpdateStates.Failed, closed.InstallerResult.State);
     }
+
+    [Theory]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, 7, 7)]
+    [InlineData(AgentInstallerHealthPhase.Stability, 7, 7)]
+    [InlineData(AgentInstallerHealthPhase.Stability, 100, 100)]
+    [InlineData(AgentInstallerHealthPhase.BackendContact, 7, 5)]
+    [InlineData(null, 7, 5)]
+    public void CloseRecovery_PinsTheFailedSequenceOnlyForAProvenHealthRollback(AgentInstallerHealthPhase? phase, long planSequence, long expected)
+    {
+        var plan = Plan with { Sequence = planSequence };
+        var closed = AgentUpdateLocalService.CloseRecovery(Recovery(Recorded) with { FailedInstallSequence = 5 }, plan, healthy: false, Recorded, phase);
+        Assert.Equal(AgentUpdateStates.Failed, closed.Phase);
+        Assert.Equal(AgentUpdateErrorCodes.RecoveryTimeout, closed.InstallerResult!.ErrorCode);
+        Assert.Equal(expected, closed.FailedInstallSequence);
+    }
+
+    [Fact]
+    public void CloseRecovery_NeverLowersAnExistingPin()
+        => Assert.Equal(9, AgentUpdateLocalService.CloseRecovery(
+            Recovery(Recorded) with { FailedInstallSequence = 9 }, Plan with { Sequence = 7 }, healthy: false, Recorded,
+            AgentInstallerHealthPhase.PipeConnect).FailedInstallSequence);
+
+    [Fact]
+    public void CloseRecovery_WithoutPlanKeepsTheSequence()
+        => Assert.Equal(5, AgentUpdateLocalService.CloseRecovery(
+            Recovery(Recorded) with { FailedInstallSequence = 5 }, null, healthy: false, Recorded,
+            AgentInstallerHealthPhase.Stability).FailedInstallSequence);
+
+    [Fact]
+    public void CloseRecovery_HealthyKeepsTheSequence()
+    {
+        var closed = AgentUpdateLocalService.CloseRecovery(
+            Recovery(Recorded) with { FailedInstallSequence = 5 }, Plan, healthy: true, Recorded, AgentInstallerHealthPhase.Stability);
+        Assert.Equal(AgentUpdateStates.Installed, closed.Phase);
+        Assert.Equal(5, closed.FailedInstallSequence);
+    }
+
+    private static bool Elevated
+    {
+        get
+        {
+            using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            return identity.IsSystem || new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+    }
+
+    [Fact]
+    public void RecoveryRollbackPhase_HealthyOrWithoutPlanReadsNothing()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "cerberus-recovery-phase-" + Guid.NewGuid().ToString("N"));
+        Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(true, Plan, Recorded, missing));
+        Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, null, Recorded, missing));
+    }
+
+    [Fact]
+    public void RecoveryRollbackPhase_UnreadableRootYieldsNullInsteadOfThrowing()
+    {
+        Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded, ""));
+        // A plain temp folder (inherited user ACE) fails the protected-root check, so even a valid-looking record is not trusted.
+        var untrusted = Path.Combine(Path.GetTempPath(), "cerberus-recovery-phase-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(untrusted);
+        try
+        {
+            AgentUpdateDurableFile.Write(Path.Combine(untrusted, "a.health-failure.json"), untrusted,
+                new AgentInstallerHealthDiagnostic("v1", "health", Recorded.AddMinutes(1), "stability", "unexpected", "Exception", null, "9.9.9", null, null, null, null));
+            Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded, untrusted));
+        }
+        finally { Directory.Delete(untrusted, recursive: true); }
+    }
+
+    [Fact]
+    public void RecoveryRollbackPhase_UnhealthyWithACurrentAttemptRecordReturnsItsPhase()
+    {
+        if (!Elevated) return; // the protected root can only be created with an elevated token
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-recovery-phase-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            AgentUpdateDurableFile.Write(Path.Combine(root, "a.health-failure.json"), root,
+                new AgentInstallerHealthDiagnostic("v1", "health", Recorded.AddMinutes(1), "stability", "unexpected", "Exception", null, "9.9.9", null, null, null, null));
+            Assert.Equal(AgentInstallerHealthPhase.Stability, AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded, root));
+            Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(true, Plan, Recorded, root));
+            Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded.AddHours(1), root));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
 }
