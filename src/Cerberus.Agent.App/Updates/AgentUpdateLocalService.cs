@@ -599,7 +599,7 @@ internal static partial class AgentUpdateLocalService
         try
         {
             var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && !AllowsAutomaticUpdate(lifecycle)) return AgentUpdateCheckResult.None;
+            if (automatic && !AllowsAutomatic(lifecycle)) return AgentUpdateCheckResult.None;
             var active = Journal.Read();
             var effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
             active = RecoverActiveAttempt(
@@ -663,7 +663,7 @@ internal static partial class AgentUpdateLocalService
                 var signal = new AgentUpdateSignal(false, true, trust.ConfiguredManifestUrl, "service_update_check", trust.ExpectedChannel);
                 var result = await new AgentUpdateStager(http, trust, Root).CheckAsync(signal, cancellation.Token).ConfigureAwait(false);
                 var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
-                if (automatic && (latestLifecycle.Generation != lifecycle.Generation || !AllowsAutomaticUpdate(latestLifecycle)))
+                if (automatic && (latestLifecycle.Generation != lifecycle.Generation || !AllowsAutomatic(latestLifecycle)))
                 {
                     authorizationChanged = true;
                     cancellation.Cancel();
@@ -713,7 +713,7 @@ internal static partial class AgentUpdateLocalService
         long? requiredPolicyGeneration = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (automatic && !AllowsAutomaticUpdate(lifecycle))
+        if (automatic && !AllowsAutomatic(lifecycle))
             return null;
         // Bind the incoming policy to the generation observed at the start of
         // this owned operation. An unstamped internal signal is bound once to
@@ -758,7 +758,7 @@ internal static partial class AgentUpdateLocalService
             // Reload before staging so the new attempt is bound to the current
             // authorization boundary rather than the old check snapshot.
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && !AllowsAutomaticUpdate(lifecycle))
+            if (automatic && !AllowsAutomatic(lifecycle))
                 return null;
             incomingRequired = IsRequiredSignalCurrent(
                 required,
@@ -799,7 +799,7 @@ internal static partial class AgentUpdateLocalService
             var stager = new AgentUpdateStager(http, trust, Root);
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
-            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomaticUpdate(latestLifecycle)))
+            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomatic(latestLifecycle)))
             {
                 authorizationChanged = true;
                 cancellation.Cancel();
@@ -895,7 +895,7 @@ internal static partial class AgentUpdateLocalService
                 .ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
             if (latestLifecycle.Generation != lifecycle.Generation ||
-                (automatic && !AllowsAutomaticUpdate(latestLifecycle)))
+                (automatic && !AllowsAutomatic(latestLifecycle)))
             {
                 authorizationChanged = true;
                 cancellation.Cancel();
@@ -1095,7 +1095,7 @@ internal static partial class AgentUpdateLocalService
             {
                 await ReconcileOwnedAsync(ct).ConfigureAwait(false);
                 var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                if (!AllowsAutomaticUpdate(lifecycle)) continue;
+                if (!AllowsAutomatic(lifecycle)) continue;
                 var active = Journal.Read();
                 var now = DateTimeOffset.UtcNow;
                 if (active.AttemptId is not null &&
@@ -1123,7 +1123,7 @@ internal static partial class AgentUpdateLocalService
         if (active.Phase is not (AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy))
             throw new InvalidOperationException("Update attempt cannot be applied.");
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (automatic && (!AllowsAutomaticUpdate(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+        if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
             throw new InvalidOperationException("Automatic update authorization changed.");
         if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Update installer retry is not admitted.");
@@ -1134,7 +1134,7 @@ internal static partial class AgentUpdateLocalService
         using (await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false))
         {
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && (!AllowsAutomaticUpdate(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+            if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
@@ -1269,19 +1269,21 @@ internal static partial class AgentUpdateLocalService
         else if (active.Phase is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot)
         {
             if (!allowHealth) return; // Startup must open the pipe before health can prove local readiness.
-            var plan = ReadPlan(active) ?? throw new InvalidOperationException("Installed update plan is missing.");
+            AgentUpdatePlan? plan;
+            try { plan = ReadPlan(active); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { plan = null; }
             if (active.Phase == AgentUpdateStates.PendingReboot && active.InstallationBootId == AgentUpdateBootIdentity.Read())
             {
                 await ProjectAsync(ct).ConfigureAwait(false);
                 return;
             }
-            if (await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
+            if (plan is not null && await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
                 Journal.ChangeAttempt(active.AttemptId, before => before with
                 {
                     Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
                     HealthyInstalledVersion = plan.Version,
                 });
-            else if (!HealthRetryExpired(active, DateTimeOffset.UtcNow))
+            else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, ServiceStartedUtc.Value))
                 return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
             {

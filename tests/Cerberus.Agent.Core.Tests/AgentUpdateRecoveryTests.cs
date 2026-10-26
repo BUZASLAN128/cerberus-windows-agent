@@ -23,13 +23,13 @@ public sealed class AgentUpdateRecoveryTests
     [InlineData(16 * 60, true)]
     public void HealthRetry_StaysOpenUntilFifteenMinutesAfterTheInstallerResult(int elapsedSeconds, bool expired)
         => Assert.Equal(expired, AgentUpdateLocalService.HealthRetryExpired(
-            HealthPending(Recorded.ToString("O")), Recorded.AddSeconds(elapsedSeconds)));
+            HealthPending(Recorded.ToString("O")), Recorded.AddSeconds(elapsedSeconds), DateTimeOffset.MinValue));
 
     [Theory]
     [InlineData(null)]
     [InlineData("not-a-date")]
     public void HealthRetry_WithoutUsableInstallerTimestampExpiresImmediately(string? recorded)
-        => Assert.True(AgentUpdateLocalService.HealthRetryExpired(HealthPending(recorded), Recorded));
+        => Assert.True(AgentUpdateLocalService.HealthRetryExpired(HealthPending(recorded), Recorded, DateTimeOffset.MinValue));
 
     [Fact]
     public void RecoveryEvidence_IsTheLatestOfResultRunnerAndInstallerTimestamps()
@@ -64,41 +64,6 @@ public sealed class AgentUpdateRecoveryTests
     public void RecoveryTimeout_IsADistinctErrorCode()
         => Assert.Equal("recovery_timeout", AgentUpdateErrorCodes.RecoveryTimeout);
 
-    [Fact]
-    public void AutomaticUpdate_IsAllowedInEveryLifecycleStateExceptRetired()
-    {
-        var recoverable = new[]
-        {
-            AgentLifecycleState.Active, AgentLifecycleState.Degraded, AgentLifecycleState.AuthSuspect,
-            AgentLifecycleState.BlockedConfig, AgentLifecycleState.NeedsReenrollment,
-        };
-        foreach (var state in Enum.GetValues<AgentLifecycleState>())
-            Assert.Equal(recoverable.Contains(state), AgentLifecycleStates.AllowsAutomaticUpdate(state, null));
-        Assert.Equal(recoverable.Length + 1, Enum.GetValues<AgentLifecycleState>().Length);
-    }
-
-    [Theory]
-    [InlineData(AgentLifecycleState.Active)]
-    [InlineData(AgentLifecycleState.Degraded)]
-    [InlineData(AgentLifecycleState.AuthSuspect)]
-    [InlineData(AgentLifecycleState.BlockedConfig)]
-    [InlineData(AgentLifecycleState.NeedsReenrollment)]
-    [InlineData(AgentLifecycleState.Retired)]
-    public void AutomaticUpdate_StopsForRevokedAndDeactivatedReasonsInAnyState(AgentLifecycleState state)
-    {
-        Assert.False(AgentLifecycleStates.AllowsAutomaticUpdate(state, AgentLifecycleStatePolicy.AgentRevokedCode));
-        Assert.False(AgentLifecycleStates.AllowsAutomaticUpdate(state, AgentLifecycleStatePolicy.AgentDeactivatedCode));
-    }
-
-    [Fact]
-    public void AutomaticUpdate_IsWiderThanTheNetworkGateOnlyForRecoverableStates()
-    {
-        Assert.False(AgentLifecycleStates.AllowsAutomaticNetwork(AgentLifecycleState.BlockedConfig));
-        Assert.True(AgentLifecycleStates.AllowsAutomaticUpdate(AgentLifecycleState.BlockedConfig, "agent_reenroll_required"));
-        Assert.False(AgentLifecycleStates.AllowsAutomaticNetwork(AgentLifecycleState.Retired));
-        Assert.False(AgentLifecycleStates.AllowsAutomaticUpdate(AgentLifecycleState.Retired, null));
-    }
-
     private static AgentUpdateJournal Recovery(DateTimeOffset? resultAt = null) => new()
     {
         AttemptId = "attempt-1",
@@ -117,10 +82,10 @@ public sealed class AgentUpdateRecoveryTests
     {
         var journal = Recovery(Recorded);
         var later = Recorded.AddMinutes(30);
-        Assert.True(AgentUpdateLocalService.RecoveryCloseDue(journal, later, false, false));
-        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal with { AttemptId = null }, later, false, false));
-        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal, later, true, false));
-        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal, later, false, true));
+        Assert.True(AgentUpdateLocalService.RecoveryCloseDue(journal, later, DateTimeOffset.MinValue, false, false));
+        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal with { AttemptId = null }, later, DateTimeOffset.MinValue, false, false));
+        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal, later, DateTimeOffset.MinValue, true, false));
+        Assert.False(AgentUpdateLocalService.RecoveryCloseDue(journal, later, DateTimeOffset.MinValue, false, true));
     }
 
     [Theory]
@@ -129,12 +94,12 @@ public sealed class AgentUpdateRecoveryTests
     public void RecoveryCloseDue_WaitsTenMinutesAfterTheLatestInstallActivity(int elapsedSeconds, bool due)
     {
         var journal = Recovery(Recorded.AddMinutes(-30)) with { InstallerStartedUtc = Recorded.AddMinutes(-20), RunnerStartedUtc = Recorded };
-        Assert.Equal(due, AgentUpdateLocalService.RecoveryCloseDue(journal, Recorded.AddSeconds(elapsedSeconds), false, false));
+        Assert.Equal(due, AgentUpdateLocalService.RecoveryCloseDue(journal, Recorded.AddSeconds(elapsedSeconds), DateTimeOffset.MinValue, false, false));
     }
 
     [Fact]
     public void RecoveryCloseDue_WithoutAnyTimestampClosesImmediately()
-        => Assert.True(AgentUpdateLocalService.RecoveryCloseDue(Recovery(), Recorded, false, false));
+        => Assert.True(AgentUpdateLocalService.RecoveryCloseDue(Recovery(), Recorded, DateTimeOffset.MinValue, false, false));
 
     [Theory]
     [InlineData(AgentUpdateStates.HealthPending)]
@@ -184,16 +149,5 @@ public sealed class AgentUpdateRecoveryTests
         var closed = AgentUpdateLocalService.CloseRecovery(Recovery(), Plan, healthy: false, Recorded);
         Assert.Equal(AgentUpdateErrorCodes.RecoveryTimeout, closed.InstallerResult!.ErrorCode);
         Assert.Equal(AgentUpdateStates.Failed, closed.InstallerResult.State);
-    }
-
-    [Fact]
-    public void SnapshotGate_RequiresQuiescenceAndARecoverableState()
-    {
-        Assert.True(AgentUpdateLocalService.AllowsAutomaticUpdate(new AgentLifecycleSnapshot(AgentLifecycleState.BlockedConfig)));
-        Assert.True(AgentUpdateLocalService.AllowsAutomaticUpdate(new AgentLifecycleSnapshot(AgentLifecycleState.NeedsReenrollment)));
-        Assert.False(AgentUpdateLocalService.AllowsAutomaticUpdate(new AgentLifecycleSnapshot(AgentLifecycleState.Active) { QuiescenceComplete = false }));
-        Assert.False(AgentUpdateLocalService.AllowsAutomaticUpdate(new AgentLifecycleSnapshot(AgentLifecycleState.Retired)));
-        Assert.False(AgentUpdateLocalService.AllowsAutomaticUpdate(
-            new AgentLifecycleSnapshot(AgentLifecycleState.BlockedConfig, AgentLifecycleStatePolicy.AgentRevokedCode)));
     }
 }

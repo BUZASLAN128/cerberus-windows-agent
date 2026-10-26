@@ -229,7 +229,7 @@ internal static class Program
             var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(CancellationToken.None).GetAwaiter().GetResult();
             if (active.AttemptId != plan.AttemptId || active.Phase != "launch_requested" ||
                 lifecycle.Generation != active.LifecycleGeneration ||
-                (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticUpdate(lifecycle.State, lifecycle.ReasonCode))))
+                (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
                 throw new InvalidOperationException("Update attempt authorization changed.");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with
             {
