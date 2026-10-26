@@ -20,7 +20,16 @@ internal static class FailedLogonSection
     private static readonly object Gate = new();
     private static (FailedLogonCursorStore Store, FailedLogonCursorState State, object Report)? _pending;
 
+    /// <summary>The <c>failed_logons</c> object of <see cref="CollectAll"/>.</summary>
     public static object Collect(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
+        => CollectAll(store, now, commit, ct).FailedLogons;
+
+    /// <summary>
+    /// One bounded pass over the channels. The Security scan also yields the successful interactive logons, the
+    /// privileged group changes and the newest log clear; they share the failed-logon window, cursor and commit, so
+    /// they are consume-once exactly like <c>failed_logons</c>.
+    /// </summary>
+    public static SecurityLogResult CollectAll(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
     {
         lock (Gate)
         {
@@ -30,6 +39,9 @@ internal static class FailedLogonSection
             var firstRun = !invalid && state.LastWindowEndUtc is null;
             var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
             var events = new List<FailedLogonEvent>();
+            var securityEvents = new List<FailedLogonEvent>();
+            var securityReadable = false;
+            var securityCapped = false;
             var reset = false;
             var capped = false;
             var failed = 0;
@@ -60,6 +72,7 @@ internal static class FailedLogonSection
                 {
                     state.Channels[channel] = after;
                     readable++;
+                    securityReadable |= channel == FailedLogonEventReader.Security;
                     continue;
                 }
 
@@ -70,13 +83,21 @@ internal static class FailedLogonSection
                     continue;
                 }
                 readable++;
+                securityReadable |= channel == FailedLogonEventReader.Security;
                 capped |= read.Capped;
                 state.Channels[channel] = FailedLogonCursorLogic.NextSaved(read.LastRecordId, read.Capped, b.Newest);
                 events.AddRange(read.Events);
+                if (channel == FailedLogonEventReader.Security)
+                {
+                    securityEvents.AddRange(read.Events);
+                    securityCapped = read.Capped;
+                }
             }
 
             reset |= events.Any(e => e.Source == FailedLogonSource.LogCleared);
             state.LastWindowEndUtc = now;
+            var lastCleared = securityReadable ? LatestClear(state.LastLogClearedUtc, securityEvents) : state.LastLogClearedUtc;
+            state.LastLogClearedUtc = lastCleared;
             var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
             var auditFailure = FailedLogonAuditPolicy.ReadFailureEnabled();
             ct.ThrowIfCancellationRequested();
@@ -88,8 +109,32 @@ internal static class FailedLogonSection
             var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
             if (commit && !firstRun)
                 _pending = (store, state, report);
-            return report;
+
+            var feedStatus = !securityReadable ? "unavailable" : securityCapped || !saveOk ? "partial" : "ok";
+            return new SecurityLogResult(
+                report,
+                feedStatus == "unavailable"
+                    ? SecurityLogFields.Unavailable
+                    : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(securityEvents, FailedLogonSource.SuccessfulLogon4624)),
+                securityReadable
+                    ? SecurityLogFields.LogCleared(feedStatus == "ok" ? "ok" : "partial", lastCleared)
+                    : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
+                SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
         }
+    }
+
+    private static List<T> Details<T>(IEnumerable<FailedLogonEvent> events, FailedLogonSource source) where T : class
+        => events.Where(e => e.Source == source).Select(e => e.Detail).OfType<T>().ToList();
+
+    /// <summary>Newest of the saved value, the 1102 events of this scan and the newest 1102 still in the Security log.</summary>
+    private static DateTimeOffset? LatestClear(DateTimeOffset? saved, IEnumerable<FailedLogonEvent> securityEvents)
+    {
+        var latest = saved;
+        foreach (var t in securityEvents.Where(e => e.Source == FailedLogonSource.LogCleared).Select(e => (DateTimeOffset?)e.TimeUtc)
+                     .Append(FailedLogonEventReader.LatestSecurityCleared()))
+            if (t is { } time && (latest is null || time > latest))
+                latest = time;
+        return latest;
     }
 
     /// <summary>Persists the cursor of the last committing collection; call after the snapshot upload succeeded.</summary>

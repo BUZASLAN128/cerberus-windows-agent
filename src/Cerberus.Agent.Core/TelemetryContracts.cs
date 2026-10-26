@@ -193,14 +193,21 @@ public static class AgentSnapshotFactory
 
     /// <summary>
     /// Copy of <paramref name="request"/> without one field of one section (hash of that section recomputed); the
-    /// request itself when the field is absent. Used so a buffered snapshot never carries consume-once data
-    /// (<c>security.failed_logons</c>) that the next live snapshot re-reads and reports.
+    /// request itself when the field is absent. <paramref name="field"/> may be a dotted path to a nested object field
+    /// (<c>local_admins.changes</c>). Used so a buffered snapshot never carries consume-once data
+    /// (<c>security.failed_logons</c> and the fields read with it) that the next live snapshot re-reads and reports.
     /// </summary>
     public static AgentSnapshotRequest WithoutSectionField(AgentSnapshotRequest request, string section, string field)
     {
         if (!request.Sections.TryGetValue(section, out var value) || value is null
-            || JsonSerializer.SerializeToNode(value, JsonOpts) is not JsonObject node
-            || !node.Remove(field))
+            || JsonSerializer.SerializeToNode(value, JsonOpts) is not JsonObject node)
+            return request;
+
+        var path = field.Split('.');
+        JsonObject? parent = node;
+        for (var i = 0; i < path.Length - 1 && parent is not null; i++)
+            parent = parent[path[i]] as JsonObject;
+        if (parent is null || !parent.Remove(path[^1]))
             return request;
 
         var sections = new Dictionary<string, object?>(request.Sections, StringComparer.Ordinal) { [section] = node };

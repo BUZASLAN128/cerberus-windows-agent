@@ -13,7 +13,8 @@ internal sealed record ChannelRead(
 
 /// <summary>
 /// Reads failed-logon events from the Windows event channels by record id. Only the fields needed for
-/// classification are taken from the event XML; account-name fields are never read.
+/// classification are taken from the event XML; account-name fields are never read, except for the user name and
+/// domain of a successful interactive logon (4624).
 /// </summary>
 internal static class FailedLogonEventReader
 {
@@ -32,7 +33,10 @@ internal static class FailedLogonEventReader
 
     private static string Query(string channel, long after) => channel switch
     {
-        Security => $"*[System[(EventID=4625 or EventID=1102) and (EventRecordID > {after})]]",
+        // One pass over the Security log: failed logons, clears, privileged group changes and (only logon types 2 and
+        // 10, filtered server side so network logons never use up the scan cap) successful logons.
+        Security => $"*[(System[(EventID=4625 or EventID=1102 or EventID=4728 or EventID=4729 or EventID=4732 or EventID=4733 or EventID=4756 or EventID=4757) and (EventRecordID > {after})]) "
+            + $"or (System[(EventID=4624) and (EventRecordID > {after})] and EventData[Data[@Name='LogonType']=10 or Data[@Name='LogonType']=2])]",
         SystemLog => $"*[System[(EventID=104) and (EventRecordID > {after})]]",
         RdpCore => $"*[System[(EventID=140) and (EventRecordID > {after})]]",
         Application => $"*[System[(EventID=18456) and (EventRecordID > {after})]]",
@@ -64,6 +68,21 @@ internal static class FailedLogonEventReader
         using var reader = new EventLogReader(query);
         using var record = reader.ReadEvent();
         return record?.RecordId ?? 0;
+    }
+
+    /// <summary>Time of the newest Security 1102 still in the log (one reverse read); null when none or unreadable.</summary>
+    public static DateTimeOffset? LatestSecurityCleared()
+    {
+        try
+        {
+            using var reader = new EventLogReader(new EventLogQuery(Security, PathType.LogName, "*[System[(EventID=1102)]]") { ReverseDirection = true });
+            using var record = reader.ReadEvent();
+            return record?.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : null;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
+        {
+            return null;
+        }
     }
 
     /// <summary>One scanned record: its id and the classified event (null when the record is not a failed logon).</summary>
@@ -147,7 +166,8 @@ internal static class FailedLogonEventReader
         EventData data;
         try
         {
-            data = ReadData(record.ToXml());
+            // Account names are read only for successful interactive logons; failed attempts never expose them.
+            data = ReadData(record.ToXml(), keepAccountNames: channel == Security && record.Id == 4624);
         }
         catch (Exception ex) when (ex is System.Xml.XmlException or EventLogException)
         {
@@ -161,14 +181,22 @@ internal static class FailedLogonEventReader
                     ? new FailedLogonEvent(FailedLogonSource.LogCleared, time, null)
                     : null;
             case Security:
-                if (record.Id == 1102)
-                    return new FailedLogonEvent(FailedLogonSource.LogCleared, time, null);
-                return new FailedLogonEvent(
-                    FailedLogonSource.Security4625,
-                    time,
-                    data.Named.GetValueOrDefault("IpAddress"),
-                    int.TryParse(data.Named.GetValueOrDefault("LogonType"), out var type) ? type : null,
-                    data.Named.GetValueOrDefault("ProcessName"));
+                switch (record.Id)
+                {
+                    case 1102:
+                        return new FailedLogonEvent(FailedLogonSource.LogCleared, time, null);
+                    case 4625:
+                        return new FailedLogonEvent(
+                            FailedLogonSource.Security4625,
+                            time,
+                            data.Named.GetValueOrDefault("IpAddress"),
+                            int.TryParse(data.Named.GetValueOrDefault("LogonType"), out var type) ? type : null,
+                            data.Named.GetValueOrDefault("ProcessName"));
+                    case 4624:
+                        return SecurityLogEventParser.Logon(time, data.Named);
+                    default:
+                        return SecurityLogEventParser.GroupChange(record.Id, time, data.Named);
+                }
             case RdpCore:
                 // Fixed manifest field only: no scan of other values.
                 return new FailedLogonEvent(FailedLogonSource.RdpCore140, time, data.Named.GetValueOrDefault("IPString"));
@@ -206,9 +234,9 @@ internal static class FailedLogonEventReader
 
     /// <summary>
     /// Event data values by name (unnamed values get "#n") and in template order. Values stay in memory only for
-    /// classification; account-name fields are dropped from the named set.
+    /// classification; account-name fields are dropped from the named set unless <paramref name="keepAccountNames"/>.
     /// </summary>
-    private static EventData ReadData(string xml)
+    private static EventData ReadData(string xml, bool keepAccountNames = false)
     {
         var named = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var positional = new List<string>();
@@ -217,8 +245,9 @@ internal static class FailedLogonEventReader
         {
             var name = (string?)d.Attribute("Name") ?? $"#{positional.Count}";
             positional.Add(d.Value);
-            if (string.Equals(name, "TargetUserName", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(name, "SubjectUserName", StringComparison.OrdinalIgnoreCase))
+            if (!keepAccountNames
+                && (string.Equals(name, "TargetUserName", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(name, "SubjectUserName", StringComparison.OrdinalIgnoreCase)))
                 continue;
             named[name] = d.Value;
         }

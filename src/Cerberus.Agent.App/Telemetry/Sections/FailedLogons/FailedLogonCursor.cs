@@ -14,6 +14,10 @@ internal sealed class FailedLogonCursorState
     [JsonPropertyName("last_window_end_utc")]
     public DateTimeOffset? LastWindowEndUtc { get; set; }
 
+    /// <summary>Latest Security 1102 time seen; additive field, absent in files written before it existed.</summary>
+    [JsonPropertyName("last_log_cleared_utc")]
+    public DateTimeOffset? LastLogClearedUtc { get; set; }
+
     [JsonPropertyName("channels")]
     public Dictionary<string, long> Channels { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

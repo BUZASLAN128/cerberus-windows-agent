@@ -16,6 +16,10 @@ internal enum FailedLogonSource
     Sql18456,
     /// <summary>Security 1102 / System 104: an event log was cleared. Not an attempt; only marks the window as having a gap.</summary>
     LogCleared,
+    /// <summary>Security 4624 with logon type 2 or 10; carried in <see cref="FailedLogonEvent.Detail"/>, not part of the failed tally.</summary>
+    SuccessfulLogon4624,
+    /// <summary>Security 4728/4729/4732/4733/4756/4757 on a privileged group; carried in <see cref="FailedLogonEvent.Detail"/>.</summary>
+    GroupChange,
 }
 
 /// <summary>
@@ -27,7 +31,8 @@ internal sealed record FailedLogonEvent(
     DateTimeOffset TimeUtc,
     string? SourceIp,
     int? LogonType = null,
-    string? ProcessName = null);
+    string? ProcessName = null,
+    object? Detail = null);
 
 internal sealed record FailedLogonGroup(string Protocol, string SourceIp, int Count, DateTimeOffset FirstSeenUtc, DateTimeOffset LastSeenUtc);
 

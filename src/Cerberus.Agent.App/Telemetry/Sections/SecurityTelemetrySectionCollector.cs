@@ -49,7 +49,17 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
             },
         };
         if (_cursor is not null)
-            section["failed_logons"] = await CollectFailedLogonsAsync(_cursor, ct).ConfigureAwait(false);
+        {
+            // One Security scan feeds failed_logons, successful_logons, log_cleared and local_admins.changes.
+            var log = await CollectSecurityLogAsync(_cursor, ct).ConfigureAwait(false);
+            section["failed_logons"] = log.FailedLogons;
+            section["successful_logons"] = log.SuccessfulLogons;
+            section["log_cleared"] = log.LogCleared;
+            section["local_admins"] = await CollectLocalAdminsAsync(log.AdminChanges, ct).ConfigureAwait(false);
+            section["unexpected_shutdowns"] = await CollectUnexpectedShutdownsAsync(ct).ConfigureAwait(false);
+            foreach (var (key, value) in await Task.Run(() => SecurityPostureProbe.Read(ct), ct).ConfigureAwait(false))
+                section[key] = value;
+        }
         return section;
     }
 
@@ -67,18 +77,54 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         }
     }
 
-    private async Task<object> CollectFailedLogonsAsync(FailedLogonCursorStore cursor, CancellationToken ct)
+    private async Task<SecurityLogResult> CollectSecurityLogAsync(FailedLogonCursorStore cursor, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
         try
         {
-            return await Task.Run(() => FailedLogonSection.Collect(cursor, now, _commitFailedLogons, ct), ct).ConfigureAwait(false);
+            return await Task.Run(() => FailedLogonSection.CollectAll(cursor, now, _commitFailedLogons, ct), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            TelemetrySectionCapture.Log?.Warn(
-                $"Telemetry section security failed_logons {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)} at={ExceptionSite.FirstFrame(ex)}");
-            return FailedLogonSection.Unavailable(now);
+            WarnProbe("failed_logons", ex);
+            return SecurityLogResult.Unavailable(now);
         }
     }
+
+    private static async Task<object> CollectLocalAdminsAsync(AdminChangeReport changes, CancellationToken ct)
+    {
+        LocalAdminsRead? members = null;
+        try
+        {
+            members = await Task.Run(() => LocalAdminsProbe.Read(ct), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WarnProbe("local_admins", ex);
+        }
+        return SecurityLogFields.LocalAdmins(members, changes);
+    }
+
+    private static async Task<object> CollectUnexpectedShutdownsAsync(CancellationToken ct)
+    {
+        try
+        {
+            var read = await Task.Run(() => UnexpectedShutdownsProbe.Read(ct), ct).ConfigureAwait(false);
+            return new
+            {
+                status = "ok",
+                count_7d = read.Count7d,
+                last_utc = read.LastUtc is { } t ? FailedLogonSection.Iso(t) : null,
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            WarnProbe("unexpected_shutdowns", ex);
+            return SecurityLogFields.Unavailable;
+        }
+    }
+
+    private static void WarnProbe(string field, Exception ex)
+        => TelemetrySectionCapture.Log?.Warn(
+            $"Telemetry section security {field} {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)} at={ExceptionSite.FirstFrame(ex)}");
 }
