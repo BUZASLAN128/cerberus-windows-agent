@@ -31,6 +31,7 @@ param(
   [string]$SigningCertThumbprint = "",
   [string[]]$ExtraSignerPins = @(),
   [string[]]$DeployedSignerPins = @(),  # sha256: SPKI pins accepted by deployed agents (default: CERBERUS_AGENT_DEPLOYED_SIGNER_PINS); see Assert-ReleaseSignerContinuity
+  [switch]$AllowUnconfirmedDeployedSigners,  # preview/stable: release without confirming deployed signer pins (otherwise missing pins fail the build)
   [string]$ManifestSigningCertThumbprint = "",
   [string]$ManifestSigningPublicKeyFile = "",
   [string]$ManifestSignatureFile = "",
@@ -201,7 +202,7 @@ if ($tokenMode) {
   $signerPinsForBuild = ConvertTo-MsBuildListValue $tokenSignerPins
   $allowUnsignedBuildMetadata = $false
 }
-Assert-ReleaseSignerContinuity -Stage PreSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignerKeyIdentity $signerKeyIdentity -TokenSignerPins $tokenSignerPins -TokenMode:$tokenMode
+Assert-ReleaseSignerContinuity -Stage PreSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignerKeyIdentity $signerKeyIdentity -TokenSignerPins $tokenSignerPins -TokenMode:$tokenMode -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 if ($ManifestSequence -le 0) { $ManifestSequence = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 if ($ManifestSequence -le 0) { throw "Manifest sequence must be positive." }
 Assert-ManifestSequenceInRange $ManifestSequence
@@ -400,7 +401,7 @@ if ($signed) {
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   }
-  Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll")
+  Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll") -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 }
 
 Write-Step "Creating checksums, SBOM, provenance, manifest"
