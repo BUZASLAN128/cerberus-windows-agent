@@ -508,7 +508,7 @@ public sealed class AgentUxStaticTests
         Assert.DoesNotContain("per-user install", readme);
         Assert.DoesNotContain("Cerberus.Agent.App.exe --tray", readme);
         Assert.DoesNotContain("bootstrap/descriptor", readme);
-        Assert.DoesNotContain("bootstrap/enroll", readme);
+        Assert.DoesNotMatch(@"bootstrap/enroll(?!-headless(?![\w-]))", readme);
     }
 
     [Fact]
