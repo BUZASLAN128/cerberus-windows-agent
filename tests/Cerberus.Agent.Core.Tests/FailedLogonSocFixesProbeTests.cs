@@ -77,4 +77,36 @@ public sealed class FailedLogonSocFixesProbeTests
         Assert.False(read.Truncated);
         Assert.Equal(UnexpectedShutdownsProbe.MaxEventsRead, read.Count7d);
     }
+
+    [Fact]
+    public void ShutdownCache_RebootWithinBootToleranceIsDetectedByBootId()
+    {
+        UnexpectedShutdownsProbe.ResetCache();
+        try
+        {
+            var calls = 0;
+            IReadOnlyList<DateTimeOffset> Fetch() { calls++; return Events(1); }
+
+            UnexpectedShutdownsProbe.ReadCached(Now, Boot, Fetch, bootId: 7);
+            UnexpectedShutdownsProbe.ReadCached(Now.AddMinutes(5), Boot, Fetch, bootId: 7);
+            Assert.Equal(1, calls);
+            UnexpectedShutdownsProbe.ReadCached(Now.AddMinutes(6), Boot.AddSeconds(10), Fetch, bootId: 8); // same boot time to the minute
+            Assert.Equal(2, calls);
+            UnexpectedShutdownsProbe.ReadCached(Now.AddMinutes(7), Boot.AddSeconds(10), Fetch, bootId: null); // id unreadable: boot time decides
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            UnexpectedShutdownsProbe.ResetCache();
+        }
+    }
+
+    [Fact]
+    public void BootId_IsReadOnlyFromADwordValue()
+    {
+        Assert.Equal(147, UnexpectedShutdownsProbe.BootIdFromValue(147));
+        Assert.Null(UnexpectedShutdownsProbe.BootIdFromValue(null));
+        Assert.Null(UnexpectedShutdownsProbe.BootIdFromValue("147"));
+        Assert.Null(UnexpectedShutdownsProbe.BootIdFromValue(new byte[] { 1 }));
+    }
 }

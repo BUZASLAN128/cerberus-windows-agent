@@ -93,7 +93,9 @@ internal static class FailedLogonEventReader
     internal readonly record struct ScannedRecord(long? RecordId, FailedLogonEvent? Event);
 
     /// <param name="serviceLookup">Installed service names for the Application channel (null result = lookup failed); defaults to the live list.</param>
-    public static ChannelRead Read(string channel, long after, CancellationToken ct, Func<HashSet<string>?>? serviceLookup = null)
+    /// <param name="processLookup">SQL service name to its running process id and start time (null result = unknown); defaults to the live lookup.</param>
+    public static ChannelRead Read(string channel, long after, CancellationToken ct, Func<HashSet<string>?>? serviceLookup = null,
+        Func<string, (int ProcessId, DateTimeOffset StartUtc)?>? processLookup = null)
     {
         try
         {
@@ -107,7 +109,7 @@ internal static class FailedLogonEventReader
                     return new ChannelRead(channel, Array.Empty<FailedLogonEvent>(), after, false, Present: true, Failed: true);
             }
             using var reader = new EventLogReader(new EventLogQuery(channel, PathType.LogName, Query(channel, after)));
-            return Scan(channel, after, Records(reader, channel, sqlServices), ct: ct);
+            return Scan(channel, after, Records(reader, channel, sqlServices, new SqlEventProvenance(processLookup)), ct: ct);
         }
         catch (EventLogNotFoundException)
         {
@@ -119,14 +121,14 @@ internal static class FailedLogonEventReader
         }
     }
 
-    private static IEnumerable<ScannedRecord> Records(EventLogReader reader, string channel, HashSet<string>? sqlServices)
+    private static IEnumerable<ScannedRecord> Records(EventLogReader reader, string channel, HashSet<string>? sqlServices, SqlEventProvenance provenance)
     {
         while (true)
         {
             using var record = reader.ReadEvent();
             if (record is null)
                 yield break;
-            yield return new ScannedRecord(record.RecordId, Parse(channel, record, sqlServices));
+            yield return new ScannedRecord(record.RecordId, Parse(channel, record, sqlServices, provenance));
         }
     }
 
@@ -164,14 +166,16 @@ internal static class FailedLogonEventReader
         return new ChannelRead(channel, events, last, capped, Present: true, Failed: false);
     }
 
-    private static FailedLogonEvent? Parse(string channel, EventRecord record, HashSet<string>? sqlServices)
+    private static FailedLogonEvent? Parse(string channel, EventRecord record, HashSet<string>? sqlServices, SqlEventProvenance provenance)
     {
         var time = record.TimeCreated is { } t ? new DateTimeOffset(t.ToUniversalTime(), TimeSpan.Zero) : DateTimeOffset.UtcNow;
         EventData data;
+        string xml;
         try
         {
+            xml = record.ToXml();
             // Account names are read only for successful interactive logons; failed attempts never expose them.
-            data = ReadData(record.ToXml(), keepAccountNames: channel == Security && record.Id == 4624);
+            data = ReadData(xml, keepAccountNames: channel == Security && record.Id == 4624);
         }
         catch (Exception ex) when (ex is System.Xml.XmlException or EventLogException)
         {
@@ -181,9 +185,7 @@ internal static class FailedLogonEventReader
         switch (channel)
         {
             case SystemLog:
-                return string.Equals(record.ProviderName, "Microsoft-Windows-Eventlog", StringComparison.OrdinalIgnoreCase)
-                    ? new FailedLogonEvent(FailedLogonSource.LogCleared, time, null)
-                    : null;
+                return SystemLogCleared(record.ProviderName, xml, time);
             case Security:
                 switch (record.Id)
                 {
@@ -213,16 +215,42 @@ internal static class FailedLogonEventReader
                 if (!IsInstalledSqlProvider(record.ProviderName, sqlServices))
                     return null;
                 // Any local user can write Application events under an MSSQL provider name, so the provider must
-                // also be an installed SQL Server service. 18456 template: %1 account, %2 reason, %3 "[CLIENT: x]". The Application log accepts writes from
-                // non-admin callers, so only the third data field is read: no scan of the other values. A failed
-                // SQL logon without a usable address is still counted. (Not filtered by event UserId: the service
-                // account differs per install and is not reliably known to the agent.)
-                return new FailedLogonEvent(
-                    FailedLogonSource.Sql18456,
-                    time,
-                    FailedLogonClassifier.SqlClientIpFromFields(data.Positional));
+                // also be an installed SQL Server service and the writer process must be that service (see
+                // SqlEventProvenance); other events are only counted as unverified. 18456 template: %1 account, %2 reason,
+                // %3 "[CLIENT: x]". The Application log accepts writes from non-admin callers, so only the third data
+                // field is read: no scan of the other values. A failed SQL logon without a usable address is still counted.
+                return provenance.Classify(record.ProviderName!, record.ProcessId, time, data.Positional);
             default:
                 return null;
+        }
+    }
+
+    /// <summary>
+    /// System 104 names the cleared channel in <c>UserData/LogFileCleared/Channel</c>. Clearing a channel the agent does
+    /// not read is not a gap; when the channel cannot be read the event still counts, so a gap is signalled rather than missed.
+    /// </summary>
+    internal static FailedLogonEvent? SystemLogCleared(string? provider, string xml, DateTimeOffset time)
+    {
+        if (!string.Equals(provider, "Microsoft-Windows-Eventlog", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var channel = ClearedChannel(xml);
+        if (channel is not null && !Channels.Contains(channel, StringComparer.OrdinalIgnoreCase))
+            return null;
+        return new FailedLogonEvent(FailedLogonSource.LogCleared, time, null);
+    }
+
+    private static string? ClearedChannel(string xml)
+    {
+        try
+        {
+            var doc = XDocument.Parse(xml);
+            var value = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "Channel" && e.Parent?.Name.LocalName == "LogFileCleared")?.Value
+                        ?? doc.Descendants(Ns + "Data").FirstOrDefault(d => string.Equals((string?)d.Attribute("Name"), "Channel", StringComparison.OrdinalIgnoreCase))?.Value;
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+        catch (System.Xml.XmlException)
+        {
+            return null;
         }
     }
 

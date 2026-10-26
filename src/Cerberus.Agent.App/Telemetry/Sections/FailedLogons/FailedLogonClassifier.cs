@@ -14,6 +14,8 @@ internal enum FailedLogonSource
     OpenSsh,
     /// <summary>Application log event 18456 from a SQL Server provider.</summary>
     Sql18456,
+    /// <summary>An 18456 whose writer is not the SQL Server service process: counted only as unverified, no address.</summary>
+    Sql18456Unverified,
     /// <summary>Security 1102 / System 104: an event log was cleared. Not an attempt; only marks the window as having a gap.</summary>
     LogCleared,
     /// <summary>Security 4624 with logon type 2 or 10; carried in <see cref="FailedLogonEvent.Detail"/>, not part of the failed tally.</summary>
@@ -38,7 +40,8 @@ internal sealed record FailedLogonGroup(string Protocol, string SourceIp, int Co
 
 internal sealed record FailedLogonTally(
     IReadOnlyDictionary<string, int> Counts,
-    IReadOnlyList<FailedLogonGroup> Groups);
+    IReadOnlyList<FailedLogonGroup> Groups,
+    int SqlUnverified = 0);
 
 /// <summary>
 /// Pure classification and aggregation of failed-logon events.
@@ -124,6 +127,7 @@ internal static partial class FailedLogonClassifier
         var rdpPool = new List<FailedLogonEvent>();
         var sshPool = new List<FailedLogonEvent>();
         var direct = new List<(string Protocol, FailedLogonEvent Event)>();
+        var sqlUnverified = 0;
         foreach (var e in events)
         {
             switch (e.Source)
@@ -132,6 +136,7 @@ internal static partial class FailedLogonClassifier
                 case FailedLogonSource.RdpCore140: rdpPool.Add(e); break;
                 case FailedLogonSource.OpenSsh: sshPool.Add(e); break;
                 case FailedLogonSource.Sql18456: direct.Add(("sql", e)); break;
+                case FailedLogonSource.Sql18456Unverified: sqlUnverified++; break;
             }
         }
 
@@ -190,7 +195,7 @@ internal static partial class FailedLogonClassifier
             .ThenBy(g => g.Protocol, StringComparer.Ordinal)
             .ThenBy(g => g.SourceIp, StringComparer.Ordinal)
             .ToList();
-        return new FailedLogonTally(counts, list);
+        return new FailedLogonTally(counts, list, sqlUnverified);
     }
 
     /// <summary>Time-sorted secondary records; each can be consumed once by a primary record within the window.</summary>

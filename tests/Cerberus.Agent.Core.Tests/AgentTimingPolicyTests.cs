@@ -106,6 +106,23 @@ public sealed class AgentTimingPolicyTests
     public void SnapshotDelay_Desktop_ZeroMeansDefault_OtherValuesClamp(int fromServer, int expected)
         => Assert.Equal(expected, new AgentTimingPolicy(Desktop).SnapshotDelaySeconds(fromServer));
 
+    [Theory]
+    [InlineData(1800, 1440, 2160)]
+    [InlineData(300, 300, 360)]
+    [InlineData(3600, 2880, 3600)]
+    [InlineData(0, 2880, 3600)]
+    [InlineData(-5, 300, 360)]
+    [InlineData(int.MaxValue, 2880, 3600)]
+    public void SnapshotDelayWithJitter_Server_StaysWithinJitterAndClamps(int fromServer, int min, int max)
+    {
+        var policy = new AgentTimingPolicy(Server);
+        for (var i = 0; i < 200; i++)
+        {
+            var delay = HeartbeatLoop.SnapshotDelayWithJitter(policy, fromServer);
+            Assert.InRange(delay, min, max);
+        }
+    }
+
     [Fact]
     public void ParseTiming_AcceptsConsistentValues()
         => Assert.Equal(Server, AgentProfileMetadata.ParseTiming(Metadata(Server)));

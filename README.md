@@ -1,432 +1,209 @@
-# CERBERUS Windows Agent
+# Cerberus Windows Agent
 
-Per-machine Windows agent package for endpoint onboarding, secure agent identity, service-mode polling, telemetry, diagnostics, and governed desktop operations.
-
-## Quick Links
-
-- Repository: https://github.com/BUZASLAN128/cerberus-windows-agent
-- Releases: https://github.com/BUZASLAN128/cerberus-windows-agent/releases
-- Latest Release: https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest
-- Auto Publish Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
-- CI Workflow: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml
-- Create Public Release: https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml
-- Third-Party Notices: docs/legal/THIRD-PARTY-NOTICES.md
-
-Badges:
+Windows agent and service that enroll a machine with a Cerberus backend, report telemetry, and run backend-issued commands.
 
 [![CI](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml)
 [![Auto Publish](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/auto-publish-exe.yml)
 [![Latest Release](https://img.shields.io/github/v/release/BUZASLAN128/cerberus-windows-agent)](https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest)
 
-## 1) Purpose
+- Releases: https://github.com/BUZASLAN128/cerberus-windows-agent/releases
+- Third-party notices: [docs/legal/THIRD-PARTY-NOTICES.md](docs/legal/THIRD-PARTY-NOTICES.md)
+- Contributing, security and support: [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [SUPPORT.md](SUPPORT.md)
 
-This project provides a Windows endpoint agent that:
-- onboards a machine/user via SSO (Casdoor PKCE),
-- registers the device to CERBERUS backend with an RSA public key,
-- stores agent secrets securely with Windows DPAPI,
-- runs as a Windows Service for heartbeat, telemetry, and governed command handling,
-- reports telemetry and command results back to backend with signed requests.
+## Build profiles
 
-Primary use cases:
-- device onboarding for tenant-aware access,
-- safe operational visibility via heartbeat and status snapshots,
-- governed update and diagnostics flow for public agent releases.
+The profile is fixed at build time (`-p:AgentBuildProfile=server`, or `-BuildProfile server` in the release script). A backend or config setting cannot switch it.
 
-## 2) Runtime Modes
+| | Desktop (default) | Server |
+|---|---|---|
+| Product / service | Cerberus Windows Agent, `CerberusAgent` | Cerberus Server Agent, `CerberusServerAgent` |
+| Data directory | `%ProgramData%\CerberusAgent` | `%ProgramData%\CerberusServerAgent` |
+| Enrollment | Browser sign-in (Casdoor PKCE) from the tray panel | Headless, with a one-time enrollment proof entered in the MSI |
+| User interface | Tray client and control panel | None |
+| Commands | See [Commands](#commands) | `ping`, `collect_facts`, `agent_state` only |
+| Snapshot interval | Default 60 s (60 s–24 h) | Default 3600 s (300–3600 s) |
+| Release asset suffix | none | `-server` |
 
-The customer-facing runtime follows a service + single tray client model:
+## Components
 
-- `app/Cerberus.Agent.exe`: single user-session tray client and control center. It opens the same panel for status, onboarding, diagnostics, and updates.
-- `app/Cerberus.Agent.Service.exe`: Windows service runtime for heartbeat, telemetry, command polling, and update coordination.
-- `app/Cerberus.Agent.Updater.exe`: signed/checksum-verified MSI update applier.
-- `app/Cerberus.Agent.Uninstall.exe`: customer-facing uninstall wrapper with best-effort portal deactivation.
+Installed under `Program Files\Cerberus\Windows Agent` (server: `Program Files\Cerberus\Server Agent`):
 
-Support/admin CLI flags remain available through the agent binary for diagnostics and controlled automation:
-`--open`, `--connect`, `--check-updates`, `--update-now`, `--register`, `--heartbeat-once`, `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`, `--export-tailscale-up`, `--self-test`, `--apply-staged-update`, and `--accept-eula`.
+- `app/Cerberus.Agent.exe`: tray client and control panel (desktop) and the support CLI.
+- `app/Cerberus.Agent.Service.exe`: Windows service. Heartbeat, telemetry, command polling, update coordination.
+- `app/Cerberus.Agent.Updater.exe`: applies a verified MSI update.
+- `app/Cerberus.Agent.Uninstall.exe`: uninstall wrapper that also unregisters the device from the backend when it can.
 
-Notes:
-- Token/file based register flow is intentionally disabled in `--register`; PKCE browser flow is the single onboarding path.
-- `--service` runs as LocalSystem only when launched by the installed Windows Service.
-- `--accept-eula` is a support/headless path only; the customer MSI path uses the EULA dialog.
+Source projects:
 
-## 3) High-Level Architecture
+| Project | Contents |
+|---|---|
+| `src/Cerberus.Agent.App` | Tray UI, CLI, service provisioning, enrollment, telemetry section collectors, updates |
+| `src/Cerberus.Agent.Core` | API client, heartbeat loop, command dispatch and envelopes, telemetry contracts |
+| `src/Cerberus.Agent.Security` | DPAPI secret store, request signing, token refresh |
+| `src/Cerberus.Agent.Integrations.Ad` | Local user and Active Directory command handlers |
+| `src/Cerberus.Agent.Integrations.Tailscale` | Tailscale status and `tailscale.ensure_connected` |
+| `src/Cerberus.Agent.Observability` | Redaction (`Sanitizer`) and file logging |
+| `src/Cerberus.Agent.Runtime` | Shared files linked into the service, updater and uninstall binaries |
+| `src/Cerberus.Agent.Service`, `.Updater`, `.Uninstall` | Entry points |
+| `src/Cerberus.Agent.Installer` | WiX MSI |
 
-- `src/Cerberus.Agent.App`
-  - single tray/control-center UI, support CLI, service provisioning, onboarding orchestration, local UI config.
-- `src/Cerberus.Agent.Runtime`
-  - shared runtime files linked into service, updater, and uninstall binaries.
-- `src/Cerberus.Agent.Service`
-  - Windows service entry point.
-- `src/Cerberus.Agent.Updater`
-  - MSI update applier.
-- `src/Cerberus.Agent.Uninstall`
-  - uninstall wrapper.
-- `src/Cerberus.Agent.Core`
-  - API client, heartbeat loop, command dispatcher, telemetry/update contracts, idempotency cache.
-- `src/Cerberus.Agent.Security`
-  - DPAPI secret store, RSA request signer, token refresh manager.
-- `src/Cerberus.Agent.Integrations.Ad`
-  - AD readiness and guarded module boundary. AD mutation executors are not implemented in this foundation build.
-- `src/Cerberus.Agent.Integrations.Tailscale`
-  - status probe and `tailscale.ensure_connected` handler (safe/verify-first behavior).
-- `src/Cerberus.Agent.Observability`
-  - log/token redaction (`Sanitizer`) and file logger.
+## Install
 
-## 4) Backend API Contract
+### Desktop
 
-Core endpoints currently used by the agent:
+1. Run `Cerberus.Agent-<channel>-<version>.msi` and accept the EULA.
+2. The last installer page can open the panel (`app\Cerberus.Agent.exe --open`).
+3. The panel handles sign-in, registration, portal claim, service install (UAC) and start.
 
-- `POST /api/v1/agents/register`
-  - called by `AgentRegistrar` with OAuth token, generated RSA public key, fingerprint, and build metadata.
-  - persists returned `agent_id`, `tenant_id`, `agent_refresh_token`, and server-owned telemetry config.
+The MSI records EULA consent under `HKLM\Software\Cerberus\WindowsAgent\LegalConsent` (server: `ServerAgent\LegalConsent`); the agent imports it with `acceptedVia = "msi_eula_dialog"`. `--accept-eula` is for support and headless installs only.
 
-- `POST /api/v1/agents/token`
-  - called by `AgentTokenManager` to refresh access token using refresh token.
-  - supports refresh-token rotation (new refresh token may be returned and persisted).
+### Server
 
-- `POST /api/v1/agents/{agentId}/heartbeat`
-  - called by `AgentApiClient.HeartbeatAsync`.
-  - returns pending commands and next poll interval.
+Run `Cerberus.Agent-<channel>-<version>-server.msi` and enter the enrollment proof. The installer runs `--enroll-headless --proof-from-installer <proof> --install-service` as a deferred custom action; no other arguments are accepted. Enrollment runs once, on first install only.
 
-- `POST /api/v1/agents/{agentId}/commands/{commandId}/result`
-  - called by `AgentApiClient.SubmitCommandResultAsync`.
-  - sends command result (`status`, `exit_code`, `stdout`, `stderr`, `post_verify`).
+### MSI properties
 
-- `POST /api/v1/agents/{agentId}/snapshot`
-- `POST /api/v1/agents/{agentId}/events`
-- `POST /api/v1/agents/{agentId}/probe-results`
-- `POST /api/v1/agents/{agentId}/diagnostic-bundles`
-  - signed telemetry and diagnostics endpoints. Payloads are allowlisted and redacted.
+Non-secret public properties, stored under `HKLM\Software\Cerberus\WindowsAgent` (server: `HKLM\Software\Cerberus\ServerAgent`):
 
-- `POST /api/v1/agents/{agentId}/tailscale/preauth`
-  - called by `AgentApiClient.GetTailscalePreauthAsync`.
-  - returns `tailscale_login_server` + `tailscale_authkey`.
+| Property | Default | Profile |
+|---|---|---|
+| `CERBERUS_BACKEND_URL` | build default | both |
+| `CERBERUS_SSO_BASE_URL`, `CERBERUS_SSO_CLIENT_ID` | build default | both |
+| `CERBERUS_SSO_SCOPE` | `openid profile email groups` | both |
+| `CERBERUS_CHANNEL` | release channel | both |
+| `CERBERUS_LANGUAGE` | `auto` (`en-US`, `tr-TR`) | both |
+| `CERBERUS_EULA_ACCEPTED` | unset; `1` for approved managed installs | both |
+| `CREATE_DESKTOP_SHORTCUT` | `0` | desktop |
+| `START_TRAY_ON_LOGIN` | `1` | desktop |
+| `CERBERUS_ENROLLMENT_PROOF` | none; hidden, not logged | server |
 
-- `GET /health`
-  - used by `SelfTestMode` online health probe.
+Do not pass secrets in other MSI properties.
 
-### Signed Request Headers
+## Backend contract
 
-`AgentApiClient` signs request body and sends:
-- `Authorization: Bearer <access_token>`
-- `X-Agent-Id`
-- `X-Nonce`
-- `X-Timestamp`
-- `X-Body-Hash` (SHA-256 Base64)
-- `X-Signature` (RSA SHA256 PKCS#1 v1.5 over canonical string)
+| Call | Endpoint |
+|---|---|
+| Register (desktop) | `POST /api/v1/agents/register` |
+| Enroll (server) | `POST /api/v1/agents/bootstrap/enroll-headless` |
+| Refresh access token | `POST /api/v1/agents/token` |
+| Heartbeat, pending commands | `POST /api/v1/agents/{id}/heartbeat` |
+| Command ack / result | `POST /api/v1/agents/{id}/commands/{commandId}/ack`, `/result` |
+| AD command authority | `POST /api/v1/agents/{id}/commands/{commandId}/ad-authority` |
+| Managed account manifest | `GET /api/v1/agents/{id}/managed-accounts/manifest` |
+| Telemetry | `POST /api/v1/agents/{id}/snapshot`, `/events`, `/probe-results` |
+| Diagnostic bundle | `POST /api/v1/agents/{id}/diagnostic-bundles` |
+| Tailscale pre-auth | `POST /api/v1/agents/{id}/tailscale/preauth` |
+| Deactivate | `POST /api/v1/agents/{id}/deactivate` |
 
-Canonical format:
+Every agent request carries a bearer token and a signature:
 
-```text
-v1:{METHOD}:{PATH}:{NONCE}:{TIMESTAMP}:{BODY_HASH}
-```
+- `X-Agent-Id`, `X-Nonce` (16 random bytes, hex), `X-Timestamp` (Unix seconds)
+- `X-Body-Hash`: SHA-256 of the body, Base64
+- `X-Signature`: RSA PKCS#1 v1.5 SHA-256 over `v1:{METHOD}:{PATH}:{NONCE}:{TIMESTAMP}:{BODY_HASH}`, Base64 (path without query)
 
-## 5) Supported Command Types
+## Commands
 
-Dispatched by `CommandDispatcher` and idempotency-protected.
+Commands are idempotent per command id (`idempotency.json`, 24 h). Unknown types fail and are cached the same way.
 
-- `agent.health.snapshot`
-  - returns basic host info/uptime.
+Desktop:
 
-- `tailscale.ensure_connected`
-  - verify-first mode.
-  - does not automatically run `tailscale up` in this implementation.
-  - writes `tailscale-up.cmd` when preauth data exists.
+- `agent.health.snapshot`, `agent.rdp.quick_test`, `agent.diagnostic_bundle.collect`, `agent.update.request`
+- `tailscale.ensure_connected`: when Tailscale is installed but not connected, runs `tailscale up` with the one-time auth key from the backend. `CERBERUS_AGENT_TAILSCALE_AUTO_UP=0` turns this off.
+- `windows.local_user.create`, `.disable`, `.delete`. Local user creation is controlled on the device with `--enable-local-user-create` / `--disable-local-user-create`.
+- `windows.ad_user.create`, `.disable`, `.delete`: each command needs a short-lived authority from the backend.
 
-- `ad.user.create`
-- `ad.user.update`
-- `ad.user.disable`
+Server: `ping`, `collect_facts` (one telemetry collection), `agent_state`. Server commands arrive in signed envelopes verified against the trust anchors built into the package.
 
-AD and Windows mutation commands are not enabled as real executors in this foundation build. Windows mutation command families must pass explicit approval/audit guardrails and still fail closed until a governed executor is implemented.
+## Telemetry
 
-Unknown command types are returned as `FAILED` with reason text and cached via idempotency key.
+The service posts a snapshot on the interval the backend returns, within the profile limits, with ±20% jitter.
 
-## 6) Security Model
+- Desktop sections: identity, os, resources, network, tailscale, rdp, firewall, security, clock, runtime, capabilities. `CERBERUS_AGENT_TELEMETRY_SECTIONS` can narrow the list.
+- Server sections: identity, os, resources, network, firewall, security, clock, runtime, sessions, hardware, services, listening_ports, updates, software, processes.
 
-### Secret Storage
+Server `security` includes failed logons per protocol (RDP, SSH, SQL Server, and other for network and console logons) with an event-log cursor, successful interactive/RDP logons, local administrators and membership changes, log clears, unexpected shutdowns, and Defender/SMBv1 posture. SQL Server failures count only when the event was written by the running SQL Server service process; other entries are reported as `unverified`. Command lines, passwords and attempted user names are not collected.
 
-Secrets are encrypted with Windows DPAPI:
-- User scope: `%LOCALAPPDATA%\CerberusAgent\secrets.json`
-- Machine scope: `%ProgramData%\CerberusAgent\secrets.json`
+Snapshots that cannot be sent are buffered in `telemetry-offline.json`; one-time feeds (failed/successful logons, admin changes) are dropped from buffered copies so they are not counted twice.
 
-Stored secret payload includes:
-- `agent_id`, `tenant_id`
-- `refresh_token`
-- agent `private_key_pem`
-- backend URL
-- optional Tailscale preauth fields
+## Security model
 
-ACL hardening is applied best-effort:
-- SYSTEM + Administrators full control.
-- current interactive user can be granted access where needed for tray flows.
+- Secrets (`agent_id`, `tenant_id`, refresh token, agent private key, backend URL, optional Tailscale pre-auth) are DPAPI-encrypted in `secrets.json` in the data directory. The machine-scope file is limited to SYSTEM and Administrators; a user-scope onboarding file also grants the signed-in user.
+- Access tokens are refreshed shortly before expiry with the stored refresh token.
+- Updates: the manifest is signed with a Cerberus key, and the MSI and binaries must carry an Authenticode signature whose publisher key matches a key pinned at build time.
+- Logs pass through `Sanitizer`, which redacts token, secret, password, private key, API key and authorization values, JWT-like strings and Headscale keys.
 
-### Token Handling
+## Configuration
 
-- Access token is in-memory only.
-- Refresh token is persisted encrypted (DPAPI).
-- Rotation-aware refresh logic updates stored refresh token if backend rotates it.
-- Expiration guard renews token before expiry (~30s skew).
+Environment variables: `CERBERUS_BACKEND_URL`, `CERBERUS_SSO_BASE_URL`, `CERBERUS_SSO_CLIENT_ID`, `CERBERUS_SSO_CLIENT_SECRET` (read from the environment only, never stored), `CERBERUS_SSO_SCOPE`, `CERBERUS_OAUTH_REDIRECT_PORT`. The older `CERBERUS_CASDOOR_ENDPOINT`, `_CLIENT_ID`, `_CLIENT_SECRET` and `_SCOPE` names are still accepted.
 
-### Signing and Integrity
+`%LOCALAPPDATA%\CerberusAgent\ui-config.json` keeps non-secret UI defaults (backend URL, SSO endpoint, client ID, scope, redirect port).
 
-- Every agent API request body is hashed and signed.
-- Nonce + timestamp headers support replay protections on backend side.
+## Files and logs
 
-## 7) Public Release Requirements
+In the data directory (`%ProgramData%\CerberusAgent` or `CerberusServerAgent`):
 
-Public agent releases must be produced through `.github/workflows/auto-publish-exe.yml` or `scripts/build-agent-public-release.ps1`.
+- `secrets.json`, `idempotency.json`, `command-envelopes.v1.json`, `telemetry-offline.json`, `update-plan.json`, `manifest.json`
+- `logs\agent.log` (service); the tray writes `logs\agent-ui.log` under `%LOCALAPPDATA%`.
 
-Required release inputs:
+## CLI
 
-- `WINDOWS_SIGNING_CERT_BASE64`: base64-encoded PFX code-signing certificate.
-- `WINDOWS_SIGNING_CERT_PASSWORD`: PFX password.
-- `AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM`: Cerberus-owned RSA private key used only to sign update manifests.
-- `AGENT_RELEASE_ARTIFACT_BASE_URL`: Cerberus-owned release artifact URL prefix.
-- Optional: `TimestampUrl`, defaults to `http://timestamp.digicert.com`.
+Support and automation flags of `Cerberus.Agent.exe`:
 
-Local release builds require PowerShell 7+ (`pwsh`) because update manifest signing uses modern .NET PEM APIs. GitHub Actions already runs the release workflow with `pwsh`.
+- Panel and setup: `--open`, `--connect`, `--setup`, `--onboard`, `--register`, `--accept-eula`
+- Service: `--service`, `--install-service`, `--uninstall-service`, `--start-service`, `--stop-service`
+- Updates: `--check-updates`, `--update-now`, `--update-check-once`, `--update-apply-once`, `--apply-staged-update <path>`
+- Diagnostics: `--self-test`, `--self-test-json`, `--self-test-out <path>`, `--heartbeat-once`, `--export-tailscale-up`, `--show-fingerprint`
+- Device: `--unregister-device`, `--factory-reset`, `--enable-local-user-create`, `--disable-local-user-create`
+- Server enrollment: `--enroll-headless` with `--proof-stdin`, `--proof-file <path>` or `--proof-from-installer`; `--enroll-rollback`
 
-Installer builds use WiX Toolset v7 with explicit OSMF EULA acceptance (`AcceptEula=wix7`). This is the installer toolchain license decision, separate from the Cerberus Agent EULA shown to customers during MSI install.
+`--register` uses the browser (PKCE) flow; token-file registration is disabled.
 
-Release gate output includes:
+## Development
 
-- signed `.exe`
-- signed `.msi` installer
-- `.zip`
-- `.sha256`
-- `.sbom.json`
-- `.provenance.json`
-- `.release-gate.json`
-- `.update-manifest.json`
-- `.update-manifest.v2.json`
-
-Unsigned public releases are denied. Tenant-controlled backend, update URL, signing key, channel, or artifact source is not supported.
-
-The stable workflow stages a versioned draft and requires all artifact uploads to
-succeed before publishing it as the latest stable release. New stable builds select
-the fixed v2 manifest through GitHub's `releases/latest/download` endpoint; its
-installer URL remains bound to the versioned release. An interrupted upload can
-leave a draft for operator review without replacing the previous stable release.
-The dev and preview channels retain their existing channel-specific aliases.
-
-### Preview MSI Customer Flow
-
-Preview customer installs use the MSI asset from the mutable `preview-latest` GitHub release:
-
-1. Download `Cerberus.Agent-preview-<version>.msi`.
-2. Accept the MSI EULA dialog.
-3. Complete the per-machine install under `Program Files\Cerberus\Windows Agent`.
-4. The installer opens `app\Cerberus.Agent.exe --open`.
-5. The Cerberus Agent panel handles PKCE login, registration, portal claim/lock, UAC service install/start, heartbeat, and ready state.
-
-The MSI never calls `--accept-eula`. That flag remains a support/admin/headless test path only. After the MSI EULA dialog is accepted, Windows Installer writes consent metadata under `HKLM\Software\Cerberus\WindowsAgent\LegalConsent`; the agent imports that record into canonical `legal-consent.json` with `acceptedVia = "msi_eula_dialog"` before setup proceeds. The MSI does not use PowerShell custom actions for consent.
-
-### MSI Public Properties
-
-Enterprise deployment may pass non-secret public MSI properties:
-
-- `CERBERUS_BACKEND_URL`
-- `CERBERUS_SSO_BASE_URL`
-- `CERBERUS_SSO_CLIENT_ID`
-- `CERBERUS_SSO_SCOPE` (default: `openid profile email groups`)
-- `CERBERUS_CHANNEL` (default: release channel)
-- `CERBERUS_LANGUAGE` (`auto`, `en-US`, or `tr-TR`)
-- `CREATE_DESKTOP_SHORTCUT` (default: `0`)
-- `START_TRAY_ON_LOGIN` (default: `1`)
-- `CERBERUS_EULA_ACCEPTED=1` only for approved managed/headless deployments.
-
-These values are stored under `HKLM\Software\Cerberus\WindowsAgent`. Do not put secrets in MSI properties.
-
-## 8) Local Smoke
-
-Use the clean-install smoke helper for local verification:
+Requires Windows 10/11 and the .NET 10 SDK.
 
 ```powershell
-.\scripts\clean-install-smoke.ps1 -RunEnrollment
-```
-
-The smoke is read-only until `-RunEnrollment`, `-InstallService`, or `-StartService` is explicitly provided. It does not run `tailscale up`, create Windows users, or mutate Headscale/Tailscale state.
-
-### Redaction and Logging
-
-`Sanitizer` redacts:
-- token/secret/password/private key patterns,
-- JWT-like values,
-- Headscale key formats.
-
-Self-test output is sanitized before printing/writing.
-
-### Tailscale Safety
-
-- Generated `tailscale-up.cmd` explicitly marks auth key as sensitive.
-- In service/machine scope flows, command file ACL is hardened.
-- Verify-first behavior avoids automatic risky network changes in legacy/test mode.
-
-## 7) Configuration
-
-### Environment Variables
-
-Backend/SSO configuration:
-- `CERBERUS_BACKEND_URL`
-- `CERBERUS_SSO_BASE_URL` (preferred)
-- `CERBERUS_SSO_CLIENT_ID`
-- `CERBERUS_SSO_CLIENT_SECRET` (env-only, not persisted)
-- `CERBERUS_SSO_SCOPE`
-- `CERBERUS_OAUTH_REDIRECT_PORT`
-
-Legacy compatibility variables are also accepted:
-- `CERBERUS_CASDOOR_ENDPOINT`
-- `CERBERUS_CASDOOR_CLIENT_ID`
-- `CERBERUS_CASDOOR_CLIENT_SECRET`
-- `CERBERUS_CASDOOR_SCOPE`
-
-### UI Config File (Non-Secret)
-
-`%LOCALAPPDATA%\CerberusAgent\ui-config.json` stores non-secret defaults:
-- backend URL,
-- SSO endpoint/client ID/scope,
-- redirect port.
-
-Secrets are never persisted in this file.
-
-## 8) Local Development
-
-### Prerequisites
-
-- Windows 10/11
-- .NET SDK 10.x
-
-### Restore / Build / Test
-
-Preferred project-based commands:
-
-```powershell
-dotnet restore src/Cerberus.Agent.App/Cerberus.Agent.App.csproj
-dotnet restore tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj
-
 dotnet build src/Cerberus.Agent.App/Cerberus.Agent.App.csproj -c Release
 dotnet test tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj -c Release
 ```
 
-### Publish Runtime Bundle
+Server profile: add `-p:AgentBuildProfile=server`. If a `.slnx` command fails locally, use the project files as above.
+
+- `./scripts/preflight.ps1`: build, test, publish and self-test.
+- `.\scripts\clean-install-smoke.ps1`: install smoke. Steps that change the machine run only with their switches (`-RunEnrollment`, `-HeartbeatOnce`, `-InstallService`, `-StartService`, `-StopService`, `-UninstallService`); it does not create Windows users.
+
+## Releases
+
+Releases are built by `.github/workflows/auto-publish-exe.yml` (desktop) or `scripts/build-agent-public-release.ps1` (desktop or server). Local builds need PowerShell 7.
+
+Signing (`-SigningMode`):
+
+- `Pfx` (workflow default): `WINDOWS_SIGNING_CERT_BASE64`, `WINDOWS_SIGNING_CERT_PASSWORD` and `AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM`.
+- `Token`: a hardware-token certificate selected with `-SigningCertThumbprint`; `-ExtraSignerPins` adds publisher keys that agents also accept, for key rotation. All first-party files are signed in one `signtool` run, then each signature and its publisher pin are checked.
+
+Every first-party binary and the MSI must be signed; only the `dev` channel can build unsigned, with `-AllowUnsignedDevBuild`. Preview and stable server builds refuse the test command trust anchors.
+
+Outputs per build (`<suffix>` is `-server` for server builds):
+
+- `Cerberus.Agent-<channel>-<version><suffix>.msi`
+- `Cerberus.Agent.Bundle-<channel>-<version><suffix>.zip`, `.sha256`, `.sbom.json`, `.provenance.json`, `.release-gate.json`
+- `.update-manifest.v2.json` (and the v1 manifest where still produced), plus `-latest` aliases
+
+Workflows:
+
+- `ci.yml`: build and test on pushes and pull requests to `dev` and `develop`; manual for other refs.
+- `auto-publish-exe.yml`: runs on `dev`/`develop` pushes that touch source or build files, and manually with `release_version`, `channel` (`dev`, `preview`, `stable`) and `release_notes`. Each run creates a versioned release and moves the `<channel>-latest` pointer; stable runs are also marked as the latest GitHub release.
 
 ```powershell
-dotnet publish src/Cerberus.Agent.App/Cerberus.Agent.App.csproj -c Release -r win-x64 --self-contained true `
-  -p:PublishSingleFile=false `
-  -p:DebugSymbols=false `
-  -o out/release
+gh workflow run auto-publish-exe.yml --ref dev -f release_version=0.2.0-preview.1 -f channel=preview -f release_notes="..."
 ```
 
-### Preflight Gate
+## Troubleshooting
 
-```powershell
-./scripts/preflight.ps1
-```
+- Registration fails with a configuration error: check `CERBERUS_BACKEND_URL`, `CERBERUS_SSO_BASE_URL` and `CERBERUS_SSO_CLIENT_ID`.
+- The service cannot read secrets: the device must be registered in machine scope.
+- `tailscale.ensure_connected` fails with exit code 2: the backend has not issued a one-time auth key for this device yet.
 
-Preflight runs build + test + publish + self-test (unless skipped via script flags).
+## Branches
 
-## 9) CI/CD and Auto Release
-
-### `ci.yml`
-
-- Runs automatically for `dev` and `develop` on `push` and `pull_request`.
-- For `main`, run manually with `workflow_dispatch`.
-- Performs restore/build/test.
-- Publishes self-contained `win-x64` output as workflow artifact.
-
-### `auto-publish-exe.yml`
-
-- Runs automatically for `dev`/`develop` pushes and manually for the permitted ref/channel combinations.
-- Uses provided `release_version`, `channel`, and optional release notes.
-- `release_version` accepts ASCII SemVer with an optional leading `v`; asset names use the normalized numeric form and release tags are `v`-prefixed.
-- Publishes split self-contained runtime files with computed `Version`.
-- Builds the WiX MSI installer:
-  - package name: `Cerberus.Agent-<channel>-<version>.msi`
-  - per-machine install under `Program Files\Cerberus\Windows Agent`
-  - mandatory MSI EULA dialog
-  - registry-based EULA consent metadata, imported by the agent
-  - no PowerShell custom action
-  - desktop shortcut disabled by default
-  - agent tray startup enabled by default
-  - post-install launch: `app\Cerberus.Agent.exe --open`
-- Produces full release package:
-  - `*.exe`
-  - `*.msi`
-  - `*.zip`
-  - `*.sha256`
-  - `*.sbom.json`
-  - `*.provenance.json`
-  - `*.release-gate.json`
-  - `*.update-manifest.json`
-  - `*.update-manifest.v2.json`
-- Uploads package files as workflow artifacts.
-- Creates a versioned GitHub release with package assets and notes.
-- Refreshes the mutable `<channel>-latest` release pointer for every channel with both v1 and v2 manifests.
-- The `stable-latest` alias is a normal, explicitly non-latest release; the versioned stable release remains GitHub's Latest release.
-
-Manual preview dispatch:
-
-```powershell
-gh workflow run auto-publish-exe.yml `
-  --ref dev `
-  -f release_version=0.2.0-preview.1 `
-  -f channel=preview `
-  -f release_notes="Preview MSI installer with one-click setup UI"
-```
-
-Follow-up:
-
-```powershell
-gh run list --workflow auto-publish-exe.yml --limit 5
-gh run watch <run-id>
-gh release view preview-latest --web
-```
-
-## 10) Branch Policy
-
-- Default integration branch is `dev`.
-- All new work and updates should go to `dev` (or PRs targeting `dev`).
-- `main` is reserved for explicit manual promotion/merge.
-
-## Repository Standards
-
-The repository includes multi-contributor baseline governance files:
-
-- `CODEOWNERS`
-- `CONTRIBUTING.md`
-- `SECURITY.md`
-- `SUPPORT.md`
-- `CODE_OF_CONDUCT.md`
-- PR template
-- Issue templates (bug/feature/config)
-- Dependabot configuration
-
-## 11) Service Behavior
-
-Service name:
-- `CerberusAgent` (display name: `CERBERUS Windows Agent`)
-
-Install behavior:
-- requires Administrator rights,
-- starts automatically,
-- sets recovery policy (restart on failure).
-
-Execution loop:
-- heartbeat polling with jitter,
-- command dispatch with idempotency cache (`%ProgramData%\CerberusAgent\idempotency.json`),
-- degraded mode on transient failures with retry delay.
-
-## 12) Troubleshooting
-
-- Registration fails with config errors:
-  - verify `CERBERUS_BACKEND_URL`, `CERBERUS_SSO_BASE_URL`, `CERBERUS_SSO_CLIENT_ID`.
-
-- Service cannot read secrets:
-  - ensure machine-scope onboarding/registration exists for service context.
-
-- Tailscale command not exported:
-  - backend may not have returned preauth data yet,
-  - run self-test and inspect `online.agent.tailscale_*` steps.
-
-- CI works but `.slnx` local command fails:
-  - use `.csproj`-based restore/build/test commands above.
+`dev` is the integration branch; open pull requests against `dev`. `main` changes only by explicit promotion.

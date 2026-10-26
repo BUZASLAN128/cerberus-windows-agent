@@ -111,6 +111,8 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     /// removable/network/optical paths are rejected so the service account never opens a file a user pointed it at
     /// (an SMB open would send the machine account's NTLM credentials to that host).
     /// Reparse points (symlinks, junctions) anywhere in the path are rejected too, since they can lead to a share.
+    /// This is only a pre-filter: the path can change after the check, so <see cref="LocalImageFile.TryOpen"/>
+    /// refuses reparse points again in the open itself.
     /// </summary>
     internal static bool IsLocalFixedPath(string? path, Func<string, DriveType>? driveTypeOf = null, Func<string, FileAttributes>? attributesOf = null)
     {
@@ -144,14 +146,20 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         }
     }
 
-    private static string? ReadSignerCached(string path)
+    internal static string? ReadSignerCached(string path)
     {
-        // Never open an image outside a local fixed disk: the path is reported, the signer stays null.
+        // Cheap pre-filter: never open an image outside a local fixed disk; the path is reported, the signer stays null.
         if (!IsLocalFixedPath(path))
             return null;
 
+        // One open that cannot traverse a reparse point; identity and signature are both read through it, so a
+        // component swapped after the pre-filter fails the open rather than redirecting it.
+        using var handle = LocalImageFile.TryOpen(path);
+        if (handle is null)
+            return null;
+
         // No identity (file missing, unreadable, not NTFS-like): nothing is reported or cached.
-        if (!TryGetKey(path, out var key))
+        if (!TryGetKey(handle, path, out var key))
             return null;
 
         lock (CacheLock)
@@ -160,12 +168,12 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
                 return cached;
         }
 
-        if (!TryReadSigner(path, out var signer))
+        if (!TryReadSigner(handle, path, out var signer))
             return null; // transient I/O error: not cached, retried next cycle
 
-        // The file must still be the same one (volume, file index, size, last write) after verification;
-        // otherwise the verified signer may belong to another file and nothing is reported or cached.
-        if (!TryGetKey(path, out var after) || after != key)
+        // The file must be unchanged (size, last write) after verification; otherwise the verified signer may
+        // belong to other content and nothing is reported or cached.
+        if (!TryGetKey(handle, path, out var after) || after != key)
             return null;
 
         lock (CacheLock)
@@ -178,24 +186,16 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         return signer;
     }
 
-    private static bool TryGetKey(string path, out SignerKey key)
+    private static bool TryGetKey(SafeFileHandle handle, string path, out SignerKey key)
     {
         key = default;
-        try
-        {
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (!GetFileInformationByHandle(stream.SafeFileHandle, out var info))
-                return false;
-            var index = ((long)info.FileIndexHigh << 32) | info.FileIndexLow;
-            var written = ((long)info.LastWriteTime.High << 32) | info.LastWriteTime.Low;
-            var length = ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
-            key = new SignerKey(path, written, length, info.VolumeSerialNumber, index);
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
+        if (!GetFileInformationByHandle(handle, out var info))
             return false;
-        }
+        var index = ((long)info.FileIndexHigh << 32) | info.FileIndexLow;
+        var written = ((long)info.LastWriteTime.High << 32) | info.LastWriteTime.Low;
+        var length = ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
+        key = new SignerKey(path, written, length, info.VolumeSerialNumber, index);
+        return true;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -265,13 +265,13 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     /// cache-only revocation, no network). Unsigned, catalog-signed or untrusted images report null.
     /// Returns false on an I/O error so the caller does not cache the miss.
     /// </summary>
-    private static bool TryReadSigner(string path, out string? signer)
+    private static bool TryReadSigner(SafeFileHandle handle, string path, out string? signer)
     {
         signer = null;
         try
         {
             // The subject is the certificate Subject (full distinguished name) from the signature WinVerifyTrust accepted.
-            if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(path, out var subject))
+            if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(handle, path, out var subject))
                 return true;
             signer = SimpleNameFromSubject(subject);
             return true;

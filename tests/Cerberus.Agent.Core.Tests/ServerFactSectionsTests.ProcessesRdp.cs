@@ -268,4 +268,22 @@ public sealed partial class ServerFactSectionsTests
     [InlineData("", false)]
     public void Software_UserHiveSidFilter(string name, bool expected)
         => Assert.Equal(expected, SoftwareTelemetrySectionCollector.IsUserHiveSid(name));
+
+    [Fact]
+    public void RdpCertificate_SelfSignedNeedsAValidOwnSignature_NotJustMatchingNames()
+    {
+        using var realKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var otherKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var name = new X500DistinguishedName("CN=rdp.test");
+        using var real = new CertificateRequest(name, realKey, HashAlgorithmName.SHA256).CreateSelfSigned(T0.AddDays(-1), T0.AddDays(30));
+        // Subject and issuer match, but another key signed it.
+        using var forged = new CertificateRequest(name, realKey, HashAlgorithmName.SHA256)
+            .Create(name, X509SignatureGenerator.CreateForECDsa(otherKey), T0.AddDays(-1), T0.AddDays(30), new byte[] { 9, 9 });
+        using var expired = new CertificateRequest(name, realKey, HashAlgorithmName.SHA256).CreateSelfSigned(T0.AddDays(-30), T0.AddDays(-10));
+
+        Assert.True(RdpCertificate.IsSelfSigned(real));
+        Assert.True(RdpCertificate.IsSelfSigned(expired));
+        Assert.False(RdpCertificate.IsSelfSigned(forged));
+        Assert.False(RdpCertificate.FromCertificate(forged).SelfSigned);
+    }
 }
