@@ -9,6 +9,8 @@ namespace Cerberus.Agent.Core;
 
 public static class AgentUpdateAuthenticode
 {
+    private const int CertEUntrustedRoot = unchecked((int)0x800B0109);
+
     private static readonly Guid WinTrustActionGenericVerifyV2 = new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
 
     public static void Verify(
@@ -25,7 +27,11 @@ public static class AgentUpdateAuthenticode
             if (isDev && allowUnsignedDevBuild && status == unchecked((int)0x800B0100) &&
                 allowedSignerKeyIdentity == "unsigned-dev" && IsActuallyUnsigned(path))
                 return;
-            throw new InvalidOperationException("Update Authenticode signature verification failed.");
+            // The manifest signature (key compiled in) plus its sha256 is the root of trust; Authenticode is a pin check.
+            // WinVerifyTrust reports digest and signature failures (TRUST_E_BAD_DIGEST, TRUST_E_NOSIGNATURE) instead of
+            // CERT_E_UNTRUSTEDROOT, so an untrusted root with a pinned signer key still proves the file is intact.
+            if (status != CertEUntrustedRoot)
+                throw new InvalidOperationException("Update Authenticode signature verification failed.");
         }
 
         if (string.IsNullOrWhiteSpace(allowedSignerKeyIdentity))
@@ -34,9 +40,7 @@ public static class AgentUpdateAuthenticode
         try
         {
             using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
-            var actual = PublisherSpkiSha256(certificate);
-            if (!allowedSignerKeyIdentity.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Any(identity => NormalizeIdentity(actual).Equals(NormalizeIdentity(identity), StringComparison.OrdinalIgnoreCase)))
+            if (!AcceptsSigner(status, PublisherSpkiSha256(certificate), allowedSignerKeyIdentity))
                 throw new InvalidOperationException("Update signer identity is not trusted.");
         }
         catch (CryptographicException ex)
@@ -44,6 +48,12 @@ public static class AgentUpdateAuthenticode
             throw new InvalidOperationException("Update signer identity could not be read.", ex);
         }
     }
+
+    /// <summary>Accepts a clean WinVerifyTrust result, or exactly CERT_E_UNTRUSTEDROOT, only for a pinned signer key.</summary>
+    internal static bool AcceptsSigner(int status, string actualSpki, string allowedSignerKeyIdentity)
+        => (status == 0 || status == CertEUntrustedRoot) &&
+           allowedSignerKeyIdentity.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+               .Any(identity => NormalizeIdentity(actualSpki).Equals(NormalizeIdentity(identity), StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Verifies the Authenticode signature in-process (WinVerifyTrust) and returns the signer subject.</summary>
     public static bool TryGetValidSignerSubject(string path, out string subject)
