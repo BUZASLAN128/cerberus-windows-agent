@@ -110,8 +110,9 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     /// True only for a drive-letter path on a fixed local disk. UNC, device (<c>\\?\</c>, <c>\\.\</c>), relative and
     /// removable/network/optical paths are rejected so the service account never opens a file a user pointed it at
     /// (an SMB open would send the machine account's NTLM credentials to that host).
+    /// Reparse points (symlinks, junctions) anywhere in the path are rejected too, since they can lead to a share.
     /// </summary>
-    internal static bool IsLocalFixedPath(string? path, Func<string, DriveType>? driveTypeOf = null)
+    internal static bool IsLocalFixedPath(string? path, Func<string, DriveType>? driveTypeOf = null, Func<string, FileAttributes>? attributesOf = null)
     {
         if (string.IsNullOrWhiteSpace(path) || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal))
             return false;
@@ -122,7 +123,20 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
             var root = System.IO.Path.GetPathRoot(path);
             if (root is not { Length: >= 3 } || !char.IsAsciiLetter(root[0]) || root[1] != ':')
                 return false;
-            return (driveTypeOf ?? (r => new DriveInfo(r).DriveType))(root) == DriveType.Fixed;
+            if ((driveTypeOf ?? (r => new DriveInfo(r).DriveType))(root) != DriveType.Fixed)
+                return false;
+
+            // Top-down: a deeper component is only stat'ed once its parent is known not to be a reparse point.
+            var stat = attributesOf ?? File.GetAttributes;
+            var full = System.IO.Path.GetFullPath(path);
+            var current = root;
+            foreach (var segment in full[root.Length..].Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = System.IO.Path.Combine(current, segment);
+                if ((stat(current) & FileAttributes.ReparsePoint) != 0)
+                    return false;
+            }
+            return true;
         }
         catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException or UnauthorizedAccessException)
         {

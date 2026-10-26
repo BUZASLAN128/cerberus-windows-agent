@@ -32,11 +32,53 @@ public sealed class ProcessesAndShutdownGateTests
     public void IsLocalFixedPath_DependsOnDriveType()
     {
         string? asked = null;
-        Assert.True(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", r => { asked = r; return DriveType.Fixed; }));
+        Func<string, FileAttributes> plain = _ => FileAttributes.Normal;
+        Assert.True(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", r => { asked = r; return DriveType.Fixed; }, plain));
         Assert.Equal(@"C:\", asked);
-        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => DriveType.Network));
-        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => DriveType.Removable));
-        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => throw new DriveNotFoundException("gone")));
+        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => DriveType.Network, plain));
+        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => DriveType.Removable, plain));
+        Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(@"C:\Windows\x.exe", _ => throw new DriveNotFoundException("gone"), plain));
+    }
+
+    private static string Norm(string p) => p.Replace('/', '\\').TrimEnd('\\');
+
+    private static (bool Result, List<string> Calls) Probe(string path, Func<string, FileAttributes> attrs)
+    {
+        var calls = new List<string>();
+        var result = ProcessesTelemetrySectionCollector.IsLocalFixedPath(path, _ => DriveType.Fixed, p => { calls.Add(Norm(p)); return attrs(Norm(p)); });
+        return (result, calls);
+    }
+
+    private static FileAttributes ReparseAt(string p, string reparse)
+        => string.Equals(p, reparse, StringComparison.OrdinalIgnoreCase) ? FileAttributes.ReparsePoint | FileAttributes.Directory : FileAttributes.Normal;
+
+    [Fact]
+    public void IsLocalFixedPath_RejectsIntermediateReparsePointWithoutQueryingDeeper()
+    {
+        var (result, calls) = Probe(@"C:\a\link\b\x.exe", p => ReparseAt(p, @"C:\a\link"));
+        Assert.False(result);
+        Assert.Equal(new[] { @"C:\a", @"C:\a\link" }, calls, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IsLocalFixedPath_RejectsReparsePointFinalComponent()
+    {
+        var (result, calls) = Probe(@"C:\a\x.exe", p => ReparseAt(p, @"C:\a\x.exe"));
+        Assert.False(result);
+        Assert.Equal(new[] { @"C:\a", @"C:\a\x.exe" }, calls, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void IsLocalFixedPath_FailsClosedWhenAttributesCannotBeRead()
+        => Assert.False(ProcessesTelemetrySectionCollector.IsLocalFixedPath(
+            @"C:\a\x.exe", _ => DriveType.Fixed, _ => throw new FileNotFoundException("gone")));
+
+    [Fact]
+    public void IsLocalFixedPath_AcceptsPlainPathAndWalksEveryPrefixTopDown()
+    {
+        var (result, calls) = Probe(@"C:\a\b\x.exe", p => p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? FileAttributes.Normal : FileAttributes.Directory);
+        Assert.True(result);
+        Assert.Equal(new[] { @"C:\a", @"C:\a\b", @"C:\a\b\x.exe" }, calls, StringComparer.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<DateTimeOffset> Events(int count)
