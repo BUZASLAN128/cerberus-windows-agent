@@ -20,6 +20,7 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
 {
     internal const int MaxItems = 400;
     internal const int MaxCacheEntries = 2048;
+    internal const int MaxUncachedPerRun = 32;
 
     /// <summary>One running process: <c>Path</c> is null when the image path cannot be read.</summary>
     internal sealed record RawProcess(string? Path);
@@ -32,7 +33,10 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     public string SectionName => "processes";
 
     public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
-        => ValueTask.FromResult(Build(Read(ct), ReadSignerCached, ct));
+    {
+        var budget = new UncachedBudget(MaxUncachedPerRun);
+        return ValueTask.FromResult(Build(Read(ct), path => ReadSignerCached(path, budget), ct));
+    }
 
     /// <summary>
     /// <c>count</c> = number of distinct image paths seen (ordinal, case-insensitive) plus the number of processes
@@ -146,7 +150,21 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         }
     }
 
-    internal static string? ReadSignerCached(string path)
+    /// <summary>Verifications of images without a cache key that one collection run may start.</summary>
+    internal sealed class UncachedBudget(int remaining)
+    {
+        private int _remaining = remaining;
+
+        internal bool TryTake()
+        {
+            if (_remaining <= 0)
+                return false;
+            _remaining--;
+            return true;
+        }
+    }
+
+    internal static string? ReadSignerCached(string path, UncachedBudget budget)
     {
         // Cheap pre-filter: never open an image outside a local fixed disk; the path is reported, the signer stays null.
         if (!IsLocalFixedPath(path))
@@ -158,7 +176,7 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         if (handle is null)
             return null;
 
-        return SignerFor(handle, path, TryGetKey, TryReadSigner);
+        return SignerFor(handle, path, TryGetKey, TryReadSigner, budget);
     }
 
     internal delegate bool KeyReader(SafeFileHandle handle, string path, out SignerKey key);
@@ -166,13 +184,14 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     internal delegate bool SignerReader(SafeFileHandle handle, string path, out string? signer);
 
     /// <summary>
-    /// Cache lookup, verification and store around one handle. Without a key (no change journal, unreadable
-    /// identity) there is no signer and nothing is cached.
+    /// Cache lookup, verification and store around one handle. Without a key (no change journal, ReFS, FAT,
+    /// unreadable identity) the image is verified each run, never cached, and only while <paramref name="budget"/>
+    /// lasts; the handle is held without write sharing, so the content cannot change during verification.
     /// </summary>
-    internal static string? SignerFor(SafeFileHandle handle, string path, KeyReader keyOf, SignerReader read)
+    internal static string? SignerFor(SafeFileHandle handle, string path, KeyReader keyOf, SignerReader read, UncachedBudget budget)
     {
         if (!keyOf(handle, path, out var key))
-            return null;
+            return budget.TryTake() && read(handle, path, out var uncached) ? uncached : null;
 
         lock (CacheLock)
         {

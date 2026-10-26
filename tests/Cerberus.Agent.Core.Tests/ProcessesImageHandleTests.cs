@@ -156,7 +156,7 @@ public sealed class ProcessesImageHandleTests
             Assert.False(AgentUpdateAuthenticode.TryGetValidSignerSubject(handle, file, out _));
         }
 
-        Assert.Null(ProcessesTelemetrySectionCollector.ReadSignerCached(file));
+        Assert.Null(ProcessesTelemetrySectionCollector.ReadSignerCached(file, Budget()));
         Assert.Null(LocalImageFile.TryOpen(Path.Combine(dir.Path, "missing.exe")));
         Assert.Null(LocalImageFile.TryOpen(dir.Path)); // a directory is never an image
     }
@@ -202,7 +202,7 @@ public sealed class ProcessesImageHandleTests
             Assert.Equal(expected, viaNoReparse);
         }
 
-        Assert.Equal(ProcessesTelemetrySectionCollector.SimpleNameFromSubject(expected), ProcessesTelemetrySectionCollector.ReadSignerCached(signed));
+        Assert.Equal(ProcessesTelemetrySectionCollector.SimpleNameFromSubject(expected), ProcessesTelemetrySectionCollector.ReadSignerCached(signed, Budget()));
     }
 
     [Fact]
@@ -241,17 +241,17 @@ public sealed class ProcessesImageHandleTests
         var file = dir.File("a.exe", "AAAAAAAA");
         var written = File.GetLastWriteTimeUtc(file);
 
-        if (!string.Equals(new DriveInfo(file).DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine("TryGetKey rewrite test not run: the temp volume is not NTFS (no change journal).");
-            return;
-        }
-
         ProcessesTelemetrySectionCollector.SignerKey before;
+        bool hasKey;
         using (var handle = LocalImageFile.TryOpen(file))
         {
             Assert.NotNull(handle);
-            Assert.True(ProcessesTelemetrySectionCollector.TryGetKey(handle, file, out before));
+            hasKey = ProcessesTelemetrySectionCollector.TryGetKey(handle, file, out before);
+        }
+        if (!hasKey)
+        {
+            Console.WriteLine("TryGetKey rewrite test not run: no file id or USN on the temp volume (no NTFS change journal).");
+            return;
         }
 
         // The image is opened without write sharing, so the rewrite is a new writer session between two opens.
@@ -266,19 +266,32 @@ public sealed class ProcessesImageHandleTests
     }
 
     [Fact]
+    public void TryGetKey_ReadsAPositiveUsnForASystemImage()
+    {
+        var image = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+        using var handle = LocalImageFile.TryOpen(image);
+        Assert.NotNull(handle);
+        Assert.True(ProcessesTelemetrySectionCollector.TryGetKey(handle, image, out var key));
+        Assert.True(key.Usn > 0);
+    }
+
+    [Fact]
     public void TryOpen_FailsWhileAWriterHoldsTheFileOpen_AndSucceedsAfterItCloses()
     {
+        var original = typeof(object).Assembly.Location; // embedded Authenticode signature
+        Assert.True(AgentUpdateAuthenticode.TryGetValidSignerSubject(original, out var subject));
         using var dir = new TempDir();
-        var file = dir.File("a.exe", "AAAAAAAA");
+        var file = Path.Combine(dir.Path, "a.dll");
+        File.Copy(original, file);
 
         using (var writer = new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
         {
-            writer.Write("BBBBBBBB"u8);
             Assert.Null(LocalImageFile.TryOpen(file));
             Assert.Null(LocalImageFile.TryOpen(file, forceFallback: true));
-            Assert.Null(ProcessesTelemetrySectionCollector.ReadSignerCached(file));
+            Assert.Null(ProcessesTelemetrySectionCollector.ReadSignerCached(file, Budget())); // the open failed: nothing cached
         }
 
+        Assert.Equal(ProcessesTelemetrySectionCollector.SimpleNameFromSubject(subject), ProcessesTelemetrySectionCollector.ReadSignerCached(file, Budget()));
         using (var primary = LocalImageFile.TryOpen(file))
             Assert.NotNull(primary);
         using (var walked = LocalImageFile.TryOpen(file, forceFallback: true))
@@ -323,12 +336,12 @@ public sealed class ProcessesImageHandleTests
             return true;
         }
 
-        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify));
-        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify));
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify, Budget()));
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify, Budget()));
         Assert.Equal(1, verifications); // same key: a hit
 
         usn = 11; // content changed: new key, verified again
-        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify));
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify, Budget()));
         Assert.Equal(2, verifications);
 
         // The key moves during verification: reported nothing, cached nothing.
@@ -338,15 +351,24 @@ public sealed class ProcessesImageHandleTests
             key = new(p, 1, 2, 3, 100 + calls++);
             return true;
         }
-        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "m", Moving, Verify));
+        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "m", Moving, Verify, Budget()));
         Assert.Equal(3, verifications);
 
-        // No key (no change journal): no signer, not verified, not stored.
+        // No key (no change journal): verified on every call while the budget lasts, never stored, and keyed
+        // lookups do not spend the budget.
         bool NoKey(SafeFileHandle h, string p, out ProcessesTelemetrySectionCollector.SignerKey key) { key = default; return false; }
-        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
-        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
-        Assert.Equal(3, verifications);
+        var budget = new ProcessesTelemetrySectionCollector.UncachedBudget(2);
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify, budget));
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify, budget));
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify, budget));
+        Assert.Equal(5, verifications); // second uncached call verified again
+        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify, budget));
+        Assert.Equal(5, verifications); // budget spent: signer reader not called
+        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path, Key, Verify, budget)); // keyed hit still works
     }
+
+    private static ProcessesTelemetrySectionCollector.UncachedBudget Budget()
+        => new(ProcessesTelemetrySectionCollector.MaxUncachedPerRun);
 
     /// <summary>Real junction through <c>mklink /J</c>, which needs no elevation (a file or directory symlink would).</summary>
     private static void CreateJunction(string junction, string target)
