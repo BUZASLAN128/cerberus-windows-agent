@@ -10,8 +10,8 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class AgentRegistrarTests
 {
     [Theory]
-    [InlineData("http://100.101.130.51:8000", false)]
-    [InlineData("http://100.101.130.51:8000", true)]
+    [InlineData("http://100.64.0.10:8000", false)]
+    [InlineData("http://100.64.0.10:8000", true)]
     [InlineData("https://foreign.example", false)]
     [InlineData(null, false)]
     public async Task RegisterAsync_AdvertisementCannotRebindSelectedDeployment(string? advertisement, bool explicitReenrollment)
@@ -30,7 +30,7 @@ public sealed partial class AgentRegistrarTests
         var secrets = new CaptureSecretStore {
             CancelAfterSave = cts,
             Existing = explicitReenrollment
-                ? (new AgentIdentity("old-agent", "old-tenant"), "old-refresh", "old-key", "http://100.101.130.51:8000", null, null)
+                ? (new AgentIdentity("old-agent", "old-tenant"), "old-refresh", "old-key", "http://100.64.0.10:8000", null, null)
                 : null
         };
         var registrar = new AgentRegistrar(http, secrets, new StubKeyPairs("priv", "pub"));

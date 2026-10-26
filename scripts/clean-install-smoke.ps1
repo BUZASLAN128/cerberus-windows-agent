@@ -1,6 +1,6 @@
 param(
   [string]$ExePath = "",
-  [string]$SsoBaseUrl = "http://100.101.130.51:31080",
+  [string]$SsoBaseUrl = "",
   [string]$BootstrapDescriptorUrl = "",
   [switch]$RunEnrollment,
   [switch]$HeartbeatOnce,
@@ -134,7 +134,9 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
   throw "Agent exe not found: $ExePath"
 }
 
-$env:CERBERUS_SSO_BASE_URL = $SsoBaseUrl
+if (-not [string]::IsNullOrWhiteSpace($SsoBaseUrl)) {
+  $env:CERBERUS_SSO_BASE_URL = $SsoBaseUrl
+}
 if (-not [string]::IsNullOrWhiteSpace($BootstrapDescriptorUrl)) {
   $env:CERBERUS_AGENT_BOOTSTRAP_DESCRIPTOR_URL = $BootstrapDescriptorUrl
 }
