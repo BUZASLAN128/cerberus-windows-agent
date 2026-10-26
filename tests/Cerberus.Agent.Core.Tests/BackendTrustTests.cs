@@ -61,6 +61,19 @@ public sealed class BackendTrustTests
         await Assert.ThrowsAsync<HttpRequestException>(() => http.GetStringAsync($"https://localhost:{server.Port}/"));
     }
 
+    [Fact]
+    public async Task Handler_PlatformChainFaultBeyondTrust_IsNotRepairedByAnchor()
+    {
+        // With revocation checking on, the platform adds RevocationStatusUnknown to the chain status; the anchor
+        // re-check (no revocation) must not override it.
+        using var pki = TestPki.Create();
+        await using var server = TlsServer.Start(pki.Leaf);
+        var handler = BackendTrust.Apply(new HttpClientHandler { CheckCertificateRevocationList = true }, pki.Anchors());
+        using var http = new HttpClient(handler);
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => http.GetStringAsync($"https://localhost:{server.Port}/"));
+    }
+
     [Theory]
     [InlineData(SslPolicyErrors.RemoteCertificateNameMismatch)]
     [InlineData(SslPolicyErrors.RemoteCertificateNotAvailable)]
