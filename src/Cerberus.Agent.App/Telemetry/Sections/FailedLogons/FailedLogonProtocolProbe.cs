@@ -28,7 +28,8 @@ internal static class FailedLogonProtocolProbe
         var sqlPresent = services.Any(FailedLogonEventReader.IsSqlProvider);
         var sql = new ProtocolPresence(
             sqlPresent,
-            sqlPresent && (tcp.Contains(DefaultSqlPort) || owners?.Any(o => IsProcess(o.Name, "sqlservr")) == true));
+            // Any sqlservr-owned listener counts whatever its port; otherwise 1433 must not be held by another process.
+            sqlPresent && (owners?.Any(o => IsProcess(o.Name, "sqlservr")) == true || PortOwned(tcp, DefaultSqlPort, owners, "sqlservr")));
         return (rdp, ssh, sql);
     }
 
@@ -38,11 +39,18 @@ internal static class FailedLogonProtocolProbe
     /// another process on that port is not RDP. No owner row for the port falls back to the port check.
     /// </summary>
     internal static bool RdpListening(HashSet<int> tcp, int port, IReadOnlyList<(int Port, string? Name)>? owners)
+        => PortOwned(tcp, port, owners, "svchost");
+
+    /// <summary>
+    /// Port check refined by owners: with owner rows for the port one must be <paramref name="expected"/> or unnamed;
+    /// no rows or unreadable owners fall back to the port being open.
+    /// </summary>
+    internal static bool PortOwned(HashSet<int> tcp, int port, IReadOnlyList<(int Port, string? Name)>? owners, string expected)
     {
         var rows = owners?.Where(o => o.Port == port).ToList();
         return rows is null or { Count: 0 }
             ? tcp.Contains(port)
-            : rows.Any(o => o.Name is null || IsProcess(o.Name, "svchost"));
+            : rows.Any(o => o.Name is null || IsProcess(o.Name, expected));
     }
 
     private static bool IsProcess(string? name, string expected) => string.Equals(name, expected, StringComparison.OrdinalIgnoreCase);

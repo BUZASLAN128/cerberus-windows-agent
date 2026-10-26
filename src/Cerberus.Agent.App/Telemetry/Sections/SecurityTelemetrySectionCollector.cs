@@ -117,7 +117,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
             var read = await Task.Run(() => UnexpectedShutdownsProbe.Read(ct), ct).ConfigureAwait(false);
             return new
             {
-                status = "ok",
+                status = read.Truncated ? "partial" : "ok",
                 count_7d = read.Count7d,
                 last_utc = read.LastUtc is { } t ? FailedLogonSection.Iso(t) : null,
             };

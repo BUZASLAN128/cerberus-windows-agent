@@ -251,7 +251,7 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
             recent.OrderByDescending(e => e.InstalledUtc).Take(MaxRecent).ToArray(),
             items.OrderByDescending(p => p.Security).Take(MaxPendingItems).ToArray(),
             pending > MaxPendingItems,
-            recent.Count > MaxRecent);
+            recent.Count > MaxRecent || total > MaxHistoryEntries);
     }
 
     [GeneratedRegex(@"KB\d{4,8}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

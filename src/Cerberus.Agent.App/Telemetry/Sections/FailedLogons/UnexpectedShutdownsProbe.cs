@@ -2,7 +2,8 @@ using System.Diagnostics.Eventing.Reader;
 
 namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 
-internal sealed record UnexpectedShutdowns(int Count7d, DateTimeOffset? LastUtc);
+/// <param name="Truncated">More than <see cref="UnexpectedShutdownsProbe.MaxEventsRead"/> matching events exist in the window, so the count is a lower bound.</param>
+internal sealed record UnexpectedShutdowns(int Count7d, DateTimeOffset? LastUtc, bool Truncated = false);
 
 /// <summary>
 /// System log events 41 (Kernel-Power) and 6008 (EventLog) of the last 7 days: a bounded, newest-first time-window
@@ -53,7 +54,9 @@ internal static class UnexpectedShutdownsProbe
                 _cachedTimes = times;
             }
         }
-        return Summarize(times.Where(t => now - t <= Window));
+        // The fetch reads one matching event past the cap: seeing it inside the window means the older ones were not counted.
+        var inWindow = times.Where(t => now - t <= Window).OrderByDescending(t => t).ToList();
+        return Summarize(inWindow.Take(MaxEventsRead)) with { Truncated = inWindow.Count > MaxEventsRead };
     }
 
     internal static void ResetCache()
@@ -69,7 +72,7 @@ internal static class UnexpectedShutdownsProbe
     {
         var times = new List<DateTimeOffset>();
         using var reader = new EventLogReader(new EventLogQuery(FailedLogonEventReader.SystemLog, PathType.LogName, Query) { ReverseDirection = true });
-        while (times.Count < MaxEventsRead)
+        while (times.Count <= MaxEventsRead)
         {
             ct.ThrowIfCancellationRequested();
             using var record = reader.ReadEvent();
