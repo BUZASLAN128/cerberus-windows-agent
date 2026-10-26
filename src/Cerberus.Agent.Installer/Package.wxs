@@ -178,6 +178,14 @@
         Execute="deferred"
         Impersonate="no"
         Return="check" />
+    <!-- Belt and braces after a rolled-back upgrade: make sure the previous service is running again. Never stops or reconfigures it. -->
+    <CustomAction
+        Id="EnsureServerAgentRunningOnRollback"
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='ensure-running "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        Execute="rollback"
+        Impersonate="no"
+        Return="ignore" />
     <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
@@ -236,6 +244,7 @@
       <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="ServerEnrollRollback" After="ServerEnrollFromInstaller" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="CheckServerAgentHealth" After="StartServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="EnsureServerAgentRunningOnRollback" After="StopServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <?else ?>
       <Custom Action="CaptureCerberusServiceBeforeUpgrade" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
       <Custom Action="RestoreCerberusServicePathOnRollback" Before="CaptureCerberusServiceBeforeUpgrade" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />

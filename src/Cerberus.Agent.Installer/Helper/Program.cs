@@ -30,10 +30,10 @@ internal static partial class Program
             if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7) || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
-            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit"))
+            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running"))
                 return 2;
-            // The optional seventh argument is the server upgrade's backend-contact requirement ("" or "1").
-            if (args.Length == 7 && (operation != "health" || args[6] is not ("" or "1")))
+            // The optional seventh argument belongs to health: only "1" requires backend contact; any other value is off.
+            if (args.Length == 7 && operation != "health")
                 return 2;
             if (operation == "bootstrap")
             {
@@ -46,6 +46,20 @@ internal static partial class Program
             AgentUpdateSecurity.EnsureProtectedRoot(root);
             var snapshotPath = Path.Combine(root, product.ToString("N") + ".json");
             var diagnosticPath = Path.Combine(root, product.ToString("N") + ".health-failure.json");
+
+            if (operation == "ensure-running")
+            {
+                // Rollback safety net for the server MSI: leave the previous service running. Never stops or reconfigures.
+                if (!AgentBuildProfile.IsServer) return 2;
+                using var ensureManager = OpenSCManager(null, null, 1);
+                ThrowIfInvalid(ensureManager);
+                using var ensureService = OpenExistingService(ensureManager) ?? throw new Win32Exception(ErrorServiceDoesNotExist);
+                // A stop in progress finishes first; Start on a StopPending service would fail.
+                if (Status(ensureService).CurrentState == 3) WaitForState(ensureService, 1, TimeSpan.FromSeconds(60));
+                if (Status(ensureService).CurrentState == 2) WaitForState(ensureService, 4, TimeSpan.FromSeconds(60));
+                else Start(ensureService, TimeSpan.FromSeconds(60));
+                return 0;
+            }
 
             if (operation == "health" && AgentBuildProfile.IsServer)
             {
@@ -221,17 +235,17 @@ internal static partial class Program
         WaitForState(service, 1);
     }
 
-    private static void Start(ServiceHandle service)
+    private static void Start(ServiceHandle service, TimeSpan? wait = null)
     {
         if (Status(service).CurrentState == 4) return;
         Check(StartService(service, 0, IntPtr.Zero));
-        WaitForState(service, 4);
+        WaitForState(service, 4, wait);
     }
 
-    private static void WaitForState(ServiceHandle service, uint state)
+    private static void WaitForState(ServiceHandle service, uint state, TimeSpan? limit = null)
     {
         var deadline = Stopwatch.StartNew();
-        while (deadline.Elapsed < TimeSpan.FromSeconds(45))
+        while (deadline.Elapsed < (limit ?? TimeSpan.FromSeconds(45)))
         {
             if (Status(service).CurrentState == state) return;
             Thread.Sleep(100);

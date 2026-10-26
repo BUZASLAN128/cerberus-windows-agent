@@ -38,7 +38,8 @@ internal static partial class Program
             {
                 await VerifyRuntimeAsync(service, runtime, expectedVersion, executableHash, assemblyHash, options, trace).ConfigureAwait(false);
             }
-            catch (Exception) when (options.AllowPendingReboot && PendingRenameUnder(runtime))
+            catch (Exception error) when (options.AllowPendingReboot && AgentUpdateRollbackPolicy.PendingRebootExcuses(
+                trace.Phase, error is OperationCanceledException or TimeoutException, ReadPendingRenames(), runtime))
             {
                 // The new files replace the running ones at the next restart, so this process cannot be judged now.
                 Console.Error.WriteLine("Cerberus installer health skipped: a restart is pending for the application folder.");
@@ -178,21 +179,17 @@ internal static partial class Program
             throw new InvalidOperationException("Lifecycle state is not readable.");
     }
 
-    /// <summary>True when a queued rename/delete (PendingFileRenameOperations) targets a path under the runtime folder.</summary>
-    private static bool PendingRenameUnder(string runtime)
+    /// <summary>The queued rename/delete paths (PendingFileRenameOperations); empty when the value is absent or unreadable.</summary>
+    private static string[] ReadPendingRenames()
     {
         try
         {
             using var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager", writable: false);
-            if (key?.GetValue("PendingFileRenameOperations") is not string[] entries)
-                return false;
-            var prefix = runtime.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return entries.Any(entry => entry.TrimStart('!').Replace(@"\??\", "", StringComparison.Ordinal)
-                .StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+            return key?.GetValue("PendingFileRenameOperations") as string[] ?? [];
         }
         catch (Exception)
         {
-            return false;
+            return [];
         }
     }
 }

@@ -59,14 +59,17 @@ internal static class Program
                 AttemptId = plan.AttemptId,
                 RetryCount = active.RetryCount,
             };
+            // The record scan reads files, so it runs before the journal lock is taken.
+            var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
+                ? HealthRollbackPhaseSince(journalStore.Read().InstallerStartedUtc, plan.Version, log) : null;
             journalStore.ChangeAttempt(attemptId, before => before with
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
                 // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
-                // Other installer failures keep the normal retry behavior.
+                // Other installer failures, and a backend-contact failure, keep the normal retry behavior.
                 FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
-                    installerResult.ErrorCode, plan.Sequence, installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed && HealthRollbackRecordedSince(before.InstallerStartedUtc, log)),
+                    installerResult.ErrorCode, plan.Sequence, rollbackPhase),
             });
             WriteInstallerResult(installerResult, log);
             log.Write("Cerberus Agent updater completed.");
@@ -259,25 +262,34 @@ internal static class Program
         return process.ExitCode;
     }
 
-    /// <summary>True when the installer helper wrote a health-failure record after this attempt's msiexec started.</summary>
-    private static bool HealthRollbackRecordedSince(DateTimeOffset? installerStartedUtc, UpdaterLog log)
+    /// <summary>The failed phase of the newest health-failure record the installer helper wrote for this attempt; null when there is none or its phase is unknown.</summary>
+    private static AgentInstallerHealthPhase? HealthRollbackPhaseSince(DateTimeOffset? installerStartedUtc, string planVersion, UpdaterLog log)
     {
+        AgentInstallerHealthDiagnostic? newest = null;
         try
         {
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
             AgentUpdateSecurity.EnsureProtectedRoot(root);
             foreach (var path in Directory.EnumerateFiles(root, "*.health-failure.json"))
             {
-                var record = AgentUpdateDurableFile.Read<AgentInstallerHealthDiagnostic>(path, root);
-                if (record is not null && AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(record.RecordedAtUtc, installerStartedUtc))
-                    return true;
+                try
+                {
+                    var record = AgentUpdateDurableFile.Read<AgentInstallerHealthDiagnostic>(path, root);
+                    if (record is not null && AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(record.RecordedAtUtc, installerStartedUtc, record.ExpectedVersion, planVersion)
+                        && (newest is null || record.RecordedAtUtc > newest.RecordedAtUtc))
+                        newest = record;
+                }
+                catch (Exception ex)
+                {
+                    log.Write($"Health failure record skipped: {ex.GetType().Name}.");
+                }
             }
         }
         catch (Exception ex)
         {
-            log.Write($"Health failure record unreadable: {ex.GetType().Name}.");
+            log.Write($"Health failure records unreadable: {ex.GetType().Name}.");
         }
-        return false;
+        return AgentUpdateRollbackPolicy.ParsePhase(newest?.Phase);
     }
 
     private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
