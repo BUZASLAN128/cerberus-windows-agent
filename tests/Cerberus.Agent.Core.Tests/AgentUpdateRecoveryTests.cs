@@ -203,7 +203,10 @@ public sealed class AgentUpdateRecoveryTests
     [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, 7, 7)]
     [InlineData(AgentInstallerHealthPhase.Stability, 7, 7)]
     [InlineData(AgentInstallerHealthPhase.Stability, 100, 100)]
+    [InlineData(AgentInstallerHealthPhase.ResponseVersion, 7, 7)]
     [InlineData(AgentInstallerHealthPhase.BackendContact, 7, 5)]
+    [InlineData(AgentInstallerHealthPhase.PipeConnect, 7, 5)]
+    [InlineData(AgentInstallerHealthPhase.StabilityNoAnswer, 7, 5)]
     [InlineData(null, 7, 5)]
     public void CloseRecovery_PinsTheFailedSequenceOnlyForAProvenHealthRollback(AgentInstallerHealthPhase? phase, long planSequence, long expected)
     {
@@ -218,7 +221,7 @@ public sealed class AgentUpdateRecoveryTests
     public void CloseRecovery_NeverLowersAnExistingPin()
         => Assert.Equal(9, AgentUpdateLocalService.CloseRecovery(
             Recovery(Recorded) with { FailedInstallSequence = 9 }, Plan with { Sequence = 7 }, healthy: false, Recorded,
-            AgentInstallerHealthPhase.PipeConnect).FailedInstallSequence);
+            AgentInstallerHealthPhase.Stability).FailedInstallSequence);
 
     [Fact]
     public void CloseRecovery_WithoutPlanKeepsTheSequence()

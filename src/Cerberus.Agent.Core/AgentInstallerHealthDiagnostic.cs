@@ -8,7 +8,7 @@ public enum AgentInstallerHealthPhase
     RuntimePath, ServiceExecutableHash, ServiceAssemblyHash, ServiceState, ServiceImage,
     PipeConnect, PipeAuthority, StatusRequest, StatusResponse, ResponseSuccess, ResponseVersion,
     LifecycleAuthority, LifecycleOpen, LifecycleLength, LifecycleJson, LifecycleState,
-    Stability, BackendContact,
+    Stability, BackendContact, StabilityNoAnswer,
 }
 
 /// <summary>Failure-only installer evidence. Never includes exception messages, paths or raw local-control data.</summary>

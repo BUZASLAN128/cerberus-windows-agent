@@ -125,7 +125,7 @@ internal static partial class Program
                 return;
             if (healthyFor.Elapsed > options.SettleLimit)
             {
-                trace.Phase = stableAnswer ? AgentInstallerHealthPhase.BackendContact : AgentInstallerHealthPhase.Stability;
+                trace.Phase = stableAnswer ? AgentInstallerHealthPhase.BackendContact : AgentInstallerHealthPhase.StabilityNoAnswer;
                 throw new InvalidOperationException(stableAnswer ? "Backend contact was not observed." : "Service did not answer after the stability window.");
             }
             await Task.Delay(TimeSpan.FromSeconds(2), overall.Token).ConfigureAwait(false);

@@ -44,7 +44,7 @@ public sealed record AgentUpdateJournal
     public AgentUpdateReconciliationSnapshot? ReconciliationSnapshot { get; init; }
     public long HealthyInstalledSequence { get; init; }
     public string? HealthyInstalledVersion { get; init; }
-    /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback). Automatic staging skips it and older ones.</summary>
+    /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback in a phase AgentUpdateRollbackPolicy.NextFailedInstallSequence pins). Automatic staging skips it and older ones.</summary>
     public long FailedInstallSequence { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or

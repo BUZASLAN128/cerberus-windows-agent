@@ -58,9 +58,22 @@ public sealed class AgentUpdateRollbackPolicyTests
     [InlineData(0L, "msi_failed", 9L, null, 0L)]
     [InlineData(7L, "download_failed", 9L, AgentInstallerHealthPhase.Stability, 7L)]
     [InlineData(7L, null, 9L, AgentInstallerHealthPhase.Stability, 7L)]
-    public void NextFailedInstallSequence_PinsOnlyAMsiRollbackWithAKnownNonBackendPhaseAndNeverLowers(
+    public void NextFailedInstallSequence_PinsOnlyAMsiRollbackWithAKnownPinningPhaseAndNeverLowers(
         long previous, string? errorCode, long plan, AgentInstallerHealthPhase? phase, long expected)
         => Assert.Equal(expected, AgentUpdateRollbackPolicy.NextFailedInstallSequence(previous, errorCode, plan, phase));
+
+    [Fact]
+    public void NextFailedInstallSequence_PipePhasesAndNoAnswerStabilityNeverPinAndEveryOtherPhaseDoes()
+    {
+        // A local user can hold or squat the control pipe, so those phases retry at the next check; a new phase must be classified here on purpose.
+        var unpinned = new[]
+        {
+            AgentInstallerHealthPhase.BackendContact, AgentInstallerHealthPhase.PipeConnect, AgentInstallerHealthPhase.PipeAuthority,
+            AgentInstallerHealthPhase.StatusRequest, AgentInstallerHealthPhase.StatusResponse, AgentInstallerHealthPhase.StabilityNoAnswer,
+        };
+        foreach (var phase in Enum.GetValues<AgentInstallerHealthPhase>())
+            Assert.Equal(unpinned.Contains(phase) ? 3L : 7L, AgentUpdateRollbackPolicy.NextFailedInstallSequence(3, "msi_failed", 7, phase));
+    }
 
     [Fact]
     public void ParsePhase_RoundTripsEveryPhaseFromItsSnakeCaseText()
@@ -68,6 +81,7 @@ public sealed class AgentUpdateRollbackPolicyTests
         foreach (var phase in Enum.GetValues<AgentInstallerHealthPhase>())
             Assert.Equal(phase, AgentUpdateRollbackPolicy.ParsePhase(System.Text.Json.JsonNamingPolicy.SnakeCaseLower.ConvertName(phase.ToString())));
         Assert.Equal(AgentInstallerHealthPhase.BackendContact, AgentUpdateRollbackPolicy.ParsePhase("backend_contact"));
+        Assert.Equal(AgentInstallerHealthPhase.StabilityNoAnswer, AgentUpdateRollbackPolicy.ParsePhase("stability_no_answer"));
     }
 
     [Theory]

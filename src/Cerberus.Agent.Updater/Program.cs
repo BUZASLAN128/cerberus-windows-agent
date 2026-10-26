@@ -68,7 +68,7 @@ internal static class Program
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
                 // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
-                // Other installer failures, and a backend-contact failure, keep the normal retry behavior.
+                // Other installer failures, and a backend-contact, control-pipe or no-answer failure, keep the normal retry behavior.
                 FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
                     installerResult.ErrorCode, plan.Sequence, rollbackPhase),
             });

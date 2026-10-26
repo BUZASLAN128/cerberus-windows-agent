@@ -19,10 +19,15 @@ public static class AgentUpdateRollbackPolicy
         => Enum.GetValues<AgentInstallerHealthPhase>().Cast<AgentInstallerHealthPhase?>()
             .FirstOrDefault(value => string.Equals(JsonNamingPolicy.SnakeCaseLower.ConvertName(value!.Value.ToString()), phase, StringComparison.Ordinal));
 
-    /// <summary>Only an installer health rollback pins the failed sequence. A backend outage or an unknown phase does not; other msi_failed cases keep the previous value.</summary>
+    /// <summary>Only an installer health rollback pins the failed sequence. A backend outage, an unknown phase and the pipe and no-answer phases do not,
+    /// because a local user can hold or squat the control pipe to cause them; such a rollback is retried at the next check.</summary>
     public static long NextFailedInstallSequence(long previous, string? errorCode, long planSequence, AgentInstallerHealthPhase? rollbackPhase)
-        => rollbackPhase is not null and not AgentInstallerHealthPhase.BackendContact && errorCode == AgentUpdateErrorCodes.MsiFailed
+        => rollbackPhase is not null && !IsPipeInducible(rollbackPhase.Value) && errorCode == AgentUpdateErrorCodes.MsiFailed
             ? Math.Max(previous, planSequence) : previous;
+
+    private static bool IsPipeInducible(AgentInstallerHealthPhase phase) => phase is
+        AgentInstallerHealthPhase.BackendContact or AgentInstallerHealthPhase.PipeConnect or AgentInstallerHealthPhase.PipeAuthority
+        or AgentInstallerHealthPhase.StatusRequest or AgentInstallerHealthPhase.StatusResponse or AgentInstallerHealthPhase.StabilityNoAnswer;
 
     /// <summary>A pending reboot excuses a failed probe only when the old service binary is still in place because its files were locked:
     /// the failure is in the service executable or assembly hash check (both run before the probe, so a later phase means the new files
