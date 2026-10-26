@@ -28,7 +28,7 @@ internal static class TelemetryValue
                 can_stop = service.CanStop,
             };
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return new
             {

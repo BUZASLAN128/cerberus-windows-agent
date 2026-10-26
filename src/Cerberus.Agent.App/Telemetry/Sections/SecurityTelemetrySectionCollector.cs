@@ -34,7 +34,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
 
     public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
-        var (domainJoined, domainName, adError) = AdStatusProbe.Probe();
+        var (domainJoined, domainName, adError) = ProbeAd();
         var section = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["status"] = "ok",
@@ -53,6 +53,20 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         return section;
     }
 
+    private static (bool DomainJoined, string? DomainName, string? Error) ProbeAd()
+    {
+        try
+        {
+            return AdStatusProbe.Probe();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            TelemetrySectionCapture.Log?.Warn(
+                $"Telemetry section security ad probe {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)} at={ExceptionSite.FirstFrame(ex)}");
+            return (false, null, $"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private async Task<object> CollectFailedLogonsAsync(FailedLogonCursorStore cursor, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
@@ -62,6 +76,8 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            TelemetrySectionCapture.Log?.Warn(
+                $"Telemetry section security failed_logons {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)} at={ExceptionSite.FirstFrame(ex)}");
             return FailedLogonSection.Unavailable(now);
         }
     }

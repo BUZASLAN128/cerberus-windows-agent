@@ -342,6 +342,7 @@ internal static partial class ServiceMode
             return;
         }
 #endif
+        TelemetrySectionCapture.Log = log;
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
         var loop = new HeartbeatLoop(
