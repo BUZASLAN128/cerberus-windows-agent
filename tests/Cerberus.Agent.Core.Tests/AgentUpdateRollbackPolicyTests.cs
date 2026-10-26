@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -23,28 +24,172 @@ public sealed class AgentUpdateRollbackPolicyTests
 
     [Fact]
     public void IsCurrentAttemptRecord_WithoutInstallerStartIsNeverCurrent()
-        => Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started, null));
+        => Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started, null, "1.2.3", "1.2.3"));
 
     [Fact]
     public void IsCurrentAttemptRecord_IncludesTheStartInstantAndExcludesOneTickBefore()
     {
-        Assert.True(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started, Started));
-        Assert.True(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started.AddTicks(1), Started));
-        Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started.AddTicks(-1), Started));
+        Assert.True(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started, Started, "1.2.3", "1.2.3"));
+        Assert.True(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started.AddTicks(1), Started, "1.2.3", "1.2.3"));
+        Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started.AddTicks(-1), Started, "1.2.3", "1.2.3"));
     }
 
     [Theory]
-    [InlineData(7L, "msi_failed", 9L, true, 9L)]
-    [InlineData(7L, "msi_failed", 5L, true, 7L)]
-    [InlineData(7L, "msi_failed", 7L, true, 7L)]
-    [InlineData(0L, "msi_failed", 5L, true, 5L)]
-    [InlineData(7L, "msi_failed", 9L, false, 7L)]
-    [InlineData(7L, "download_failed", 9L, true, 7L)]
-    [InlineData(7L, null, 9L, true, 7L)]
-    [InlineData(0L, "msi_failed", 9L, false, 0L)]
-    public void NextFailedInstallSequence_PinsOnlyARecordedMsiRollbackAndNeverLowers(
-        long previous, string? errorCode, long plan, bool rollbackRecorded, long expected)
-        => Assert.Equal(expected, AgentUpdateRollbackPolicy.NextFailedInstallSequence(previous, errorCode, plan, rollbackRecorded));
+    [InlineData("1.2.2")]
+    [InlineData("1.2.3.0")]
+    [InlineData("1.2.3 ")]
+    [InlineData(null)]
+    public void IsCurrentAttemptRecord_VersionMismatchOrMissingNeverBindsEvenWhenTheTimestampIsCurrent(string? recordVersion)
+        => Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started.AddMinutes(1), Started, recordVersion, "1.2.3"));
+
+    [Fact]
+    public void IsCurrentAttemptRecord_VersionComparisonIsOrdinal()
+        => Assert.False(AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(Started, Started, "1.2.3-RC1", "1.2.3-rc1"));
+
+    [Theory]
+    [InlineData(7L, "msi_failed", 9L, AgentInstallerHealthPhase.Stability, 9L)]
+    [InlineData(7L, "msi_failed", 9L, AgentInstallerHealthPhase.ResponseVersion, 9L)]
+    [InlineData(7L, "msi_failed", 5L, AgentInstallerHealthPhase.Stability, 7L)]
+    [InlineData(7L, "msi_failed", 7L, AgentInstallerHealthPhase.Stability, 7L)]
+    [InlineData(0L, "msi_failed", 5L, AgentInstallerHealthPhase.ServiceState, 5L)]
+    [InlineData(7L, "msi_failed", 9L, AgentInstallerHealthPhase.BackendContact, 7L)]
+    [InlineData(0L, "msi_failed", 9L, AgentInstallerHealthPhase.BackendContact, 0L)]
+    [InlineData(7L, "msi_failed", 9L, null, 7L)]
+    [InlineData(0L, "msi_failed", 9L, null, 0L)]
+    [InlineData(7L, "download_failed", 9L, AgentInstallerHealthPhase.Stability, 7L)]
+    [InlineData(7L, null, 9L, AgentInstallerHealthPhase.Stability, 7L)]
+    public void NextFailedInstallSequence_PinsOnlyAMsiRollbackWithAKnownNonBackendPhaseAndNeverLowers(
+        long previous, string? errorCode, long plan, AgentInstallerHealthPhase? phase, long expected)
+        => Assert.Equal(expected, AgentUpdateRollbackPolicy.NextFailedInstallSequence(previous, errorCode, plan, phase));
+
+    [Fact]
+    public void ParsePhase_RoundTripsEveryPhaseFromItsSnakeCaseText()
+    {
+        foreach (var phase in Enum.GetValues<AgentInstallerHealthPhase>())
+            Assert.Equal(phase, AgentUpdateRollbackPolicy.ParsePhase(System.Text.Json.JsonNamingPolicy.SnakeCaseLower.ConvertName(phase.ToString())));
+        Assert.Equal(AgentInstallerHealthPhase.BackendContact, AgentUpdateRollbackPolicy.ParsePhase("backend_contact"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("unknown_phase")]
+    [InlineData("BackendContact")]
+    [InlineData("BACKEND_CONTACT")]
+    public void ParsePhase_UnknownOrDifferentlyCasedTextYieldsNull(string? text)
+        => Assert.Null(AgentUpdateRollbackPolicy.ParsePhase(text));
+
+    private const string Runtime = @"C:\Program Files\Cerberus\Agent";
+
+    [Theory]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, true)]
+    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, true)]
+    [InlineData(AgentInstallerHealthPhase.ServiceImage, false)]
+    [InlineData(AgentInstallerHealthPhase.ResponseVersion, false)]
+    [InlineData(AgentInstallerHealthPhase.Stability, false)]
+    [InlineData(AgentInstallerHealthPhase.BackendContact, false)]
+    [InlineData(AgentInstallerHealthPhase.ServiceState, false)]
+    [InlineData(AgentInstallerHealthPhase.PipeConnect, false)]
+    public void PendingRebootExcuses_OnlyTheServiceFileHashPhases(AgentInstallerHealthPhase phase, bool expected)
+    {
+        var pending = new[] { Runtime + @"\Cerberus.Agent.Service.exe" };
+        Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, pending, Runtime));
+    }
+
+    [Fact]
+    public void PendingRebootExcuses_NoOtherPhaseIsExcusedAndCancellationNeverIs()
+    {
+        var pending = new[] { Runtime + @"\Cerberus.Agent.Service.exe" };
+        var allowed = new[]
+        {
+            AgentInstallerHealthPhase.ServiceExecutableHash, AgentInstallerHealthPhase.ServiceAssemblyHash,
+        };
+        foreach (var phase in Enum.GetValues<AgentInstallerHealthPhase>())
+        {
+            Assert.Equal(allowed.Contains(phase), AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, pending, Runtime));
+            Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, true, pending, Runtime));
+        }
+    }
+
+    [Theory]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.exe", true)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.dll", true)]
+    [InlineData(@"c:\program files\cerberus\agent\CERBERUS.AGENT.SERVICE.DLL", true)]
+    [InlineData(@"\??\C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.exe", true)]
+    [InlineData(@"!\??\C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.dll", true)]
+    [InlineData(@"!C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.exe", true)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\Cerberus.Agent.Updater.exe", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.pdb", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\Cerberus.Agent.Service.exe.bak", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\sub\Cerberus.Agent.Service.exe", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Other\Cerberus.Agent.Service.exe", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent2\Cerberus.Agent.Service.exe", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent", false)]
+    [InlineData(@"C:\Program Files\Cerberus\Agent\", false)]
+    [InlineData(@"", false)]
+    public void PendingRebootExcuses_RequiresAnExactServiceBinaryEntryUnderTheRuntime(string entry, bool expected)
+        => Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false, [entry], Runtime));
+
+    [Fact]
+    public void PendingRebootExcuses_OneMatchingEntryAmongOthersIsEnoughAndAnEmptyListIsNot()
+    {
+        Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false,
+            [@"C:\Windows\x.dll", Runtime + @"\Cerberus.Agent.Service.dll"], Runtime));
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false, [], Runtime));
+    }
+
+    [Fact]
+    public void InstallerPackage_ServerHealthGateAndRollbackStartAreWiredAsTheRollbackContractRequires()
+    {
+        var package = File.ReadAllText(Path.Combine(FindRepoRoot(), "src", "Cerberus.Agent.Installer", "Package.wxs"));
+
+        var health = CustomActionElement(package, "CheckServerAgentHealth");
+        Assert.Contains("Execute=\"deferred\"", health);
+        Assert.Contains("Impersonate=\"no\"", health);
+        Assert.Contains("Return=\"check\"", health);
+        Assert.Matches("ExeCommand='health [^']*\"\\[CERBERUS_UPDATE_REQUIRE_BACKEND\\]\"'", health);
+        Assert.Equal(7, Regex.Matches(Regex.Match(health, "ExeCommand='([^']*)'").Groups[1].Value, "\"[^\"]*\"").Count + 1);
+
+        var rollback = CustomActionElement(package, "EnsureServerAgentRunningOnRollback");
+        Assert.Contains("Execute=\"rollback\"", rollback);
+        Assert.Contains("Impersonate=\"no\"", rollback);
+        Assert.Contains("Return=\"ignore\"", rollback);
+        Assert.Matches("ExeCommand='ensure-running ", rollback);
+
+        Assert.Matches(@"<Custom Action=""CheckServerAgentHealth"" After=""StartServices"" Condition=""NOT REMOVE AND WIX_UPGRADE_DETECTED"" />", package);
+        Assert.Matches(@"<Custom Action=""EnsureServerAgentRunningOnRollback"" After=""StopServices"" Condition=""NOT REMOVE AND WIX_UPGRADE_DETECTED"" />", package);
+        Assert.Matches(@"<Property Id=""CERBERUS_UPDATE_REQUIRE_BACKEND"" Secure=""yes"" />", package);
+
+        // All four live inside a server-profile block, never the desktop one.
+        foreach (var marker in new[] { "Id=\"CheckServerAgentHealth\"", "Id=\"EnsureServerAgentRunningOnRollback\"",
+            "Action=\"CheckServerAgentHealth\"", "Action=\"EnsureServerAgentRunningOnRollback\"", "Id=\"CERBERUS_UPDATE_REQUIRE_BACKEND\"" })
+            Assert.True(InServerBlock(package, package.IndexOf(marker, StringComparison.Ordinal)), marker + " is not in the server profile block.");
+    }
+
+    private static string CustomActionElement(string package, string id)
+    {
+        var match = Regex.Match(package, "<CustomAction\\s+Id=\"" + id + "\"[^>]*?/>", RegexOptions.Singleline);
+        Assert.True(match.Success, id + " CustomAction was not found.");
+        return match.Value;
+    }
+
+    private static bool InServerBlock(string package, int index)
+    {
+        Assert.True(index >= 0);
+        var directive = Regex.Matches(package[..index], @"<\?(if|else|endif)[^?]*\?>").LastOrDefault();
+        return directive is not null && directive.Value.Contains("AgentBuildProfile) = server", StringComparison.Ordinal);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "Cerberus.WindowsAgent.slnx"))) return dir.FullName;
+            dir = dir.Parent;
+        }
+        throw new DirectoryNotFoundException("Could not locate cerberus-windows-agent repository root.");
+    }
 
     [Theory]
     [InlineData(false, 5L, null)]
