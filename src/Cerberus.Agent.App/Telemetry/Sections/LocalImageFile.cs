@@ -96,7 +96,7 @@ internal static class LocalImageFile
         {
             var status = Open(null, nt, ObjCaseInsensitive | ObjDontReparse, FileAccessRights, FileOpenOptions, out var handle);
             if (!ShouldRetryWithoutDontReparse(status))
-                return Accept(handle, requested: null);
+                return Accept(handle, requested: nt[4..]);
         }
 
         var full = nt[4..];
@@ -213,7 +213,7 @@ internal static class LocalImageFile
     }
 
     /// <summary>Keeps the handle only on a local volume and, when <paramref name="requested"/> is set, at that exact path.</summary>
-    private static SafeFileHandle? Accept(SafeFileHandle? handle, string? requested)
+    internal static SafeFileHandle? Accept(SafeFileHandle? handle, string? requested)
     {
         if (handle is null)
             return null;
