@@ -22,6 +22,14 @@ public static class AgentLifecycleStates
     public static bool AllowsAutomaticNetwork(AgentLifecycleState state)
         => state is AgentLifecycleState.Active or AgentLifecycleState.Degraded;
 
+    /// <summary>
+    /// Self-update checks continue in every recoverable state: the manifest and MSI are trusted by
+    /// signature pins, not the agent token, and a release must be able to repair a dormant agent.
+    /// Retired and revoked/deactivated agents stay stopped.
+    /// </summary>
+    public static bool AllowsAutomaticUpdate(AgentLifecycleState state, string? reasonCode)
+        => state != AgentLifecycleState.Retired && !AgentLifecycleStatePolicy.IsTerminalCode(reasonCode);
+
     public static bool IsDormant(AgentLifecycleState state)
         => !AllowsAutomaticNetwork(state);
 }

@@ -50,6 +50,7 @@ public static class AgentUpdateErrorCodes
     public const string InstallerBusy = "installer_busy";
     public const string RebootRequired = "reboot_required";
     public const string MsiFailed = "msi_failed";
+    public const string RecoveryTimeout = "recovery_timeout";
     public const string Unknown = "unknown";
 
     public static string Classify(Exception ex)

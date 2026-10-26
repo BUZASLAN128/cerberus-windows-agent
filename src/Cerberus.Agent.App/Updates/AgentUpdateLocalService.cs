@@ -13,7 +13,7 @@ internal sealed class AgentUpdateReconciliationDeferredException(Exception cause
 }
 
 /// <summary>The installed service owns update decisions. UI/CLI requests contain operations and attempt IDs only.</summary>
-internal static class AgentUpdateLocalService
+internal static partial class AgentUpdateLocalService
 {
     private static readonly TimeSpan ReconciliationRetryDelay = TimeSpan.FromMinutes(5);
     private sealed class IntentionalUpdateCancellationException(string message, CancellationToken cancellationToken)
@@ -599,7 +599,7 @@ internal static class AgentUpdateLocalService
         try
         {
             var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && !AllowsAutomatic(lifecycle)) return AgentUpdateCheckResult.None;
+            if (automatic && !AllowsAutomaticUpdate(lifecycle)) return AgentUpdateCheckResult.None;
             var active = Journal.Read();
             var effectiveRequired = CarryRequiredBlockedIntent(active, required: false, lifecycleGeneration: lifecycle.Generation);
             active = RecoverActiveAttempt(
@@ -663,7 +663,7 @@ internal static class AgentUpdateLocalService
                 var signal = new AgentUpdateSignal(false, true, trust.ConfiguredManifestUrl, "service_update_check", trust.ExpectedChannel);
                 var result = await new AgentUpdateStager(http, trust, Root).CheckAsync(signal, cancellation.Token).ConfigureAwait(false);
                 var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
-                if (automatic && (latestLifecycle.Generation != lifecycle.Generation || !AllowsAutomatic(latestLifecycle)))
+                if (automatic && (latestLifecycle.Generation != lifecycle.Generation || !AllowsAutomaticUpdate(latestLifecycle)))
                 {
                     authorizationChanged = true;
                     cancellation.Cancel();
@@ -713,7 +713,7 @@ internal static class AgentUpdateLocalService
         long? requiredPolicyGeneration = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (automatic && !AllowsAutomatic(lifecycle))
+        if (automatic && !AllowsAutomaticUpdate(lifecycle))
             return null;
         // Bind the incoming policy to the generation observed at the start of
         // this owned operation. An unstamped internal signal is bound once to
@@ -758,7 +758,7 @@ internal static class AgentUpdateLocalService
             // Reload before staging so the new attempt is bound to the current
             // authorization boundary rather than the old check snapshot.
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && !AllowsAutomatic(lifecycle))
+            if (automatic && !AllowsAutomaticUpdate(lifecycle))
                 return null;
             incomingRequired = IsRequiredSignalCurrent(
                 required,
@@ -799,7 +799,7 @@ internal static class AgentUpdateLocalService
             var stager = new AgentUpdateStager(http, trust, Root);
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
-            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomatic(latestLifecycle)))
+            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomaticUpdate(latestLifecycle)))
             {
                 authorizationChanged = true;
                 cancellation.Cancel();
@@ -895,7 +895,7 @@ internal static class AgentUpdateLocalService
                 .ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
             if (latestLifecycle.Generation != lifecycle.Generation ||
-                (automatic && !AllowsAutomatic(latestLifecycle)))
+                (automatic && !AllowsAutomaticUpdate(latestLifecycle)))
             {
                 authorizationChanged = true;
                 cancellation.Cancel();
@@ -1095,7 +1095,7 @@ internal static class AgentUpdateLocalService
             {
                 await ReconcileOwnedAsync(ct).ConfigureAwait(false);
                 var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                if (!AllowsAutomatic(lifecycle)) continue;
+                if (!AllowsAutomaticUpdate(lifecycle)) continue;
                 var active = Journal.Read();
                 var now = DateTimeOffset.UtcNow;
                 if (active.AttemptId is not null &&
@@ -1123,7 +1123,7 @@ internal static class AgentUpdateLocalService
         if (active.Phase is not (AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy))
             throw new InvalidOperationException("Update attempt cannot be applied.");
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+        if (automatic && (!AllowsAutomaticUpdate(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
             throw new InvalidOperationException("Automatic update authorization changed.");
         if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Update installer retry is not admitted.");
@@ -1134,7 +1134,7 @@ internal static class AgentUpdateLocalService
         using (await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false))
         {
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+            if (automatic && (!AllowsAutomaticUpdate(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
@@ -1275,32 +1275,25 @@ internal static class AgentUpdateLocalService
                 await ProjectAsync(ct).ConfigureAwait(false);
                 return;
             }
-            if (string.Equals(WindowsDeviceInfo.GetAgentVersion(), plan.Version, StringComparison.Ordinal) &&
-                IsCanonicalServiceProcess())
-            {
-                await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                AgentLocalControlResponse ready;
-                try { ready = await Cerberus.Agent.App.Control.AgentLocalControlClient.SendAsync(new AgentLocalControlRequest("status"), ct).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
-                    await ProjectAsync(ct).ConfigureAwait(false);
-                    return;
-                }
-                if (!ready.Success || ready.CurrentVersion != plan.Version)
-                {
-                    Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
-                    await ProjectAsync(ct).ConfigureAwait(false);
-                    return;
-                }
+            if (await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
                 Journal.ChangeAttempt(active.AttemptId, before => before with
                 {
                     Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
                     HealthyInstalledVersion = plan.Version,
                 });
-            }
+            else if (!HealthRetryExpired(active, DateTimeOffset.UtcNow))
+                return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
+            {
                 Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
+                await ProjectAsync(ct).ConfigureAwait(false);
+                return;
+            }
+        }
+        else if (active.Phase == AgentUpdateStates.RecoveryRequired)
+        {
+            if (!allowHealth) return;
+            await TryCloseRecoveryAsync(active, ct).ConfigureAwait(false);
         }
         else if (active.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking)
             Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.Failed });
