@@ -35,12 +35,15 @@ internal static class FailedLogonProtocolProbe
     /// <summary>
     /// RDP is listening when the configured port is open. With readable owners it must be held by svchost (the
     /// TermService host; the owner lookup reports image names only) or by a process whose name could not be read;
-    /// another process on that port is not RDP.
+    /// another process on that port is not RDP. No owner row for the port falls back to the port check.
     /// </summary>
     internal static bool RdpListening(HashSet<int> tcp, int port, IReadOnlyList<(int Port, string? Name)>? owners)
-        => owners is null
+    {
+        var rows = owners?.Where(o => o.Port == port).ToList();
+        return rows is null or { Count: 0 }
             ? tcp.Contains(port)
-            : owners.Any(o => o.Port == port && (o.Name is null || IsProcess(o.Name, "svchost")));
+            : rows.Any(o => o.Name is null || IsProcess(o.Name, "svchost"));
+    }
 
     private static bool IsProcess(string? name, string expected) => string.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
 

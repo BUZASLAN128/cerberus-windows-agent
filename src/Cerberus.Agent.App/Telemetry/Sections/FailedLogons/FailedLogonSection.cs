@@ -18,10 +18,12 @@ namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 internal static class FailedLogonSection
 {
     // Gate only guards the pending fields and is never held across event-log or file I/O. CollectGuard keeps a single
-    // collection reading at a time; a caller that finds it taken (e.g. an abandoned, still-reading collection) gets
-    // an unavailable result instead of blocking.
+    // collection reading at a time; a caller waits for it up to CollectWait (under the 5 s section budget) and then
+    // gets an unavailable result. StoreLock serialises cursor-file Load and Save (never held across event-log reads).
+    internal static readonly TimeSpan CollectWait = TimeSpan.FromSeconds(3);
     private static readonly object Gate = new();
-    private static readonly object CollectGuard = new();
+    private static readonly SemaphoreSlim CollectGuard = new(1, 1);
+    private static readonly object StoreLock = new();
     private static (FailedLogonCursorStore Store, FailedLogonCursorState State, object Report)? _pending;
     // Bumped when a committing collection starts and when KeepPendingIfReported runs: a collection that finishes
     // after either (timed out and abandoned) cannot stage a pending cursor.
@@ -38,20 +40,7 @@ internal static class FailedLogonSection
     /// </summary>
     public static SecurityLogResult CollectAll(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
     {
-        if (!Monitor.TryEnter(CollectGuard))
-            return SecurityLogResult.Unavailable(now);
-        try
-        {
-            return CollectCore(store, now, commit, ct);
-        }
-        finally
-        {
-            Monitor.Exit(CollectGuard);
-        }
-    }
-
-    private static SecurityLogResult CollectCore(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
-    {
+        // A committing collection supersedes any earlier pending cursor even if it is cancelled or times out waiting.
         long generation = 0;
         if (commit)
         {
@@ -62,106 +51,154 @@ internal static class FailedLogonSection
             }
         }
 
+        if (!CollectGuard.Wait(CollectWait, ct))
+            return SecurityLogResult.Unavailable(now);
+        try
         {
-            var state = store.Load(out var invalid);
-            var firstRun = !invalid && state.LastWindowEndUtc is null;
-            var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
-            var events = new List<FailedLogonEvent>();
-            var securityEvents = new List<FailedLogonEvent>();
-            var securityReadable = false;
-            var securityCapped = false;
-            var securityResetOrGap = false;
-            var securityFresh = false;
-            var reset = false;
-            var capped = false;
-            var failed = 0;
-            var readable = 0;
+            return CollectCore(store, now, commit, generation, ct);
+        }
+        finally
+        {
+            CollectGuard.Release();
+        }
+    }
 
-            foreach (var channel in FailedLogonEventReader.Channels)
+    /// <summary>Stages the pending cursor unless a newer committing collection or a snapshot build superseded <paramref name="generation"/>.</summary>
+    internal static bool TryStage(long generation, FailedLogonCursorStore store, FailedLogonCursorState state, object report)
+    {
+        lock (Gate)
+        {
+            if (_generation != generation)
+                return false;
+            _pending = (store, state, report);
+            return true;
+        }
+    }
+
+    internal static long Generation
+    {
+        get
+        {
+            lock (Gate)
+                return _generation;
+        }
+    }
+
+    internal static bool HasPending
+    {
+        get
+        {
+            lock (Gate)
+                return _pending is not null;
+        }
+    }
+
+    private static FailedLogonCursorState LoadCursor(FailedLogonCursorStore store, out bool invalid)
+    {
+        lock (StoreLock)
+            return store.Load(out invalid);
+    }
+
+    private static bool SaveCursor(FailedLogonCursorStore store, FailedLogonCursorState state)
+    {
+        lock (StoreLock)
+            return store.Save(state);
+    }
+
+    private static SecurityLogResult CollectCore(FailedLogonCursorStore store, DateTimeOffset now, bool commit, long generation, CancellationToken ct)
+    {
+        var state = LoadCursor(store, out var invalid);
+        var firstRun = !invalid && state.LastWindowEndUtc is null;
+        var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
+        var events = new List<FailedLogonEvent>();
+        var securityEvents = new List<FailedLogonEvent>();
+        var securityReadable = false;
+        var securityCapped = false;
+        var securityResetOrGap = false;
+        var securityFresh = false;
+        var reset = false;
+        var capped = false;
+        var failed = 0;
+        var readable = 0;
+
+        foreach (var channel in FailedLogonEventReader.Channels)
+        {
+            ct.ThrowIfCancellationRequested();
+            var bounds = FailedLogonEventReader.Bounds(channel, out var present);
+            if (!present)
             {
-                ct.ThrowIfCancellationRequested();
-                var bounds = FailedLogonEventReader.Bounds(channel, out var present);
-                if (!present)
-                {
-                    // Optional channels are absent when their service is not installed.
-                    if (channel == FailedLogonEventReader.Security)
-                        failed++;
-                    continue;
-                }
-                if (bounds is not { } b)
-                {
-                    failed++;
-                    continue;
-                }
-
-                long? saved = state.Channels.TryGetValue(channel, out var s) ? s : null;
-                var decision = FailedLogonCursorLogic.Decide(saved, b.Oldest, b.Newest, invalid);
-                reset |= FailedLogonCursorLogic.IsReset(decision);
+                // Optional channels are absent when their service is not installed.
                 if (channel == FailedLogonEventReader.Security)
-                {
-                    securityResetOrGap = FailedLogonCursorLogic.IsReset(decision);
-                    securityFresh = decision != ChannelStart.Resume;
-                }
-                var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
-                if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
-                {
-                    state.Channels[channel] = after;
-                    readable++;
-                    securityReadable |= channel == FailedLogonEventReader.Security;
-                    continue;
-                }
-
-                var read = FailedLogonEventReader.Read(channel, after, ct);
-                if (read.Failed)
-                {
                     failed++;
-                    continue;
-                }
+                continue;
+            }
+            if (bounds is not { } b)
+            {
+                failed++;
+                continue;
+            }
+
+            long? saved = state.Channels.TryGetValue(channel, out var s) ? s : null;
+            var decision = FailedLogonCursorLogic.Decide(saved, b.Oldest, b.Newest, invalid);
+            reset |= FailedLogonCursorLogic.IsReset(decision);
+            if (channel == FailedLogonEventReader.Security)
+            {
+                securityResetOrGap = FailedLogonCursorLogic.IsReset(decision);
+                securityFresh = decision != ChannelStart.Resume;
+            }
+            var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
+            if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
+            {
+                state.Channels[channel] = after;
                 readable++;
                 securityReadable |= channel == FailedLogonEventReader.Security;
-                capped |= read.Capped;
-                state.Channels[channel] = FailedLogonCursorLogic.NextSaved(read.LastRecordId, read.Capped, b.Newest);
-                events.AddRange(read.Events);
-                if (channel == FailedLogonEventReader.Security)
-                {
-                    securityEvents.AddRange(read.Events);
-                    securityCapped = read.Capped;
-                }
+                continue;
             }
 
-            reset |= events.Any(e => e.Source == FailedLogonSource.LogCleared);
-            state.LastWindowEndUtc = now;
-            var lastCleared = securityReadable ? LatestClear(state, securityEvents, securityFresh, ct) : state.LastLogClearedUtc;
-            state.LastLogClearedUtc = lastCleared;
-            var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
-            var auditFailure = FailedLogonAuditPolicy.ReadFailureEnabled();
-            ct.ThrowIfCancellationRequested();
-            var saveOk = true;
-            // First run has nothing to lose: persist the baseline now so a failed first upload cannot skip events.
-            if (commit && firstRun)
-                saveOk = store.Save(state);
-            var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
-            var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
-            if (commit && !firstRun)
+            var read = FailedLogonEventReader.Read(channel, after, ct);
+            if (read.Failed)
             {
-                lock (Gate)
-                {
-                    if (_generation == generation)
-                        _pending = (store, state, report);
-                }
+                failed++;
+                continue;
             }
-
-            var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
-            return new SecurityLogResult(
-                report,
-                feedStatus == "unavailable"
-                    ? SecurityLogFields.Unavailable
-                    : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(securityEvents, FailedLogonSource.SuccessfulLogon4624)),
-                securityReadable
-                    ? SecurityLogFields.LogCleared(feedStatus == "ok" ? "ok" : "partial", lastCleared)
-                    : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
-                SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
+            readable++;
+            securityReadable |= channel == FailedLogonEventReader.Security;
+            capped |= read.Capped;
+            state.Channels[channel] = FailedLogonCursorLogic.NextSaved(read.LastRecordId, read.Capped, b.Newest);
+            events.AddRange(read.Events);
+            if (channel == FailedLogonEventReader.Security)
+            {
+                securityEvents.AddRange(read.Events);
+                securityCapped = read.Capped;
+            }
         }
+
+        reset |= events.Any(e => e.Source == FailedLogonSource.LogCleared);
+        state.LastWindowEndUtc = now;
+        var lastCleared = securityReadable ? LatestClear(state, securityEvents, securityFresh, ct) : state.LastLogClearedUtc;
+        state.LastLogClearedUtc = lastCleared;
+        var (rdp, ssh, sql) = FailedLogonProtocolProbe.Read(ct);
+        var auditFailure = FailedLogonAuditPolicy.ReadFailureEnabled();
+        ct.ThrowIfCancellationRequested();
+        var saveOk = true;
+        // First run has nothing to lose: persist the baseline now so a failed first upload cannot skip events.
+        if (commit && firstRun)
+            saveOk = SaveCursor(store, state);
+        var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
+        var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
+        if (commit && !firstRun)
+            TryStage(generation, store, state, report);
+
+        var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
+        return new SecurityLogResult(
+            report,
+            feedStatus == "unavailable"
+                ? SecurityLogFields.Unavailable
+                : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(securityEvents, FailedLogonSource.SuccessfulLogon4624)),
+            securityReadable
+                ? SecurityLogFields.LogCleared(feedStatus == "ok" ? "ok" : "partial", lastCleared)
+                : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
+            SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
     }
 
     private static List<T> Details<T>(IEnumerable<FailedLogonEvent> events, FailedLogonSource source) where T : class
@@ -201,7 +238,7 @@ internal static class FailedLogonSection
             _pending = null;
         }
         if (p is { } pending)
-            pending.Store.Save(pending.State);
+            SaveCursor(pending.Store, pending.State);
     }
 
     /// <summary>Drops the pending cursor unless <paramref name="securityPayload"/> carries the report it was produced for.</summary>

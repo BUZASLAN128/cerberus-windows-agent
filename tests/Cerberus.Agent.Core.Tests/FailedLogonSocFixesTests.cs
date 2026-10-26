@@ -19,14 +19,23 @@ public sealed class FailedLogonSocFixesTests
     }
 
     [Fact]
-    public void RdpListening_WithOwners_RequiresSvchostOrUnreadableNameOnThePort()
+    public void RdpListening_WithOwners_RequiresSvchostOrUnreadableNameWhenRowsExistForThePort()
     {
         var tcp = new HashSet<int> { 3389 };
         Assert.True(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (3389, (string?)"SvcHost") }));
         Assert.False(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (3389, (string?)"nginx") }));
         Assert.True(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (3389, (string?)null) }));
-        Assert.False(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (443, (string?)"svchost") }));
-        Assert.False(FailedLogonProtocolProbe.RdpListening(tcp, 3389, Array.Empty<(int, string?)>()));
+        Assert.True(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (3389, (string?)"nginx"), (3389, (string?)"svchost") }));
+    }
+
+    [Fact]
+    public void RdpListening_WithoutAnOwnerRowForThePort_FallsBackToThePortCheck()
+    {
+        var tcp = new HashSet<int> { 3389 };
+        Assert.True(FailedLogonProtocolProbe.RdpListening(tcp, 3389, Array.Empty<(int, string?)>()));
+        Assert.True(FailedLogonProtocolProbe.RdpListening(tcp, 3389, new[] { (443, (string?)"nginx") }));
+        Assert.False(FailedLogonProtocolProbe.RdpListening(new HashSet<int>(), 3389, Array.Empty<(int, string?)>()));
+        Assert.False(FailedLogonProtocolProbe.RdpListening(new HashSet<int>(), 3389, new[] { (443, (string?)"svchost") }));
     }
 
     [Theory]
@@ -51,63 +60,110 @@ public sealed class FailedLogonSocFixesTests
         return store;
     }
 
-    private static T Field<T>(string name)
-        => (T)typeof(FailedLogonSection).GetField(name, BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+    private static SemaphoreSlim Guard()
+        => (SemaphoreSlim)typeof(FailedLogonSection).GetField("CollectGuard", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+
+    private static string Window(SecurityLogResult r, string property)
+    {
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(r.FailedLogons));
+        return json.RootElement.GetProperty(property).GetString()!;
+    }
+
+    // The unavailable stand-in has start == end == now; a real collection starts at the stored cursor (T0).
+    private static readonly string StartOfRealWindow = FailedLogonSection.Iso(T0);
 
     [Fact]
-    public async Task CollectionStillRunningWhenKeepPendingRuns_StagesNoPending()
+    public async Task SecondCollection_WaitsForTheGuard_AndRunsOnceItIsReleased()
     {
-        // Not a deterministic interleaving: FailedLogonSection reads the real event logs and has no reader seam.
-        // The test waits until the committing collection has taken its generation, then runs KeepPendingIfReported
-        // while that collection is (normally) still reading. Either order leaves the cursor untouched; the
-        // in-flight order is the one that needs the generation guard.
         var store = Seed(out var dir);
+        var guard = Guard();
+        await guard.WaitAsync();
+        var held = true;
         try
         {
-            var before = Field<long>("_generation");
-            var run = Task.Run(() => FailedLogonSection.CollectAll(store, T0.AddMinutes(5), commit: true, CancellationToken.None));
-            var spin = SpinWait.SpinUntil(() => Field<long>("_generation") != before, TimeSpan.FromSeconds(30));
-            Assert.True(spin);
-            FailedLogonSection.KeepPendingIfReported(null);
-            await run.WaitAsync(TimeSpan.FromSeconds(60));
-            FailedLogonSection.CommitPending();
-            Assert.Equal(T0, store.Load(out _).LastWindowEndUtc);
+            var second = Task.Run(() => FailedLogonSection.CollectAll(store, T0.AddMinutes(5), commit: false, CancellationToken.None));
+            await Task.Delay(TimeSpan.FromSeconds(1));
+            Assert.False(second.IsCompleted);
+            guard.Release();
+            held = false;
+            var result = await second.WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.Equal(StartOfRealWindow, Window(result, "window_start_utc"));
         }
         finally
         {
+            if (held)
+                guard.Release();
             Directory.Delete(dir, true);
         }
     }
 
     [Fact]
-    public async Task SecondCollection_WhileTheGuardIsHeld_ReturnsUnavailableWithoutBlocking()
+    public async Task SecondCollection_HeldPastTheWait_ReturnsUnavailableWithinTheBound()
     {
         var store = Seed(out var dir);
-        var guard = Field<object>("CollectGuard");
-        using var held = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        var holder = Task.Run(() =>
-        {
-            lock (guard)
-            {
-                held.Set();
-                release.Wait(TimeSpan.FromSeconds(60));
-            }
-        });
+        var guard = Guard();
+        await guard.WaitAsync();
         try
         {
-            Assert.True(held.Wait(TimeSpan.FromSeconds(10)));
-            var second = Task.Run(() => FailedLogonSection.CollectAll(store, T0.AddMinutes(5), commit: true, CancellationToken.None));
-            var result = await second.WaitAsync(TimeSpan.FromSeconds(10));
-            using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.FailedLogons));
-            Assert.Equal("unavailable", json.RootElement.GetProperty("status").GetString());
+            var started = DateTime.UtcNow;
+            var result = await Task.Run(() => FailedLogonSection.CollectAll(store, T0.AddMinutes(5), commit: false, CancellationToken.None))
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(5));
+            Assert.Equal(FailedLogonSection.Iso(T0.AddMinutes(5)), Window(result, "window_start_utc"));
+            Assert.Equal("unavailable", Window(result, "status"));
+        }
+        finally
+        {
+            guard.Release();
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public async Task KeepPendingAndCommit_DoNotWaitForTheCollectionGuard()
+    {
+        var guard = Guard();
+        await guard.WaitAsync();
+        try
+        {
+            await Task.Run(() =>
+            {
+                FailedLogonSection.KeepPendingIfReported(null);
+                FailedLogonSection.CommitPending();
+            }).WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            guard.Release();
+        }
+    }
+
+    [Fact]
+    public void TryStage_RefusesASupersededGeneration_AndAcceptsTheCurrentOne()
+    {
+        var store = Seed(out var dir);
+        FailedLogonSection.KeepPendingIfReported(null);
+        try
+        {
+            var state = new FailedLogonCursorState { LastWindowEndUtc = T0.AddMinutes(5) };
+            var report = new object();
+
+            var old = FailedLogonSection.Generation;
+            FailedLogonSection.KeepPendingIfReported(null);
+            Assert.NotEqual(old, FailedLogonSection.Generation);
+            Assert.False(FailedLogonSection.TryStage(old, store, state, report));
+            Assert.False(FailedLogonSection.HasPending);
+
+            Assert.True(FailedLogonSection.TryStage(FailedLogonSection.Generation, store, state, report));
+            Assert.True(FailedLogonSection.HasPending);
+            FailedLogonSection.KeepPendingIfReported(new Dictionary<string, object?> { ["failed_logons"] = new object() });
+            Assert.False(FailedLogonSection.HasPending);
             FailedLogonSection.CommitPending();
             Assert.Equal(T0, store.Load(out _).LastWindowEndUtc);
         }
         finally
         {
-            release.Set();
-            await holder;
+            FailedLogonSection.KeepPendingIfReported(null);
             Directory.Delete(dir, true);
         }
     }
