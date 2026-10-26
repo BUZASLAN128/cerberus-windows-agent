@@ -235,29 +235,58 @@ public sealed class ProcessesImageHandleTests
     }
 
     [Fact]
-    public void TryGetKey_ChangesAfterAnInPlaceRewriteWithTheTimestampRestored_OrIsNullWithoutAJournal()
+    public void TryGetKey_ChangesAfterAnInPlaceRewriteWithTheTimestampRestored()
     {
         using var dir = new TempDir();
         var file = dir.File("a.exe", "AAAAAAAA");
         var written = File.GetLastWriteTimeUtc(file);
 
-        using var handle = LocalImageFile.TryOpen(file);
-        Assert.NotNull(handle);
-        var hasKey = ProcessesTelemetrySectionCollector.TryGetKey(handle, file, out var before);
-        Console.WriteLine("signer key available on the temp volume: " + hasKey);
+        if (!string.Equals(new DriveInfo(file).DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("TryGetKey rewrite test not run: the temp volume is not NTFS (no change journal).");
+            return;
+        }
 
+        ProcessesTelemetrySectionCollector.SignerKey before;
+        using (var handle = LocalImageFile.TryOpen(file))
+        {
+            Assert.NotNull(handle);
+            Assert.True(ProcessesTelemetrySectionCollector.TryGetKey(handle, file, out before));
+        }
+
+        // The image is opened without write sharing, so the rewrite is a new writer session between two opens.
         using (var writer = new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
             writer.Write("BBBBBBBB"u8);
         File.SetLastWriteTimeUtc(file, written);
 
-        var hasKeyAfter = ProcessesTelemetrySectionCollector.TryGetKey(handle, file, out var after);
-        Assert.Equal(hasKey, hasKeyAfter);
-        if (hasKey)
-            Assert.NotEqual(before, after); // same size, same mtime, same file id: the USN still moved
+        using var again = LocalImageFile.TryOpen(file);
+        Assert.NotNull(again);
+        Assert.True(ProcessesTelemetrySectionCollector.TryGetKey(again, file, out var after));
+        Assert.NotEqual(before, after); // same size, same mtime, same file id: the USN still moved
     }
 
     [Fact]
-    public void TryParseUsn_ReadsV2AndV3AndRejectsMalformedOrZero()
+    public void TryOpen_FailsWhileAWriterHoldsTheFileOpen_AndSucceedsAfterItCloses()
+    {
+        using var dir = new TempDir();
+        var file = dir.File("a.exe", "AAAAAAAA");
+
+        using (var writer = new FileStream(file, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+        {
+            writer.Write("BBBBBBBB"u8);
+            Assert.Null(LocalImageFile.TryOpen(file));
+            Assert.Null(LocalImageFile.TryOpen(file, forceFallback: true));
+            Assert.Null(ProcessesTelemetrySectionCollector.ReadSignerCached(file));
+        }
+
+        using (var primary = LocalImageFile.TryOpen(file))
+            Assert.NotNull(primary);
+        using (var walked = LocalImageFile.TryOpen(file, forceFallback: true))
+            Assert.NotNull(walked);
+    }
+
+    [Fact]
+    public void TryParseUsn_ReadsV2AndRejectsOtherVersionsMalformedOrZero()
     {
         static byte[] Record(ushort major, int usnOffset, long usn, uint length)
         {
@@ -270,8 +299,7 @@ public sealed class ProcessesImageHandleTests
 
         Assert.True(ProcessesTelemetrySectionCollector.TryParseUsn(Record(2, 24, 1234, 60), 64, out var v2));
         Assert.Equal(1234, v2);
-        Assert.True(ProcessesTelemetrySectionCollector.TryParseUsn(Record(3, 32, 5678, 60), 64, out var v3));
-        Assert.Equal(5678, v3);
+        Assert.False(ProcessesTelemetrySectionCollector.TryParseUsn(Record(3, 32, 5678, 60), 64, out _)); // V3 keeps its Usn at 40
         Assert.False(ProcessesTelemetrySectionCollector.TryParseUsn(Record(2, 24, 0, 60), 64, out _));
         Assert.False(ProcessesTelemetrySectionCollector.TryParseUsn(Record(4, 24, 9, 60), 64, out _));
         Assert.False(ProcessesTelemetrySectionCollector.TryParseUsn(Record(2, 24, 9, 200), 64, out _)); // record longer than the data
@@ -280,7 +308,7 @@ public sealed class ProcessesImageHandleTests
     }
 
     [Fact]
-    public void SignerFor_CachesOnlyWhileTheKeyIsTheSame_AndNeverWithoutAKey()
+    public void SignerFor_CachesOnlyWhileTheKeyIsTheSame_AndReportsNothingWithoutAKey()
     {
         using var dir = new TempDir();
         var file = dir.File("a.exe", "x");
@@ -313,11 +341,11 @@ public sealed class ProcessesImageHandleTests
         Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "m", Moving, Verify));
         Assert.Equal(3, verifications);
 
-        // No key (no change journal): verified on every call, never stored.
+        // No key (no change journal): no signer, not verified, not stored.
         bool NoKey(SafeFileHandle h, string p, out ProcessesTelemetrySectionCollector.SignerKey key) { key = default; return false; }
-        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
-        Assert.Equal("Signer", ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
-        Assert.Equal(5, verifications);
+        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
+        Assert.Null(ProcessesTelemetrySectionCollector.SignerFor(handle, path + "n", NoKey, Verify));
+        Assert.Equal(3, verifications);
     }
 
     /// <summary>Real junction through <c>mklink /J</c>, which needs no elevation (a file or directory symlink would).</summary>

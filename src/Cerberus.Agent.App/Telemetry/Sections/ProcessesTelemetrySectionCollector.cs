@@ -167,15 +167,12 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
 
     /// <summary>
     /// Cache lookup, verification and store around one handle. Without a key (no change journal, unreadable
-    /// identity) the image is verified every time and nothing is cached.
+    /// identity) there is no signer and nothing is cached.
     /// </summary>
     internal static string? SignerFor(SafeFileHandle handle, string path, KeyReader keyOf, SignerReader read)
     {
         if (!keyOf(handle, path, out var key))
-        {
-            // Not cacheable: report the verified signer for this call only.
-            return read(handle, path, out var uncached) ? uncached : null;
-        }
+            return null;
 
         lock (CacheLock)
         {
@@ -186,8 +183,8 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         if (!read(handle, path, out var signer))
             return null; // transient I/O error: not cached, retried next cycle
 
-        // The identity (including the USN, which any data, attribute or timestamp change advances) must be unchanged
-        // after verification; otherwise the verified signer may belong to other content and is not cached.
+        // The image is held open without write sharing during verification, so no other handle can write to it. The key
+        // is read again; if it moved, the verified signer may belong to other content and is not cached.
         if (!keyOf(handle, path, out var after) || after != key)
             return null;
 
@@ -202,9 +199,9 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     }
 
     /// <summary>
-    /// Identity read through the open handle that the file owner cannot restore: volume serial, 128-bit file id and
-    /// the current USN. Size and last write time are left out, since SetFileTime can put them back after an in-place
-    /// edit. False (nothing is cached) when the id or a non-zero USN cannot be read, e.g. no change journal.
+    /// Cache key read through the open handle: path, volume serial, 128-bit file id and the file's current USN.
+    /// Size and last write time are left out, since SetFileTime can put them back after an in-place edit. False
+    /// (nothing is cached) when the id or a non-zero USN cannot be read, e.g. no change journal.
     /// </summary>
     internal static bool TryGetKey(SafeFileHandle handle, string path, out SignerKey key)
     {
@@ -227,8 +224,9 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     }
 
     /// <summary>
-    /// Usn of the first USN_RECORD_V2/V3 in <paramref name="buffer"/> (V2 at offset 24, V3 at offset 32); false for a
-    /// short or inconsistent record, another version, or a USN of zero or below (no journal entry for the file).
+    /// Usn of the USN_RECORD_V2 in <paramref name="buffer"/> (offset 24; the IOCTL is called without an input buffer,
+    /// which returns V2 only); false for a short or inconsistent record, another version, or a USN of zero or below
+    /// (no journal entry for the file).
     /// </summary>
     internal static bool TryParseUsn(byte[] buffer, int length, out long usn)
     {
@@ -236,11 +234,9 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         if (length < 32 || length > buffer.Length)
             return false;
         var recordLength = BitConverter.ToUInt32(buffer, 0);
-        var major = BitConverter.ToUInt16(buffer, 4);
-        var offset = major switch { 2 => 24, 3 => 32, _ => -1 };
-        if (offset < 0 || recordLength > length || recordLength < offset + 8)
+        if (BitConverter.ToUInt16(buffer, 4) != 2 || recordLength > length || recordLength < 32)
             return false;
-        usn = BitConverter.ToInt64(buffer, offset);
+        usn = BitConverter.ToInt64(buffer, 24);
         return usn > 0;
     }
 
