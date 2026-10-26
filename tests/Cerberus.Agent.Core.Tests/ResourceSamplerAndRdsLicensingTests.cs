@@ -132,6 +132,15 @@ public sealed class ResourceSamplerAndRdsLicensingTests
     }
 
     [Fact]
+    public void WindowSeconds_NeverExceedsTheRingLengthWhenTheSnapshotCeilingIsLarger()
+    {
+        var policy = new AgentTimingPolicy(new AgentTimingBounds(5, 60, 30, 7200, 120));
+
+        Assert.Equal(ResourceSampler.MaxBufferSeconds, ResourceSampler.WindowSeconds(policy, 7200));
+        Assert.Equal(3000, ResourceSampler.WindowSeconds(policy, 3000));
+    }
+
+    [Fact]
     public void CpuPercent_UsesBusyShareOfKernelPlusUser()
     {
         var previous = new ResourceSampler.SystemTimes(Idle: 100, Kernel: 200, User: 100);

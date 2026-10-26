@@ -182,7 +182,10 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation info);
 
-    /// <summary>Simple name of a distinguished name: CN, else O, else the whole subject (cleaned by the caller).</summary>
+    /// <summary>
+    /// Simple name of a distinguished name: CN, else O, else OU. Multi-valued RDNs are skipped; null when nothing
+    /// matches or the subject does not parse (never the whole DN).
+    /// </summary>
     internal static string? SimpleNameFromSubject(string? subject)
     {
         if (string.IsNullOrWhiteSpace(subject))
@@ -190,23 +193,28 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         try
         {
             string? organization = null;
+            string? unit = null;
             foreach (var rdn in new X500DistinguishedName(subject).EnumerateRelativeDistinguishedNames())
             {
+                if (rdn.HasMultipleElements)
+                    continue;
                 var type = rdn.GetSingleElementType().Value;
                 var value = rdn.GetSingleElementValue();
                 if (string.IsNullOrWhiteSpace(value))
                     continue;
                 if (type == "2.5.4.3")
                     return value;
-                if (type == "2.5.4.10" && organization is null)
-                    organization = value;
+                if (type == "2.5.4.10")
+                    organization ??= value;
+                else if (type == "2.5.4.11")
+                    unit ??= value;
             }
 
-            return organization ?? subject.Trim();
+            return organization ?? unit;
         }
         catch (Exception ex) when (ex is CryptographicException or ArgumentException or InvalidOperationException)
         {
-            return subject.Trim();
+            return null;
         }
     }
 

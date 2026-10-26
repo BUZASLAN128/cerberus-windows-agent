@@ -44,11 +44,11 @@ internal sealed class ResourceSampler
 
     internal int Capacity => _at.Length;
 
-    /// <summary>Window length: the effective snapshot delay, clamped to [60 s, snapshot ceiling].</summary>
+    /// <summary>Window length: the effective snapshot delay, clamped to [60 s, min(snapshot ceiling, ring length)].</summary>
     internal static int WindowSeconds(AgentTimingPolicy policy, int? serverSnapshotSeconds)
     {
         var effective = policy.SnapshotDelaySeconds(serverSnapshotSeconds ?? 0);
-        return Math.Clamp(effective, MinWindowSeconds, Math.Max(MinWindowSeconds, policy.Bounds.SnapshotCeiling));
+        return Math.Clamp(effective, MinWindowSeconds, Math.Max(MinWindowSeconds, Math.Min(policy.Bounds.SnapshotCeiling, MaxBufferSeconds)));
     }
 
     /// <summary>Runs until cancelled. A second concurrent call returns immediately.</summary>

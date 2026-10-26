@@ -18,21 +18,31 @@ internal static class FailedLogonProtocolProbe
     {
         var services = ReadServiceNames();
         var tcp = ReadTcpPorts();
-        var owners = ListenerProcessNames(ct);
+        var owners = ListenerOwners(ct);
 
-        var rdp = new ProtocolPresence(
-            services.Contains("TermService"),
-            tcp.Contains(ReadRdpPort()));
+        var rdp = new ProtocolPresence(services.Contains("TermService"), RdpListening(tcp, ReadRdpPort(), owners));
         var ssh = new ProtocolPresence(
             services.Contains("sshd"),
             // Any sshd-owned listener counts whatever its port; port 22 only when the owners cannot be read.
-            owners?.Contains("sshd") ?? tcp.Contains(DefaultSshPort));
+            owners?.Any(o => IsProcess(o.Name, "sshd")) ?? tcp.Contains(DefaultSshPort));
         var sqlPresent = services.Any(FailedLogonEventReader.IsSqlProvider);
         var sql = new ProtocolPresence(
             sqlPresent,
-            sqlPresent && (tcp.Contains(DefaultSqlPort) || owners?.Contains("sqlservr") == true));
+            sqlPresent && (tcp.Contains(DefaultSqlPort) || owners?.Any(o => IsProcess(o.Name, "sqlservr")) == true));
         return (rdp, ssh, sql);
     }
+
+    /// <summary>
+    /// RDP is listening when the configured port is open. With readable owners it must be held by svchost (the
+    /// TermService host; the owner lookup reports image names only) or by a process whose name could not be read;
+    /// another process on that port is not RDP.
+    /// </summary>
+    internal static bool RdpListening(HashSet<int> tcp, int port, IReadOnlyList<(int Port, string? Name)>? owners)
+        => owners is null
+            ? tcp.Contains(port)
+            : owners.Any(o => o.Port == port && (o.Name is null || IsProcess(o.Name, "svchost")));
+
+    private static bool IsProcess(string? name, string expected) => string.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Presence reporting: an unreadable service list counts as no services.</summary>
     internal static HashSet<string> ReadServiceNames()
@@ -67,15 +77,15 @@ internal static class FailedLogonProtocolProbe
         }
     }
 
-    /// <summary>Process names that own a TCP listener; null when the owner lookup fails.</summary>
-    private static HashSet<string>? ListenerProcessNames(CancellationToken ct)
+    /// <summary>Port and owning process name (null when unreadable) of every TCP listener; null when the owner lookup fails.</summary>
+    private static List<(int Port, string? Name)>? ListenerOwners(CancellationToken ct)
     {
         try
         {
             return PortsNative.Read(ct)
-                .Where(p => p.Protocol == "tcp" && p.ProcessName is not null)
-                .Select(p => p.ProcessName!)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                .Where(p => p.Protocol == "tcp")
+                .Select(p => (p.Port, p.ProcessName))
+                .ToList();
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {

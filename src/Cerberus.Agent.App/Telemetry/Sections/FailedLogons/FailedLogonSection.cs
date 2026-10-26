@@ -17,8 +17,15 @@ namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 /// </summary>
 internal static class FailedLogonSection
 {
+    // Gate only guards the pending fields and is never held across event-log or file I/O. CollectGuard keeps a single
+    // collection reading at a time; a caller that finds it taken (e.g. an abandoned, still-reading collection) gets
+    // an unavailable result instead of blocking.
     private static readonly object Gate = new();
+    private static readonly object CollectGuard = new();
     private static (FailedLogonCursorStore Store, FailedLogonCursorState State, object Report)? _pending;
+    // Bumped when a committing collection starts and when KeepPendingIfReported runs: a collection that finishes
+    // after either (timed out and abandoned) cannot stage a pending cursor.
+    private static long _generation;
 
     /// <summary>The <c>failed_logons</c> object of <see cref="CollectAll"/>.</summary>
     public static object Collect(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
@@ -31,10 +38,31 @@ internal static class FailedLogonSection
     /// </summary>
     public static SecurityLogResult CollectAll(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
     {
-        lock (Gate)
+        if (!Monitor.TryEnter(CollectGuard))
+            return SecurityLogResult.Unavailable(now);
+        try
         {
-            if (commit)
+            return CollectCore(store, now, commit, ct);
+        }
+        finally
+        {
+            Monitor.Exit(CollectGuard);
+        }
+    }
+
+    private static SecurityLogResult CollectCore(FailedLogonCursorStore store, DateTimeOffset now, bool commit, CancellationToken ct)
+    {
+        long generation = 0;
+        if (commit)
+        {
+            lock (Gate)
+            {
                 _pending = null;
+                generation = ++_generation;
+            }
+        }
+
+        {
             var state = store.Load(out var invalid);
             var firstRun = !invalid && state.LastWindowEndUtc is null;
             var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
@@ -115,7 +143,13 @@ internal static class FailedLogonSection
             var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
             var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
             if (commit && !firstRun)
-                _pending = (store, state, report);
+            {
+                lock (Gate)
+                {
+                    if (_generation == generation)
+                        _pending = (store, state, report);
+                }
+            }
 
             var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
             return new SecurityLogResult(
@@ -160,12 +194,14 @@ internal static class FailedLogonSection
     /// <summary>Persists the cursor of the last committing collection; call after the snapshot upload succeeded.</summary>
     public static void CommitPending()
     {
+        (FailedLogonCursorStore Store, FailedLogonCursorState State, object Report)? p;
         lock (Gate)
         {
-            if (_pending is { } p)
-                p.Store.Save(p.State);
+            p = _pending;
             _pending = null;
         }
+        if (p is { } pending)
+            pending.Store.Save(pending.State);
     }
 
     /// <summary>Drops the pending cursor unless <paramref name="securityPayload"/> carries the report it was produced for.</summary>
@@ -173,6 +209,7 @@ internal static class FailedLogonSection
     {
         lock (Gate)
         {
+            _generation++;
             if (_pending is { } p
                 && !(securityPayload is IReadOnlyDictionary<string, object?> section
                      && section.TryGetValue("failed_logons", out var reported)
