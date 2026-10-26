@@ -64,7 +64,10 @@ public sealed class SecurityPostureCacheTests
                 time.Advance(TimeSpan.FromMinutes(3));
             }
 
-            WaitFor(() => reader.DefenderCalls >= 1, "first defender query");
+            // Each key starts its own background query; wait for both before counting.
+            WaitFor(() => reader.DefenderCalls >= 1 && reader.Smb1Calls >= 1, "first defender and smb1 queries");
+            Assert.Equal("unavailable", DefenderStatus(cache));
+            Thread.Sleep(100); // a wrongly started second query would begin within this window
             Assert.Equal(1, reader.DefenderCalls);
             Assert.Equal(1, reader.Smb1Calls);
         }
