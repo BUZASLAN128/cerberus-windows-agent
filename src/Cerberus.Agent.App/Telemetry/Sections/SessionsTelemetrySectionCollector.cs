@@ -21,8 +21,9 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
 
     private static RdpPosture ReadPosture()
     {
-        try { return RdpPosture.Read(); }
-        catch (Exception) { return RdpPosture.Unknown; }
+        var certificate = RdpCertificate.Read();
+        try { return RdpPosture.Read() with { Certificate = certificate }; }
+        catch (Exception) { return RdpPosture.Unknown with { Certificate = certificate }; }
     }
 
     internal static object Build(IEnumerable<RawSession> raw, RdsLicensingInfo? licensing = null, RdpPosture? posture = null)
@@ -52,7 +53,7 @@ internal sealed class SessionsTelemetrySectionCollector : IWindowsTelemetrySecti
             truncated = sessions.Length > MaxSessions,
             sessions = sessions.Take(MaxSessions).ToArray(),
             rds_licensing = (licensing ?? RdsLicensingInfo.Unavailable).ToPayload(),
-            rdp_posture = (posture ?? RdpPosture.Unknown).ToPayload(),
+            rdp_posture = (posture ?? RdpPosture.Unknown).ToSessionsPayload(),
         };
     }
 }

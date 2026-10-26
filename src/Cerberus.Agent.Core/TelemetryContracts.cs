@@ -235,6 +235,7 @@ public static class ServerSnapshotFit
         ("software", "software"),
         ("services", "services"),
         ("listening_ports", "ports"),
+        ("processes", "items"),
     };
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);

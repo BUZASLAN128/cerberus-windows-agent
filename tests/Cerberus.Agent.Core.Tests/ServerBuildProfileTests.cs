@@ -57,7 +57,7 @@ public sealed class ServerBuildProfileTests
     private static readonly string[] ServerSections =
         {
             "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
-            "sessions", "hardware", "services", "listening_ports", "updates", "software",
+            "sessions", "hardware", "services", "listening_ports", "updates", "software", "processes",
         };
 
     [Theory]

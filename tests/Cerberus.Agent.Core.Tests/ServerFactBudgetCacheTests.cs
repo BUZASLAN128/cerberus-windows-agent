@@ -170,15 +170,16 @@ public sealed partial class ServerFactSectionsTests
 
 #if CERBERUS_SERVER_PROFILE
     [Fact]
-    public void Catalog_ServerProfileCarriesAllFourteenSectionsWithCap262144()
+    public void Catalog_ServerProfileCarriesAllFifteenSectionsWithCap262144()
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
 
-        Assert.Equal(14, names.Length);
+        Assert.Equal(15, names.Length);
+        Assert.Contains("processes", names);
         Assert.Subset(names.ToHashSet(), SixSections.ToHashSet());
         Assert.Equal(262144, AgentTelemetryLimits.MaxSnapshotBytes);
         var wrapped = WindowsTelemetrySectionCatalog.CreateServerFactSections(new ManualTimeProvider(T0));
-        Assert.Equal(SixSections.OrderBy(n => n), wrapped.Select(s => s.SectionName).OrderBy(n => n));
+        Assert.Equal(SixSections.Append("processes").OrderBy(n => n), wrapped.Select(s => s.SectionName).OrderBy(n => n));
         Assert.All(wrapped, s => Assert.IsType<ServerSectionBudget>(s));
     }
 
@@ -291,7 +292,7 @@ public sealed partial class ServerFactSectionsTests
 
         Assert.Equal(11, names.Length);
         Assert.DoesNotContain(WindowsTelemetrySectionCatalog.CreateDefault((string?)null), s => s is ServerSectionBudget);
-        Assert.Empty(names.Intersect(SixSections));
+        Assert.Empty(names.Intersect(SixSections.Append("processes")));
         Assert.Equal(AgentTelemetryLimits.MaxJsonBytes, AgentTelemetryLimits.MaxSnapshotBytes);
         Assert.Equal(64 * 1024, AgentTelemetryLimits.MaxSnapshotBytes);
     }
@@ -299,7 +300,7 @@ public sealed partial class ServerFactSectionsTests
     [Fact]
     public void Snapshot_DesktopRejectsServerSectionsAndKeepsThe64KiBCap()
     {
-        foreach (var section in SixSections)
+        foreach (var section in SixSections.Append("processes"))
             Assert.Throws<InvalidOperationException>(() => AgentSnapshotFactory.Create(
                 Metadata(), T0, new Dictionary<string, object?> { [section] = new { status = "ok" } }));
 

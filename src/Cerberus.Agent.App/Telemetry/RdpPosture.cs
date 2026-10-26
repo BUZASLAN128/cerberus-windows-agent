@@ -3,7 +3,7 @@ using Microsoft.Win32;
 namespace Cerberus.Agent.App.Telemetry;
 
 /// <summary>Remote Desktop settings shared by the rdp section and sessions.rdp_posture. Null means unreadable.</summary>
-internal sealed record RdpPosture(bool? RemoteDesktopEnabled, bool? NlaRequired, int? PortNumber)
+internal sealed record RdpPosture(bool? RemoteDesktopEnabled, bool? NlaRequired, int? PortNumber, RdpCertificate? Certificate = null)
 {
     internal static readonly RdpPosture Unknown = new(null, null, null);
 
@@ -25,5 +25,14 @@ internal sealed record RdpPosture(bool? RemoteDesktopEnabled, bool? NlaRequired,
         remote_desktop_enabled = RemoteDesktopEnabled,
         nla_required = NlaRequired,
         port_number = PortNumber,
+    };
+
+    /// <summary>sessions.rdp_posture: the shared settings plus the listener certificate (the rdp section does not carry it).</summary>
+    internal object ToSessionsPayload() => new
+    {
+        remote_desktop_enabled = RemoteDesktopEnabled,
+        nla_required = NlaRequired,
+        port_number = PortNumber,
+        certificate = (Certificate ?? RdpCertificate.Unavailable).ToPayload(),
     };
 }
