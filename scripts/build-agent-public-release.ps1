@@ -40,6 +40,7 @@ param(
   # Build profile. The server profile needs the file holding AgentCommandTrustAnchorsB64.
   [ValidateSet("desktop", "server")][string]$BuildProfile = "desktop",
   [string]$AgentCommandTrustAnchorsFile = "",
+  [string]$BackendTrustAnchorsFile = "",  # PEM or DER certificate(s) compiled in as the backend TLS trust anchors
   [hashtable]$TimingOverrides = @{},
   [string]$ProductName = "",
   [string]$EulaRtf = ""
@@ -73,7 +74,7 @@ $tokenMode = ($signingPlan.Mode -eq "Token")
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
-$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel
+$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel $BackendTrustAnchorsFile
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
 if ($signingPlan.Finalize) {

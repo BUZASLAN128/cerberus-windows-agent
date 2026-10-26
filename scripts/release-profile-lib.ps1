@@ -145,6 +145,38 @@ $script:ReleaseTimingKeys = @(
   "AgentPollFloorSeconds", "AgentPollCeilingSeconds",
   "AgentSnapshotFloorSeconds", "AgentSnapshotCeilingSeconds", "AgentSnapshotDefaultSeconds")
 
+# Reads the backend TLS trust anchors (PEM or DER, one or several certificates) and returns the
+# BackendTrustAnchors build value: base64 DER certificates joined with an escaped comma.
+# Every certificate must parse and be valid now; an empty file argument returns an empty value.
+function Get-BackendTrustAnchorsValue([string]$AnchorsFile) {
+  if ([string]::IsNullOrWhiteSpace($AnchorsFile)) { return "" }
+  if (-not (Test-Path -LiteralPath $AnchorsFile -PathType Leaf)) {
+    throw "Backend trust anchors file was not found."
+  }
+  $bytes = [IO.File]::ReadAllBytes($AnchorsFile)
+  $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+  $ders = [System.Collections.Generic.List[byte[]]]::new()
+  if ($text.Contains("-----BEGIN CERTIFICATE-----")) {
+    foreach ($m in [regex]::Matches($text, '-----BEGIN CERTIFICATE-----(?<b>[A-Za-z0-9+/=\s]+?)-----END CERTIFICATE-----')) {
+      try { $ders.Add([Convert]::FromBase64String(($m.Groups['b'].Value -replace '\s', ''))) }
+      catch { throw "Backend trust anchors file holds a certificate that is not valid base64." }
+    }
+  } else {
+    $ders.Add($bytes)
+  }
+  if ($ders.Count -eq 0) { throw "Backend trust anchors file holds no certificate." }
+  $items = foreach ($der in $ders) {
+    try { $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der) }
+    catch { throw "Backend trust anchors file holds an unreadable certificate." }
+    if ($cert.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow -or $cert.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow) {
+      throw "Backend trust anchor $($cert.Thumbprint) is not valid at build time."
+    }
+    Write-Host "Backend trust anchor: $($cert.Thumbprint) (until $($cert.NotAfter.ToString('yyyy-MM-dd')))"
+    [Convert]::ToBase64String($der)
+  }
+  return (ConvertTo-MsBuildListValue @($items))
+}
+
 # Returns the MSBuild arguments that every project of one release build must share
 # (runtime publishes, the installer helper and the MSI project), the extra MSI-only
 # arguments, and the asset-name suffix. The server profile needs the command trust anchors.
@@ -154,9 +186,12 @@ function Get-ReleaseProfileBuild(
   [System.Collections.IDictionary]$Timing,
   [string]$ProductName,
   [string]$EulaRtf,
-  [string]$Channel = "dev"
+  [string]$Channel = "dev",
+  [string]$BackendAnchorsFile = ""
 ) {
   $shared = @()
+  $backendAnchors = Get-BackendTrustAnchorsValue $BackendAnchorsFile
+  if ($backendAnchors) { $shared += "-p:BackendTrustAnchors=$backendAnchors" }
   $anchors = ""
   if (-not [string]::IsNullOrWhiteSpace($AnchorsFile)) {
     if (-not (Test-Path -LiteralPath $AnchorsFile -PathType Leaf)) {

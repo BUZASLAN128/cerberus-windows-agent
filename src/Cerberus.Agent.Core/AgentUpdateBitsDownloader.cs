@@ -14,6 +14,7 @@ public sealed class AgentUpdateBitsDownloader
     private const string JobPrefix = "Cerberus.Update.v2:";
     private const string ReceiptFileName = "bits-job.json";
     private const uint EnumerateAllUsers = 0x0001;
+    private const uint IgnoreUnknownCa = 0x0008; // BG_SSL_IGNORE_UNKNOWN_CA
     private sealed record JobReceipt(Guid JobId, string AttemptId);
 
     public async Task DownloadAsync(
@@ -60,6 +61,7 @@ public sealed class AgentUpdateBitsDownloader
             // BITS creates suspended jobs. Persist its identity before any Resume;
             // a crash before this write leaves an identifiable suspended orphan.
             AgentUpdateDurableFile.Write(Path.Combine(attemptDirectory, ReceiptFileName), attemptDirectory, new JobReceipt(jobId, attemptId));
+            AllowCompiledBackendRoot(job);
             Check(job.AddFile(source.AbsoluteUri, fullDestination), "BITS file registration failed.");
             ct.ThrowIfCancellationRequested();
             Check(job.Resume(), "BITS job could not be resumed.");
@@ -297,6 +299,17 @@ public sealed class AgentUpdateBitsDownloader
             throw new InvalidOperationException("BITS update artifact length is invalid.");
     }
 
+    // BITS validates TLS against the Windows store only, so a build with compiled backend anchors lets it accept
+    // an unknown CA. Host name and dates are still checked; the sha256 from the signed manifest proves the file.
+    private static void AllowCompiledBackendRoot(IBackgroundCopyJob job)
+    {
+        if (!BackendTrust.HasAnchors)
+            return;
+        var options = (IBackgroundCopyJobHttpOptions)job;
+        Check(options.GetSecurityFlags(out var flags), "BITS security flags could not be read.");
+        Check(options.SetSecurityFlags(flags | IgnoreUnknownCa), "BITS security flags could not be set.");
+    }
+
     private static void Check(int hresult, string message)
     {
         if (hresult < 0)
@@ -413,6 +426,20 @@ public sealed class AgentUpdateBitsDownloader
         [PreserveSig] int SetProxySettings(uint usage, [MarshalAs(UnmanagedType.LPWStr)] string? proxy, [MarshalAs(UnmanagedType.LPWStr)] string? bypass);
         [PreserveSig] int GetProxySettings(out uint usage, [MarshalAs(UnmanagedType.LPWStr)] out string proxy, [MarshalAs(UnmanagedType.LPWStr)] out string bypass);
         [PreserveSig] int TakeOwnership();
+    }
+
+    [ComImport, Guid("F1BD1079-9F01-4BDC-8036-F09B70095066"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IBackgroundCopyJobHttpOptions
+    {
+        // Bits2_5.h vtable order.
+        [PreserveSig] int SetClientCertificateByID(int storeLocation, [MarshalAs(UnmanagedType.LPWStr)] string storeName, IntPtr certHashBlob);
+        [PreserveSig] int SetClientCertificateByName(int storeLocation, [MarshalAs(UnmanagedType.LPWStr)] string storeName, [MarshalAs(UnmanagedType.LPWStr)] string subjectName);
+        [PreserveSig] int RemoveClientCertificate();
+        [PreserveSig] int GetClientCertificate(out int storeLocation, out IntPtr storeName, out IntPtr certHashBlob, out IntPtr subjectName);
+        [PreserveSig] int SetCustomHeaders([MarshalAs(UnmanagedType.LPWStr)] string? requestHeaders);
+        [PreserveSig] int GetCustomHeaders(out IntPtr requestHeaders);
+        [PreserveSig] int SetSecurityFlags(uint flags);
+        [PreserveSig] int GetSecurityFlags(out uint flags);
     }
 
     [ComImport, Guid("1AF4F612-3B71-466F-8F58-7B6F73AC57AD"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]

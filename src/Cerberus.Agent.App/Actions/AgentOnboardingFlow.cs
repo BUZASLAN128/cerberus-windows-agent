@@ -64,7 +64,7 @@ internal sealed class AgentOnboardingFlow
         var token = await oauth.LoginWithPkceAsync(cfg.OAuthRedirectPort, ct).ConfigureAwait(false);
 
         progress?.Invoke("Login ok. Registering agent...");
-        using var http = new HttpClient
+        using var http = new HttpClient(BackendTrust.CreateHandler())
         {
             BaseAddress = bootstrap.Backend,
             Timeout = TimeSpan.FromSeconds(30),

@@ -174,7 +174,7 @@ internal static class AgentClaimGate
         if (string.IsNullOrWhiteSpace(privateKeyPem) || string.IsNullOrWhiteSpace(backendUrl))
             throw new InvalidOperationException("Agent registration is incomplete.");
 
-        using var http = new HttpClient
+        using var http = new HttpClient(BackendTrust.CreateHandler())
         {
             BaseAddress = new Uri(backendUrl.TrimEnd('/')),
             Timeout = ClaimCheckTimeout,

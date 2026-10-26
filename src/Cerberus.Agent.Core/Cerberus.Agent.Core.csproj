@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AgentCommandTrustAnchorsB64 Condition="'$(AgentCommandTrustAnchorsB64)' == ''"></AgentCommandTrustAnchorsB64>
+    <BackendTrustAnchors Condition="'$(BackendTrustAnchors)' == ''"></BackendTrustAnchors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,6 +32,10 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentCommandTrustAnchorsB64</_Parameter1>
       <_Parameter2>$(AgentCommandTrustAnchorsB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BackendTrustAnchors</_Parameter1>
+      <_Parameter2>$(BackendTrustAnchors)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 
