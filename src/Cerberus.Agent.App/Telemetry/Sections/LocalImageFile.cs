@@ -18,7 +18,8 @@ internal static class LocalImageFile
     private const uint FileReadData = 0x0001;
     private const uint FileReadAttributes = 0x0080;
     private const uint Synchronize = 0x00100000;
-    private const uint FileShareAll = 0x7; // read | write | delete
+    private const uint FileShareAll = 0x7; // read | write | delete (directories)
+    private const uint FileShareNoWrite = 0x5; // read | delete (the image: a writer holding it open fails the open)
     private const uint FileOpen = 1;
     private const uint FileSynchronousIoNonAlert = 0x00000020;
     private const uint FileNonDirectoryFile = 0x00000040;
@@ -81,7 +82,8 @@ internal static class LocalImageFile
             && string.Equals(final[4..], requested, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Handle opened for synchronous reads on a local volume, or null. The caller disposes it.
+    /// Handle opened for synchronous reads on a local volume, or null. The file is opened without write sharing, so a
+    /// file another handle holds open for write yields no handle. The caller disposes it.
     /// </summary>
     internal static SafeFileHandle? TryOpen(string path) => TryOpen(path, forceFallback: false);
 
@@ -94,9 +96,9 @@ internal static class LocalImageFile
 
         if (!forceFallback)
         {
-            var status = Open(null, nt, ObjCaseInsensitive | ObjDontReparse, FileAccessRights, FileOpenOptions, out var handle);
+            var status = Open(null, nt, ObjCaseInsensitive | ObjDontReparse, FileAccessRights, FileShareNoWrite, FileOpenOptions, out var handle);
             if (!ShouldRetryWithoutDontReparse(status))
-                return Accept(handle, requested: null);
+                return Accept(handle, requested: nt[4..]);
         }
 
         var full = nt[4..];
@@ -143,7 +145,7 @@ internal static class LocalImageFile
             for (var i = -1; i < parts.Length - 1; i++)
             {
                 var name = i < 0 ? @"\??\" + full[..3] : parts[i];
-                if (!IsOpened(Open(directory, name, ObjCaseInsensitive, DirectoryAccessRights, DirectoryOptions, out var child)))
+                if (!IsOpened(Open(directory, name, ObjCaseInsensitive, DirectoryAccessRights, FileShareAll, DirectoryOptions, out var child)))
                     return WalkStep.OpenFailed;
                 directory?.Dispose();
                 directory = child!;
@@ -151,7 +153,7 @@ internal static class LocalImageFile
                     return rejected;
             }
 
-            if (!IsOpened(Open(directory, parts[^1], ObjCaseInsensitive, FileAccessRights, FileOpenOptions | FileOpenReparsePoint, out var opened)))
+            if (!IsOpened(Open(directory, parts[^1], ObjCaseInsensitive, FileAccessRights, FileShareNoWrite, FileOpenOptions | FileOpenReparsePoint, out var opened)))
                 return WalkStep.OpenFailed;
             if (CheckNotReparsePoint(opened!) is { } refused)
             {
@@ -177,7 +179,7 @@ internal static class LocalImageFile
     }
 
     /// <summary>NtCreateFile of <paramref name="name"/>, relative to <paramref name="root"/> when set.</summary>
-    private static int Open(SafeFileHandle? root, string name, uint objectAttributes, uint access, uint options, out SafeFileHandle? handle)
+    private static int Open(SafeFileHandle? root, string name, uint objectAttributes, uint access, uint share, uint options, out SafeFileHandle? handle)
     {
         handle = null;
         var rootAdded = false;
@@ -196,7 +198,7 @@ internal static class LocalImageFile
                 Attributes = objectAttributes,
             };
             var status = NtCreateFile(
-                out var raw, access, ref attributes, out _, IntPtr.Zero, 0, FileShareAll, FileOpen, options, IntPtr.Zero, 0);
+                out var raw, access, ref attributes, out _, IntPtr.Zero, 0, share, FileOpen, options, IntPtr.Zero, 0);
             if (IsOpened(status))
                 handle = new SafeFileHandle(raw, ownsHandle: true);
             else if (status >= 0 && raw != IntPtr.Zero && raw != new IntPtr(-1))
@@ -213,7 +215,7 @@ internal static class LocalImageFile
     }
 
     /// <summary>Keeps the handle only on a local volume and, when <paramref name="requested"/> is set, at that exact path.</summary>
-    private static SafeFileHandle? Accept(SafeFileHandle? handle, string? requested)
+    internal static SafeFileHandle? Accept(SafeFileHandle? handle, string? requested)
     {
         if (handle is null)
             return null;

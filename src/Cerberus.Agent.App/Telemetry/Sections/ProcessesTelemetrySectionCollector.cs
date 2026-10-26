@@ -20,11 +20,12 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
 {
     internal const int MaxItems = 400;
     internal const int MaxCacheEntries = 2048;
+    internal const int MaxUncachedPerRun = 32;
 
     /// <summary>One running process: <c>Path</c> is null when the image path cannot be read.</summary>
     internal sealed record RawProcess(string? Path);
 
-    private readonly record struct SignerKey(string Path, long LastWriteTicks, long Length, uint VolumeSerial, long FileIndex);
+    internal readonly record struct SignerKey(string Path, ulong VolumeSerial, ulong FileIdLow, ulong FileIdHigh, long Usn);
 
     private static readonly Dictionary<SignerKey, string?> SignerCache = new();
     private static readonly object CacheLock = new();
@@ -32,7 +33,10 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     public string SectionName => "processes";
 
     public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
-        => ValueTask.FromResult(Build(Read(ct), ReadSignerCached, ct));
+    {
+        var budget = new UncachedBudget(MaxUncachedPerRun);
+        return ValueTask.FromResult(Build(Read(ct), path => ReadSignerCached(path, budget), ct));
+    }
 
     /// <summary>
     /// <c>count</c> = number of distinct image paths seen (ordinal, case-insensitive) plus the number of processes
@@ -146,7 +150,21 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         }
     }
 
-    internal static string? ReadSignerCached(string path)
+    /// <summary>Verifications of images without a cache key that one collection run may start.</summary>
+    internal sealed class UncachedBudget(int remaining)
+    {
+        private int _remaining = remaining;
+
+        internal bool TryTake()
+        {
+            if (_remaining <= 0)
+                return false;
+            _remaining--;
+            return true;
+        }
+    }
+
+    internal static string? ReadSignerCached(string path, UncachedBudget budget)
     {
         // Cheap pre-filter: never open an image outside a local fixed disk; the path is reported, the signer stays null.
         if (!IsLocalFixedPath(path))
@@ -158,9 +176,22 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         if (handle is null)
             return null;
 
-        // No identity (file missing, unreadable, not NTFS-like): nothing is reported or cached.
-        if (!TryGetKey(handle, path, out var key))
-            return null;
+        return SignerFor(handle, path, TryGetKey, TryReadSigner, budget);
+    }
+
+    internal delegate bool KeyReader(SafeFileHandle handle, string path, out SignerKey key);
+
+    internal delegate bool SignerReader(SafeFileHandle handle, string path, out string? signer);
+
+    /// <summary>
+    /// Cache lookup, verification and store around one handle. Without a key (no change journal, ReFS, FAT,
+    /// unreadable identity) the image is verified each run, never cached, and only while <paramref name="budget"/>
+    /// lasts; the handle is held without write sharing, so the content cannot change during verification.
+    /// </summary>
+    internal static string? SignerFor(SafeFileHandle handle, string path, KeyReader keyOf, SignerReader read, UncachedBudget budget)
+    {
+        if (!keyOf(handle, path, out var key))
+            return budget.TryTake() && read(handle, path, out var uncached) ? uncached : null;
 
         lock (CacheLock)
         {
@@ -168,12 +199,12 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
                 return cached;
         }
 
-        if (!TryReadSigner(handle, path, out var signer))
+        if (!read(handle, path, out var signer))
             return null; // transient I/O error: not cached, retried next cycle
 
-        // The file must be unchanged (size, last write) after verification; otherwise the verified signer may
-        // belong to other content and nothing is reported or cached.
-        if (!TryGetKey(handle, path, out var after) || after != key)
+        // The image is held open without write sharing during verification, so no other handle can write to it. The key
+        // is read again; if it moved, the verified signer may belong to other content and is not cached.
+        if (!keyOf(handle, path, out var after) || after != key)
             return null;
 
         lock (CacheLock)
@@ -186,43 +217,59 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         return signer;
     }
 
-    private static bool TryGetKey(SafeFileHandle handle, string path, out SignerKey key)
+    /// <summary>
+    /// Cache key read through the open handle: path, volume serial, 128-bit file id and the file's current USN.
+    /// Size and last write time are left out, since SetFileTime can put them back after an in-place edit. False
+    /// (nothing is cached) when the id or a non-zero USN cannot be read, e.g. no change journal.
+    /// </summary>
+    internal static bool TryGetKey(SafeFileHandle handle, string path, out SignerKey key)
     {
         key = default;
-        if (!GetFileInformationByHandle(handle, out var info))
+        var id = new byte[24]; // FILE_ID_INFO: VolumeSerialNumber (8), FileId (16)
+        if (!GetFileInformationByHandleEx(handle, FileIdInfoClass, id, (uint)id.Length))
             return false;
-        var index = ((long)info.FileIndexHigh << 32) | info.FileIndexLow;
-        var written = ((long)info.LastWriteTime.High << 32) | info.LastWriteTime.Low;
-        var length = ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
-        key = new SignerKey(path, written, length, info.VolumeSerialNumber, index);
+        if (!TryReadUsn(handle, out var usn))
+            return false;
+        key = new SignerKey(path, BitConverter.ToUInt64(id, 0), BitConverter.ToUInt64(id, 8), BitConverter.ToUInt64(id, 16), usn);
         return true;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileTime
+    private static bool TryReadUsn(SafeFileHandle handle, out long usn)
     {
-        public uint Low;
-        public uint High;
+        var buffer = new byte[4096];
+        usn = 0;
+        return DeviceIoControl(handle, FsctlReadFileUsnData, IntPtr.Zero, 0, buffer, (uint)buffer.Length, out var returned, IntPtr.Zero)
+            && TryParseUsn(buffer, (int)returned, out usn);
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ByHandleFileInformation
+    /// <summary>
+    /// Usn of the USN_RECORD_V2 in <paramref name="buffer"/> (offset 24; the IOCTL is called without an input buffer,
+    /// which returns V2 only); false for a short or inconsistent record, another version, or a USN of zero or below
+    /// (no journal entry for the file).
+    /// </summary>
+    internal static bool TryParseUsn(byte[] buffer, int length, out long usn)
     {
-        public uint FileAttributes;
-        public FileTime CreationTime;
-        public FileTime LastAccessTime;
-        public FileTime LastWriteTime;
-        public uint VolumeSerialNumber;
-        public uint FileSizeHigh;
-        public uint FileSizeLow;
-        public uint NumberOfLinks;
-        public uint FileIndexHigh;
-        public uint FileIndexLow;
+        usn = 0;
+        if (length < 32 || length > buffer.Length)
+            return false;
+        var recordLength = BitConverter.ToUInt32(buffer, 0);
+        if (BitConverter.ToUInt16(buffer, 4) != 2 || recordLength > length || recordLength < 32)
+            return false;
+        usn = BitConverter.ToInt64(buffer, 24);
+        return usn > 0;
     }
+
+    private const int FileIdInfoClass = 18;
+    private const uint FsctlReadFileUsnData = 0x000900EB;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation info);
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, [Out] byte[] info, uint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(
+        SafeFileHandle handle, uint code, IntPtr input, uint inputSize, [Out] byte[] output, uint outputSize, out uint returned, IntPtr overlapped);
 
     /// <summary>
     /// Simple name of a distinguished name: CN, else O, else OU. Multi-valued RDNs are skipped; null when nothing
