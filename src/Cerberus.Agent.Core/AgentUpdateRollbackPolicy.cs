@@ -26,18 +26,24 @@ public static class AgentUpdateRollbackPolicy
 
     /// <summary>A pending reboot excuses a failed probe only when the old service binary is still in place because its files were locked:
     /// the failure is in the service executable or assembly hash check (both run before the probe, so a later phase means the new files
-    /// are on disk and a pending entry is stale or foreign), no timeout or cancellation, and a queued rename of that file itself.</summary>
+    /// are on disk and a pending entry is stale or foreign), no timeout or cancellation, and a queued rename of the file that phase checked:
+    /// the executable hash only by the .exe, the assembly hash only by the .dll.</summary>
     public static bool PendingRebootExcuses(AgentInstallerHealthPhase phase, bool cancelledOrTimedOut, IEnumerable<string> pendingEntries, string runtime)
     {
-        if (cancelledOrTimedOut || phase is not (AgentInstallerHealthPhase.ServiceExecutableHash or AgentInstallerHealthPhase.ServiceAssemblyHash))
-            return false;
-        var executable = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
-        var assembly = Path.Combine(runtime, "Cerberus.Agent.Service.dll");
+        if (cancelledOrTimedOut) return false;
+        var file = phase switch
+        {
+            AgentInstallerHealthPhase.ServiceExecutableHash => "Cerberus.Agent.Service.exe",
+            AgentInstallerHealthPhase.ServiceAssemblyHash => "Cerberus.Agent.Service.dll",
+            _ => null,
+        };
+        if (file is null) return false;
+        var expected = Path.Combine(runtime, file);
         return pendingEntries.Any(entry =>
         {
             var path = entry.StartsWith('!') ? entry[1..] : entry;
             if (path.StartsWith(@"\??\", StringComparison.Ordinal)) path = path[4..];
-            return string.Equals(path, executable, StringComparison.OrdinalIgnoreCase) || string.Equals(path, assembly, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(path, expected, StringComparison.OrdinalIgnoreCase);
         });
     }
 

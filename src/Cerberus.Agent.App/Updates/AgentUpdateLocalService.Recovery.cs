@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App.Updates;
@@ -68,7 +69,19 @@ internal static partial class AgentUpdateLocalService
         try { plan = ReadPlan(active); }
         catch (Exception ex) when (ex is not OperationCanceledException) { plan = null; }
         var healthy = plan is not null && await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false);
-        Journal.ChangeAttempt(active.AttemptId, before => CloseRecovery(before, plan, healthy, now));
+        // The installer helper's durable record proves a health rollback even when the updater died before pinning it.
+        // The scan reads files, so it runs before the journal lock is taken.
+        var rollbackPhase = RecoveryRollbackPhase(healthy, plan, active.InstallerStartedUtc,
+            Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"));
+        Journal.ChangeAttempt(active.AttemptId, before => CloseRecovery(before, plan, healthy, now, rollbackPhase));
+    }
+
+    /// <summary>Newest health-rollback phase recorded for this attempt; null when healthy, without a plan, or when the records cannot be read.</summary>
+    internal static AgentInstallerHealthPhase? RecoveryRollbackPhase(bool healthy, AgentUpdatePlan? plan, DateTimeOffset? installerStartedUtc, string transactionsRoot)
+    {
+        if (healthy || plan is null) return null;
+        try { return AgentInstallerHealthRecords.NewestPhaseSince(transactionsRoot, installerStartedUtc, plan.Version, null); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
     }
 
     /// <summary>True once no runner or installer is alive and the grace period since the last install activity passed.</summary>
@@ -77,7 +90,8 @@ internal static partial class AgentUpdateLocalService
            now - (LastInstallEvidenceUtc(active) is { } last && last > serviceStartedUtc ? last : serviceStartedUtc) >= RecoveryGrace;
 
     /// <summary>Installed when healthy on the planned version, otherwise terminal Failed with a rescheduled check.</summary>
-    internal static AgentUpdateJournal CloseRecovery(AgentUpdateJournal before, AgentUpdatePlan? plan, bool healthy, DateTimeOffset now)
+    internal static AgentUpdateJournal CloseRecovery(AgentUpdateJournal before, AgentUpdatePlan? plan, bool healthy, DateTimeOffset now,
+        AgentInstallerHealthPhase? rollbackPhase = null)
     {
         if (before.Phase != AgentUpdateStates.RecoveryRequired) return before;
         if (healthy && plan is not null)
@@ -92,6 +106,8 @@ internal static partial class AgentUpdateLocalService
         {
             Phase = AgentUpdateStates.Failed,
             InstallerResult = result with { State = AgentUpdateStates.Failed, ErrorCode = AgentUpdateErrorCodes.RecoveryTimeout },
+            FailedInstallSequence = plan is null ? before.FailedInstallSequence
+                : AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence, AgentUpdateErrorCodes.MsiFailed, plan.Sequence, rollbackPhase),
             NextCheckUtc = now.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
         };
     }

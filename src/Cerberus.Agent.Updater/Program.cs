@@ -61,7 +61,8 @@ internal static class Program
             };
             // The record scan reads files, so it runs before the journal lock is taken.
             var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
-                ? HealthRollbackPhaseSince(journalStore.Read().InstallerStartedUtc, plan.Version, log) : null;
+                ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"),
+                    journalStore.Read().InstallerStartedUtc, plan.Version, log.Write) : null;
             journalStore.ChangeAttempt(attemptId, before => before with
             {
                 Phase = installerResult.State,
@@ -260,36 +261,6 @@ internal static class Program
         _ = process.StandardError.ReadToEnd();
         log.Write($"msiexec exit code: {process.ExitCode}.");
         return process.ExitCode;
-    }
-
-    /// <summary>The failed phase of the newest health-failure record the installer helper wrote for this attempt; null when there is none or its phase is unknown.</summary>
-    private static AgentInstallerHealthPhase? HealthRollbackPhaseSince(DateTimeOffset? installerStartedUtc, string planVersion, UpdaterLog log)
-    {
-        AgentInstallerHealthDiagnostic? newest = null;
-        try
-        {
-            var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
-            AgentUpdateSecurity.EnsureProtectedRoot(root);
-            foreach (var path in Directory.EnumerateFiles(root, "*.health-failure.json"))
-            {
-                try
-                {
-                    var record = AgentUpdateDurableFile.Read<AgentInstallerHealthDiagnostic>(path, root);
-                    if (record is not null && AgentUpdateRollbackPolicy.IsCurrentAttemptRecord(record.RecordedAtUtc, installerStartedUtc, record.ExpectedVersion, planVersion)
-                        && (newest is null || record.RecordedAtUtc > newest.RecordedAtUtc))
-                        newest = record;
-                }
-                catch (Exception ex)
-                {
-                    log.Write($"Health failure record skipped: {ex.GetType().Name}.");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            log.Write($"Health failure records unreadable: {ex.GetType().Name}.");
-        }
-        return AgentUpdateRollbackPolicy.ParsePhase(newest?.Phase);
     }
 
     private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
