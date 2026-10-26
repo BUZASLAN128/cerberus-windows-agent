@@ -40,14 +40,16 @@ function Invoke-TokenFileSigning {
     [Parameter(Mandatory = $true)][string]$SigntoolPath,
     [Parameter(Mandatory = $true)][string]$Thumbprint,
     [Parameter(Mandatory = $true)][string]$TimestampUrl,
-    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$FilePath,
     [Parameter(Mandatory = $true)][string[]]$AllowedPins
   )
   & $SigntoolPath @(Get-SignToolTokenSignArguments -Thumbprint $Thumbprint -TimestampUrl $TimestampUrl -FilePath $FilePath) | Out-Host
   if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-  & $SigntoolPath verify /pa /v $FilePath | Out-Host
-  if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-  Assert-SignedFileSignerPin -Path $FilePath -AllowedPins $AllowedPins
+  foreach ($file in $FilePath) {
+    & $SigntoolPath verify /pa /v $file | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
+    Assert-SignedFileSignerPin -Path $file -AllowedPins $AllowedPins
+  }
 }
 
 function Write-PendingExternalManifest {

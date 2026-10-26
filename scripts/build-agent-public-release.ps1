@@ -301,10 +301,8 @@ $signed = $false
 function Invoke-FirstPartySigning([string[]]$Files) {
   if ($tokenMode) {
     $signtool = Find-SignTool
-    foreach ($peFile in $Files) {
-      Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-        -FilePath $peFile -AllowedPins $tokenSignerPins
-    }
+    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
+      -FilePath $Files -AllowedPins $tokenSignerPins
   }
   elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
     $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
