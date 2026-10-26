@@ -121,7 +121,7 @@ The service posts a snapshot on the interval the backend returns, within the pro
 - Desktop sections: identity, os, resources, network, tailscale, rdp, firewall, security, clock, runtime, capabilities. `CERBERUS_AGENT_TELEMETRY_SECTIONS` can narrow the list.
 - Server sections: identity, os, resources, network, firewall, security, clock, runtime, sessions, hardware, services, listening_ports, updates, software, processes.
 
-Server `security` includes failed logons per protocol (RDP, SMB/network, SSH, SQL Server, console) with an event-log cursor, successful interactive/RDP logons, local administrators and membership changes, log clears, unexpected shutdowns, and Defender/SMBv1 posture. SQL Server failures count only when the event was written by the running SQL Server service process; other entries are reported as `unverified`. Command lines, passwords and attempted user names are not collected.
+Server `security` includes failed logons per protocol (RDP, SSH, SQL Server, and other for network and console logons) with an event-log cursor, successful interactive/RDP logons, local administrators and membership changes, log clears, unexpected shutdowns, and Defender/SMBv1 posture. SQL Server failures count only when the event was written by the running SQL Server service process; other entries are reported as `unverified`. Command lines, passwords and attempted user names are not collected.
 
 Snapshots that cannot be sent are buffered in `telemetry-offline.json`; one-time feeds (failed/successful logons, admin changes) are dropped from buffered copies so they are not counted twice.
 
