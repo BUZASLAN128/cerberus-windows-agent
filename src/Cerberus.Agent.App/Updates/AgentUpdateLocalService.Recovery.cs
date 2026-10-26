@@ -24,16 +24,12 @@ internal static partial class AgentUpdateLocalService
         return latest;
     }
 
-    /// <summary>Start of this service process; retry and grace windows never count time before it (a reboot can follow the installer by hours).</summary>
-    private static readonly Lazy<DateTimeOffset> ServiceStartedUtc = new(() =>
-    {
-        try { return new DateTimeOffset(System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime()); }
-        catch { return DateTimeOffset.UtcNow; }
-    });
+    /// <summary>Last system start; retry and grace windows never count time before it, since a reboot can follow the installer by hours, and a service restart does not reset them.</summary>
+    private static readonly Lazy<DateTimeOffset> SystemStartedUtc = new(() => DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64));
 
-    internal static bool HealthRetryExpired(AgentUpdateJournal journal, DateTimeOffset now, DateTimeOffset serviceStartedUtc)
+    internal static bool HealthRetryExpired(AgentUpdateJournal journal, DateTimeOffset now, DateTimeOffset systemStartedUtc)
     {
-        var anchor = Parse(journal.InstallerResult?.RecordedAtUtc) is { } recorded && recorded > serviceStartedUtc ? recorded : serviceStartedUtc;
+        var anchor = Parse(journal.InstallerResult?.RecordedAtUtc) is { } recorded && recorded > systemStartedUtc ? recorded : systemStartedUtc;
         return now - anchor >= HealthRetryWindow;
     }
 
@@ -61,7 +57,7 @@ internal static partial class AgentUpdateLocalService
     {
         var now = DateTimeOffset.UtcNow;
         if (active.AttemptId is null ||
-            !RecoveryCloseDue(active, now, ServiceStartedUtc.Value,
+            !RecoveryCloseDue(active, now, SystemStartedUtc.Value,
                 IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc),
                 IsProcessAlive(active.InstallerProcessId, active.InstallerStartedUtc)))
             return;
@@ -85,9 +81,9 @@ internal static partial class AgentUpdateLocalService
     }
 
     /// <summary>True once no runner or installer is alive and the grace period since the last install activity passed.</summary>
-    internal static bool RecoveryCloseDue(AgentUpdateJournal active, DateTimeOffset now, DateTimeOffset serviceStartedUtc, bool runnerAlive, bool installerAlive)
+    internal static bool RecoveryCloseDue(AgentUpdateJournal active, DateTimeOffset now, DateTimeOffset systemStartedUtc, bool runnerAlive, bool installerAlive)
         => active.AttemptId is not null && !runnerAlive && !installerAlive &&
-           now - (LastInstallEvidenceUtc(active) is { } last && last > serviceStartedUtc ? last : serviceStartedUtc) >= RecoveryGrace;
+           now - (LastInstallEvidenceUtc(active) is { } last && last > systemStartedUtc ? last : systemStartedUtc) >= RecoveryGrace;
 
     /// <summary>Installed when healthy on the planned version, otherwise terminal Failed with a rescheduled check.</summary>
     internal static AgentUpdateJournal CloseRecovery(AgentUpdateJournal before, AgentUpdatePlan? plan, bool healthy, DateTimeOffset now,

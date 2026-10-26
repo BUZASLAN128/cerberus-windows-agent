@@ -31,8 +31,8 @@ public static class AgentUpdateRollbackPolicy
 
     /// <summary>A pending reboot excuses a failed probe only when the old service binary is still in place because its files were locked:
     /// the failure is in the service executable or assembly hash check (both run before the probe, so a later phase means the new files
-    /// are on disk and a pending entry is stale or foreign), no timeout or cancellation, and a queued rename of the file that phase checked:
-    /// the executable hash only by the .exe, the assembly hash only by the .dll.</summary>
+    /// are on disk and a pending entry is stale or foreign), no timeout or cancellation, and a queued rename whose destination is the file
+    /// that phase checked (the .exe for the executable hash, the .dll for the assembly hash); the file as a rename source never excuses.</summary>
     public static bool PendingRebootExcuses(AgentInstallerHealthPhase phase, bool cancelledOrTimedOut, IEnumerable<string> pendingEntries, string runtime)
     {
         if (cancelledOrTimedOut) return false;
@@ -44,12 +44,16 @@ public static class AgentUpdateRollbackPolicy
         };
         if (file is null) return false;
         var expected = Path.Combine(runtime, file);
-        return pendingEntries.Any(entry =>
+        var entries = pendingEntries.ToArray();
+        // Entries are (source, destination) pairs; a deletion has an empty destination.
+        for (var i = 1; i < entries.Length; i += 2)
         {
-            var path = entry.StartsWith('!') ? entry[1..] : entry;
+            var path = entries[i] ?? string.Empty;
+            if (path.StartsWith('!')) path = path[1..];
             if (path.StartsWith(@"\??\", StringComparison.Ordinal)) path = path[4..];
-            return string.Equals(path, expected, StringComparison.OrdinalIgnoreCase);
-        });
+            if (path.Length > 0 && string.Equals(path, expected, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     /// <summary>Automatic staging skips the failed sequence; manual staging is never blocked.</summary>

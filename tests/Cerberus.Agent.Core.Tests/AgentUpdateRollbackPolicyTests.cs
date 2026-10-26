@@ -98,24 +98,30 @@ public sealed class AgentUpdateRollbackPolicyTests
     private const string ServiceExe = Runtime + @"\Cerberus.Agent.Service.exe";
     private const string ServiceDll = Runtime + @"\Cerberus.Agent.Service.dll";
 
+    private const string Temp = @"\??\C:\Windows\Installer\tmp1.tmp";
+
+    /// <summary>A queued replace: a staged temp file overwrites <paramref name="destination"/> at reboot.</summary>
+    private static string[] Replace(string destination) => [Temp, @"!\??\" + destination];
+
     [Theory]
     [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, ServiceExe, true)]
     [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, ServiceDll, false)]
     [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, ServiceDll, true)]
     [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, ServiceExe, false)]
-    public void PendingRebootExcuses_EachHashPhaseIsExcusedOnlyByItsOwnBinary(AgentInstallerHealthPhase phase, string entry, bool expected)
-        => Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [entry], Runtime));
+    public void PendingRebootExcuses_EachHashPhaseIsExcusedOnlyByItsOwnBinary(AgentInstallerHealthPhase phase, string destination, bool expected)
+        => Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, Replace(destination), Runtime));
 
     [Theory]
     [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash)]
     [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash)]
     public void PendingRebootExcuses_BothBinariesQueuedExcuseBothHashPhases(AgentInstallerHealthPhase phase)
-        => Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [ServiceDll, ServiceExe], Runtime));
+        => Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false,
+            [.. Replace(ServiceDll), .. Replace(ServiceExe)], Runtime));
 
     [Fact]
     public void PendingRebootExcuses_NoOtherPhaseIsExcusedAndCancellationNeverIs()
     {
-        string[] pending = [ServiceExe, ServiceDll];
+        string[] pending = [.. Replace(ServiceExe), .. Replace(ServiceDll)];
         var allowed = new[]
         {
             AgentInstallerHealthPhase.ServiceExecutableHash, AgentInstallerHealthPhase.ServiceAssemblyHash,
@@ -143,18 +149,44 @@ public sealed class AgentUpdateRollbackPolicyTests
     [InlineData(@"C:\Program Files\Cerberus\Agent", false)]
     [InlineData(@"C:\Program Files\Cerberus\Agent\", false)]
     [InlineData(@"", false)]
-    public void PendingRebootExcuses_RequiresAnExactServiceBinaryEntryUnderTheRuntime(string entry, bool expected)
+    public void PendingRebootExcuses_RequiresAnExactServiceBinaryDestinationUnderTheRuntime(string destination, bool expected)
     {
-        var phase = entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+        var phase = destination.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
             ? AgentInstallerHealthPhase.ServiceAssemblyHash : AgentInstallerHealthPhase.ServiceExecutableHash;
-        Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [entry], Runtime));
+        Assert.Equal(expected, AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [Temp, destination], Runtime));
+    }
+
+    [Theory]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, ServiceExe)]
+    [InlineData(AgentInstallerHealthPhase.ServiceAssemblyHash, ServiceDll)]
+    public void PendingRebootExcuses_TheCheckedPathAsASourceNeverExcuses(AgentInstallerHealthPhase phase, string binary)
+    {
+        // Deletion: the binary is a source followed by an empty destination.
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false, [@"\??\" + binary, ""], Runtime));
+        // Move-away: the binary is the source, another path the destination.
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false,
+            [@"\??\" + binary, @"\??\C:\Windows\Temp\old.bak"], Runtime));
+        // A deletion pair followed by an unrelated deletion does not shift the pairing.
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(phase, false,
+            [@"\??\" + binary, "", Temp, ""], Runtime));
     }
 
     [Fact]
-    public void PendingRebootExcuses_OneMatchingEntryAmongOthersIsEnoughAndAnEmptyListIsNot()
+    public void PendingRebootExcuses_ATrailingUnpairedEntryIsIgnored()
     {
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false,
+            [Temp, @"\??\C:\Windows\Temp\x.tmp", ServiceExe], Runtime));
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false,
+            [ServiceExe], Runtime));
+    }
+
+    [Fact]
+    public void PendingRebootExcuses_ForeignPairsDoNotExcuseButOneMatchingPairAmongThemDoes()
+    {
+        string[] foreign = [Temp, @"!\??\C:\Windows\System32\other.dll", Temp, ""];
+        Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceAssemblyHash, false, foreign, Runtime));
         Assert.True(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceAssemblyHash, false,
-            [@"C:\Windows\x.dll", ServiceDll], Runtime));
+            [.. foreign, .. Replace(ServiceDll)], Runtime));
         Assert.False(AgentUpdateRollbackPolicy.PendingRebootExcuses(AgentInstallerHealthPhase.ServiceExecutableHash, false, [], Runtime));
     }
 

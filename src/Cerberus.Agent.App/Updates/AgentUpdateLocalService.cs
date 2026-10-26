@@ -1285,7 +1285,7 @@ internal static partial class AgentUpdateLocalService
                     Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
                     HealthyInstalledVersion = plan.Version,
                 });
-            else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, ServiceStartedUtc.Value))
+            else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, SystemStartedUtc.Value))
                 return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
             {
