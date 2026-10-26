@@ -203,7 +203,7 @@ public sealed partial class HeartbeatLoop
                             _log.Warn($"Snapshot refresh acknowledgement failed: {ex.GetType().Name}: {ex.Message}");
                         }
                     }
-                    nextSnapshotAt = now.AddSeconds(_timing.SnapshotDelaySeconds(hb.NextSnapshotSeconds));
+                    nextSnapshotAt = now.AddSeconds(SnapshotDelayWithJitter(_timing, hb.NextSnapshotSeconds));
                 }
 
                 if (skipCommands)

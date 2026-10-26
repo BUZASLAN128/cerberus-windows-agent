@@ -240,6 +240,13 @@ public sealed partial class HeartbeatLoop
         }
     }
 
+    /// <summary>
+    /// Resolves the snapshot interval (0 = profile default, otherwise clamped), jitters it by +/-20%,
+    /// then clamps again so the result stays within the profile bounds.
+    /// </summary>
+    internal static int SnapshotDelayWithJitter(AgentTimingPolicy timing, int serverSeconds)
+        => timing.SnapshotDelaySeconds(ApplyJitter(timing.SnapshotDelaySeconds(serverSeconds), 0.20));
+
     private static int ApplyJitter(int seconds, double pct)
     {
         var baseSec = Math.Max(1, seconds);
