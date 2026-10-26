@@ -13,7 +13,7 @@ internal sealed class AgentUpdateReconciliationDeferredException(Exception cause
 }
 
 /// <summary>The installed service owns update decisions. UI/CLI requests contain operations and attempt IDs only.</summary>
-internal static class AgentUpdateLocalService
+internal static partial class AgentUpdateLocalService
 {
     private static readonly TimeSpan ReconciliationRetryDelay = TimeSpan.FromMinutes(5);
     private sealed class IntentionalUpdateCancellationException(string message, CancellationToken cancellationToken)
@@ -769,6 +769,7 @@ internal static class AgentUpdateLocalService
         }
         if (automatic && !bypassSchedule && active.NextCheckUtc > DateTimeOffset.UtcNow) return null;
         var operationStart = active;
+        var failedInstallSequence = active.FailedInstallSequence;
         var schedulePersisted = false;
         var authorizationChanged = false;
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -795,7 +796,8 @@ internal static class AgentUpdateLocalService
                 trust.ExpectedChannel,
                 effectiveRequired
                     ? incomingRequiredGeneration ?? lifecycle.Generation
-                    : null);
+                    : null,
+                AgentUpdateRollbackPolicy.SkipSequenceFor(automatic, failedInstallSequence));
             var stager = new AgentUpdateStager(http, trust, Root);
             var plan = await stager.StageAsync(signal, cancellation.Token).ConfigureAwait(false);
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
@@ -1269,38 +1271,33 @@ internal static class AgentUpdateLocalService
         else if (active.Phase is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot)
         {
             if (!allowHealth) return; // Startup must open the pipe before health can prove local readiness.
-            var plan = ReadPlan(active) ?? throw new InvalidOperationException("Installed update plan is missing.");
+            AgentUpdatePlan? plan;
+            try { plan = ReadPlan(active); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { plan = null; }
             if (active.Phase == AgentUpdateStates.PendingReboot && active.InstallationBootId == AgentUpdateBootIdentity.Read())
             {
                 await ProjectAsync(ct).ConfigureAwait(false);
                 return;
             }
-            if (string.Equals(WindowsDeviceInfo.GetAgentVersion(), plan.Version, StringComparison.Ordinal) &&
-                IsCanonicalServiceProcess())
-            {
-                await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                AgentLocalControlResponse ready;
-                try { ready = await Cerberus.Agent.App.Control.AgentLocalControlClient.SendAsync(new AgentLocalControlRequest("status"), ct).ConfigureAwait(false); }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
-                    await ProjectAsync(ct).ConfigureAwait(false);
-                    return;
-                }
-                if (!ready.Success || ready.CurrentVersion != plan.Version)
-                {
-                    Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
-                    await ProjectAsync(ct).ConfigureAwait(false);
-                    return;
-                }
+            if (plan is not null && await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
                 Journal.ChangeAttempt(active.AttemptId, before => before with
                 {
                     Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
                     HealthyInstalledVersion = plan.Version,
                 });
-            }
+            else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, SystemStartedUtc.Value))
+                return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
+            {
                 Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
+                await ProjectAsync(ct).ConfigureAwait(false);
+                return;
+            }
+        }
+        else if (active.Phase == AgentUpdateStates.RecoveryRequired)
+        {
+            if (!allowHealth) return;
+            await TryCloseRecoveryAsync(active, ct).ConfigureAwait(false);
         }
         else if (active.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking)
             Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.Failed });

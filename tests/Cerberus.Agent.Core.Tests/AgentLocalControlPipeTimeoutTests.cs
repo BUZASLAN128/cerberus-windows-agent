@@ -15,6 +15,19 @@ public sealed class AgentLocalControlPipeTimeoutTests
     private static async Task<AgentLocalControlResponse?> RoundTripAsync(
         AgentLocalControlServer server, CancellationToken serviceCt)
     {
+        // HandleConnectionAsync arms its request deadline before it reads the request, so cold JSON/JIT work
+        // on a slow runner would count against the deadline and the server would close before the reply.
+        // Warm the codec first so only the pipe hop remains inside the deadline.
+        using (var warm = new MemoryStream())
+        {
+            await AgentLocalControlProtocol.WriteAsync(warm, new AgentLocalControlRequest("status"), CancellationToken.None);
+            warm.Position = 0;
+            await AgentLocalControlProtocol.ReadAsync<AgentLocalControlRequest>(warm, CancellationToken.None);
+            warm.SetLength(0);
+            await AgentLocalControlProtocol.WriteAsync(warm, new AgentLocalControlResponse(false, "service_timeout"), CancellationToken.None);
+            warm.Position = 0;
+            await AgentLocalControlProtocol.ReadAsync<AgentLocalControlResponse>(warm, CancellationToken.None);
+        }
         var name = "cerberus-test-" + Guid.NewGuid().ToString("N");
         var serverPipe = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         await using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
@@ -62,7 +75,7 @@ public sealed class AgentLocalControlPipeTimeoutTests
             await Task.Delay(Timeout.Infinite, ct);
             return new AgentLocalControlResponse(true, "ok");
         })
-        { RequestDeadline = TimeSpan.FromMilliseconds(200) };
+        { RequestDeadline = TimeSpan.FromMilliseconds(750) };
 
         var response = await RoundTripAsync(server, CancellationToken.None);
 

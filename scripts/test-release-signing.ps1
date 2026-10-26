@@ -74,6 +74,8 @@ Check "escaped list round-trips to the original items" {
   ([uri]::UnescapeDataString((ConvertTo-MsBuildListValue $items)) -split ',') -join '|' -ceq ($items -join '|')
 }
 
+. (Join-Path $PSScriptRoot "test-release-signing-continuity.ps1")
+
 # Mode selection
 Check "default Pfx mode with no token input" { (Assert-ReleaseSigningInputs -Mode Pfx).Mode -eq "Pfx" }
 Check "Pfx mode with the unsigned dev switch stays on the Pfx path" {

@@ -59,10 +59,18 @@ internal static class Program
                 AttemptId = plan.AttemptId,
                 RetryCount = active.RetryCount,
             };
+            // The record scan reads files, so it runs before the journal lock is taken.
+            var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
+                ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"),
+                    journalStore.Read().InstallerStartedUtc, plan.Version, log.Write) : null;
             journalStore.ChangeAttempt(attemptId, before => before with
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
+                // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
+                // Other installer failures, and a backend-contact, control-pipe or no-answer failure, keep the normal retry behavior.
+                FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
+                    installerResult.ErrorCode, plan.Sequence, rollbackPhase),
             });
             WriteInstallerResult(installerResult, log);
             log.Write("Cerberus Agent updater completed.");
@@ -231,6 +239,9 @@ internal static class Program
                 lifecycle.Generation != active.LifecycleGeneration ||
                 (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
                 throw new InvalidOperationException("Update attempt authorization changed.");
+            // Only an automatic run that started from a fully active agent must prove backend contact before the install commits.
+            if (AgentUpdateRollbackPolicy.RequiresBackendContact(active.Automatic, lifecycle.State))
+                psi.ArgumentList.Add("CERBERUS_UPDATE_REQUIRE_BACKEND=1");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with
             {
                 Phase = "install_may_have_started", InstallationBootId = AgentUpdateBootIdentity.Read(),

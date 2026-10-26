@@ -24,7 +24,8 @@ public sealed record AgentUpdateSignal(
     string? ManifestUrl,
     string? Reason,
     string? Channel,
-    long? LifecycleGeneration = null);
+    long? LifecycleGeneration = null,
+    long? SkipSequenceAtOrBelow = null);
 
 public sealed record AgentUpdatePlan(
     string ArtifactKind,
@@ -182,6 +183,12 @@ public sealed class AgentUpdateStager
         if (!IsActionableManifest(manifest))
         {
             _log.Info($"Agent update staging skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
+            return null;
+        }
+
+        if (AgentUpdateRollbackPolicy.SkipsSequence(signal.SkipSequenceAtOrBelow, manifest.IsV2, manifest.Sequence))
+        {
+            _log.Info($"Agent update staging skipped: sequence {manifest.Sequence} already failed to install; waiting for a newer release.");
             return null;
         }
 
