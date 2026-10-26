@@ -2,8 +2,10 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using Cerberus.Agent.Core;
+using Microsoft.Win32.SafeHandles;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
@@ -22,7 +24,7 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
     /// <summary>One running process: <c>Path</c> is null when the image path cannot be read.</summary>
     internal sealed record RawProcess(string? Path);
 
-    private readonly record struct SignerKey(string Path, long LastWriteTicks, long Length);
+    private readonly record struct SignerKey(string Path, long LastWriteTicks, long Length, uint VolumeSerial, long FileIndex);
 
     private static readonly Dictionary<SignerKey, string?> SignerCache = new();
     private static readonly object CacheLock = new();
@@ -106,18 +108,9 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
 
     private static string? ReadSignerCached(string path)
     {
-        SignerKey key;
-        try
-        {
-            var info = new FileInfo(path);
-            if (!info.Exists)
-                return null;
-            key = new SignerKey(path, info.LastWriteTimeUtc.Ticks, info.Length);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
-        {
+        // No identity (file missing, unreadable, not NTFS-like): nothing is reported or cached.
+        if (!TryGetKey(path, out var key))
             return null;
-        }
 
         lock (CacheLock)
         {
@@ -128,9 +121,10 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         if (!TryReadSigner(path, out var signer))
             return null; // transient I/O error: not cached, retried next cycle
 
-        // The image must be unchanged since the key was taken, otherwise the result belongs to another file version.
-        if (!SameFile(path, key))
-            return signer;
+        // The file must still be the same one (volume, file index, size, last write) after verification;
+        // otherwise the verified signer may belong to another file and nothing is reported or cached.
+        if (!TryGetKey(path, out var after) || after != key)
+            return null;
 
         lock (CacheLock)
         {
@@ -142,16 +136,77 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         return signer;
     }
 
-    private static bool SameFile(string path, SignerKey key)
+    private static bool TryGetKey(string path, out SignerKey key)
     {
+        key = default;
         try
         {
-            var info = new FileInfo(path);
-            return info.Exists && info.LastWriteTimeUtc.Ticks == key.LastWriteTicks && info.Length == key.Length;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (!GetFileInformationByHandle(stream.SafeFileHandle, out var info))
+                return false;
+            var index = ((long)info.FileIndexHigh << 32) | info.FileIndexLow;
+            var written = ((long)info.LastWriteTime.High << 32) | info.LastWriteTime.Low;
+            var length = ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
+            key = new SignerKey(path, written, length, info.VolumeSerialNumber, index);
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return false;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        public uint Low;
+        public uint High;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTime CreationTime;
+        public FileTime LastAccessTime;
+        public FileTime LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation info);
+
+    /// <summary>Simple name of a distinguished name: CN, else O, else the whole subject (cleaned by the caller).</summary>
+    internal static string? SimpleNameFromSubject(string? subject)
+    {
+        if (string.IsNullOrWhiteSpace(subject))
+            return null;
+        try
+        {
+            string? organization = null;
+            foreach (var rdn in new X500DistinguishedName(subject).EnumerateRelativeDistinguishedNames())
+            {
+                var type = rdn.GetSingleElementType().Value;
+                var value = rdn.GetSingleElementValue();
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+                if (type == "2.5.4.3")
+                    return value;
+                if (type == "2.5.4.10" && organization is null)
+                    organization = value;
+            }
+
+            return organization ?? subject.Trim();
+        }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException or InvalidOperationException)
+        {
+            return subject.Trim();
         }
     }
 
@@ -165,14 +220,10 @@ internal sealed class ProcessesTelemetrySectionCollector : IWindowsTelemetrySect
         signer = null;
         try
         {
-            if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(path, out _))
+            // The subject is the certificate Subject (full distinguished name) from the signature WinVerifyTrust accepted.
+            if (!AgentUpdateAuthenticode.TryGetValidSignerSubject(path, out var subject))
                 return true;
-            // SYSLIB0057: X509CertificateLoader cannot read the embedded signer of a signed PE file.
-#pragma warning disable SYSLIB0057
-            using var certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
-#pragma warning restore SYSLIB0057
-            var subject = certificate.GetNameInfo(X509NameType.SimpleName, false);
-            signer = string.IsNullOrWhiteSpace(subject) ? null : subject;
+            signer = SimpleNameFromSubject(subject);
             return true;
         }
         catch (CryptographicException)
