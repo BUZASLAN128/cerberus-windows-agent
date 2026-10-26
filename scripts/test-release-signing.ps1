@@ -122,6 +122,7 @@ try {
       ($a -notcontains "/f") -and ($a -notcontains "/p")
   }
   . (Join-Path $PSScriptRoot "test-release-signing-token.ps1")
+  . (Join-Path $PSScriptRoot "test-release-signing-anchors.ps1")
   Check "hash and timestamp flags match the PFX path" {
     $text = Get-Content -Raw -LiteralPath $mainScript
     $text -match 'sign /fd SHA256 /td SHA256 /tr \$TimestampUrl /f \$certPath /p \$certPassword \$peFile' -and

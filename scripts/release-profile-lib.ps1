@@ -128,8 +128,11 @@ function Test-CommandAnchorsAreTestFixture([string]$AnchorsB64) {
   if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) {
     throw "The command trust anchor test fixture is missing ($fixtureFile); cannot verify that a preview or stable build does not use it."
   }
+  # Each line is compared by the SHA-256 of its decoded SPKI bytes, as the runtime decodes it (Convert.FromBase64String
+  # ignores embedded whitespace); a line that does not decode cannot be an anchor and is skipped.
   $lines = { param($b64) [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Trim())).Split("`n") |
-    ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } }
+    ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 } |
+    ForEach-Object { try { [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_))) } catch { } } }
   try { $fixture = @(& $lines (Get-Content -LiteralPath $fixtureFile -Raw)) } catch { $fixture = @() }
   if ($fixture.Count -eq 0) { throw "The command trust anchor test fixture cannot be decoded ($fixtureFile); cannot verify that a preview or stable build does not use it." }
   try {

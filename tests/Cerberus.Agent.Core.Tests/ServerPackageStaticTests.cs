@@ -283,6 +283,28 @@ public sealed class ServerPackageStaticTests
         }
     }
 
+    [Theory]
+    [InlineData("preview")]
+    [InlineData("stable")]
+    public void ReleaseProfileLib_RefusesWhitespacePaddedTestFixtureAnchors(string channel)
+    {
+        var fixture = File.ReadAllText(Path.Combine(FindRepoRoot(), "tests", "fixtures", "agent-command-test-anchors.b64")).Trim();
+        var inner = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(fixture)).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var padded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', inner.Select(l => l.Insert(8, " ")))));
+        var anchors = Path.Combine(Path.GetTempPath(), $"anchors-{Guid.NewGuid():N}.b64");
+        File.WriteAllText(anchors, padded + "\n");
+        try
+        {
+            var result = RunProfileLib($"'server' '{anchors}' @{{}} '' '' '{channel}'");
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("repository test fixture", result.Output);
+        }
+        finally
+        {
+            File.Delete(anchors);
+        }
+    }
+
     [Fact]
     public void ReleaseScript_SignsAndGatesTheInstallerHelperBeforeTheMsiBuild()
     {

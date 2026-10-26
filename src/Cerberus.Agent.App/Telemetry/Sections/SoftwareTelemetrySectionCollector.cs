@@ -73,9 +73,10 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
                || releaseType.Contains("Hotfix", StringComparison.OrdinalIgnoreCase)
                || releaseType.Contains("Service Pack", StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Loaded interactive-user hives only: domain/local account SIDs, not the per-user _Classes hives.</summary>
+    /// <summary>Loaded interactive-user hives only: domain/local (S-1-5-21-) and Microsoft Entra (S-1-12-1-) account SIDs, not the per-user _Classes hives.</summary>
     internal static bool IsUserHiveSid(string name)
-        => name.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase)
+        => (name.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("S-1-12-1-", StringComparison.OrdinalIgnoreCase))
            && !name.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase);
 
     private static List<RawSoftware> Read(CancellationToken ct)
