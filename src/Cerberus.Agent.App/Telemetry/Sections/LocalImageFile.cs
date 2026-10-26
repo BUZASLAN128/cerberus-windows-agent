@@ -72,8 +72,8 @@ internal static class LocalImageFile
 
     /// <summary>
     /// True when the handle's final path (<c>\\?\</c> + normalized DOS path) is exactly the requested full path,
-    /// ignoring case. A junction, symlink or mount point anywhere in the path, a short (8.3) name, a UNC or volume
-    /// GUID final path, or a trailing separator difference all fail.
+    /// ignoring case. A junction, symlink or mount point anywhere in the path, a UNC or volume GUID final path, or a
+    /// trailing separator difference all fail.
     /// </summary>
     internal static bool FinalPathMatches(string requested, string? final)
         => final is not null
@@ -108,7 +108,8 @@ internal static class LocalImageFile
 
     /// <summary>
     /// Components below the drive root (<c>C:\a\b.exe</c> → <c>a</c>, <c>b.exe</c>), or null unless the path is a
-    /// drive-letter path whose components are all plain names (not empty, <c>.</c>, <c>..</c>, or holding a colon).
+    /// drive-letter path whose components are all plain names (not empty, <c>.</c>, <c>..</c>, or holding <c>:</c>
+    /// or <c>/</c>).
     /// </summary>
     internal static string[]? SplitComponents(string? path)
     {
@@ -126,8 +127,8 @@ internal static class LocalImageFile
     /// <summary>
     /// Server 2016 open that never follows a reparse point: every component, from the drive root down to the file,
     /// is opened relative to its parent with FILE_OPEN_REPARSE_POINT, so a junction or symlink is opened as itself
-    /// and rejected by its attributes. Compressed (WOF) or deduplicated images are reparse points too and report no
-    /// signer on this path.
+    /// and rejected by its attributes. Images that are reparse points themselves (for example deduplicated ones)
+    /// report no signer on this path.
     /// </summary>
     internal static WalkStep OpenByWalk(string full, out SafeFileHandle? file)
     {

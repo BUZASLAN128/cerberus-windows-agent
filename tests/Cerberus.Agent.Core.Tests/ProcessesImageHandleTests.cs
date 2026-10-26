@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Cerberus.Agent.App.Telemetry.Sections;
 using Microsoft.Win32.SafeHandles;
 
@@ -220,18 +219,7 @@ public sealed class ProcessesImageHandleTests
 
     private sealed class TempDir : IDisposable
     {
-        // Long form: TEMP can hold 8.3 names (e.g. on CI runners), which the fallback final-path check rejects.
-        public string Path { get; } = LongPath(Directory.CreateDirectory(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cerberus-image-" + Guid.NewGuid().ToString("N"))).FullName);
-
-        private static string LongPath(string path)
-        {
-            var buffer = new char[1024];
-            var length = GetLongPathNameW(path, buffer, (uint)buffer.Length);
-            return length == 0 || length >= buffer.Length ? path : new string(buffer, 0, (int)length);
-        }
-
-        [DllImport("kernel32.dll", ExactSpelling = true, CharSet = CharSet.Unicode)]
-        private static extern uint GetLongPathNameW(string shortPath, [Out] char[] longPath, uint length);
+        public string Path { get; } = Directory.CreateDirectory(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "cerberus-image-" + Guid.NewGuid().ToString("N"))).FullName;
 
         public string File(string name, string content)
         {
