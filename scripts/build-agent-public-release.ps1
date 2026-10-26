@@ -30,6 +30,9 @@ param(
   [string]$SigningMode = "Pfx",
   [string]$SigningCertThumbprint = "",
   [string[]]$ExtraSignerPins = @(),
+  # Comma list of sha256: SPKI pins that the currently deployed agents accept (default: CERBERUS_AGENT_DEPLOYED_SIGNER_PINS).
+  # The build fails when this release's Authenticode certificate is not among them; preview/stable warn when it is missing.
+  [string[]]$DeployedSignerPins = @(),
   [string]$ManifestSigningCertThumbprint = "",
   [string]$ManifestSigningPublicKeyFile = "",
   [string]$ManifestSignatureFile = "",
@@ -199,6 +202,14 @@ if ($tokenMode) {
   $signerKeyIdentity = $tokenSignerPins[0]
   $signerPinsForBuild = ConvertTo-MsBuildListValue $tokenSignerPins
   $allowUnsignedBuildMetadata = $false
+}
+if (@($DeployedSignerPins | Where-Object { $_ }).Count -eq 0 -and $env:CERBERUS_AGENT_DEPLOYED_SIGNER_PINS) {
+  $DeployedSignerPins = @($env:CERBERUS_AGENT_DEPLOYED_SIGNER_PINS)
+}
+if ($signerKeyIdentity -match '^sha256:') {
+  # Fail before tests and signing prompts when the certificate cannot continue the update chain.
+  Assert-SignerContinuity -SignerPin $signerKeyIdentity `
+    -EmbeddedPins $(if ($tokenMode) { $tokenSignerPins } else { @($signerKeyIdentity) }) -DeployedPins $DeployedSignerPins -Channel $Channel
 }
 if ($ManifestSequence -le 0) {
   $ManifestSequence = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -402,6 +413,12 @@ if ($signed) {
     if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
   Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   }
+}
+
+if ($signed) {
+  # Measured on the signed MSI against the pins read back from the built runtime, before any manifest or output is written.
+  Assert-SignerContinuity -SignedFile $msi -EmbeddedPins (Get-EmbeddedReleaseTrust (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll")).SignerPins `
+    -DeployedPins $DeployedSignerPins -Channel $Channel
 }
 
 Write-Step "Creating checksums, SBOM, provenance, manifest"

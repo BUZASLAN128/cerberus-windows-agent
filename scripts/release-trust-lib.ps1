@@ -128,3 +128,33 @@ function Assert-EmbeddedTrustMatches {
     throw "$Label artifact prefixes do not match the prefixes embedded in the built runtime."
   }
 }
+
+function Assert-SignerContinuity {
+  param(
+    [string]$SignedFile = "",
+    [string]$SignerPin = "",
+    [Parameter(Mandatory = $true)][string[]]$EmbeddedPins,
+    [string[]]$DeployedPins = @(),
+    [Parameter(Mandatory = $true)][string]$Channel
+  )
+  # The Authenticode certificate of this release must be pinned (a) by this release itself, so its own next update verifies,
+  # and (b) by the agents already deployed, when their pins are declared, so they accept this release.
+  # -SignedFile measures the signature of a signed file; otherwise -SignerPin is the pin of the certificate about to sign.
+  $accepted = {
+    param([string[]]$Pins)
+    if ($SignedFile) {
+      try { Assert-SignedFileSignerPin -Path $SignedFile -AllowedPins $Pins; return $null } catch { return $_.Exception.Message }
+    }
+    if (([string[]]@($Pins)) -contains $SignerPin.ToLowerInvariant()) { return $null }
+    return "signer pin $SignerPin is not in the list"
+  }
+  $problem = & $accepted $EmbeddedPins
+  if ($problem) { throw "Signer continuity: the Authenticode certificate is not among the signer pins compiled into this release, so it could not verify its own next update ($problem)." }
+  $deployed = ConvertTo-NormalizedSignerPins @(@($DeployedPins) | ForEach-Object { ([string]$_) -split ',' })
+  if (@($deployed).Count -eq 0) {
+    if ($Channel -ne "dev") { Write-Warning "-DeployedSignerPins (or CERBERUS_AGENT_DEPLOYED_SIGNER_PINS) is not set: cannot confirm that deployed agents accept this release's Authenticode certificate." }
+    return
+  }
+  $problem = & $accepted $deployed
+  if ($problem) { throw "Signer continuity: deployed agents do not pin this release's Authenticode certificate and would refuse it. Sign with a deployed certificate, or ship a bridge release that carries both pins first ($problem)." }
+}
