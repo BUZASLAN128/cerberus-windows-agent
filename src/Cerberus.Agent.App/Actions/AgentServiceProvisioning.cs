@@ -158,7 +158,7 @@ internal static class AgentBackendLifecycle
         try
         {
             var (_, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
-            using var http = new HttpClient
+            using var http = new HttpClient(BackendTrust.CreateHandler())
             {
                 BaseAddress = new Uri(backendUrl.TrimEnd('/')),
                 Timeout = TimeSpan.FromSeconds(20),

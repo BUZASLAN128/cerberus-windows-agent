@@ -96,7 +96,7 @@ internal static class SelfTestMode
             "online.prereq",
             $"Using stored secrets (scope={scopeUsed}) and configured backend."));
 
-        using var http = new HttpClient
+        using var http = new HttpClient(BackendTrust.CreateHandler())
         {
             BaseAddress = new Uri(backendUrl),
             Timeout = TimeSpan.FromSeconds(30),

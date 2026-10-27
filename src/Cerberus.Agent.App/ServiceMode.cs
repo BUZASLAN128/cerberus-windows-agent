@@ -280,8 +280,8 @@ internal static partial class ServiceMode
         }
         var baseAddress = new Uri(backendUrl.Trim().TrimEnd('/'));
 
-        using var http = new HttpClient { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
-        using var updateHttp = new HttpClient
+        using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
+        using var updateHttp = new HttpClient(BackendTrust.CreateHandler())
         {
             BaseAddress = baseAddress,
             Timeout = ReadTimeSpanFromSeconds("CERBERUS_AGENT_UPDATE_TIMEOUT_SECONDS", TimeSpan.FromMinutes(10)),

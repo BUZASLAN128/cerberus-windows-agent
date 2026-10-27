@@ -68,7 +68,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     // A redirect would replay the proof to another host.
     public HttpClient CreateHttpClient(Uri backend)
-        => new(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
+        => new(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = false })) { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
 
     public async Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
     {

@@ -96,7 +96,7 @@ internal sealed class AgentLocalControlService
         if (snapshot.State == AgentLifecycleState.NeedsReenrollment)
             return StateResponse(false, "reenrollment_required", snapshot);
         var (_, _, key, backend, _, _) = await machine.LoadAsync(ct).ConfigureAwait(false);
-        using var http = new HttpClient { BaseAddress = new Uri(backend), Timeout = TimeSpan.FromSeconds(30) };
+        using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = new Uri(backend), Timeout = TimeSpan.FromSeconds(30) };
         var api = new AgentApiClient(http, machine,
             new AgentTokenManager(http, machine, lifecycleState: _lifecycle, manualOperation: true, quiesce: _quiesce),
             new RequestSigner(key), _lifecycle, manualOperation: true, quiesce: _quiesce);
@@ -159,7 +159,7 @@ internal sealed class AgentLocalControlService
         var (_, _, key, backend, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
         if (!Uri.TryCreate(backend, UriKind.Absolute, out var endpoint) || endpoint.Scheme is not ("https" or "http"))
             throw new InvalidDataException("Stored endpoint is invalid.");
-        using var http = new HttpClient { BaseAddress = endpoint, Timeout = TimeSpan.FromSeconds(30) };
+        using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = endpoint, Timeout = TimeSpan.FromSeconds(30) };
         var api = new AgentApiClient(http, store,
             new AgentTokenManager(http, store, lifecycleState: lifecycle, manualOperation: true, quiesce: quiesce),
             new RequestSigner(key), lifecycle, manualOperation: true, quiesce: quiesce);

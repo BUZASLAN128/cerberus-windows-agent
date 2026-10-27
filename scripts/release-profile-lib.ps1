@@ -145,6 +145,51 @@ $script:ReleaseTimingKeys = @(
   "AgentPollFloorSeconds", "AgentPollCeilingSeconds",
   "AgentSnapshotFloorSeconds", "AgentSnapshotCeilingSeconds", "AgentSnapshotDefaultSeconds")
 
+# Reads the backend TLS trust anchors and returns the BackendTrustAnchors build value: base64 DER
+# certificates joined with an escaped comma. The file is PEM holding only CERTIFICATE blocks, or exactly
+# one DER certificate. Each certificate is read with the loader the agent uses and only its own bytes are
+# embedded, so the agent reads every anchor the build reports; key blocks, PFX/PKCS#7 containers, trailing
+# data and unreadable blocks are rejected. An empty file argument returns an empty value.
+function Get-BackendTrustAnchorsValue([string]$AnchorsFile) {
+  if ([string]::IsNullOrWhiteSpace($AnchorsFile)) { return "" }
+  if (-not (Test-Path -LiteralPath $AnchorsFile -PathType Leaf)) {
+    throw "Backend trust anchors file was not found."
+  }
+  $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $AnchorsFile).Path)
+  $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+  $ders = [System.Collections.Generic.List[byte[]]]::new()
+  if ($text.Contains("-----BEGIN")) {
+    $blocks = [regex]::Matches($text, '-----BEGIN CERTIFICATE-----(?<b>[A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----')
+    if ($blocks.Count -ne [regex]::Matches($text, '-----BEGIN ').Count) {
+      throw "Backend trust anchors file holds a PEM block that is not a readable certificate (key blocks are not accepted)."
+    }
+    foreach ($m in $blocks) {
+      try { $ders.Add([Convert]::FromBase64String(($m.Groups['b'].Value -replace '\s', ''))) }
+      catch { throw "Backend trust anchors file holds a certificate that is not valid base64." }
+    }
+  } else {
+    $ders.Add($bytes)
+  }
+  if ($ders.Count -eq 0) { throw "Backend trust anchors file holds no certificate." }
+  $now = [DateTime]::UtcNow
+  $items = foreach ($der in $ders) {
+    try { $cert = [System.Security.Cryptography.X509Certificates.X509CertificateLoader]::LoadCertificate($der) }
+    catch { throw "Backend trust anchors file holds data that is not a certificate (PFX and PKCS#7 are not accepted)." }
+    if ($cert.RawData.Length -ne $der.Length) {
+      throw "Backend trust anchors file holds data after a certificate; give several certificates as PEM."
+    }
+    if ($cert.NotAfter.ToUniversalTime() -le $now -or $cert.NotBefore.ToUniversalTime() -gt $now) {
+      throw "Backend trust anchor $($cert.Thumbprint) is not valid at build time."
+    }
+    if ($cert.NotAfter.ToUniversalTime() -le $now.AddDays(60)) {
+      Write-Warning "Backend trust anchor $($cert.Thumbprint) expires on $($cert.NotAfter.ToString('yyyy-MM-dd')); agents need a build with its successor before then."
+    }
+    Write-Host "Backend trust anchor: $($cert.Thumbprint) (until $($cert.NotAfter.ToString('yyyy-MM-dd')))"
+    [Convert]::ToBase64String($cert.RawData)
+  }
+  return (ConvertTo-MsBuildListValue @($items))
+}
+
 # Returns the MSBuild arguments that every project of one release build must share
 # (runtime publishes, the installer helper and the MSI project), the extra MSI-only
 # arguments, and the asset-name suffix. The server profile needs the command trust anchors.
@@ -154,9 +199,12 @@ function Get-ReleaseProfileBuild(
   [System.Collections.IDictionary]$Timing,
   [string]$ProductName,
   [string]$EulaRtf,
-  [string]$Channel = "dev"
+  [string]$Channel = "dev",
+  [string]$BackendAnchorsFile = ""
 ) {
   $shared = @()
+  $backendAnchors = Get-BackendTrustAnchorsValue $BackendAnchorsFile
+  if ($backendAnchors) { $shared += "-p:BackendTrustAnchors=$backendAnchors" }
   $anchors = ""
   if (-not [string]::IsNullOrWhiteSpace($AnchorsFile)) {
     if (-not (Test-Path -LiteralPath $AnchorsFile -PathType Leaf)) {

@@ -60,7 +60,7 @@ internal static class RegisterMode
             // Store secrets in user-scope so onboarding does not require admin/UAC.
             // Service-mode (LocalSystem) uses machine-scope secrets separately.
             var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            using var http = new HttpClient
+            using var http = new HttpClient(BackendTrust.CreateHandler())
             {
                 BaseAddress = bootstrap.Backend,
                 Timeout = TimeSpan.FromSeconds(30),

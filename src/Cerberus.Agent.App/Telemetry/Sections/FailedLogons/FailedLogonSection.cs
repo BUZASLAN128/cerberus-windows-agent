@@ -3,7 +3,10 @@ namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 /// <summary>
 /// Builds the <c>security.failed_logons</c> object. Each collection reports the window since the last committed
 /// one (<c>window_start_utc</c> = last committed window end). The very first run has no history: it starts at the
-/// current end of every log, reports zeros and is not a cursor reset. A reset (cleared log, regressed record id,
+/// current end of every log, reports zeros and is not a cursor reset. Successful logons are the exception: until a
+/// committed window has carried them (<see cref="FailedLogonCursorState.SuccessfulLogonsSeeded"/>), each committing pass
+/// also reports those of the last week before the window, so logons from before install or upgrade show up; the
+/// receiver deduplicates the repeat. A reset (cleared log, regressed record id,
 /// log wrapped past the saved id, 1102/104 clear event, invalid cursor file) sets <c>cursor_reset</c>; cleared or
 /// invalid positions restart at the current end of the log, a wrapped log resumes at its oldest retained record.
 /// <para>
@@ -116,6 +119,8 @@ internal static class FailedLogonSection
         var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
         var events = new List<FailedLogonEvent>();
         var securityEvents = new List<FailedLogonEvent>();
+        var lookback = new List<FailedLogonEvent>();
+        var lookbackRead = false;
         var securityReadable = false;
         var securityCapped = false;
         var securityResetOrGap = false;
@@ -151,6 +156,8 @@ internal static class FailedLogonSection
                 securityFresh = decision != ChannelStart.Resume;
             }
             var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
+            if (channel == FailedLogonEventReader.Security && LooksBack(commit, state.SuccessfulLogonsSeeded, decision))
+                lookbackRead = LookBack(after, lookback, ct);
             if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
             {
                 state.Channels[channel] = after;
@@ -194,20 +201,46 @@ internal static class FailedLogonSection
         }
         var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
         var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
+        var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
+        if (EndsLookBack(lookbackRead, firstRun, feedStatus))
+            state.SuccessfulLogonsSeeded = true;
         if (commit && !firstRun)
             TryStage(generation, store, state, report);
 
-        var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
         return new SecurityLogResult(
             report,
             feedStatus == "unavailable"
                 ? SecurityLogFields.Unavailable
-                : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(securityEvents, FailedLogonSource.SuccessfulLogon4624)),
+                : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(lookback.Concat(securityEvents), FailedLogonSource.SuccessfulLogon4624)),
             securityReadable
                 ? SecurityLogFields.LogCleared(feedStatus == "ok" ? "ok" : "partial", lastCleared)
                 : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
             SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
     }
+
+    /// <summary>
+    /// Adds the successful logons of the last week up to <paramref name="upTo"/>, the record the window starts after.
+    /// False when the log could not be read. A read cut short by its budget keeps the newest logons it found and counts
+    /// as read: the next pass would scan the same newest records.
+    /// </summary>
+    private static bool LookBack(long upTo, List<FailedLogonEvent> into, CancellationToken ct)
+    {
+        if (FailedLogonEventReader.ReadRecentLogons(upTo, 2 * SecurityLogFields.MaxLogons, ct) is not { } recent)
+            return false;
+        into.AddRange(recent);
+        return true;
+    }
+
+    /// <summary>Whether a Security pass looks back. A wrapped log has nothing at or below its window start; the next window looks back instead.</summary>
+    internal static bool LooksBack(bool commit, bool seeded, ChannelStart decision)
+        => commit && !seeded && decision != ChannelStart.Gap;
+
+    /// <summary>
+    /// Whether the staged window ends the look-back. A first run is saved before its upload and a pass whose Security
+    /// read failed reports no logons, so both look back again next time.
+    /// </summary>
+    internal static bool EndsLookBack(bool lookbackRead, bool firstRun, string feedStatus)
+        => lookbackRead && !firstRun && feedStatus != "unavailable";
 
     /// <summary>A cursor file that still has no state continues from the retained first-run baseline; a file with state supersedes it.</summary>
     private static FailedLogonCursorState ApplyRetainedBaseline(FailedLogonCursorStore store, FailedLogonCursorState loaded, bool invalid)
@@ -238,6 +271,7 @@ internal static class FailedLogonSection
         LastWindowEndUtc = s.LastWindowEndUtc,
         LastLogClearedUtc = s.LastLogClearedUtc,
         LogClearedSeeded = s.LogClearedSeeded,
+        SuccessfulLogonsSeeded = s.SuccessfulLogonsSeeded,
         Channels = new Dictionary<string, long>(s.Channels, StringComparer.OrdinalIgnoreCase),
     };
 

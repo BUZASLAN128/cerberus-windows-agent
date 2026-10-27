@@ -65,7 +65,7 @@ internal static class VpnCommandExportService
             var secrets = new DpapiSecretStore(SecretStoreScope.User);
             var (_, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
 
-            using var http = new HttpClient { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
+            using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
             var tokens = new AgentTokenManager(http, secrets);
             var signer = new RequestSigner(privateKeyPem);
             var api = new AgentApiClient(http, secrets, tokens, signer);
