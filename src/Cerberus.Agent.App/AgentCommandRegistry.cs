@@ -1,10 +1,10 @@
+using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 #if CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.App.Commands;
 #else
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Telemetry;
-using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
 #endif
@@ -13,17 +13,20 @@ namespace Cerberus.Agent.App;
 
 /// <summary>
 /// Command handlers registered by the service, per build profile. The server build registers exactly
-/// <c>ping</c>, <c>collect_facts</c> and <c>agent_state</c>; the desktop list is the one the service always used.
+/// <c>ping</c>, <c>collect_facts</c>, <c>agent_state</c> and <c>agent.update.request</c> (install only); the desktop
+/// list is the one the service always used.
 /// </summary>
 internal static class AgentCommandRegistry
 {
 #if CERBERUS_SERVER_PROFILE
-    public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState)
+    public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState,
+        AgentUpdateRequestCommandHandler updateRequest)
         => new ICommandHandler[]
         {
             new PingCommandHandler(metadata),
             new CollectFactsCommandHandler(metadata),
             agentState ?? throw new ArgumentNullException(nameof(agentState)),
+            updateRequest ?? throw new ArgumentNullException(nameof(updateRequest)),
         };
 #else
     public static IReadOnlyList<ICommandHandler> CreateDesktop(

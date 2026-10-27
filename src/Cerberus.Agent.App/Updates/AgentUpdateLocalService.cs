@@ -1099,6 +1099,7 @@ internal static partial class AgentUpdateLocalService
                 var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
                 if (!AllowsAutomatic(lifecycle)) continue;
                 var active = Journal.Read();
+                if (await RunInstallRequestAsync(active, lifecycle.Generation, ct).ConfigureAwait(false)) continue;
                 var now = DateTimeOffset.UtcNow;
                 if (active.AttemptId is not null &&
                     ((active.Required && active.Phase == AgentUpdateStates.AwaitingConsent && active.ApplyNotBeforeUtc <= now) ||

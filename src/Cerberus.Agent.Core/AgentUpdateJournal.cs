@@ -18,6 +18,9 @@ public sealed record AgentUpdateReconciliationSnapshot(
     DateTimeOffset? NextRetryUtc,
     DateTimeOffset? NextCheckUtc);
 
+/// <summary>A signed install request waiting for the update scheduler; it lapses when the lifecycle generation changes.</summary>
+public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long LifecycleGeneration);
+
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
 {
@@ -46,6 +49,7 @@ public sealed record AgentUpdateJournal
     public string? HealthyInstalledVersion { get; init; }
     /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback in a phase AgentUpdateRollbackPolicy.NextFailedInstallSequence pins). Automatic staging skips it and older ones.</summary>
     public long FailedInstallSequence { get; init; }
+    public AgentUpdateInstallRequest? InstallRequest { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
@@ -75,6 +79,7 @@ public sealed class AgentUpdateJournalStore
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
+            value.InstallRequest is { LifecycleGeneration: < 0 } ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");

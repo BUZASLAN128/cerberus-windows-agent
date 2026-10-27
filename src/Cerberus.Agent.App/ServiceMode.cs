@@ -317,7 +317,8 @@ internal static partial class ServiceMode
         var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
             new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log,
             stopAutomaticNetwork: serviceCts.Cancel, finalResults: finalRevokes);
-        var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
+        var handlers = AgentCommandRegistry.CreateServer(metadata, agentState, new AgentUpdateRequestCommandHandler(
+            () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion));
 #else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,

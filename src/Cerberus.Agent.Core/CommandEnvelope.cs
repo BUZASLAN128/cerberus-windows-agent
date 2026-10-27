@@ -35,10 +35,11 @@ public static class EnvelopeTypes
     public const string Ping = "ping";
     public const string CollectFacts = "collect_facts";
     public const string AgentState = "agent_state";
+    public const string AgentUpdateRequest = "agent.update.request";
 
     /// <summary>The server profile accepts exactly these types inside an envelope.</summary>
     public static readonly IReadOnlySet<string> ServerSet =
-        new HashSet<string>(StringComparer.Ordinal) { Ping, CollectFacts, AgentState };
+        new HashSet<string>(StringComparer.Ordinal) { Ping, CollectFacts, AgentState, AgentUpdateRequest };
 
     /// <summary>Fact section names a <c>collect_facts</c> payload may request (contract (e)).</summary>
     public static readonly IReadOnlySet<string> ServerFactSections = new HashSet<string>(StringComparer.Ordinal)
