@@ -120,6 +120,7 @@ internal static class FailedLogonSection
         var events = new List<FailedLogonEvent>();
         var securityEvents = new List<FailedLogonEvent>();
         var lookback = new List<FailedLogonEvent>();
+        var lookbackRead = false;
         var securityReadable = false;
         var securityCapped = false;
         var securityResetOrGap = false;
@@ -155,8 +156,9 @@ internal static class FailedLogonSection
                 securityFresh = decision != ChannelStart.Resume;
             }
             var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
-            if (channel == FailedLogonEventReader.Security && commit && !state.SuccessfulLogonsSeeded)
-                LookBack(state, after, firstRun, lookback, ct);
+            // A wrapped log has nothing at or below the window start; the next window looks back instead.
+            if (channel == FailedLogonEventReader.Security && commit && !state.SuccessfulLogonsSeeded && decision != ChannelStart.Gap)
+                lookbackRead = LookBack(after, lookback, ct);
             if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
             {
                 state.Channels[channel] = after;
@@ -200,10 +202,14 @@ internal static class FailedLogonSection
         }
         var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
         var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
+        var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
+        // The look-back ends only with a staged window that carries it. A first run is saved before its upload and a
+        // pass whose Security read failed reports no logons, so both look back again next time.
+        if (lookbackRead && !firstRun && feedStatus != "unavailable")
+            state.SuccessfulLogonsSeeded = true;
         if (commit && !firstRun)
             TryStage(generation, store, state, report);
 
-        var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
         return new SecurityLogResult(
             report,
             feedStatus == "unavailable"
@@ -216,17 +222,16 @@ internal static class FailedLogonSection
     }
 
     /// <summary>
-    /// Adds the successful logons of the last week up to <paramref name="upTo"/>, the record the window starts after. A
-    /// first run reports them but leaves the flag unset because its baseline is saved before the upload; the next
-    /// committing pass reports them again and sets the flag on its pending state, so only an uploaded window ends the
-    /// look-back. A read cut short by its budget still counts; a log that could not be read is tried again.
+    /// Adds the successful logons of the last week up to <paramref name="upTo"/>, the record the window starts after.
+    /// False when the log could not be read. A read cut short by its budget keeps the newest logons it found and counts
+    /// as read: the next pass would scan the same newest records.
     /// </summary>
-    private static void LookBack(FailedLogonCursorState state, long upTo, bool firstRun, List<FailedLogonEvent> into, CancellationToken ct)
+    private static bool LookBack(long upTo, List<FailedLogonEvent> into, CancellationToken ct)
     {
         if (FailedLogonEventReader.ReadRecentLogons(upTo, 2 * SecurityLogFields.MaxLogons, ct) is not { } recent)
-            return;
+            return false;
         into.AddRange(recent);
-        state.SuccessfulLogonsSeeded = !firstRun;
+        return true;
     }
 
     /// <summary>A cursor file that still has no state continues from the retained first-run baseline; a file with state supersedes it.</summary>

@@ -103,7 +103,12 @@ internal static class FailedLogonEventReader
         budget.CancelAfter(LogonLookbackBudget);
         try
         {
-            using var reader = new EventLogReader(new EventLogQuery(Security, PathType.LogName, RecentLogonsQuery(upTo, LogonLookback)) { ReverseDirection = true });
+            // One match per native call: CancelReading drops the batch being filled, and with the default batch of 64
+            // a sparse query would lose every match found before the budget ran out.
+            using var reader = new EventLogReader(new EventLogQuery(Security, PathType.LogName, RecentLogonsQuery(upTo, LogonLookback)) { ReverseDirection = true })
+            {
+                BatchSize = 1,
+            };
             using var cancel = budget.Token.Register(reader.CancelReading);
             return TakeNewest(Records(reader, Security, null, new SqlEventProvenance()), maxEvents, MaxScannedPerChannel, budget.Token, ct);
         }
