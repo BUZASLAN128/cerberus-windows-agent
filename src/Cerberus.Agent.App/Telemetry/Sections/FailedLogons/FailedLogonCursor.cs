@@ -22,6 +22,10 @@ internal sealed class FailedLogonCursorState
     [JsonPropertyName("log_cleared_seeded")]
     public bool LogClearedSeeded { get; set; }
 
+    /// <summary>True once a committed window carried the successful-logon look-back; additive, absent in older files.</summary>
+    [JsonPropertyName("successful_logons_seeded")]
+    public bool SuccessfulLogonsSeeded { get; set; }
+
     [JsonPropertyName("channels")]
     public Dictionary<string, long> Channels { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

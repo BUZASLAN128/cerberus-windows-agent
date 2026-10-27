@@ -3,7 +3,10 @@ namespace Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 /// <summary>
 /// Builds the <c>security.failed_logons</c> object. Each collection reports the window since the last committed
 /// one (<c>window_start_utc</c> = last committed window end). The very first run has no history: it starts at the
-/// current end of every log, reports zeros and is not a cursor reset. A reset (cleared log, regressed record id,
+/// current end of every log, reports zeros and is not a cursor reset. Successful logons are the exception: until a
+/// committed window has carried them (<see cref="FailedLogonCursorState.SuccessfulLogonsSeeded"/>), each committing pass
+/// also reports those of the last week before the window, so logons from before install or upgrade show up; the
+/// receiver deduplicates the repeat. A reset (cleared log, regressed record id,
 /// log wrapped past the saved id, 1102/104 clear event, invalid cursor file) sets <c>cursor_reset</c>; cleared or
 /// invalid positions restart at the current end of the log, a wrapped log resumes at its oldest retained record.
 /// <para>
@@ -116,6 +119,7 @@ internal static class FailedLogonSection
         var start = state.LastWindowEndUtc is { } prev && prev <= now ? prev : now;
         var events = new List<FailedLogonEvent>();
         var securityEvents = new List<FailedLogonEvent>();
+        var lookback = new List<FailedLogonEvent>();
         var securityReadable = false;
         var securityCapped = false;
         var securityResetOrGap = false;
@@ -151,6 +155,8 @@ internal static class FailedLogonSection
                 securityFresh = decision != ChannelStart.Resume;
             }
             var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
+            if (channel == FailedLogonEventReader.Security && commit && !state.SuccessfulLogonsSeeded)
+                LookBack(state, after, firstRun, lookback, ct);
             if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
             {
                 state.Channels[channel] = after;
@@ -202,11 +208,25 @@ internal static class FailedLogonSection
             report,
             feedStatus == "unavailable"
                 ? SecurityLogFields.Unavailable
-                : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(securityEvents, FailedLogonSource.SuccessfulLogon4624)),
+                : SecurityLogFields.SuccessfulLogons(feedStatus, Details<SuccessfulLogon>(lookback.Concat(securityEvents), FailedLogonSource.SuccessfulLogon4624)),
             securityReadable
                 ? SecurityLogFields.LogCleared(feedStatus == "ok" ? "ok" : "partial", lastCleared)
                 : lastCleared is null ? SecurityLogFields.Unavailable : SecurityLogFields.LogCleared("partial", lastCleared),
             SecurityLogFields.AdminChanges(feedStatus, Details<AdminGroupChange>(securityEvents, FailedLogonSource.GroupChange)));
+    }
+
+    /// <summary>
+    /// Adds the successful logons of the last week up to <paramref name="upTo"/>, the record the window starts after. A
+    /// first run reports them but leaves the flag unset because its baseline is saved before the upload; the next
+    /// committing pass reports them again and sets the flag on its pending state, so only an uploaded window ends the
+    /// look-back. A read cut short by its budget still counts; a log that could not be read is tried again.
+    /// </summary>
+    private static void LookBack(FailedLogonCursorState state, long upTo, bool firstRun, List<FailedLogonEvent> into, CancellationToken ct)
+    {
+        if (FailedLogonEventReader.ReadRecentLogons(upTo, 2 * SecurityLogFields.MaxLogons, ct) is not { } recent)
+            return;
+        into.AddRange(recent);
+        state.SuccessfulLogonsSeeded = !firstRun;
     }
 
     /// <summary>A cursor file that still has no state continues from the retained first-run baseline; a file with state supersedes it.</summary>
@@ -238,6 +258,7 @@ internal static class FailedLogonSection
         LastWindowEndUtc = s.LastWindowEndUtc,
         LastLogClearedUtc = s.LastLogClearedUtc,
         LogClearedSeeded = s.LogClearedSeeded,
+        SuccessfulLogonsSeeded = s.SuccessfulLogonsSeeded,
         Channels = new Dictionary<string, long>(s.Channels, StringComparer.OrdinalIgnoreCase),
     };
 

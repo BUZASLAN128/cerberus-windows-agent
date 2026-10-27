@@ -26,6 +26,9 @@ internal static class FailedLogonEventReader
     internal const string OpenSsh = "OpenSSH/Operational";
     internal const string Application = "Application";
     internal const string SystemLog = "System";
+    internal static readonly TimeSpan LogonLookback = TimeSpan.FromDays(7);
+    // The time filter does not end a reverse scan early: a large log without recent logons is scanned to its start.
+    internal static readonly TimeSpan LogonLookbackBudget = TimeSpan.FromSeconds(1.5);
 
     internal static readonly string[] Channels = { Security, RdpCore, OpenSsh, Application, SystemLog };
 
@@ -87,6 +90,58 @@ internal static class FailedLogonEventReader
         {
             return (false, null);
         }
+    }
+
+    /// <summary>
+    /// Successful interactive logons (4624, type 2 or 10) of the last <see cref="LogonLookback"/> with a record id at or
+    /// below <paramref name="upTo"/>, newest first, at most <paramref name="maxEvents"/>. After
+    /// <see cref="LogonLookbackBudget"/> the read is cancelled and keeps what it found. Null when the log could not be read.
+    /// </summary>
+    public static IReadOnlyList<FailedLogonEvent>? ReadRecentLogons(long upTo, int maxEvents, CancellationToken ct)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(LogonLookbackBudget);
+        try
+        {
+            using var reader = new EventLogReader(new EventLogQuery(Security, PathType.LogName, RecentLogonsQuery(upTo, LogonLookback)) { ReverseDirection = true });
+            using var cancel = budget.Token.Register(reader.CancelReading);
+            return TakeNewest(Records(reader, Security, null, new SqlEventProvenance()), maxEvents, MaxScannedPerChannel, budget.Token, ct);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or EventLogException)
+        {
+            return null;
+        }
+    }
+
+    internal static string RecentLogonsQuery(long upTo, TimeSpan lookback)
+        => $"*[System[(EventID=4624) and (EventRecordID <= {upTo}) and TimeCreated[timediff(@SystemTime) <= {(long)lookback.TotalMilliseconds}]] "
+           + "and EventData[Data[@Name='LogonType']=10 or Data[@Name='LogonType']=2]]";
+
+    /// <summary>
+    /// Successful logons in input order until <paramref name="maxEvents"/> are found, <paramref name="maxScanned"/> records
+    /// were scanned or <paramref name="budget"/> ran out; a read cancelled by the budget keeps what it found.
+    /// </summary>
+    internal static List<FailedLogonEvent> TakeNewest(IEnumerable<ScannedRecord> records, int maxEvents, int maxScanned, CancellationToken budget, CancellationToken ct)
+    {
+        var events = new List<FailedLogonEvent>();
+        var scanned = 0;
+        try
+        {
+            foreach (var record in records)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (budget.IsCancellationRequested || events.Count >= maxEvents || scanned >= maxScanned)
+                    break;
+                scanned++;
+                if (record.Event is { Source: FailedLogonSource.SuccessfulLogon4624 } logon)
+                    events.Add(logon);
+            }
+        }
+        catch (Exception ex) when ((ex is OperationCanceledException or EventLogException) && budget.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // The budget cancelled the native read (CancelReading); the logons found so far stay valid.
+        }
+        return events;
     }
 
     /// <summary>One scanned record: its id and the classified event (null when the record is not a failed logon).</summary>
