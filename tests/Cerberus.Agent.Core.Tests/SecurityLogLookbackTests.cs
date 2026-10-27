@@ -92,6 +92,25 @@ public sealed class SecurityLogLookbackTests
             () => FailedLogonEventReader.TakeNewest(Throwing(), 10, 100, CancellationToken.None, CancellationToken.None));
     }
 
+    [Theory]
+    [InlineData(true, false, (int)ChannelStart.FirstRun, true)]
+    [InlineData(true, false, (int)ChannelStart.Resume, true)]
+    [InlineData(true, false, (int)ChannelStart.Reset, true)]
+    [InlineData(true, false, (int)ChannelStart.Gap, false)]
+    [InlineData(true, true, (int)ChannelStart.Resume, false)]
+    [InlineData(false, false, (int)ChannelStart.Resume, false)]
+    public void LooksBack_OnlyOnCommittingUnseededPassesOutsideAGap(bool commit, bool seeded, int decision, bool expected)
+        => Assert.Equal(expected, FailedLogonSection.LooksBack(commit, seeded, (ChannelStart)decision));
+
+    [Theory]
+    [InlineData(true, false, "ok", true)]
+    [InlineData(true, false, "partial", true)]
+    [InlineData(true, false, "unavailable", false)]
+    [InlineData(true, true, "ok", false)]
+    [InlineData(false, false, "ok", false)]
+    public void EndsLookBack_OnlyWhenTheStagedWindowCarriesIt(bool read, bool firstRun, string feedStatus, bool expected)
+        => Assert.Equal(expected, FailedLogonSection.EndsLookBack(read, firstRun, feedStatus));
+
     [Fact]
     public void Cursor_OlderFileIsNotSeeded_AndTheFlagRoundTripsAtVersion1()
     {

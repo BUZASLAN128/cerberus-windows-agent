@@ -156,8 +156,7 @@ internal static class FailedLogonSection
                 securityFresh = decision != ChannelStart.Resume;
             }
             var after = FailedLogonCursorLogic.StartAfter(decision, saved, b.Oldest, b.Newest);
-            // A wrapped log has nothing at or below the window start; the next window looks back instead.
-            if (channel == FailedLogonEventReader.Security && commit && !state.SuccessfulLogonsSeeded && decision != ChannelStart.Gap)
+            if (channel == FailedLogonEventReader.Security && LooksBack(commit, state.SuccessfulLogonsSeeded, decision))
                 lookbackRead = LookBack(after, lookback, ct);
             if (decision is ChannelStart.FirstRun or ChannelStart.Reset)
             {
@@ -203,9 +202,7 @@ internal static class FailedLogonSection
         var status = readable == 0 ? "unavailable" : failed > 0 || capped || !saveOk ? "partial" : "ok";
         var report = Build(status, start, now, reset, FailedLogonClassifier.Tally(events), rdp, ssh, sql, auditFailure);
         var feedStatus = !securityReadable ? "unavailable" : securityCapped || securityResetOrGap || !saveOk ? "partial" : "ok";
-        // The look-back ends only with a staged window that carries it. A first run is saved before its upload and a
-        // pass whose Security read failed reports no logons, so both look back again next time.
-        if (lookbackRead && !firstRun && feedStatus != "unavailable")
+        if (EndsLookBack(lookbackRead, firstRun, feedStatus))
             state.SuccessfulLogonsSeeded = true;
         if (commit && !firstRun)
             TryStage(generation, store, state, report);
@@ -233,6 +230,17 @@ internal static class FailedLogonSection
         into.AddRange(recent);
         return true;
     }
+
+    /// <summary>Whether a Security pass looks back. A wrapped log has nothing at or below its window start; the next window looks back instead.</summary>
+    internal static bool LooksBack(bool commit, bool seeded, ChannelStart decision)
+        => commit && !seeded && decision != ChannelStart.Gap;
+
+    /// <summary>
+    /// Whether the staged window ends the look-back. A first run is saved before its upload and a pass whose Security
+    /// read failed reports no logons, so both look back again next time.
+    /// </summary>
+    internal static bool EndsLookBack(bool lookbackRead, bool firstRun, string feedStatus)
+        => lookbackRead && !firstRun && feedStatus != "unavailable";
 
     /// <summary>A cursor file that still has no state continues from the retained first-run baseline; a file with state supersedes it.</summary>
     private static FailedLogonCursorState ApplyRetainedBaseline(FailedLogonCursorStore store, FailedLogonCursorState loaded, bool invalid)
