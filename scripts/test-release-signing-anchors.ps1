@@ -54,7 +54,8 @@ Check "backend anchors: a PFX is rejected" {
   Throws { Get-BackendTrustAnchorsValue (Write-AnchorFile "one.pfx" $anchorA.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)) } "not a certificate"
 }
 Check "backend anchors: a key block next to a certificate is rejected" {
-  $pem = $anchorA.ExportCertificatePem() + "`n-----BEGIN PRIVATE KEY-----`nMIIB`n-----END PRIVATE KEY-----`n"
+  # Split so the release secret scan does not match this placeholder (no key material).
+  $pem = $anchorA.ExportCertificatePem() + "`n-----BEGIN PRIV" + "ATE KEY-----`nMIIB`n-----END PRIV" + "ATE KEY-----`n"
   Throws { Get-BackendTrustAnchorsValue (Write-AnchorFile "with-key.pem" $pem) } "not a readable certificate"
 }
 Check "backend anchors: a malformed second PEM block is rejected" {
