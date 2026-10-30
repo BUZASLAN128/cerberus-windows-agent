@@ -90,6 +90,7 @@ internal static class AgentClaimGate
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ClaimCheckTimeout);
+        var selectedIdentity = store.LoadAsync(timeout.Token).GetAwaiter().GetResult().Identity;
 
         HeartbeatResponse response;
         try
@@ -109,7 +110,10 @@ internal static class AgentClaimGate
         {
             throw new AgentRegistrationInactiveException($"http_{(int)ex.StatusCode!}");
         }
-        if (!IsClaimed(response))
+        // The secondary collector's 200 response proves the credential probe, not claim status.
+        if (store.LoadAsync(timeout.Token).GetAwaiter().GetResult().Identity != selectedIdentity)
+            throw new InvalidOperationException("The active product enrollment changed; retry service installation.");
+        if (selectedIdentity.Product != AgentProducts.Secondary && !IsClaimed(response))
         {
             var state = NormalizeState(response.RegistrationState);
             if (state is "rejected" or "deactivated" or "revoked")
@@ -170,9 +174,12 @@ internal static class AgentClaimGate
         CancellationToken ct,
         IAgentLifecycleStateStore? lifecycleState)
     {
-        var (_, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+        var (identity, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(privateKeyPem) || string.IsNullOrWhiteSpace(backendUrl))
             throw new InvalidOperationException("Agent registration is incomplete.");
+        if (identity.Product == AgentProducts.Secondary &&
+            !AgentBuildConfig.SameEndpoint(backendUrl, AgentBuildConfig.SecondaryBackendUrl))
+            throw new InvalidOperationException("Stored product endpoint does not match this package.");
 
         using var http = new HttpClient(BackendTrust.CreateHandler())
         {
@@ -202,7 +209,9 @@ internal static class AgentClaimGate
                 build_id = WindowsDeviceInfo.GetBuildId(),
                 build_channel = WindowsDeviceInfo.GetBuildChannel(),
                 runtime_mode = "interactive",
-                supported_schema_versions = AgentSchemaVersions.All,
+                supported_schema_versions = AgentBuildProfile.IsServer || identity.Product == AgentProducts.Secondary
+                    ? AgentSchemaVersions.All.Append(CommandEnvelope.SignedOnlyCapability).ToArray()
+                    : AgentSchemaVersions.All,
                 tailscale = (object?)null,
                 ad = (object?)null,
                 capabilities = Array.Empty<string>(),

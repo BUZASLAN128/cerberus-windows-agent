@@ -1,4 +1,3 @@
-#if CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
@@ -74,4 +73,3 @@ internal sealed class ServerServiceStartup
         return !_networkStopped();
     }
 }
-#endif

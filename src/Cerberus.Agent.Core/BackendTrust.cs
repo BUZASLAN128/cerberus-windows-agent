@@ -19,7 +19,7 @@ internal static class BackendTrust
 
     public static bool HasAnchors => Configured.Value.Count > 0;
 
-    public static HttpClientHandler CreateHandler() => Apply(new HttpClientHandler());
+    public static HttpClientHandler CreateHandler() => Apply(new HttpClientHandler { AllowAutoRedirect = false });
 
     public static HttpClientHandler Apply(HttpClientHandler handler) => Apply(handler, Configured.Value);
 

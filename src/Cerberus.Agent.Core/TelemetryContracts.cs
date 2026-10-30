@@ -148,23 +148,22 @@ public static class AgentSnapshotFactory
     public static AgentSnapshotRequest Create(
         AgentBuildMetadata metadata,
         DateTimeOffset collectedAtUtc,
-        IReadOnlyDictionary<string, object?> sections)
+        IReadOnlyDictionary<string, object?> sections,
+        bool signedFacts = false)
     {
         foreach (var section in sections.Keys)
         {
-            if (!AllowedSections.Contains(section))
+            if (!AllowedSections.Contains(section) && !(signedFacts && EnvelopeTypes.ServerFactSections.Contains(section)))
                 throw new InvalidOperationException($"Unknown agent snapshot section: {section}");
         }
 
         var request = Build(metadata, collectedAtUtc, sections);
-#if CERBERUS_SERVER_PROFILE
-        while (AgentTelemetryLimits.EstimateJsonBytes(request) > AgentTelemetryLimits.MaxSnapshotBytes
+        while ((AgentBuildProfile.IsServer || signedFacts) && AgentTelemetryLimits.EstimateJsonBytes(request) > AgentTelemetryLimits.MaxSnapshotBytes
                && ServerSnapshotFit.TryHalve(sections, out var smaller))
         {
             sections = smaller;
             request = Build(metadata, collectedAtUtc, sections);
         }
-#endif
 
         AgentTelemetryLimits.ThrowIfTooLarge(request, AgentTelemetryLimits.MaxSnapshotBytes);
         return request;
@@ -223,7 +222,6 @@ public static class AgentSnapshotFactory
     }
 }
 
-#if CERBERUS_SERVER_PROFILE
 /// <summary>
 /// Server-profile snapshot fitting (contract section e): when the body is over the cap, the largest list is
 /// halved, in the order software, services, listening_ports, and the section's <c>truncated</c> is set.
@@ -267,8 +265,6 @@ public static class ServerSnapshotFit
         return false;
     }
 }
-#endif
-
 public static class AgentTelemetryFactory
 {
     public static AgentEventBatchRequest CreateEvents(

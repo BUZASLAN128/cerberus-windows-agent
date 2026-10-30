@@ -108,6 +108,7 @@ internal sealed class FakeBackend : HttpMessageHandler
 
     public Func<BackendRequest, CancellationToken, Task<HttpStatusCode>> Respond { get; set; }
         = (_, _) => Task.FromResult(HttpStatusCode.OK);
+    public string? RetryAfter { get; set; }
 
     public IReadOnlyList<BackendRequest> Requests
     {
@@ -129,7 +130,9 @@ internal sealed class FakeBackend : HttpMessageHandler
         lock (_gate)
             _requests.Add(recorded);
         var status = await Respond(recorded, cancellationToken);
-        return new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        var response = new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        if (RetryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", RetryAfter);
+        return response;
     }
 }
 

@@ -3,7 +3,14 @@ using System.Text.Json.Serialization;
 
 namespace Cerberus.Agent.Core;
 
-public sealed record AgentIdentity(string AgentId, string TenantId);
+public static class AgentProducts
+{
+    public const string Cerberus = "cerberus";
+    public const string Secondary = "secondary";
+    public static bool IsKnown(string? product) => product is Cerberus or Secondary;
+}
+
+public sealed record AgentIdentity(string AgentId, string TenantId, string Product = AgentProducts.Cerberus);
 
 public sealed record TokenPair(
     [property: JsonPropertyName("agent_refresh_token")] string RefreshToken,
@@ -15,7 +22,11 @@ public sealed record AgentCommand(
     [property: JsonPropertyName("idempotency_key")] string IdempotencyKey,
     [property: JsonPropertyName("payload")] object Payload,
     [property: JsonPropertyName("lease_id")] string? LeaseId = null,
-    [property: JsonPropertyName("envelope"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Envelope = null);
+    [property: JsonPropertyName("envelope"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] JsonElement? Envelope = null,
+    [property: JsonPropertyName("lease_expires_at_unix"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? LeaseExpiresAtUnix = null)
+{
+    [JsonIgnore] public long? SafeLeaseDeadlineTimestamp { get; init; }
+}
 
 public sealed record VersionPolicy(
     [property: JsonPropertyName("minimum_supported_version")] string? MinimumSupportedVersion,
@@ -45,7 +56,8 @@ public sealed record HeartbeatResponse(
     [property: JsonPropertyName("update")] IReadOnlyDictionary<string, JsonElement>? Update,
     [property: JsonPropertyName("revoke")] IReadOnlyDictionary<string, JsonElement>? Revoke,
     [property: JsonPropertyName("quarantine")] IReadOnlyDictionary<string, JsonElement>? Quarantine,
-    [property: JsonPropertyName("tenant_name")] string? TenantName = null);
+    [property: JsonPropertyName("tenant_name")] string? TenantName = null,
+    [property: JsonPropertyName("wakeup")] JsonElement? Wakeup = null);
 
 public sealed record AgentSelfDeactivateRequest(
     [property: JsonPropertyName("schema_version")] string SchemaVersion,

@@ -40,6 +40,7 @@ param(
   # Build profile. The server profile needs the file holding AgentCommandTrustAnchorsB64.
   [ValidateSet("desktop", "server")][string]$BuildProfile = "desktop",
   [string]$AgentCommandTrustAnchorsFile = "",
+  [string]$SecondaryBackendUrl = "", [string]$SecondaryCommandTrustAnchorsFile = "",
   [string]$BackendTrustAnchorsFile = "",  # PEM or DER certificate(s) compiled in as the backend TLS trust anchors
   [hashtable]$TimingOverrides = @{},
   [string]$ProductName = "",
@@ -74,7 +75,7 @@ $tokenMode = ($signingPlan.Mode -eq "Token")
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $outputRootPath = Join-Path $repoRoot $OutputRoot
 $publishDir = Join-Path $outputRootPath "publish"
-$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel $BackendTrustAnchorsFile
+$releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel $BackendTrustAnchorsFile $SecondaryBackendUrl $SecondaryCommandTrustAnchorsFile
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
 if ($signingPlan.Finalize) {
@@ -167,6 +168,7 @@ $AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64
 if ($BuildProfile -eq "server") {
   Assert-CommandAnchorsNotManifestKeys $releaseProfile.AnchorsB64 $(if ($tokenMode) { $tokenKeyListB64 } else { @($manifestPublicKeyB64) })
 }
+if ($releaseProfile.SecondaryAnchorsB64) { Assert-CommandAnchorsNotManifestKeys $releaseProfile.SecondaryAnchorsB64 $(if ($tokenMode) { $tokenKeyListB64 } else { @($manifestPublicKeyB64) }) }
 if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
   $manifestRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
   $UpdateManifestUrl = if ($Channel -eq "stable") {

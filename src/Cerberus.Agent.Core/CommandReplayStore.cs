@@ -113,6 +113,14 @@ public sealed class CommandReplayStore
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
     public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
+    public static string DefaultLegacyAsyncPath() => ProtectedMachineFile.DefaultPath("legacy-async.v1.json");
+
+    public static string DefaultPathForProduct(string product) => product switch
+    {
+        AgentProducts.Cerberus => DefaultPath(),
+        AgentProducts.Secondary => ProtectedMachineFile.DefaultPath("secondary-command-envelopes.v1.json"),
+        _ => throw new InvalidOperationException("Unknown agent product profile."),
+    };
 
     /// <summary>Envelopes issued before this Unix time are rejected (step 15). 0 for a store that never existed.</summary>
     public long ResetAt { get { lock (_gate) { EnsureLoaded(); return _resetAt; } } }

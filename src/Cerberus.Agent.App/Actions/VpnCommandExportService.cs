@@ -63,7 +63,9 @@ internal static class VpnCommandExportService
         try
         {
             var secrets = new DpapiSecretStore(SecretStoreScope.User);
-            var (_, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
+            var (identity, _, privateKeyPem, _, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
+            if (identity.Product != AgentProducts.Cerberus)
+                return false;
 
             using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = backend, Timeout = TimeSpan.FromSeconds(30) };
             var tokens = new AgentTokenManager(http, secrets);

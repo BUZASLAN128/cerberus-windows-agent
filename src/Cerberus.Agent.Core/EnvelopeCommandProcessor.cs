@@ -20,6 +20,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
     private readonly EnvelopeExecutionQueue _queue;
     private readonly CommandEnvelopeVerifier _verifier;
     private readonly IAgentLogger _log;
+    private readonly AgentRetryGate _ackRetry;
     private readonly ConcurrentDictionary<string, long> _rejections = new(StringComparer.Ordinal);
 #if !CERBERUS_SERVER_PROFILE
     private readonly IHeartbeatCommandProcessor? _legacy;
@@ -39,6 +40,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
+        _ackRetry = new AgentRetryGate(queue.Time);
         _log = log ?? NullAgentLogger.Instance;
 #if CERBERUS_SERVER_PROFILE
         var types = allowedTypes ?? EnvelopeTypes.ServerSet;
@@ -80,10 +82,19 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         finally
         {
             _queue.SignalHeartbeat();
+#if !CERBERUS_SERVER_PROFILE
+            _legacy?.SignalOutbox();
+#endif
         }
     }
 
-    public void SignalOutbox() => _queue.SignalHeartbeat();
+    public void SignalOutbox()
+    {
+        _queue.SignalHeartbeat();
+#if !CERBERUS_SERVER_PROFILE
+        _legacy?.SignalOutbox();
+#endif
+    }
 
     private async Task ProcessEnvelopesAsync(List<AgentCommand> envelopes, CancellationToken ct)
     {
@@ -243,6 +254,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
 
     private async Task<bool> TrySendAckAsync(string agentId, SignedEnvelope envelope, bool accepted, string? reason, CancellationToken ct)
     {
+        if (!_ackRetry.CanTry) return false;
         var body = CommandEnvelope.BuildAckBody(envelope.EnvelopeSha256, accepted, reason);
         using var timeout = new CancellationTokenSource(AckTimeout, _queue.Time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -250,6 +262,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         {
             await _api.SubmitEnvelopeAckAsync(agentId, envelope.Id, body, linked.Token)
                 .WaitAsync(linked.Token).ConfigureAwait(false);
+            _ackRetry.Succeeded();
             return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -262,6 +275,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         }
         catch (Exception ex)
         {
+            _ackRetry.Failed(ex);
             _log.Warn($"Command envelope id={envelope.Id} ack not delivered: {ex.GetType().Name}.");
             return false;
         }

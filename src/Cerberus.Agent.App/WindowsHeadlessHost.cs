@@ -50,6 +50,17 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
     public string? ResolveBackendUrl()
         => BootstrapResolver.ResolveConfiguredBackend(UiConfigStore.LoadMergedWithEnv())?.BackendUrl;
 
+    public string? ResolveBackendUrlForProduct(string product)
+    {
+        if (product == AgentProducts.Cerberus)
+            return ResolveBackendUrl();
+        if (product != AgentProducts.Secondary || !Uri.TryCreate(AgentBuildConfig.SecondaryBackendUrl, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != "/")
+            return null;
+        return uri.AbsoluteUri.TrimEnd('/');
+    }
+
     public HeadlessEnrollmentOptions BuildOptions(string backendUrl) => new(
         backendUrl,
         WindowsDeviceInfo.ComputeDeviceFingerprint(),

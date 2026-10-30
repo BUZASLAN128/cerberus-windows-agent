@@ -8,6 +8,78 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentTokenManagerTests
 {
     [Fact]
+    public async Task SecondaryTokenIsNeverSentToAnotherEndpoint()
+    {
+        var store = new ProductStore();
+        var handler = new JsonHandler("""{"access_token":"fixture","expires_in":300}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://other.example") };
+        var manager = new AgentTokenManager(http, store);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.GetAccessTokenAsync(default));
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task SecondaryCachedTokenIsNotReturnedAfterProductChange()
+    {
+        var store = new ProductStore();
+        var handler = new JsonHandler("""{"access_token":"fixture","expires_in":300}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://collector.example") };
+        var manager = new AgentTokenManager(http, store);
+        Assert.Equal("fixture", await manager.GetAccessTokenAsync(default));
+        store.Identity = store.Identity with { Product = AgentProducts.Cerberus };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.GetAccessTokenAsync(default));
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task PrimaryCachedTokenIsNotReturnedAfterProductChange()
+    {
+        var store = new ProductStore { Identity = new("agent", "tenant", AgentProducts.Cerberus) };
+        var handler = new JsonHandler("""{"access_token":"fixture","expires_in":300}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://collector.example") };
+        var manager = new AgentTokenManager(http, store);
+        Assert.Equal("fixture", await manager.GetAccessTokenAsync(default));
+        store.Identity = store.Identity with { Product = AgentProducts.Secondary };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.GetAccessTokenAsync(default));
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task PrimaryTokenIsNeverSentToAnotherEndpoint()
+    {
+        var store = new ProductStore { Identity = new("agent", "tenant", AgentProducts.Cerberus) };
+        var handler = new JsonHandler("""{"access_token":"fixture","expires_in":300}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://other.example") };
+        var manager = new AgentTokenManager(http, store);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => manager.GetAccessTokenAsync(default));
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task CachedTokenIsNotReturnedAfterEnrollmentGenerationChanges()
+    {
+        var store = new ProductStore { Identity = new("agent", "tenant", AgentProducts.Cerberus) };
+        var state = new InMemoryAgentLifecycleStateStore();
+        var initial = await state.LoadAsync(default);
+        var handler = new JsonHandler("""{"access_token":"fixture","expires_in":300}""");
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://collector.example") };
+        var manager = new AgentTokenManager(http, store, lifecycleState: state, expectedGeneration: initial.Generation);
+        Assert.Equal("fixture", await manager.GetAccessTokenAsync(default));
+        await new AgentLifecycleController(state).CompleteEnrollmentAsync(initial.Generation, Guid.NewGuid().ToString("N"), default);
+        await Assert.ThrowsAsync<AgentLifecycleDormantException>(() => manager.GetAccessTokenAsync(default));
+        Assert.Equal(1, handler.RequestCount);
+    }
+
+    private sealed class ProductStore : ISecretStore
+    {
+        public AgentIdentity Identity = new("agent", "tenant", AgentProducts.Secondary);
+        public Task<(AgentIdentity, string, string, string, string?, string?)> LoadAsync(CancellationToken ct)
+            => Task.FromResult<(AgentIdentity, string, string, string, string?, string?)>((Identity, "fixture", "key", "https://collector.example", null, null));
+        public Task SaveAsync(AgentIdentity id, string refresh, string key, string url, string? login, string? auth, CancellationToken ct)
+            => Task.CompletedTask;
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+    [Fact]
     public async Task GetAccessTokenAsync_ReusesAccessTokenUntilSafetyMargin()
     {
         var store = new CountingSecretStore();
@@ -25,7 +97,7 @@ public sealed class AgentTokenManagerTests
         Assert.Equal("short-lived-access", first);
         Assert.Equal("short-lived-access", second);
         Assert.Equal(1, handler.RequestCount);
-        Assert.Equal(1, store.LoadCount);
+        Assert.Equal(2, store.LoadCount); // cached tokens recheck the active enrollment
         Assert.Empty(store.Saves);
     }
 

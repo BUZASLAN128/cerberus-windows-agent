@@ -61,7 +61,13 @@ internal static class WindowsTelemetrySectionCatalog
 #endif
     }
 
-#if CERBERUS_SERVER_PROFILE
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts()
+        => CreateCoreSections(false)
+            .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
+            .Concat(CreateServerFactSections(TimeProvider.System))
+            .Where(section => ServerProfileSections.Contains(section.SectionName))
+            .ToArray();
+
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateServerFactSections(TimeProvider time)
     {
         IWindowsTelemetrySectionCollector[] facts =
@@ -76,8 +82,6 @@ internal static class WindowsTelemetrySectionCatalog
         };
         return facts.Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, time)).ToArray();
     }
-#endif
-
     private static IWindowsTelemetrySectionCollector[] CreateCoreSections(bool publishServiceObservation) => new IWindowsTelemetrySectionCollector[]
     {
         new IdentityTelemetrySectionCollector(),

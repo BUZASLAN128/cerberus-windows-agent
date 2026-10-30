@@ -21,9 +21,10 @@ internal static class EnvelopeWiring
         IEnumerable<ICommandHandler> handlers,
         Func<CancellationToken, Task<string>> currentAgentId,
         AgentSignedStateStore signedState,
-        IAgentLogger log)
+        IAgentLogger log,
+        string product = AgentProducts.Cerberus)
     {
-        var queue = new EnvelopeExecutionQueue(api, new CommandReplayStore(CommandReplayStore.DefaultPath(), log: log),
+        var queue = new EnvelopeExecutionQueue(api, new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log),
             handlers, currentAgentId, signedState.IsQuarantined, log: log);
         queue.Start();
         return queue;
@@ -37,20 +38,24 @@ internal static class EnvelopeWiring
         AgentApiClient api,
         EnvelopeExecutionQueue queue,
         CommandDispatcher dispatcher,
-        IAgentLogger log)
+        IAgentLogger log,
+        string product = AgentProducts.Cerberus,
+        IHeartbeatCommandProcessor? legacy = null)
     {
-        var anchors = AgentProfileMetadata.LoadCommandAnchors(ManifestPublicKeyPems(log), log);
+        var anchors = AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log);
 #if CERBERUS_SERVER_PROFILE
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log);
 #else
+        if (product == AgentProducts.Secondary)
+            return new EnvelopeCommandProcessor(api, anchors, queue, allowedTypes: EnvelopeTypes.ServerSet, log: log);
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log,
-            legacy: new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
+            legacy: legacy ?? new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
 #endif
     }
 
     /// <summary>Update manifest keys, so an anchor equal to one of them is dropped and never authorizes commands.
     /// When no update trust is configured, the embedded manifest keys still count.</summary>
-    private static IReadOnlyList<string> ManifestPublicKeyPems(IAgentLogger log)
+    internal static IReadOnlyList<string> ManifestPublicKeyPems(IAgentLogger log)
     {
         try
         {

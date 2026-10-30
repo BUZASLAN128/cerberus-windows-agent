@@ -76,6 +76,13 @@ public sealed class AgentSignedStateStore
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
     public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
 
+    public static string DefaultPathForProduct(string product) => product switch
+    {
+        AgentProducts.Cerberus => DefaultPath(),
+        AgentProducts.Secondary => ProtectedMachineFile.DefaultPath("secondary-agent-state.v1.json"),
+        _ => throw new InvalidOperationException("Unknown agent product profile."),
+    };
+
     /// <summary>
     /// Wraps the current-<c>agent_id</c> provider so every id it returns becomes the id that
     /// <see cref="IsQuarantined()"/> checks. Pass the wrapped provider to the execution queue and
@@ -152,6 +159,10 @@ public sealed class AgentSignedStateStore
         lock (_gate)
         {
             EnsureLoaded();
+            var currentSeq = _state is { Reset: null } && string.Equals(_state.AgentId, state.AgentId, StringComparison.Ordinal)
+                ? _state.StateSeq : 0;
+            if (state.StateSeq <= Math.Max(currentSeq, HighWaterFor(state.AgentId)))
+                return false;
             if (!TryPersist(state))
                 return false;
             if (_state is not null && !string.Equals(_state.AgentId, state.AgentId, StringComparison.Ordinal))
@@ -179,11 +190,17 @@ public sealed class AgentSignedStateStore
         lock (_gate)
         {
             EnsureLoaded();
-            return _state is { PendingRevoke: { } pending } state
-                   && string.Equals(state.AgentId, agentId, StringComparison.Ordinal)
-                   && string.Equals(pending.CommandId, commandId, StringComparison.Ordinal)
-                ? TrySave(state with { PendingRevoke = null })
-                : true;
+            if (_state is not { PendingRevoke: { } pending } state
+                || !string.Equals(state.AgentId, agentId, StringComparison.Ordinal)
+                || !string.Equals(pending.CommandId, commandId, StringComparison.Ordinal))
+                return true;
+            // This is a local completion of the same signed state, not a new
+            // state command; preserve its sequence and high-water mark.
+            var cleared = state with { PendingRevoke = null };
+            if (!TryPersist(cleared)) return false;
+            _state = cleared;
+            _unreadable = false;
+            return true;
         }
     }
 

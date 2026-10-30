@@ -18,6 +18,12 @@ internal static class Program
         AgentLocalizer.ApplyThreadCulture();
         var parsed = Args.Parse(args ?? Array.Empty<string>());
 
+        if (parsed.Product is not null && !parsed.EnrollHeadless)
+        {
+            Console.Error.WriteLine("--product is supported only with --enroll-headless.");
+            return 2;
+        }
+
         if (parsed.AcceptEula)
         {
             var scope = (parsed.InstallService || parsed.Service) && Elevation.IsAdministrator()
