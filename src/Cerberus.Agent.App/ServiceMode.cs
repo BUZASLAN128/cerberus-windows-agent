@@ -356,8 +356,12 @@ internal static partial class ServiceMode
 #endif
         var dispatcher = new CommandDispatcher(handlers, idempotency);
 #if !CERBERUS_SERVER_PROFILE
+        // Observation only: managed commands remain on their existing authority path.
+        // Default off until the operator enables this diagnostic for the deployment.
+        var managedDelayLog = string.Equals(Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC"), "1",
+            StringComparison.Ordinal) ? log : null;
         legacyAsync = secondary ? null : new LegacyAsyncCommandProcessor(api, dispatcher,
-            new LegacyHeartbeatCommandProcessor(api, dispatcher, TimeSpan.FromSeconds(120), 2),
+            new LegacyHeartbeatCommandProcessor(api, dispatcher, TimeSpan.FromSeconds(120), 2, managedDelayLog),
             new CommandReplayStore(CommandReplayStore.DefaultLegacyAsyncPath(), log: log), currentAgentId, log);
         await using var legacyAsyncLifetime = legacyAsync;
 #endif
