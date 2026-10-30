@@ -1,10 +1,23 @@
 using System.Text;
 using System.Security.Cryptography;
+using System.Xml.Linq;
 
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class SecondaryReleaseProfileTests
 {
+    [Theory]
+    [InlineData("Cerberus.Agent.App/Cerberus.Agent.App.csproj")]
+    [InlineData("Cerberus.Agent.Runtime/Cerberus.Agent.Runtime.csproj")]
+    public void ExecutableAndServiceRuntimeBothEmbedTheSecondaryEndpoint(string project)
+    {
+        var root = ServerPackageStaticTests.FindRepoRoot();
+        var doc = XDocument.Load(Path.Combine(root, "src", project));
+        Assert.Contains(doc.Descendants("AssemblyAttribute"), item =>
+            (string?)item.Element("_Parameter1") == "AgentSecondaryBackendUrlBase64" &&
+            (string?)item.Element("_Parameter2") == "$(AgentSecondaryBackendUrlBase64)");
+    }
+
     [Fact]
     public void BothProductAnchorsAndRootEndpointArePassedToEveryPublish()
     {
