@@ -235,7 +235,13 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
         if (!_resultRetry.CanTry) return;
         if (!_store.IsAvailable || _store.ResetAt != 0) return;
         var agent = await _currentAgentId(ct).ConfigureAwait(false);
-        foreach (var record in _store.Records(agent).Where(r => !_inFlight.ContainsKey((r.AgentId, r.Id))).Take(16))
+        // Retained, already-submitted records still protect against replay but are
+        // not outbox work. Filter before bounding the batch so they cannot starve
+        // newer results or records that must be recovered after a restart.
+        foreach (var record in _store.Records(agent).Where(r =>
+            !_inFlight.ContainsKey((r.AgentId, r.Id)) &&
+            (r.State is EnvelopeRecordStates.Reserved or EnvelopeRecordStates.Started ||
+             r.State == EnvelopeRecordStates.Done && !r.ResultSubmitted && r.ResultB64 is not null)).Take(16))
         {
             ct.ThrowIfCancellationRequested();
             var current = record;

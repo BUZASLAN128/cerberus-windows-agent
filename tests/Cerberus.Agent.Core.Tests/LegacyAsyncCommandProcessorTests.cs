@@ -1,11 +1,52 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text.Json;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class LegacyAsyncCommandProcessorTests
 {
+    [Theory]
+    [InlineData(EnvelopeRecordStates.Done, "DONE")]
+    [InlineData(EnvelopeRecordStates.Started, "OUTCOME_UNKNOWN")]
+    public async Task SentReplayRecordsDoNotStarvePendingOrRecoveredResult(string state, string expectedStatus)
+    {
+        await using var h = EnvelopeHarness.Create();
+        var handler = new FakeCommandHandler("agent.health.snapshot");
+        var dispatcher = Dispatcher(h, handler);
+        var store = NewStore(h);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var resultBytes = JsonSerializer.SerializeToUtf8Bytes(FakeCommandHandler.Done(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var resultB64 = Convert.ToBase64String(resultBytes);
+        var resultHash = Convert.ToHexString(SHA256.HashData(resultBytes)).ToLowerInvariant();
+        for (var index = 0; index < 16; index++)
+        {
+            var sent = new CommandReplayRecord(h.AgentId, Guid.NewGuid().ToString("D"), new string('a', 64),
+                Guid.NewGuid().ToString("D"), handler.Type, now, now + 100 + index,
+                EnvelopeRecordStates.Reserved, null, null, false);
+            Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(sent));
+            Assert.True(store.TryUpdate(sent with { State = EnvelopeRecordStates.Done, ResultB64 = resultB64,
+                ResultSha256 = resultHash, ResultSubmitted = true }));
+        }
+        var pending = new CommandReplayRecord(h.AgentId, Guid.NewGuid().ToString("D"), new string('b', 64),
+            Guid.NewGuid().ToString("D"), handler.Type, now, now + 300,
+            EnvelopeRecordStates.Reserved, null, null, false);
+        Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(pending));
+        Assert.True(store.TryUpdate(pending with { State = state,
+            ResultB64 = state == EnvelopeRecordStates.Done ? resultB64 : null,
+            ResultSha256 = state == EnvelopeRecordStates.Done ? resultHash : null }));
+        await using var processor = new LegacyAsyncCommandProcessor(h.Api, dispatcher,
+            new LegacyHeartbeatCommandProcessor(h.Api, dispatcher, TimeSpan.FromSeconds(5), 1),
+            store, _ => Task.FromResult(h.AgentId));
+
+        await Wait.UntilAsync(() => store.Find(h.AgentId, pending.Id)?.ResultSubmitted == true, "pending result after retained replay records");
+        Assert.Equal(expectedStatus, Assert.Single(h.Backend.Results).Json.GetProperty("status").GetString());
+        Assert.Equal(17, store.Records(h.AgentId).Count);
+        Assert.Equal(0, handler.Calls);
+    }
+
     [Fact]
     public async Task LongCommandReturnsToHeartbeatAndPostsLeaseBoundResult()
     {
