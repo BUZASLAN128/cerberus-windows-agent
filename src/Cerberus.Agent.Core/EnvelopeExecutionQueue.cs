@@ -18,7 +18,7 @@ public interface IEnvelopeResultFollowUp
 /// entries wait or run at once. It also stores and submits every envelope result and drains
 /// the result outbox after each heartbeat, so none of this runs in the heartbeat loop.
 /// </summary>
-public sealed class EnvelopeExecutionQueue : IAsyncDisposable
+public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
 {
     public const int MaxQueued = 8;
     public const int OutboxPerCycle = 16;
@@ -389,19 +389,6 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         return true;
     }
 
-    private static string ResultStatus(CommandReplayRecord record)
-    {
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(record.ResultB64!));
-            return doc.RootElement.GetProperty("status").GetString() ?? "UNKNOWN";
-        }
-        catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            return "UNKNOWN";
-        }
-    }
-
     private async Task<byte[]> ExecuteAsync(SignedEnvelope envelope, CancellationToken ct)
     {
         if (!_handlers.TryGetValue(envelope.Type, out var handler))
@@ -440,21 +427,6 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         var body = CommandEnvelope.BuildResultBody(result.Status, result.ExitCode, result.Stderr, result.PostVerify,
             envelope.EnvelopeSha256);
         return body.Length <= MaxResultBodyBytes ? body : Failed("result_too_large", envelope.EnvelopeSha256);
-    }
-
-    private async Task<CommandResult> InvokeBoundedAsync(ICommandHandler handler, AgentCommand command, CancellationToken ct)
-    {
-        var gate = command.Type == EnvelopeTypes.AgentState ? StateHandlerGate : HandlerGate;
-        await gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ct.ThrowIfCancellationRequested();
-            return await InvokeAsync(handler, command, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-        }
     }
 
     /// <summary>Same gate order as <see cref="CommandDispatcher"/>, without its idempotency cache.</summary>
