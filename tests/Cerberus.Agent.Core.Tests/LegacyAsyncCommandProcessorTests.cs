@@ -6,7 +6,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class LegacyAsyncCommandProcessorTests
+public sealed partial class LegacyAsyncCommandProcessorTests
 {
     [Theory]
     [InlineData(EnvelopeRecordStates.Done, "DONE")]

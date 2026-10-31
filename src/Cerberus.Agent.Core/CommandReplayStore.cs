@@ -259,6 +259,7 @@ public sealed partial class CommandReplayStore
 
     private bool EnsureLoaded()
     {
+        if (_legacyBindingUnavailable) return false;
         if (_loaded)
         {
             if (_persistPending && TryPersist(_records, _resetAt))

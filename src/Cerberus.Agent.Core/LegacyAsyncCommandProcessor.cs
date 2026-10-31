@@ -62,9 +62,20 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
         var agentId = await _currentAgentId(ct).ConfigureAwait(false);
         foreach (var command in commands)
         {
-            if (command is null || !Types.Contains(command.Type) || string.IsNullOrWhiteSpace(command.LeaseId))
+            if (command is null || !Types.Contains(command.Type))
             {
                 inline.Add(command!);
+                continue;
+            }
+            // Never let the compatibility path bypass an unavailable/reset replay boundary.
+            if (!_store.AllowsLegacyAgent(agentId) || !_store.IsAvailable || _store.ResetAt != 0)
+            {
+                _log.Warn($"Async command id={LogId(command.Id)} not started: durable replay state is unavailable or reset; recovery requires verified re-enrollment with a new agent identity.");
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(command.LeaseId))
+            {
+                inline.Add(command);
                 continue;
             }
             if (!Guid.TryParseExact(command.Id, "D", out _) || !Guid.TryParseExact(command.LeaseId, "D", out _)
@@ -80,13 +91,6 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
                 continue;
             }
 
-            // A reset store cannot prove an old command did not execute. Refuse work until
-            // the registration is safely reconciled; the server makes the lease unknown.
-            if (!_store.IsAvailable || _store.ResetAt != 0)
-            {
-                _log.Warn($"Async command id={LogId(command.Id)} not started: durable replay state is unavailable or reset.");
-                continue;
-            }
             if (!TryAcquireSlot())
             {
                 _log.Warn($"Async command id={LogId(command.Id)} not started: execution queue is full.");
@@ -151,7 +155,10 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             {
                 await _wake.WaitAsync(ct).ConfigureAwait(false);
                 while (_pending.TryDequeue(out var item))
+                {
                     await RunOneAsync(item.Command, item.Record, ct).ConfigureAwait(false);
+                    await DrainAsync(ct).ConfigureAwait(false);
+                }
                 await DrainAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
@@ -235,6 +242,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
         if (!_resultRetry.CanTry) return;
         if (!_store.IsAvailable || _store.ResetAt != 0) return;
         var agent = await _currentAgentId(ct).ConfigureAwait(false);
+        if (!_store.AllowsLegacyAgent(agent)) return;
         // Retained, already-submitted records still protect against replay but are
         // not outbox work. Filter before bounding the batch so they cannot starve
         // newer results or records that must be recovered after a restart.
