@@ -30,6 +30,8 @@
     <Compile Include="..\Cerberus.Agent.Core.Tests\RetryHelperTests.cs" Link="RetryHelperTests.cs" />
     <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatResponseHandlerTests.cs" Link="HeartbeatResponseHandlerTests.cs" />
     <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.cs" Link="HeartbeatLoopTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.Support.cs" Link="HeartbeatLoopTests.Support.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.Handlers.cs" Link="HeartbeatLoopTests.Handlers.cs" />
     <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatBackoffResetSignalTests.cs" Link="HeartbeatBackoffResetSignalTests.cs" />
     <Compile Include="..\Cerberus.Agent.Core.Tests\HeadlessEnrollmentUnusableSuccessTests.cs" Link="HeadlessEnrollmentUnusableSuccessTests.cs" />
     <Compile Include="..\Cerberus.Agent.Core.Tests\HeadlessEnrollmentUnreadableStringTests.cs" Link="HeadlessEnrollmentUnreadableStringTests.cs" />
