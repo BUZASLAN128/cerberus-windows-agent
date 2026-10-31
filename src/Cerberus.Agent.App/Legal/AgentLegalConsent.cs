@@ -93,12 +93,15 @@ internal static class AgentLegalConsent
     }
 
     public static void EnsureMachineConsentForInstall()
-    {
-        if (HasCurrentConsent(LegalConsentScope.Machine))
-            return;
+        => EnsureMachineConsentForInstall(null, () => HasCurrentConsent(LegalConsentScope.User));
 
-        RequireCurrentInstallConsent();
-        Accept(LegalConsentScope.Machine, "install_service");
+    internal static void EnsureMachineConsentForInstall(string? machineBaseDir, Func<bool> hasUserConsent)
+    {
+        if (TryLoadCurrent(LegalConsentScope.Machine, machineBaseDir, out _))
+            return;
+        if (!hasUserConsent())
+            throw new InvalidOperationException(ConsentRequiredMessage);
+        Accept(LegalConsentScope.Machine, "install_service", machineBaseDir);
     }
 
     internal static bool TryLoadCurrent(LegalConsentScope scope, string? baseDir, out AgentLegalConsentRecord? record)
@@ -110,6 +113,8 @@ internal static class AgentLegalConsent
 
         try
         {
+            if (scope == LegalConsentScope.Machine)
+                AgentUpdateSecurity.ValidateProtectedPath(path, Path.GetDirectoryName(path)!, allowMissing: false);
             var loaded = JsonSerializer.Deserialize<AgentLegalConsentRecord>(
                 File.ReadAllText(path),
                 JsonOptions);
@@ -204,14 +209,6 @@ internal static class AgentLegalConsent
         string? baseDir)
     {
         var path = GetPath(scope, baseDir);
-        if (scope == LegalConsentScope.Machine &&
-            string.Equals(Path.GetFullPath(path), GetPath(scope, baseDir: null), StringComparison.OrdinalIgnoreCase))
-        {
-            // CLI consent can precede service setup; it must not create an untrusted machine namespace.
-            AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
-        }
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
         var record = new AgentLegalConsentRecord(
             SchemaVersion,
             ProductName,
@@ -223,9 +220,48 @@ internal static class AgentLegalConsent
             acceptedMachineName,
             acceptedVia);
 
-        File.WriteAllText(path, JsonSerializer.Serialize(record, JsonOptions));
-        TryHardenAcl(path, scope);
+        var contents = JsonSerializer.Serialize(record, JsonOptions);
+        if (scope == LegalConsentScope.Machine)
+            WriteMachineRecord(path, baseDir, contents);
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, contents);
+            TryHardenAcl(path, scope);
+        }
         return record;
+    }
+
+    private static void WriteMachineRecord(string path, string? baseDir, string contents)
+    {
+        var root = Path.GetDirectoryName(path)!;
+        // Stage inside protected storage, never beside the target in the user-creatable product root.
+        var staging = baseDir is null ? AgentUpdateSecurity.DefaultPrivilegedRoot : root;
+        AgentUpdateSecurity.EnsureProtectedRoot(staging);
+        AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: true);
+        var exists = File.Exists(path);
+        if (exists)
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: false);
+        var temp = Path.Combine(staging, "legal-consent-" + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(output, System.Text.Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(contents);
+                writer.Flush();
+                output.Flush(flushToDisk: true);
+            }
+            AgentUpdateSecurity.ValidateProtectedPath(temp, staging, allowMissing: false);
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: true);
+            // No overwrite for a missing target: a concurrently planted object must cause failure.
+            File.Move(temp, path, overwrite: exists);
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: false);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     private static SecretStoreScope ToSecretStoreScope(LegalConsentScope scope)

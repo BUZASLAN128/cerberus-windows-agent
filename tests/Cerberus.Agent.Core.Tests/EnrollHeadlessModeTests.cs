@@ -359,6 +359,7 @@ public sealed partial class EnrollHeadlessModeTests
         public bool Admin { get; init; } = true;
         public bool Consent { get; init; } = true;
         public bool BootstrapThrows { get; init; }
+        public Action<bool>? BootstrapAction { get; init; }
         public bool LocalSystem { get; init; } = true;
         public string? Backend { get; init; } = "https://backend.example";
         public bool BackendThrows { get; init; }
@@ -394,6 +395,7 @@ public sealed partial class EnrollHeadlessModeTests
         {
             BootstrapCalls++;
             if (BootstrapThrows) throw new UnauthorizedAccessException();
+            BootstrapAction?.Invoke(installService);
         }
 #endif
         public HeadlessServiceState GetServiceState() => State;
