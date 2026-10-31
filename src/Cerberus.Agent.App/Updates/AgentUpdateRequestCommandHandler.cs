@@ -31,17 +31,26 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
     private readonly AgentUpdateStateStore _stateStore;
     private readonly IAgentLogger _log;
     private readonly string _currentVersion;
+    private readonly Func<DateTimeOffset, CancellationToken, Task<bool>> _requestInstall;
+    private readonly Func<CancellationToken, Task<AgentUpdateState>> _projectCurrent;
+    private readonly Func<AgentUpdateSignal?> _configuredSignal;
 
     public AgentUpdateRequestCommandHandler(
         Func<AgentUpdateCoordinator?> coordinatorFactory,
         AgentUpdateStateStore stateStore,
         IAgentLogger log,
-        string currentVersion)
+        string currentVersion,
+        Func<DateTimeOffset, CancellationToken, Task<bool>>? requestInstall = null,
+        Func<CancellationToken, Task<AgentUpdateState>>? projectCurrent = null,
+        Func<AgentUpdateSignal?>? configuredSignal = null)
     {
         _coordinatorFactory = coordinatorFactory;
         _stateStore = stateStore;
         _log = log;
         _currentVersion = currentVersion;
+        _requestInstall = requestInstall ?? AgentUpdateLocalService.RequestInstallAsync;
+        _projectCurrent = projectCurrent ?? AgentUpdateLocalService.ProjectCurrentStateAsync;
+        _configuredSignal = configuredSignal ?? AgentUpdateTrustFactory.BuildConfiguredManualSignal;
     }
 
     public string Type => "agent.update.request";
@@ -234,7 +243,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
             if (_coordinatorFactory() is null)
                 return await RejectAsync("Update trust is not configured.").ConfigureAwait(false);
             _ = BuildSignal(request); // manifest URL and channel stay pinned to the installed configuration
-            if (!await AgentUpdateLocalService.RequestInstallAsync(notBefore.Value, ct).ConfigureAwait(false))
+            if (!await _requestInstall(notBefore.Value, ct).ConfigureAwait(false))
                 return await RejectAsync("Automatic updates are not allowed in the current agent state.").ConfigureAwait(false);
             _log.Info($"Install request recorded: command {command.Id}, not before {notBefore.Value:O}.");
         }
@@ -247,7 +256,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
         try
         {
-            return Done(await AgentUpdateLocalService.ProjectCurrentStateAsync(CancellationToken.None).ConfigureAwait(false));
+            return Done(await _projectCurrent(CancellationToken.None).ConfigureAwait(false));
         }
         catch (Exception)
         {
@@ -285,9 +294,9 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
     internal static bool SupportsMode(string? mode) => mode is not null && SupportedModes.Contains(mode);
 
-    private static AgentUpdateSignal BuildSignal(AgentUpdateRequestPayload request)
+    private AgentUpdateSignal BuildSignal(AgentUpdateRequestPayload request)
     {
-        var configured = AgentUpdateTrustFactory.BuildConfiguredManualSignal()
+        var configured = _configuredSignal()
             ?? throw new InvalidOperationException("Update manifest URL is not configured.");
         var requestedUrl = Clean(request.ManifestUrl);
         if (!string.IsNullOrWhiteSpace(requestedUrl) &&

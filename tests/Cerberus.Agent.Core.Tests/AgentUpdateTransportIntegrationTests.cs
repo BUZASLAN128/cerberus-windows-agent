@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Cerberus.Agent.App;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -11,8 +12,10 @@ public sealed class AgentUpdateTransportIntegrationTests
 
     [Theory]
     [InlineData(AgentProducts.Cerberus)]
+#if !CERBERUS_SERVER_PROFILE
     [InlineData(AgentProducts.Secondary)]
-    public async Task SignedUpdate_IsProductBoundAndDuplicateDoesNotExecuteAgain(string product)
+#endif
+    public async Task ProductionWiring_EnforcesRegisteredProductTypesAndReplay(string product)
     {
         await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);
         var primary = TestSigner.Default;
@@ -20,10 +23,24 @@ public sealed class AgentUpdateTransportIntegrationTests
         var anchors = AgentProfileMetadata.ParseProductAnchors(product, Metadata(primary), Metadata(secondary),
             Array.Empty<string>());
         var update = new FakeCommandHandler(EnvelopeTypes.AgentUpdateRequest);
-        await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, new[] { update },
+        IReadOnlyList<ICommandHandler> handlers = new[] { update };
+#if !CERBERUS_SERVER_PROFILE
+        if (product == AgentProducts.Secondary)
+        {
+            var state = new AgentStateCommandHandler(new AgentSignedStateStore(h.StorePath + ".signed"),
+                _ => Task.FromResult(h.AgentId), new AgentLifecycleController(new InMemoryAgentLifecycleStateStore()),
+                () => { }, null, () => { }, new AgentRevokeFinalResults());
+            handlers = AgentCommandRegistry.CreateServer(ServerFactJson.Metadata(), state);
+            Assert.Equal(new[] { "agent_state", "collect_facts", "ping" },
+                handlers.Select(handler => handler.Type).OrderBy(type => type, StringComparer.Ordinal));
+        }
+#endif
+        await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, handlers,
             _ => Task.FromResult(h.AgentId), () => false, h.Time, h.Log);
         queue.Start();
-        var processor = new EnvelopeCommandProcessor(h.Api, anchors, queue, EnvelopeTypes.ServerSet, h.Log);
+        var dispatcher = new CommandDispatcher(handlers, new IdempotencyCache(h.StorePath + ".idem", 10, TimeSpan.FromHours(1)));
+        var processor = (EnvelopeCommandProcessor)EnvelopeWiring.CreateProcessor(h.Api, queue, dispatcher,
+            h.Log, product, commandAnchors: anchors);
         h.Signer = product == AgentProducts.Cerberus ? primary : secondary;
         var command = h.Cmd(p =>
         {
@@ -32,21 +49,28 @@ public sealed class AgentUpdateTransportIntegrationTests
         });
 
         await processor.ProcessAsync(new[] { command }, default);
-        await Wait.UntilAsync(() => h.Store.Find(h.AgentId, command.Id)?.ResultSubmitted == true, "update result persisted");
+        if (product == AgentProducts.Cerberus)
+            await Wait.UntilAsync(() => h.Store.Find(h.AgentId, command.Id)?.ResultSubmitted == true, "update result persisted");
         await processor.ProcessAsync(new[] { command }, default);
-        Assert.Equal(1, update.Calls);
-        Assert.Equal(EnvelopeRecordStates.Done, h.Store.Find(h.AgentId, command.Id)!.State);
+        if (product == AgentProducts.Cerberus)
+        {
+            Assert.Equal(1, update.Calls);
+            Assert.Equal(EnvelopeRecordStates.Done, h.Store.Find(h.AgentId, command.Id)!.State);
+        }
+        else
+        {
+            Assert.Equal(0, update.Calls);
+            Assert.Equal(2, processor.RejectionCounts[EnvelopeCodes.TypeNotAllowed]);
+            Assert.Null(h.Store.Find(h.AgentId, command.Id));
+            Assert.Empty(h.Store.Records(h.AgentId));
+        }
 
         h.Signer = product == AgentProducts.Cerberus ? secondary : primary;
-        var foreign = h.Cmd(p =>
-        {
-            p.Type = EnvelopeTypes.AgentUpdateRequest;
-            p.PayloadJson = """{"schema_version":"agent.update.request.v1","mode":"install"}""";
-        });
+        var foreign = h.Cmd(p => p.Type = "ping");
         await processor.ProcessAsync(new[] { foreign }, default);
         Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.KeyUnknown]);
         Assert.Null(h.Store.Find(h.AgentId, foreign.Id));
-        Assert.Equal(1, update.Calls);
+        Assert.Equal(product == AgentProducts.Cerberus ? 1 : 0, update.Calls);
     }
 
     [Fact]

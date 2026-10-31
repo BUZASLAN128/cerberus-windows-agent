@@ -27,10 +27,13 @@ internal static partial class AgentUpdateLocalService
 
     /// <summary>The server build counts as quarantined until the worker connects its signed state, or when it cannot be read.</summary>
     private static bool Quarantined()
+        => Quarantined(_serverQuarantined, AgentBuildProfile.IsServer);
+
+    internal static bool Quarantined(Func<bool>? signedState, bool isServer)
     {
-        if (!AgentBuildProfile.IsServer)
+        if (!isServer)
             return false;
-        try { return _serverQuarantined?.Invoke() ?? true; }
+        try { return signedState?.Invoke() ?? true; }
         catch (Exception) { return true; }
     }
 
@@ -38,10 +41,18 @@ internal static partial class AgentUpdateLocalService
     public static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc, CancellationToken ct)
     {
         RequireService();
-        var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (!AllowsAutomatic(lifecycle) || Quarantined())
+        return await RequestInstallAsync(notBeforeUtc, LoadLifecycleAsync, Journal.Change, Quarantined, ct).ConfigureAwait(false);
+    }
+
+    internal static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc,
+        Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle,
+        Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
+        Func<bool> quarantined, CancellationToken ct)
+    {
+        var lifecycle = await loadLifecycle(ct).ConfigureAwait(false);
+        if (!AllowsAutomatic(lifecycle) || quarantined())
             return false;
-        Journal.Change(before => before with
+        change(before => before with
         {
             InstallRequest = new(notBeforeUtc, lifecycle.Generation, notBeforeUtc + MaxInstallRequestDelay),
         });
@@ -81,13 +92,19 @@ internal static partial class AgentUpdateLocalService
     /// </summary>
     private static async Task<bool> HoldOrRunInstallRequestAsync(
         AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
-    {
-        if (Quarantined())
-            return true;
-        var allowed = AllowsAutomatic(lifecycle);
-        var staged = await RunInstallRequestAsync(active, lifecycle.Generation, allowed, Journal.Change,
+        => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, Journal.Change,
             () => CheckAndStageOwnedAsync(automatic: true, required: true, ct, bypassSchedule: true,
                 requiredPolicyGeneration: lifecycle.Generation), _requestLog, ct).ConfigureAwait(false);
+
+    internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
+        AgentLifecycleSnapshot lifecycle, Func<bool> quarantined,
+        Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
+        Func<Task> stage, IAgentLogger log, CancellationToken ct)
+    {
+        if (quarantined())
+            return true;
+        var allowed = AllowsAutomatic(lifecycle);
+        var staged = await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);
         return staged || !allowed;
     }
 
@@ -138,9 +155,9 @@ internal static partial class AgentUpdateLocalService
     }
 
     /// <summary>An automatic install about to launch waits while the agent is quarantined.</summary>
-    private static void HoldWhileQuarantined(bool automatic, CancellationToken ct)
+    internal static void HoldWhileQuarantined(bool automatic, CancellationToken ct, Func<bool>? quarantined = null)
     {
-        if (automatic && Quarantined())
+        if (automatic && (quarantined ?? Quarantined)())
             throw new IntentionalUpdateCancellationException("Update held while quarantined.", ct);
     }
 
