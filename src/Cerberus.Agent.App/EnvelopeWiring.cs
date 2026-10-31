@@ -27,6 +27,21 @@ internal static class EnvelopeWiring
             return id;
         });
 
+    internal static Func<CancellationToken, Task<AgentRevokeRegistration>> RegistrationContext(
+        ISecretStore secrets, IAgentLifecycleStateStore lifecycle)
+        => async ct =>
+        {
+            var before = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var identity = (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity;
+            var after = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            if (before.Generation != after.Generation || before.LastEnrollmentNonce != after.LastEnrollmentNonce)
+                throw new AgentRegistrationChangedException();
+            return new AgentRevokeRegistration(identity.AgentId, identity.TenantId, after.LastEnrollmentNonce);
+        };
+
+    internal static bool HasCommandTrust(string product, IAgentLogger log)
+        => AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log).Count > 0;
+
 #if !CERBERUS_SERVER_PROFILE
     internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
         AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,

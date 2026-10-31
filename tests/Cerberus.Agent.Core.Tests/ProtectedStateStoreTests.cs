@@ -160,7 +160,7 @@ public sealed class ProtectedStateStoreTests : IDisposable
         {
             second.Backend.Respond = (_, _) => Task.FromResult(System.Net.HttpStatusCode.ServiceUnavailable);
             Assert.True(second.Store.IsQuarantined(Agent));
-            Assert.Equal(new AgentPendingRevoke("c1", "agent_revoked"), second.Store.Load(Agent).PendingRevoke);
+            Assert.Equal(new AgentPendingRevoke("c1", "agent_revoked", new AgentRevokeRegistration(Agent, null, null)), second.Store.Load(Agent).PendingRevoke);
             second.Queue.Start();
             second.Queue.SignalHeartbeat();
             await Wait.UntilAsync(() => second.Backend.Results.Count == 1, "first result POST");

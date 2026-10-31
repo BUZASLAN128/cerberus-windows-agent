@@ -292,6 +292,7 @@ internal static partial class ServiceMode
         }
         var baseAddress = new Uri((secondary ? storedBackendUrl : backendUrl).Trim().TrimEnd('/'));
 
+        var registrationContext = EnvelopeWiring.RegistrationContext(secrets, lifecycleState);
         secrets = new ProductBoundSecretStore(secrets, loadedSecrets.Identity, storedBackendUrl, privateKeyPem);
 
         using var http = new HttpClient(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = false })) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
@@ -333,7 +334,7 @@ internal static partial class ServiceMode
         var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
             new AgentLifecycleController(lifecycleState, secrets, log, quiesce),
             () => { queue?.CancelAll(); legacyAsync?.CancelAll(); }, log,
-            stopAutomaticNetwork: serviceCts.Cancel, finalResults: secondary ? secondaryFinalRevokes : finalRevokes);
+            stopAutomaticNetwork: serviceCts.Cancel, finalResults: secondary ? secondaryFinalRevokes : finalRevokes, currentRegistration: registrationContext);
 #if CERBERUS_SERVER_PROFILE
         ManagedAccountManifestPolicy? managedAccounts = null;
         var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
@@ -408,9 +409,7 @@ internal static partial class ServiceMode
             wakeupClient: wakeupClient,
             signedStateOnly: secondary,
             supportsEvents: !secondary,
-            signedCommandMode: (AgentBuildProfile.IsServer || secondary) &&
-                AgentProfileMetadata.LoadProductCommandAnchors(loadedSecrets.Identity.Product,
-                    EnvelopeWiring.ManifestPublicKeyPems(log), log).Count > 0,
+            signedCommandMode: (AgentBuildProfile.IsServer || secondary) && EnvelopeWiring.HasCommandTrust(loadedSecrets.Identity.Product, log),
             signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
             legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true);
 
