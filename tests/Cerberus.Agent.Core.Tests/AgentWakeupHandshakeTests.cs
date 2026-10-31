@@ -6,7 +6,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class AgentWakeupHandshakeTests
+public sealed partial class AgentWakeupHandshakeTests
 {
     private const string AgentId = "b9b71bb5-85d3-4d88-a207-88548bc9ba38";
 
@@ -46,24 +46,38 @@ public sealed class AgentWakeupHandshakeTests
         Assert.Null(signer.Method);
     }
 
-    [Fact]
-    public async Task Connection_PropagatesServerRetryAfterWithoutEarlyReconnect()
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task Connection_DenialPreservesHttpsAuthorityAndRetryHint(HttpStatusCode status)
     {
-        var handler = new LimitedUpgradeHandler();
+        var handler = new LimitedUpgradeHandler(status);
         using var http = new HttpClient { BaseAddress = new Uri("https://collector.example") };
-        var client = new AgentApiClient(http, new FakeSecrets(), new FakeToken(), new CaptureSigner())
+        var secrets = new FakeSecrets();
+        var tokens = new FakeToken();
+        var lifecycle = new InMemoryAgentLifecycleStateStore();
+        var client = new AgentApiClient(http, secrets, tokens, new CaptureSigner(), lifecycle)
         {
             WakeupInvokerFactory = () => new HttpMessageInvoker(handler, disposeHandler: false),
         };
         using var json = JsonDocument.Parse($"{{\"version\":1,\"path\":\"/api/v1/agents/{AgentId}/wakeup\"}}");
-        var failure = await Assert.ThrowsAsync<WakeupRateLimitedException>(() =>
-            client.ListenForWakeupsOnceAsync(json.RootElement, new AgentWakeupSignal(), default));
-        Assert.Equal(TimeSpan.FromSeconds(7200), failure.RetryAfter);
+        if (status == HttpStatusCode.TooManyRequests)
+        {
+            var failure = await Assert.ThrowsAsync<WakeupRateLimitedException>(() =>
+                client.ListenForWakeupsOnceAsync(json.RootElement, new AgentWakeupSignal(), default));
+            Assert.Equal(TimeSpan.FromSeconds(7200), failure.RetryAfter);
+        }
+        else
+            await Assert.ThrowsAsync<WakeupRejectedException>(() =>
+                client.ListenForWakeupsOnceAsync(json.RootElement, new AgentWakeupSignal(), default));
         Assert.Equal(1, handler.Attempts);
         Assert.Equal(HttpMethod.Get, handler.Method);
         Assert.Equal($"/api/v1/agents/{AgentId}/wakeup", handler.Path);
         Assert.Equal(AgentId, handler.AgentId);
         Assert.True(handler.HasAuthorization);
+        Assert.Equal(0, secrets.Clears);
+        Assert.Equal(0, tokens.Refreshes);
+        Assert.Equal(AgentLifecycleState.Active, (await lifecycle.LoadAsync(default)).State);
     }
 
     [Fact]
@@ -120,7 +134,7 @@ public sealed class AgentWakeupHandshakeTests
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 
-    private sealed class LimitedUpgradeHandler : HttpMessageHandler
+    private sealed class LimitedUpgradeHandler(HttpStatusCode status = HttpStatusCode.TooManyRequests) : HttpMessageHandler
     {
         public int Attempts { get; private set; }
         public HttpMethod? Method { get; private set; }
@@ -134,7 +148,7 @@ public sealed class AgentWakeupHandshakeTests
             Path = request.RequestUri!.AbsolutePath;
             AgentId = request.Headers.GetValues("X-Agent-Id").Single();
             HasAuthorization = request.Headers.Authorization?.Scheme == "Bearer";
-            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            var response = new HttpResponseMessage(status);
             response.Headers.TryAddWithoutValidation("Retry-After", "7200");
             return Task.FromResult(response);
         }
@@ -142,17 +156,19 @@ public sealed class AgentWakeupHandshakeTests
 
     private sealed class FakeSecrets : ISecretStore
     {
+        public int Clears { get; private set; }
         public Task<(AgentIdentity, string, string, string, string?, string?)> LoadAsync(CancellationToken ct)
             => Task.FromResult<(AgentIdentity, string, string, string, string?, string?)>((new(AgentId, "tenant"), "r", "k", "https://collector.example", null, null));
         public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl, string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct) => Task.CompletedTask;
-        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task ClearAsync(CancellationToken ct) { Clears++; return Task.CompletedTask; }
     }
 
     private sealed class FakeToken : ITokenManager
     {
         public int Calls { get; private set; }
+        public int Refreshes { get; private set; }
         public Task<string> GetAccessTokenAsync(CancellationToken ct) { Calls++; return Task.FromResult("test-token"); }
-        public Task RefreshAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task RefreshAsync(CancellationToken ct) { Refreshes++; return Task.CompletedTask; }
     }
 
     private sealed class CaptureSigner : IRequestSigner

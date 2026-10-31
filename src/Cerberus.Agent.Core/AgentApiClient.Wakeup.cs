@@ -7,6 +7,7 @@ namespace Cerberus.Agent.Core;
 public sealed partial class AgentApiClient
 {
     internal Func<HttpMessageInvoker>? WakeupInvokerFactory { get; set; }
+    internal TimeSpan WakeupConnectionLifetime { get; set; } = TimeSpan.FromMinutes(5);
 
     internal bool IsWakeupDiscovery(JsonElement? discovery)
         => _http.BaseAddress is not null && AgentWakeupProtocol.TryReadDiscovery(_http.BaseAddress, discovery, out _);
@@ -72,41 +73,49 @@ public sealed partial class AgentApiClient
                 }
             }
 
-            connection.CancelAfter(TimeSpan.FromMinutes(5));
+            connection.CancelAfter(WakeupConnectionLifetime);
             var generation = request.Options.TryGetValue(LifecycleGenerationKey, out var value) ? value : (long?)null;
             var buffer = new byte[AgentWakeupProtocol.MaxNotificationBytes + 1];
             var used = 0;
             var receive = socket.ReceiveAsync(buffer.AsMemory(used), connection.Token).AsTask();
             var check = Task.Delay(TimeSpan.FromSeconds(5), connection.Token);
-            while (true)
+            try
             {
-                var ready = await Task.WhenAny(receive, check).ConfigureAwait(false);
-                if (ready == check)
+                while (true)
                 {
-                    await check.ConfigureAwait(false);
-                    await EnsureWakeupLifecycleAsync(generation, connection.Token).ConfigureAwait(false);
-                    check = Task.Delay(TimeSpan.FromSeconds(5), connection.Token);
-                    continue;
-                }
+                    var ready = await Task.WhenAny(receive, check).ConfigureAwait(false);
+                    if (ready == check)
+                    {
+                        await check.ConfigureAwait(false);
+                        await EnsureWakeupLifecycleAsync(generation, connection.Token).ConfigureAwait(false);
+                        check = Task.Delay(TimeSpan.FromSeconds(5), connection.Token);
+                        continue;
+                    }
 
-                var message = await receive.ConfigureAwait(false);
-                if (message.MessageType == WebSocketMessageType.Close)
-                    return;
-                if (message.MessageType != WebSocketMessageType.Text || message.Count == 0 && !message.EndOfMessage)
-                    throw new InvalidOperationException("Invalid wakeup frame.");
-                used += message.Count;
-                if (used > AgentWakeupProtocol.MaxNotificationBytes)
-                    throw new InvalidOperationException("Wakeup frame is too large.");
-                if (message.EndOfMessage)
-                {
-                    if (!AgentWakeupProtocol.IsCommandAvailable(buffer.AsMemory(0, used)))
-                        throw new InvalidOperationException("Invalid wakeup message.");
-                    await EnsureWakeupLifecycleAsync(generation, connection.Token).ConfigureAwait(false);
-                    signal.Signal();
-                    used = 0;
+                    var message = await receive.ConfigureAwait(false);
+                    if (message.MessageType == WebSocketMessageType.Close)
+                        return;
+                    if (message.MessageType != WebSocketMessageType.Text || message.Count == 0 && !message.EndOfMessage)
+                        throw new InvalidOperationException("Invalid wakeup frame.");
+                    used += message.Count;
+                    if (used > AgentWakeupProtocol.MaxNotificationBytes)
+                        throw new InvalidOperationException("Wakeup frame is too large.");
+                    if (message.EndOfMessage)
+                    {
+                        if (!AgentWakeupProtocol.IsCommandAvailable(buffer.AsMemory(0, used)))
+                            throw new InvalidOperationException("Invalid wakeup message.");
+                        await EnsureWakeupLifecycleAsync(generation, connection.Token).ConfigureAwait(false);
+                        signal.Signal();
+                        used = 0;
+                    }
+                    receive = socket.ReceiveAsync(buffer.AsMemory(used), connection.Token).AsTask();
                 }
-                receive = socket.ReceiveAsync(buffer.AsMemory(used), connection.Token).AsTask();
             }
+            catch (OperationCanceledException) when (connection.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // Planned connection rotation is normal completion, not transport failure or auth denial.
+            }
+            finally { connection.Cancel(); }
         }
     }
 

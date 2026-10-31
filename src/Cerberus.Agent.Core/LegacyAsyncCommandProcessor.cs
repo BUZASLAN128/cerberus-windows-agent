@@ -135,6 +135,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     }
 
     public void SignalOutbox() => _wake.Release();
+    public bool CanAdvertise => _store.IsAvailable && _store.ResetAt == 0;
     public void CancelAll() => _stop.Cancel();
     internal long OutboxNotBefore => _resultRetry.NotBefore;
 

@@ -30,6 +30,7 @@ public sealed partial class HeartbeatLoop
     private readonly bool _signedCommandMode;
     private readonly bool _signedCommandsOnly;
     private readonly bool _legacyAsyncSupported;
+    private readonly Func<bool> _legacyAsyncReady;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -61,7 +62,8 @@ public sealed partial class HeartbeatLoop
         bool supportsEvents = true,
         bool signedCommandMode = false,
         bool signedCommandsOnly = false,
-        bool legacyAsyncSupported = false)
+        bool legacyAsyncSupported = false,
+        Func<bool>? legacyAsyncReady = null)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _api = api;
@@ -108,6 +110,7 @@ public sealed partial class HeartbeatLoop
         _signedCommandMode = signedCommandMode;
         _signedCommandsOnly = signedCommandsOnly;
         _legacyAsyncSupported = legacyAsyncSupported;
+        _legacyAsyncReady = legacyAsyncReady ?? (() => true);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -141,7 +144,8 @@ public sealed partial class HeartbeatLoop
                 if (_wakeupClient is not null) supported = supported.Append(AgentWakeupProtocol.Capability);
                 if (_signedCommandMode) supported = supported.Append(CommandEnvelope.Capability);
                 if (_signedCommandsOnly) supported = supported.Append(CommandEnvelope.SignedOnlyCapability);
-                if (_legacyAsyncSupported) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
+                var legacyAsyncAvailable = _legacyAsyncSupported && _legacyAsyncReady();
+                if (legacyAsyncAvailable) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
                 var hbReq = new
                 {
                     status = degraded ? "degraded" : "connected",
@@ -256,7 +260,7 @@ public sealed partial class HeartbeatLoop
 
                 if (_wakeupClient is not null)
                     await _wakeupClient.ConfigureAsync(hb.Wakeup, ct).ConfigureAwait(false);
-                var commands = _legacyAsyncSupported
+                var commands = legacyAsyncAvailable
                     ? BindLeaseDeadlines(hb.PendingCommands, hb.ServerTime, heartbeatStarted)
                     : hb.PendingCommands;
                 await _commandProcessor.ProcessAsync(commands, ct).ConfigureAwait(false);

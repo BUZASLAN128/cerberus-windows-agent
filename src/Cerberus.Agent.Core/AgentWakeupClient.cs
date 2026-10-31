@@ -15,6 +15,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
     private Task? _runner;
     private string? _discoveryKey;
     private DateTimeOffset _notBefore;
+    internal int ConsecutiveFailures { get; private set; }
 
     public AgentWakeupClient(AgentApiClient api, AgentWakeupSignal signal, IAgentLogger? log = null)
         : this(api, signal, api.ListenForWakeupsOnceAsync, log)
@@ -83,7 +84,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
 
     private async Task RunAsync(JsonElement discovery, CancellationToken ct)
     {
-        var failures = 0;
+        ConsecutiveFailures = 0;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -98,7 +99,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
                     continue;
                 }
                 await _listen(discovery, _signal, ct).ConfigureAwait(false);
-                failures = 0;
+                ConsecutiveFailures = 0;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -126,16 +127,16 @@ public sealed class AgentWakeupClient : IAsyncDisposable
                 _notBefore = rateLimit.RetryAfter >= DateTimeOffset.MaxValue - now
                     ? DateTimeOffset.MaxValue
                     : now.Add(rateLimit.RetryAfter);
-                failures = 0;
+                ConsecutiveFailures = 0;
             }
             catch (Exception ex)
             {
                 _log.Warn($"Wakeup connection unavailable: {ex.GetType().Name}.");
-                failures = Math.Min(failures + 1, 6);
+                ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
             }
 
             // Spread fleet reconnects over a wider window after disconnect or failure.
-            var cap = Math.Min(300, 30 * (1 << Math.Max(0, failures - 1)));
+            var cap = Math.Min(300, 30 * (1 << Math.Max(0, ConsecutiveFailures - 1)));
             var delay = TimeSpan.FromSeconds(RandomNumberGenerator.GetInt32(1, cap + 1));
             try { await Task.Delay(delay, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }

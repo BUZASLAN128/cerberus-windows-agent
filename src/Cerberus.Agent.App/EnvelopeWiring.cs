@@ -15,6 +15,31 @@ internal static class EnvelopeWiring
     public static Func<CancellationToken, Task<string>> CurrentAgentId(ISecretStore secrets)
         => async ct => (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity.AgentId;
 
+    internal static Func<CancellationToken, Task<string>> CurrentAgentId(ISecretStore secrets,
+        IAgentLifecycleStateStore lifecycle, long expectedGeneration, AgentSignedStateStore signedState)
+        => signedState.Track(async ct =>
+        {
+            if ((await lifecycle.LoadAsync(ct).ConfigureAwait(false)).Generation != expectedGeneration)
+                throw new AgentRegistrationChangedException();
+            var id = await CurrentAgentId(secrets)(ct).ConfigureAwait(false);
+            if ((await lifecycle.LoadAsync(ct).ConfigureAwait(false)).Generation != expectedGeneration)
+                throw new AgentRegistrationChangedException();
+            return id;
+        });
+
+#if !CERBERUS_SERVER_PROFILE
+    internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
+        AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,
+        IAgentLogger log)
+    {
+        // Managed operations retain their existing synchronous authority path; this is observation only.
+        var delayLog = Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC") == "1" ? log : null;
+        return new LegacyAsyncCommandProcessor(api, dispatcher,
+            new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency, delayLog),
+            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log), currentAgentId, log);
+    }
+#endif
+
     /// <summary>The background queue for <paramref name="handlers"/>, started; dispose it when the service worker stops.</summary>
     public static EnvelopeExecutionQueue StartQueue(
         AgentApiClient api,
