@@ -122,7 +122,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             {
                 throw;
             }
-            catch (AgentLifecycleDormantException)
+            catch (Exception ex) when (ex is AgentLifecycleDormantException or AgentRegistrationChangedException)
             {
                 throw;
             }
@@ -269,7 +269,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         {
             throw;
         }
-        catch (AgentLifecycleDormantException)
+        catch (Exception ex) when (ex is AgentLifecycleDormantException or AgentRegistrationChangedException)
         {
             throw;
         }

@@ -290,6 +290,11 @@ public sealed partial class HeartbeatLoop
                 _log.Warn($"Heartbeat loop entering dormant state={ex.State}.");
                 return;
             }
+            catch (AgentRegistrationChangedException)
+            {
+                _log.Warn("Heartbeat worker stopped because its registration changed.");
+                return;
+            }
             catch (Exception ex)
             {
                 if (_wakeupClient is not null)

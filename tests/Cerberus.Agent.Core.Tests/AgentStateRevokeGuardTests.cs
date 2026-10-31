@@ -7,7 +7,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 // Unit/support evidence: a signed revoke applies only to the registration (agent id and lifecycle generation) it was
 // issued for, including the production current-id guard. No installed service is exercised here.
-public sealed class AgentStateRevokeGuardTests : IDisposable
+public sealed partial class AgentStateRevokeGuardTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
 
@@ -34,9 +34,9 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
 
         Assert.NotEqual(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
         Assert.False(f.Secrets.Cleared);
-        Assert.Equal(0, f.Cancels);
-        Assert.Equal(0, f.Stops);
-        Assert.Null(f.Store.Load("agent-a").PendingRevoke);
+        Assert.Equal(1, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.NotNull(f.Store.Load("agent-a").PendingRevoke);
     }
 
     [Fact]
@@ -103,13 +103,14 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
             Handler = new AgentStateCommandHandler(
                 Store,
                 productionBinding ? EnvelopeWiring.CurrentAgentId(
-                    new ProductBoundSecretStore(Secrets, Secrets.Identity, "https://backend.invalid"), LifecycleStore, 0, Store)
+                    new ProductBoundSecretStore(Secrets, Secrets.Identity, "https://backend.invalid", "key"), LifecycleStore, 0, Store)
                     : Store.Track(_ => Task.FromResult(ReadAgentId())),
                 Lifecycle,
                 () => Cancels++,
                 Log,
                 () => Stops++,
-                new AgentRevokeFinalResults());
+                new AgentRevokeFinalResults(),
+                productionBinding ? EnvelopeWiring.RegistrationContext(Secrets, LifecycleStore) : null);
         }
 
         private string ReadAgentId()
@@ -125,6 +126,11 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
         public CaptureLog Log { get; } = new();
         public int Cancels { get; private set; }
         public int Stops { get; private set; }
+
+        public AgentStateCommandHandler FreshWorker(AgentSignedStateStore store, long generation)
+            => new(store, EnvelopeWiring.CurrentAgentId(new ProductBoundSecretStore(Secrets, Secrets.Identity,
+                    "https://backend.invalid"), LifecycleStore, generation, store), Lifecycle, () => Cancels++, Log,
+                () => Stops++, new AgentRevokeFinalResults(), EnvelopeWiring.RegistrationContext(Secrets, LifecycleStore));
 
         public static async Task<Fixture> WithPendingRevokeAsync(string dir, bool productionBinding = false)
         {
@@ -185,10 +191,13 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
     private sealed class Secrets : ISecretStore
     {
         public bool Cleared { get; private set; }
+        public int ClearCalls { get; private set; }
         public AgentIdentity Identity { get; set; } = new("agent-a", "t1");
+        public string Key { get; set; } = "key";
+        public string Backend { get; set; } = "https://backend.invalid";
 
         public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
-            => Task.FromResult((Identity, "refresh", "key", "https://backend.invalid", (string?)null, (string?)null));
+            => Task.FromResult((Identity, "refresh", Key, Backend, (string?)null, (string?)null));
 
         public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl, string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
             => Task.CompletedTask;
@@ -196,6 +205,7 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
         public Task ClearAsync(CancellationToken ct)
         {
             Cleared = true;
+            ClearCalls++;
             return Task.CompletedTask;
         }
     }

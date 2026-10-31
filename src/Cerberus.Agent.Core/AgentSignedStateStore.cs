@@ -6,7 +6,15 @@ namespace Cerberus.Agent.Core;
 /// <summary>A signed revoke that was applied but whose DONE result has not reached a final outcome yet.</summary>
 public sealed record AgentPendingRevoke(
     [property: JsonPropertyName("command_id")] string CommandId,
-    [property: JsonPropertyName("reason_code")] string ReasonCode);
+    [property: JsonPropertyName("reason_code")] string ReasonCode,
+    [property: JsonPropertyName("registration"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    AgentRevokeRegistration? Registration = null);
+
+/// <summary>Non-secret, protected registration context captured with the signed revoke.</summary>
+public sealed record AgentRevokeRegistration(
+    [property: JsonPropertyName("agent_id")] string AgentId,
+    [property: JsonPropertyName("tenant_id")] string? TenantId,
+    [property: JsonPropertyName("enrollment_nonce")] string? EnrollmentNonce);
 
 /// <summary>Signed state applied from <c>agent_state</c> envelopes (contract v1 (b)) for one registration.</summary>
 public sealed record AgentSignedState(
@@ -265,7 +273,10 @@ public sealed class AgentSignedStateStore
                 || string.IsNullOrEmpty(loaded.AgentId) || loaded.StateSeq < 0
                 || loaded.RegistrationState is not (null or "pending_claim" or "claimed")
                 || (loaded.PendingRevoke is { } revoke
-                    && (string.IsNullOrEmpty(revoke.CommandId) || revoke.ReasonCode is not ("agent_revoked" or "agent_deactivated")))
+                    && (string.IsNullOrEmpty(revoke.CommandId) || revoke.ReasonCode is not ("agent_revoked" or "agent_deactivated")
+                        || (revoke.Registration is { } registration &&
+                            (registration.AgentId != loaded.AgentId || registration.TenantId is { Length: 0 }
+                             || (registration.EnrollmentNonce is not null && !Guid.TryParseExact(registration.EnrollmentNonce, "N", out _))))))
                 || loaded.Reset is not (null or AgentSignedState.ResetUnreadable))
                 return false;
             state = loaded;
