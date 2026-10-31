@@ -1097,9 +1097,8 @@ internal static partial class AgentUpdateLocalService
             {
                 await ReconcileOwnedAsync(ct).ConfigureAwait(false);
                 var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                if (!AllowsAutomatic(lifecycle)) continue;
                 var active = Journal.Read();
-                if (await RunInstallRequestAsync(active, lifecycle.Generation, ct).ConfigureAwait(false)) continue;
+                if (await HoldOrRunInstallRequestAsync(active, lifecycle, ct).ConfigureAwait(false)) continue;
                 var now = DateTimeOffset.UtcNow;
                 if (active.AttemptId is not null &&
                     ((active.Required && active.Phase == AgentUpdateStates.AwaitingConsent && active.ApplyNotBeforeUtc <= now) ||
@@ -1139,6 +1138,7 @@ internal static partial class AgentUpdateLocalService
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
+            HoldWhileQuarantined(automatic, ct);
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
             {

@@ -18,8 +18,11 @@ public sealed record AgentUpdateReconciliationSnapshot(
     DateTimeOffset? NextRetryUtc,
     DateTimeOffset? NextCheckUtc);
 
-/// <summary>A signed install request waiting for the update scheduler; it lapses when the lifecycle generation changes.</summary>
-public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long LifecycleGeneration);
+/// <summary>
+/// A signed install request waiting for the update scheduler. It lapses when the lifecycle generation changes, when
+/// automatic updates are not allowed, or at <see cref="ExpiresUtc"/>; quarantine holds it. <see cref="Attempts"/> counts failed stagings.
+/// </summary>
+public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long LifecycleGeneration, DateTimeOffset ExpiresUtc, int Attempts = 0);
 
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
@@ -79,7 +82,7 @@ public sealed class AgentUpdateJournalStore
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
-            value.InstallRequest is { LifecycleGeneration: < 0 } ||
+            value.InstallRequest is { LifecycleGeneration: < 0 } or { Attempts: < 0 } ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");

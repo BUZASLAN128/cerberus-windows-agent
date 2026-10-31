@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -24,6 +25,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 #endif
     };
     private const string InstallMode = "install";
+    internal const string InvalidNotBefore = "not_before_utc must be an ISO-8601 time with an offset, at most 24 hours ahead.";
 
     private readonly Func<AgentUpdateCoordinator?> _coordinatorFactory;
     private readonly AgentUpdateStateStore _stateStore;
@@ -54,6 +56,9 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         }
         catch (Exception ex)
         {
+            if (AgentBuildProfile.IsServer)
+                return await RejectAsync(ex is InvalidOperationException ? ex.Message : "Update request payload is invalid.")
+                    .ConfigureAwait(false);
             var preserved = await AgentUpdateLocalService.ProjectPreservedAttemptAsync(CancellationToken.None)
                 .ConfigureAwait(false);
             if (preserved is not null)
@@ -70,11 +75,11 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
         var campaignId = Clean(request.CampaignId) ?? command.Id;
         var commandId = command.Id;
-        var install = string.Equals(request.Mode, InstallMode, StringComparison.Ordinal);
+        if (string.Equals(request.Mode, InstallMode, StringComparison.Ordinal))
+            return await RequestInstallAsync(request, command, campaignId, ct).ConfigureAwait(false);
         try
         {
-            if (!install)
-                await ApplyJitterAsync(request, command, campaignId, ct).ConfigureAwait(false);
+            await ApplyJitterAsync(request, command, campaignId, ct).ConfigureAwait(false);
 
             var coordinator = _coordinatorFactory();
             if (coordinator is null)
@@ -90,9 +95,6 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
                     errorMessage: "Update trust is not configured.").ConfigureAwait(false);
                 return Failed("Update trust is not configured.", failed);
             }
-
-            if (install)
-                return await RequestInstallAsync(request, command, campaignId, ct).ConfigureAwait(false);
 
             var signal = BuildSignal(request);
             await _stateStore.WriteTransitionAsync(
@@ -215,32 +217,71 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
     /// <summary>
     /// Records the install for the update scheduler and returns at once. The outcome is reported by the update status
-    /// and agent version of later heartbeats.
+    /// and agent version of later heartbeats. A rejection writes nothing.
     /// </summary>
-    private static async Task<CommandResult> RequestInstallAsync(
+    private async Task<CommandResult> RequestInstallAsync(
         AgentUpdateRequestPayload request,
         AgentCommand command,
         string campaignId,
         CancellationToken ct)
     {
-        _ = BuildSignal(request); // manifest URL and channel stay pinned to the installed configuration
-        var notBefore = InstallNotBefore(request.NotBeforeUtc, request.JitterSeconds,
-            $"{campaignId}:{command.IdempotencyKey}:{command.Id}", DateTimeOffset.UtcNow);
-        var recorded = await AgentUpdateLocalService.RequestInstallAsync(notBefore, ct).ConfigureAwait(false);
-        var state = await AgentUpdateLocalService.ProjectCurrentStateAsync(ct).ConfigureAwait(false);
-        return recorded ? Done(state) : Failed("Automatic updates are not allowed in the current agent state.", state);
+        try
+        {
+            var notBefore = InstallNotBefore(request.NotBeforeUtc, request.JitterSeconds,
+                $"{campaignId}:{command.IdempotencyKey}:{command.Id}", DateTimeOffset.UtcNow);
+            if (notBefore is null)
+                return await RejectAsync(InvalidNotBefore).ConfigureAwait(false);
+            if (_coordinatorFactory() is null)
+                return await RejectAsync("Update trust is not configured.").ConfigureAwait(false);
+            _ = BuildSignal(request); // manifest URL and channel stay pinned to the installed configuration
+            if (!await AgentUpdateLocalService.RequestInstallAsync(notBefore.Value, ct).ConfigureAwait(false))
+                return await RejectAsync("Automatic updates are not allowed in the current agent state.").ConfigureAwait(false);
+            _log.Info($"Install request recorded: command {command.Id}, not before {notBefore.Value:O}.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warn($"Install request rejected: {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)}");
+            return await RejectAsync(ex is InvalidOperationException ? ex.Message : "Install request could not be recorded.")
+                .ConfigureAwait(false);
+        }
+
+        try
+        {
+            return Done(await AgentUpdateLocalService.ProjectCurrentStateAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+        catch (Exception)
+        {
+            return Done(await _stateStore.ReadAsync(_currentVersion, CancellationToken.None).ConfigureAwait(false));
+        }
     }
 
-    /// <summary>Requested start plus the deterministic jitter, never before now and at most the rollout window ahead.</summary>
-    internal static DateTimeOffset InstallNotBefore(string? notBeforeUtc, int? jitterSeconds, string seed, DateTimeOffset now)
+    /// <summary>FAILED with the stored state; nothing is written, so the reported update status stays as it was.</summary>
+    private async Task<CommandResult> RejectAsync(string message)
+        => Failed(message, await _stateStore.ReadAsync(_currentVersion, CancellationToken.None).ConfigureAwait(false));
+
+    /// <summary>
+    /// Requested start plus the deterministic jitter, never before now and at most the rollout window ahead. Null when
+    /// the requested time has no offset, does not parse, or is more than the rollout window ahead.
+    /// </summary>
+    internal static DateTimeOffset? InstallNotBefore(string? notBeforeUtc, int? jitterSeconds, string seed, DateTimeOffset now)
     {
-        var start = ParseUtc(notBeforeUtc, now);
-        if (start < now)
-            start = now;
-        var at = start.Add(DeterministicOffset(TimeSpan.FromSeconds(Math.Clamp(jitterSeconds ?? 0, 0, 3600)), seed));
         var latest = now.Add(AgentUpdateLocalService.MaxInstallRequestDelay);
+        var start = now;
+        if (Clean(notBeforeUtc) is { } value)
+        {
+            if (!HasOffset(value) ||
+                !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+                parsed > latest)
+                return null;
+            if (parsed > now)
+                start = parsed.ToUniversalTime();
+        }
+        var at = start.Add(DeterministicOffset(TimeSpan.FromSeconds(Math.Clamp(jitterSeconds ?? 0, 0, 3600)), seed));
         return at > latest ? latest : at;
     }
+
+    private static bool HasOffset(string value)
+        => value.EndsWith('Z') || value.EndsWith('z') || (value.Length > 6 && value[^6] is '+' or '-' && value[^3] == ':');
 
     internal static bool SupportsMode(string? mode) => mode is not null && SupportedModes.Contains(mode);
 

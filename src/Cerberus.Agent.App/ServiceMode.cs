@@ -313,6 +313,7 @@ internal static partial class ServiceMode
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         EnvelopeExecutionQueue? queue = null;
 #if CERBERUS_SERVER_PROFILE
+        AgentUpdateLocalService.ConnectSignedState(signedState.IsQuarantined, log);
         ManagedAccountManifestPolicy? managedAccounts = null;
         var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
             new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log,
