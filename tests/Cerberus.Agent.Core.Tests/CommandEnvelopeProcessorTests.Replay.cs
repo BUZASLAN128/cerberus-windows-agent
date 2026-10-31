@@ -22,6 +22,7 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Empty(h.Backend.Results);
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Time.Advance(TimeSpan.FromSeconds(10));
         await h.Process(cmd);
         await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "result after redelivery");
 
@@ -96,6 +97,7 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
         var before = h.Backend.Acks.Count;
+        h.Time.Advance(TimeSpan.FromSeconds(10));
         await h.Process(cmd);
 
         Assert.Equal(before + 1, h.Backend.Acks.Count);
@@ -110,6 +112,28 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.All(h.Backend.Acks.Skip(1), a => Assert.Equal("rejected", a.Json.GetProperty("decision").GetString()));
         Assert.Equal(0, h.Ping.Calls);
         Assert.Empty(h.Backend.Results);
+    }
+
+    [Fact]
+    public async Task AckRetryHonorsRetryAfterWithoutStartingTheCommand()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Backend.RetryAfter = "60";
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.TooManyRequests);
+        var cmd = h.Cmd();
+        await h.Process(cmd);
+        Assert.Single(h.Backend.Acks);
+        Assert.Equal(0, h.Ping.Calls);
+
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Time.Advance(TimeSpan.FromSeconds(30));
+        await h.Process(cmd);
+        Assert.Single(h.Backend.Acks);
+        Assert.Equal(0, h.Ping.Calls);
+        h.Time.Advance(TimeSpan.FromSeconds(30));
+        await h.Process(cmd);
+        await Wait.UntilAsync(() => h.Ping.Calls == 1, "command after Retry-After");
+        Assert.Equal(2, h.Backend.Acks.Count);
     }
 
     [Fact]
@@ -222,6 +246,7 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal(h.Backend.Acks[0].Body, h.Backend.Acks[1].Body);
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Time.Advance(TimeSpan.FromSeconds(10));
         await h.Process();
         await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "result confirmed");
 
@@ -244,12 +269,31 @@ public sealed partial class CommandEnvelopeProcessorTests
         var before = h.Backend.Results.Count;
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Time.Advance(TimeSpan.FromSeconds(10));
         h.Processor.SignalOutbox();
         await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "result confirmed by the signal alone");
 
         Assert.True(h.Backend.Results.Count > before);
         Assert.Equal(1, h.Ping.Calls);
         Assert.Single(h.Backend.Acks);
+    }
+
+    [Fact]
+    public async Task SignedResultRetryHonorsRetryAfter()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Backend.RetryAfter = "60";
+        h.Backend.Respond = (r, _) => Status(r.Leaf == "result" ? HttpStatusCode.TooManyRequests : HttpStatusCode.OK);
+        var cmd = h.Cmd();
+        await h.Process(cmd);
+        await Wait.UntilAsync(() => h.Queue.ResultRetryNotBefore > h.Time.GetTimestamp(), "result retry gate");
+        Assert.Equal(h.Time.GetTimestamp() + 60 * h.Time.TimestampFrequency, h.Queue.ResultRetryNotBefore);
+        Assert.False(h.Record(cmd)!.ResultSubmitted);
+        h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
+        h.Time.Advance(TimeSpan.FromSeconds(60));
+        h.Processor.SignalOutbox();
+        await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "result after Retry-After");
+        Assert.Equal(1, h.Ping.Calls);
     }
 
     /// <summary>Leaves a <c>started</c> record on disk, as a process killed mid-run would, then restarts.</summary>

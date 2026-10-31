@@ -15,8 +15,11 @@ public sealed class AgentUxStaticTests
         const string gate = "AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot)";
         Assert.True(service.IndexOf(gate, StringComparison.Ordinal) >= 0);
         Assert.True(service.IndexOf(gate, StringComparison.Ordinal) < service.IndexOf("AgentFileLogger.CreateService", StringComparison.Ordinal));
-        Assert.True(consent.IndexOf(gate, StringComparison.Ordinal) >= 0);
-        Assert.True(consent.IndexOf(gate, StringComparison.Ordinal) < consent.IndexOf("Directory.CreateDirectory", StringComparison.Ordinal));
+        var machineWrite = consent.IndexOf("private static void WriteMachineRecord", StringComparison.Ordinal);
+        var machineGate = consent.IndexOf("AgentUpdateSecurity.EnsureProtectedRoot(staging)", machineWrite, StringComparison.Ordinal);
+        var stageCreate = consent.IndexOf("new FileStream(temp, FileMode.CreateNew", machineWrite, StringComparison.Ordinal);
+        Assert.True(machineWrite >= 0 && machineGate > machineWrite && stageCreate > machineGate);
+        Assert.Contains("baseDir is null ? AgentUpdateSecurity.DefaultPrivilegedRoot : root", consent);
         var bootstrapStart = helper.IndexOf("if (operation == \"bootstrap\")", StringComparison.Ordinal);
         var serviceOpen = helper.IndexOf("using var manager = OpenSCManager", StringComparison.Ordinal);
         Assert.True(bootstrapStart >= 0 && serviceOpen > bootstrapStart);

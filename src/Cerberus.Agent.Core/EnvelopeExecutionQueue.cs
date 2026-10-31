@@ -18,7 +18,7 @@ public interface IEnvelopeResultFollowUp
 /// entries wait or run at once. It also stores and submits every envelope result and drains
 /// the result outbox after each heartbeat, so none of this runs in the heartbeat loop.
 /// </summary>
-public sealed class EnvelopeExecutionQueue : IAsyncDisposable
+public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
 {
     public const int MaxQueued = 8;
     public const int OutboxPerCycle = 16;
@@ -29,11 +29,17 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
     private readonly IReadOnlyDictionary<string, ICommandHandler> _handlers;
     private readonly Func<CancellationToken, Task<string>> _currentAgentId;
     private readonly IAgentLogger _log;
+    private readonly AgentRetryGate _resultRetry;
     private readonly ConcurrentQueue<QueuedEnvelope> _queue = new();
     private readonly ConcurrentDictionary<(string AgentId, string Id), byte> _inFlight = new();
     private readonly ConcurrentDictionary<(string AgentId, string Id), (string Type, long Started)> _accepted = new();
     private readonly SemaphoreSlim _signal = new(0);
     private readonly SemaphoreSlim _drainGate = new(1, 1);
+    // A timed-out handler can ignore cancellation. Keep its permit until the actual
+    // handler returns so successive timeouts cannot create unbounded live work.
+    // State control has a separate permit so a stuck facts handler cannot block revoke.
+    private static readonly SemaphoreSlim HandlerGate = new(1, 1);
+    private static readonly SemaphoreSlim StateHandlerGate = new(1, 1);
     private readonly object _lifecycleGate = new();
     private CancellationTokenSource _stop = new();
     private CancellationTokenSource _cancelAll = new();
@@ -57,6 +63,7 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         _currentAgentId = currentAgentId ?? throw new ArgumentNullException(nameof(currentAgentId));
         IsQuarantined = isQuarantined ?? throw new ArgumentNullException(nameof(isQuarantined));
         Time = time ?? TimeProvider.System;
+        _resultRetry = new AgentRetryGate(Time);
         _log = log ?? NullAgentLogger.Instance;
     }
 
@@ -130,6 +137,7 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
     }
 
     public int QueuedCount => Volatile.Read(ref _slots);
+    internal long ResultRetryNotBefore => _resultRetry.NotBefore;
 
     internal bool IsInFlight(string agentId, string id) => _inFlight.ContainsKey((agentId, id));
 
@@ -340,6 +348,8 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
     {
         if (record.ResultB64 is null || record.ResultSubmitted)
             return false;
+        if (!_resultRetry.CanTry)
+            return false;
 
         var refused = false;
         var httpStatus = 0;
@@ -356,9 +366,12 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            _resultRetry.Failed(ex);
             _log.Warn($"Command envelope id={record.Id} result not delivered: {ex.GetType().Name}; kept in the outbox.");
             return false;
         }
+
+        _resultRetry.Succeeded();
 
         if (_accepted.TryRemove((record.AgentId, record.Id), out var accepted))
         {
@@ -376,19 +389,6 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         return true;
     }
 
-    private static string ResultStatus(CommandReplayRecord record)
-    {
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(record.ResultB64!));
-            return doc.RootElement.GetProperty("status").GetString() ?? "UNKNOWN";
-        }
-        catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
-        {
-            return "UNKNOWN";
-        }
-    }
-
     private async Task<byte[]> ExecuteAsync(SignedEnvelope envelope, CancellationToken ct)
     {
         if (!_handlers.TryGetValue(envelope.Type, out var handler))
@@ -400,11 +400,20 @@ public sealed class EnvelopeExecutionQueue : IAsyncDisposable
         CommandResult result;
         try
         {
-            result = await InvokeAsync(handler, command, linked.Token).WaitAsync(linked.Token).ConfigureAwait(false);
+            // A handler may block synchronously before producing a Task. The queue
+            // must still be able to enforce timeout and observe shutdown.
+            var invocation = Task.Run(() => InvokeBoundedAsync(handler, command, linked.Token), CancellationToken.None);
+            _ = invocation.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            result = await invocation.WaitAsync(linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            return Failed("command_timeout", envelope.EnvelopeSha256);
+            // Cancellation is cooperative: the handler may have performed an effect or may
+            // still be running after WaitAsync returns. Never report a definite failure.
+            return CommandEnvelope.BuildResultBody(OutcomeUnknown, null, "command_timeout", null,
+                envelope.EnvelopeSha256);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {

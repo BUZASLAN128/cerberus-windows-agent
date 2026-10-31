@@ -23,6 +23,13 @@ public sealed partial class HeartbeatLoop
     private readonly Func<CancellationToken, Task<bool>>? _backoffResetRequested;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _automaticNetwork;
+    private readonly AgentWakeupSignal? _wakeupSignal;
+    private readonly AgentWakeupClient? _wakeupClient;
+    private readonly bool _signedStateOnly;
+    private readonly bool _supportsEvents;
+    private readonly bool _signedCommandMode;
+    private readonly bool _signedCommandsOnly;
+    private readonly bool _legacyAsyncSupported;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -47,7 +54,14 @@ public sealed partial class HeartbeatLoop
         IAgentLifecycleStateStore? lifecycleState = null,
         bool automaticNetwork = true,
         IHeartbeatCommandProcessor? commandProcessor = null,
-        AgentTimingPolicy? timingPolicy = null)
+        AgentTimingPolicy? timingPolicy = null,
+        AgentWakeupSignal? wakeupSignal = null,
+        AgentWakeupClient? wakeupClient = null,
+        bool signedStateOnly = false,
+        bool supportsEvents = true,
+        bool signedCommandMode = false,
+        bool signedCommandsOnly = false,
+        bool legacyAsyncSupported = false)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _api = api;
@@ -85,6 +99,15 @@ public sealed partial class HeartbeatLoop
         _backoffResetRequested = lifecycleState is null ? backoffResetRequested : null;
         _lifecycleState = lifecycleState;
         _automaticNetwork = automaticNetwork;
+        _wakeupSignal = wakeupClient is not null && wakeupSignal is null
+            ? throw new ArgumentException("A wakeup client requires its signal.", nameof(wakeupSignal))
+            : wakeupSignal;
+        _wakeupClient = wakeupClient;
+        _signedStateOnly = signedStateOnly;
+        _supportsEvents = supportsEvents;
+        _signedCommandMode = signedCommandMode;
+        _signedCommandsOnly = signedCommandsOnly;
+        _legacyAsyncSupported = legacyAsyncSupported;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -114,6 +137,11 @@ public sealed partial class HeartbeatLoop
                     }
                 }
 
+                var supported = AgentSchemaVersions.All.AsEnumerable();
+                if (_wakeupClient is not null) supported = supported.Append(AgentWakeupProtocol.Capability);
+                if (_signedCommandMode) supported = supported.Append(CommandEnvelope.Capability);
+                if (_signedCommandsOnly) supported = supported.Append(CommandEnvelope.SignedOnlyCapability);
+                if (_legacyAsyncSupported) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
                 var hbReq = new
                 {
                     status = degraded ? "degraded" : "connected",
@@ -121,13 +149,14 @@ public sealed partial class HeartbeatLoop
                     build_id = _buildId,
                     build_channel = _buildChannel,
                     runtime_mode = "service",
-                    supported_schema_versions = AgentSchemaVersions.All,
+                    supported_schema_versions = supported.ToArray(),
                     tailscale,
                     ad = _adStatusProvider is null ? null : await _adStatusProvider(ct),
                     update_status = _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
                     capabilities = _dispatcher.HandlerTypes,
                 };
 
+                var heartbeatStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 var hb = await _api.HeartbeatAsync(hbReq, ct);
                 AgentBackendContact.MarkSuccess();
 
@@ -139,19 +168,26 @@ public sealed partial class HeartbeatLoop
                     ? HeartbeatControlAction.Continue
                     : await _responseHandler.HandleAsync(hb, ct).ConfigureAwait(false);
                 if (control == HeartbeatControlAction.Stop)
+                {
+                    if (_wakeupClient is not null)
+                        await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     return;
+                }
 
                 if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false))
                     return;
 
 #if !CERBERUS_SERVER_PROFILE
-                if (string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
+                if (!_signedStateOnly && string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
                 {
+                    if (_wakeupClient is not null)
+                        await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _log.Warn(
                         $"Agent version blocked by server policy: version={_agentVersion}, reason={hb.VersionPolicy?.Reason ?? "unknown"}");
                     _commandProcessor.SignalOutbox();
                     var blockedDelay =_timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20), 300);
                     await Task.Delay(TimeSpan.FromSeconds(blockedDelay), ct);
+                    _wakeupSignal?.Clear();
                     continue;
                 }
 #endif
@@ -160,7 +196,7 @@ public sealed partial class HeartbeatLoop
 
                 await TryFlushTelemetryBufferAsync(ct).ConfigureAwait(false);
 
-                if (!startedEventSent)
+                if (_supportsEvents && !startedEventSent)
                 {
                     await TrySubmitEventAsync(
                         "agent.started",
@@ -209,16 +245,32 @@ public sealed partial class HeartbeatLoop
 
                 if (skipCommands)
                 {
+                    if (_wakeupClient is not null)
+                        await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _commandProcessor.SignalOutbox();
                     var controlDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 60), 0.20), 60);
                     await Task.Delay(TimeSpan.FromSeconds(controlDelay), ct);
+                    _wakeupSignal?.Clear();
                     continue;
                 }
 
-                await _commandProcessor.ProcessAsync(hb.PendingCommands, ct).ConfigureAwait(false);
+                if (_wakeupClient is not null)
+                    await _wakeupClient.ConfigureAsync(hb.Wakeup, ct).ConfigureAwait(false);
+                var commands = _legacyAsyncSupported
+                    ? BindLeaseDeadlines(hb.PendingCommands, hb.ServerTime, heartbeatStarted)
+                    : hb.PendingCommands;
+                await _commandProcessor.ProcessAsync(commands, ct).ConfigureAwait(false);
 
                 var delay = _timing.PollDelaySeconds(ApplyJitter(hb.NextPollSeconds, 0.20));
-                await Task.Delay(TimeSpan.FromSeconds(delay), ct);
+                if (_wakeupSignal is null)
+                    await Task.Delay(TimeSpan.FromSeconds(delay), ct);
+                else
+                {
+                    // Even an early or repeated hint cannot bypass the profile's poll floor.
+                    var floor = Math.Min(delay, _timing.Bounds.PollFloor);
+                    await Task.Delay(TimeSpan.FromSeconds(floor), ct).ConfigureAwait(false);
+                    await _wakeupSignal.WaitAsync(TimeSpan.FromSeconds(delay - floor), ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -236,6 +288,8 @@ public sealed partial class HeartbeatLoop
             }
             catch (Exception ex)
             {
+                if (_wakeupClient is not null)
+                    await _wakeupClient.StopAsync(CancellationToken.None).ConfigureAwait(false);
                 degraded = true;
                 consecutiveHeartbeatErrors++;
                 await RecordTransientLifecycleFailureAsync(ex, ct).ConfigureAwait(false);
@@ -243,12 +297,14 @@ public sealed partial class HeartbeatLoop
                     return;
 
                 var retryDelay = CalculateRetryDelay(ex, consecutiveHeartbeatErrors);
+                _wakeupSignal?.Clear();
                 await PersistRetryAsync(retryDelay, ct).ConfigureAwait(false);
                 _log.Warn($"Heartbeat loop error: {ex.GetType().Name}. Next retry in {FormatDelay(retryDelay)}. at={ExceptionSite.FirstFrame(ex)}");
                 bool resetRequested;
                 try
                 {
                     resetRequested = await DelayForErrorBackoffAsync(retryDelay, ct).ConfigureAwait(false);
+                    _wakeupSignal?.Clear();
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -263,5 +319,19 @@ public sealed partial class HeartbeatLoop
                 }
             }
         }
+    }
+
+    internal static IReadOnlyList<AgentCommand> BindLeaseDeadlines(IReadOnlyList<AgentCommand> commands,
+        long serverTime, long heartbeatStarted)
+    {
+        return commands.Select(command =>
+        {
+            if (serverTime <= 0 || command.LeaseExpiresAtUnix is not { } expiry || expiry <= serverTime)
+                return command;
+            // Start the countdown before the HTTP request, not when the reply arrives. The
+            // server timestamp is rounded to seconds, so reserve two extra seconds.
+            var seconds = Math.Clamp(expiry - serverTime - 2, 0, 3600);
+            return command with { SafeLeaseDeadlineTimestamp = heartbeatStarted + seconds * System.Diagnostics.Stopwatch.Frequency };
+        }).ToArray();
     }
 }

@@ -32,7 +32,8 @@ internal sealed record AgentArgs(
     bool ProofFromInstaller,
     bool ShowFingerprint,
     string? ProofFile,
-    bool EnrollRollback);
+    bool EnrollRollback,
+    string? Product = null);
 
 internal static class Args
 {
@@ -124,6 +125,7 @@ internal static class Args
             proofFromInstaller,
             showFingerprint,
             proofFile,
-            enrollRollback);
+            enrollRollback,
+            Value("--product") ?? (Has("--product") ? "" : null));
     }
 }

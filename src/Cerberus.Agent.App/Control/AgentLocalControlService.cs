@@ -78,7 +78,8 @@ internal sealed class AgentLocalControlService
         if (snapshot.State == AgentLifecycleState.Active)
             return StateResponse(true, "already_active", snapshot);
         var response = await ProbeAsync(store, _lifecycle, _quiesce, ct).ConfigureAwait(false);
-        if (!Claimed(response))
+        var (retryIdentity, _, _, _, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+        if (!AcceptsCredentialProbe(response, retryIdentity.Product))
             return StateResponse(false, "registration_not_claimed", await _lifecycle.LoadAsync(ct).ConfigureAwait(false));
         var recovered = await controller.CompleteManualRecoveryAsync(snapshot.Generation, ct).ConfigureAwait(false);
         return StateResponse(AgentLifecycleStates.AllowsAutomaticNetwork(recovered.State), "recovery_checked", recovered);
@@ -95,7 +96,9 @@ internal sealed class AgentLocalControlService
             return StateResponse(true, "registration_retired", snapshot);
         if (snapshot.State == AgentLifecycleState.NeedsReenrollment)
             return StateResponse(false, "reenrollment_required", snapshot);
-        var (_, _, key, backend, _, _) = await machine.LoadAsync(ct).ConfigureAwait(false);
+        var (identity, _, key, backend, _, _) = await machine.LoadAsync(ct).ConfigureAwait(false);
+        if (identity.Product != AgentProducts.Cerberus)
+            return StateResponse(false, "product_unregister_unsupported", snapshot);
         using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = new Uri(backend), Timeout = TimeSpan.FromSeconds(30) };
         var api = new AgentApiClient(http, machine,
             new AgentTokenManager(http, machine, lifecycleState: _lifecycle, manualOperation: true, quiesce: _quiesce),
@@ -130,7 +133,7 @@ internal sealed class AgentLocalControlService
             // The caller may retry: the staged enrollment is untouched.
             return StateResponse(false, "enrollment_validation_unavailable", snapshot);
         }
-        if (!Claimed(response) || AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State))
+        if (!AcceptsCredentialProbe(response, marker.Product ?? AgentProducts.Cerberus) || AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State))
             return StateResponse(false, "enrollment_validation_failed", snapshot);
 
         using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
@@ -156,30 +159,41 @@ internal sealed class AgentLocalControlService
         Func<CancellationToken, Task>? quiesce, CancellationToken ct)
     {
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
-        var (_, _, key, backend, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+        var (identity, _, key, backend, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
         if (!Uri.TryCreate(backend, UriKind.Absolute, out var endpoint) || endpoint.Scheme is not ("https" or "http"))
             throw new InvalidDataException("Stored endpoint is invalid.");
+        if (identity.Product == AgentProducts.Secondary && (endpoint.Scheme != "https" ||
+            !AgentBuildConfig.SameEndpoint(backend, AgentBuildConfig.SecondaryBackendUrl)))
+            throw new InvalidDataException("Stored product endpoint does not match this package.");
         using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = endpoint, Timeout = TimeSpan.FromSeconds(30) };
         var api = new AgentApiClient(http, store,
             new AgentTokenManager(http, store, lifecycleState: lifecycle, manualOperation: true, quiesce: quiesce),
             new RequestSigner(key), lifecycle, manualOperation: true, quiesce: quiesce);
-        var response = await api.HeartbeatAsync(CreateManualHeartbeat(), ct).ConfigureAwait(false);
-        await new HeartbeatResponseHandler(store, lifecycleState: lifecycle, quiesce: quiesce)
+        var response = await api.HeartbeatAsync(CreateManualHeartbeat(AgentBuildProfile.IsServer || identity.Product == AgentProducts.Secondary), ct).ConfigureAwait(false);
+        await new HeartbeatResponseHandler(store, lifecycleState: lifecycle, quiesce: quiesce,
+                signedStateOnly: identity.Product == AgentProducts.Secondary)
             .HandleAsync(response, ct).ConfigureAwait(false);
         return response;
     }
 
     // Manual recovery is still a service heartbeat on the canonical backend wire contract.
-    internal static object CreateManualHeartbeat() => new
+    internal static object CreateManualHeartbeat(bool signedOnly = false) => new
         {
             status = "connected",
             agent_version = WindowsDeviceInfo.GetAgentVersion(),
             build_id = WindowsDeviceInfo.GetBuildId(),
             build_channel = WindowsDeviceInfo.GetBuildChannel(),
             runtime_mode = "service",
-            supported_schema_versions = AgentSchemaVersions.All,
+            supported_schema_versions = signedOnly
+                ? AgentSchemaVersions.All.Append(CommandEnvelope.SignedOnlyCapability).ToArray()
+                : AgentSchemaVersions.All,
             capabilities = Array.Empty<string>(),
         };
+
+    // The secondary collector's legacy five-field heartbeat confirms authentication,
+    // not claim status. The collector itself withholds commands until activation.
+    internal static bool AcceptsCredentialProbe(HeartbeatResponse response, string product)
+        => product == AgentProducts.Secondary ? response is not null : Claimed(response);
 
     // Server: a heartbeat 200 counts as claimed; unsigned registration_state, lifecycle_state and revoke are not read.
     internal static bool Claimed(HeartbeatResponse response)

@@ -21,6 +21,8 @@ internal interface IHeadlessHost
     Task<HeadlessServiceState> EnsureRunningAsync(bool startIfStopped, CancellationToken ct);
     /// <summary>The configured backend, or null. Throws InvalidOperationException when routing or scheme is not allowed.</summary>
     string? ResolveBackendUrl();
+    string? ResolveBackendUrlForProduct(string product)
+        => product == AgentProducts.Cerberus ? ResolveBackendUrl() : null;
     HeadlessEnrollmentOptions BuildOptions(string backendUrl);
     bool HasMachineCredentials();
     Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct);
@@ -43,6 +45,8 @@ internal interface IHeadlessHost
     /// <summary>Server profile: the cross-process enroll lock. Null when another run holds it after <paramref name="wait"/>. Throws UnauthorizedAccessException when the lock cannot be trusted. The desktop has no such lock.</summary>
     IDisposable? TryAcquireEnrollLock(TimeSpan wait) => NoLock.Instance;
 #if !CERBERUS_SERVER_PROFILE
+    bool HasCurrentEnrollmentConsent();
+    void PrepareDesktopEnrollment(bool installService);
     void InstallDesktopService();
 #endif
 }
@@ -63,6 +67,14 @@ internal static class EnrollHeadlessMode
 
     public static async Task<int> RunAsync(AgentArgs args, string[] rawArgs, CancellationToken ct)
     {
+        var product = args.Product ?? AgentProducts.Cerberus;
+        if (!AgentProducts.IsKnown(product) ||
+            (product == AgentProducts.Secondary && AgentProfileMetadata.LoadProductCommandAnchors(
+                product, EnvelopeWiring.ManifestPublicKeyPems(NullAgentLogger.Instance)).Count == 0))
+        {
+            Console.Error.WriteLine("Enrollment not completed: product or product trust is not configured (exit 2).");
+            return HeadlessEnrollmentExit.BadInput;
+        }
         var host = new WindowsHeadlessHost();
         var sources = (args.ProofFile is not null ? 1 : 0) + (args.ProofStdin ? 1 : 0) + (args.ProofFromInstaller ? 1 : 0);
         if (sources != 1)
@@ -80,7 +92,7 @@ internal static class EnrollHeadlessMode
             return HeadlessEnrollmentExit.BadInput;
         }
 
-        return await ExecuteAsync(raw, args.ProofFromInstaller, args.InstallService, host, Console.Out, Console.Error, ct)
+        return await ExecuteAsync(raw, args.ProofFromInstaller, args.InstallService, host, Console.Out, Console.Error, ct, product)
             .ConfigureAwait(false);
     }
 
@@ -103,10 +115,13 @@ internal static class EnrollHeadlessMode
         IHeadlessHost host,
         TextWriter stdout,
         TextWriter stderr,
-        CancellationToken ct)
+        CancellationToken ct,
+        string product = AgentProducts.Cerberus)
     {
+        if (!AgentProducts.IsKnown(product))
+            return HeadlessEnrollmentExit.BadInput;
         // The file logger writes under the data folder, so it opens only after the gate and the lock.
-        var refused = Preflight(rawProof, fromInstaller, host, out var runLock);
+        var refused = Preflight(rawProof, fromInstaller, installService, host, out var runLock);
         if (refused is { } early)
         {
             stderr.WriteLine($"Enrollment not completed: {early.Code} (exit {early.ExitCode}).{Hint(early.ExitCode)}");
@@ -116,7 +131,7 @@ internal static class EnrollHeadlessMode
         var log = host.OpenLog();
         try
         {
-            var code = await RunCoreAsync(rawProof, fromInstaller, installService, host, stdout, log, ct).ConfigureAwait(false);
+            var code = await RunCoreAsync(rawProof, fromInstaller, installService, host, stdout, log, ct, product).ConfigureAwait(false);
             if (code.ExitCode != 0)
             {
                 log.Warn($"Headless enrollment ended exit={code.ExitCode} code={code.Code}");
@@ -136,9 +151,9 @@ internal static class EnrollHeadlessMode
         }
     }
 
-    // Nothing here writes under the data folder: the gate runs first, then the lock (a file inside the gated folder).
+    // Desktop bootstrap establishes the protected namespace; the Server gate precedes its lock and logger.
     // A null result hands the lock to the caller, who holds it to the end of the run, adopt included.
-    private static HeadlessEnrollmentResult? Preflight(string rawProof, bool fromInstaller, IHeadlessHost host, out IDisposable? lease)
+    private static HeadlessEnrollmentResult? Preflight(string rawProof, bool fromInstaller, bool installService, IHeadlessHost host, out IDisposable? lease)
     {
         lease = null;
         if (fromInstaller && !host.IsLocalSystem)
@@ -147,6 +162,15 @@ internal static class EnrollHeadlessMode
             return new(HeadlessEnrollmentExit.BadInput, "administrator_required");
         if (!HeadlessEnrollmentProof.TryNormalize(rawProof, out _))
             return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
+#if !CERBERUS_SERVER_PROFILE
+        if (!host.HasCurrentEnrollmentConsent())
+            return new(HeadlessEnrollmentExit.Refused, "legal_consent_required");
+        try { host.PrepareDesktopEnrollment(installService); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return new(HeadlessEnrollmentExit.Refused, "bootstrap_unavailable");
+        }
+#endif
         // A standard user must not have pre-created the data folder or entries in it.
         if (!host.EnsureDataRootProtected())
             return new(HeadlessEnrollmentExit.Refused, "data_root_untrusted");
@@ -164,7 +188,8 @@ internal static class EnrollHeadlessMode
     };
 
     private static async Task<HeadlessEnrollmentResult> RunCoreAsync(
-        string rawProof, bool fromInstaller, bool installService, IHeadlessHost host, TextWriter stdout, IAgentLogger log, CancellationToken ct)
+        string rawProof, bool fromInstaller, bool installService, IHeadlessHost host, TextWriter stdout, IAgentLogger log, CancellationToken ct,
+        string product)
     {
         var serviceState = host.GetServiceState();
         // Paused or stopping service: activation cannot start it, so keep the one-time proof unspent.
@@ -180,7 +205,7 @@ internal static class EnrollHeadlessMode
 #endif
 
         string? backend;
-        try { backend = host.ResolveBackendUrl(); }
+        try { backend = host.ResolveBackendUrlForProduct(product); }
         catch (InvalidOperationException) { return new(HeadlessEnrollmentExit.BadInput, "backend_not_allowed"); }
         if (string.IsNullOrWhiteSpace(backend))
             return new(HeadlessEnrollmentExit.BadInput, "backend_not_configured");
@@ -198,7 +223,7 @@ internal static class EnrollHeadlessMode
         var oldFingerprint = host.ReadFingerprintLine();
         using var http = host.CreateHttpClient(new Uri(backend));
         var result = await new HeadlessEnrollment(http, log: log)
-            .RunAsync(rawProof, host.BuildOptions(backend), state, hasCredentials, host.OpenDestination(userScope), ct)
+            .RunAsync(rawProof, host.BuildOptions(backend) with { Product = product }, state, hasCredentials, host.OpenDestination(userScope), ct)
             .ConfigureAwait(false);
         if (!result.Succeeded)
             return result;

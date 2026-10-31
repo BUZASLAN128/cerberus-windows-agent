@@ -66,6 +66,19 @@ public sealed class HeadlessEnrollmentTests
     }
 
     [Fact]
+    public async Task ExplicitSecondaryEnrollmentPersistsSelectedProduct()
+    {
+        var handler = new FakeHandler().Reply(200, SuccessBody());
+        var store = new MemoryStore();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://backend.example") };
+        var result = await new HeadlessEnrollment(http, time: new ImmediateTimeProvider())
+            .RunAsync(Proof(), Options() with { Product = AgentProducts.Secondary },
+                new AgentLifecycleSnapshot(), false, store, default);
+        Assert.True(result.Succeeded);
+        Assert.Equal(AgentProducts.Secondary, store.Saved!.Value.Identity.Product);
+    }
+
+    [Fact]
     public async Task Success_overwrites_the_previous_credentials_with_the_new_key()
     {
         var store = new MemoryStore { Saved = (new AgentIdentity("old-agent", "t0"), "old-rt", "OLD-KEY-PEM", "https://old", null, null) };

@@ -71,6 +71,8 @@ public sealed record SignedEnvelope(
 public static class CommandEnvelope
 {
     public const string Header = "cerberus-agent-envelope.v1";
+    public const string Capability = "agent.command-envelope.v1";
+    public const string SignedOnlyCapability = "agent.commands.signed-only.v1";
     public const string Algorithm = "rsa-pkcs1v15-sha256";
     public const int MaxSignedBytes = 8192;
     public const int MaxPayloadBytes = 4096;

@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.RegularExpressions;
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Control;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
@@ -49,6 +50,17 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     public string? ResolveBackendUrl()
         => BootstrapResolver.ResolveConfiguredBackend(UiConfigStore.LoadMergedWithEnv())?.BackendUrl;
+
+    public string? ResolveBackendUrlForProduct(string product)
+    {
+        if (product == AgentProducts.Cerberus)
+            return ResolveBackendUrl();
+        if (product != AgentProducts.Secondary || !Uri.TryCreate(AgentBuildConfig.SecondaryBackendUrl, UriKind.Absolute, out var uri)
+            || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || uri.AbsolutePath != "/")
+            return null;
+        return uri.AbsoluteUri.TrimEnd('/');
+    }
 
     public HeadlessEnrollmentOptions BuildOptions(string backendUrl) => new(
         backendUrl,
@@ -171,6 +183,34 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     public Task<bool> DiscardStalePendingEnrollmentAsync(CancellationToken ct) => ServerEnrollmentArtifacts.DiscardStalePendingAsync(ct);
 #else
+    public bool HasCurrentEnrollmentConsent()
+    {
+        if (AgentLegalConsent.HasCurrentConsent(LegalConsentScope.User))
+            return true;
+        return AgentLegalConsent.HasCurrentConsent(LegalConsentScope.Machine);
+    }
+
+    internal static bool HasTrustedMachineConsent(string path, Func<bool> currentConsent)
+    {
+        try
+        {
+            AgentUpdateSecurity.ValidateProtectedPath(path, Path.GetDirectoryName(path)!, allowMissing: false);
+            return currentConsent();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    public void PrepareDesktopEnrollment(bool installService)
+    {
+        // This is the same protected namespace bootstrap used by the MSI helper.
+        AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        if (installService)
+            AgentLegalConsent.EnsureMachineConsentForInstall();
+    }
+
     public void InstallDesktopService() => AgentServiceProvisioning.InstallOrThrow();
 #endif
 

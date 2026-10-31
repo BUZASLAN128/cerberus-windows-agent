@@ -24,6 +24,7 @@ public sealed partial class AgentApiClient
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
+    private readonly long? _expectedGeneration;
     private static readonly HttpRequestOptionsKey<long> LifecycleGenerationKey = new("CerberusLifecycleGeneration");
     private static readonly ConditionalWeakTable<HeartbeatResponse, ResponseGeneration> ResponseGenerations = new();
 
@@ -41,7 +42,8 @@ public sealed partial class AgentApiClient
         IRequestSigner signer,
         IAgentLifecycleStateStore? lifecycleState = null,
         bool manualOperation = false,
-        Func<CancellationToken, Task>? quiesce = null)
+        Func<CancellationToken, Task>? quiesce = null,
+        long? expectedGeneration = null)
     {
         _http = http;
         _secrets = secrets;
@@ -50,6 +52,7 @@ public sealed partial class AgentApiClient
         _lifecycleState = lifecycleState;
         _manualOperation = manualOperation;
         _quiesce = quiesce;
+        _expectedGeneration = expectedGeneration;
     }
 
     /// <summary>
@@ -242,7 +245,7 @@ public sealed partial class AgentApiClient
             post_verify = result.PostVerify,
         };
 
-        object body = IsAdCommand(command)
+        object body = IsAdCommand(command) || !string.IsNullOrWhiteSpace(command.LeaseId)
             ? new
             {
                 status = result.Status,
@@ -250,7 +253,7 @@ public sealed partial class AgentApiClient
                 stdout = result.Stdout,
                 stderr = result.Stderr,
                 post_verify = result.PostVerify,
-                lease_id = ValidateAdCommandLease(command),
+                lease_id = IsAdCommand(command) ? ValidateAdCommandLease(command) : command.LeaseId,
             }
             : legacyBody;
 
@@ -589,24 +592,6 @@ public sealed partial class AgentApiClient
                 .ConfigureAwait(false);
         }
         throw failure;
-    }
-
-    private async Task EnsureAutomaticNetworkAllowedAsync(CancellationToken ct)
-    {
-        if (_lifecycleState is null)
-            return;
-
-        if (_manualOperation)
-        {
-            var manualSnapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
-            if (manualSnapshot.State is AgentLifecycleState.Retired or AgentLifecycleState.NeedsReenrollment || !manualSnapshot.QuiescenceComplete)
-                throw new AgentLifecycleDormantException(manualSnapshot);
-            return;
-        }
-
-        await new AgentLifecycleController(_lifecycleState, _secrets)
-            .EnsureAutomaticNetworkAllowedAsync(ct)
-            .ConfigureAwait(false);
     }
 
     private async Task<HttpResponseMessage> SendSignedJsonRequestOnceAsync(

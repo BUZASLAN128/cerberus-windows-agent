@@ -31,7 +31,8 @@ public sealed record HeadlessEnrollmentOptions(
     string AgentVersion,
     string? BuildId,
     string? BuildChannel,
-    string DisplayName);
+    string DisplayName,
+    string Product = AgentProducts.Cerberus);
 
 /// <summary>Outcome of one run. Never carries the proof, a token or a private key.</summary>
 public sealed record HeadlessEnrollmentResult(
@@ -172,7 +173,7 @@ public sealed class HeadlessEnrollment
     {
         if (!HeadlessEnrollmentProof.TryNormalize(rawProof, out var proof))
             return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
-        if (string.IsNullOrWhiteSpace(options.BackendUrlForStorage) || string.IsNullOrWhiteSpace(options.DeviceFingerprint) ||
+        if (!AgentProducts.IsKnown(options.Product) || string.IsNullOrWhiteSpace(options.BackendUrlForStorage) || string.IsNullOrWhiteSpace(options.DeviceFingerprint) ||
             string.IsNullOrWhiteSpace(options.AgentVersion))
             return new(HeadlessEnrollmentExit.BadInput, "arguments_invalid");
         if (HeadlessEnrollmentGate.Refusal(state, hasMachineCredentials) is { } refusal)
@@ -195,7 +196,7 @@ public sealed class HeadlessEnrollment
         if (expectedAgentId is not null && !string.Equals(expectedAgentId, success.AgentId, StringComparison.Ordinal))
             return new(HeadlessEnrollmentExit.NewProofRequired, "agent_id_mismatch");
 
-        var identity = new AgentIdentity(success.AgentId, success.TenantId);
+        var identity = new AgentIdentity(success.AgentId, success.TenantId, options.Product);
         try
         {
             // The destination store publishes atomically, so a failed save leaves the previous state intact.

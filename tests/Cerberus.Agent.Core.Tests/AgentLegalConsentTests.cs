@@ -129,7 +129,7 @@ public sealed class AgentLegalConsentTests
         Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT = 1", package);
         Assert.DoesNotContain("LicenseAccepted = 1", package);
         Assert.Contains(@"Software\Cerberus\WindowsAgent\LegalConsent", package);
-        Assert.Contains("msi_eula_dialog", package);
+        Assert.Contains("msi_explicit", package);
         Assert.Contains("Scope=\"perMachine\"", package);
         Assert.Contains("ProgramFiles64Folder", package);
         Assert.DoesNotContain("ProgramFilesFolder", package);

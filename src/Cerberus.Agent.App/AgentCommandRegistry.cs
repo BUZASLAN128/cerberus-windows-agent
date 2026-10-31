@@ -1,8 +1,7 @@
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
-#if CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.App.Commands;
-#else
+#if !CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.Integrations.Ad;
@@ -21,14 +20,19 @@ internal static class AgentCommandRegistry
 #if CERBERUS_SERVER_PROFILE
     public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState,
         AgentUpdateRequestCommandHandler updateRequest)
+#else
+    public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState)
+#endif
         => new ICommandHandler[]
         {
             new PingCommandHandler(metadata),
             new CollectFactsCommandHandler(metadata),
             agentState ?? throw new ArgumentNullException(nameof(agentState)),
+#if CERBERUS_SERVER_PROFILE
             updateRequest ?? throw new ArgumentNullException(nameof(updateRequest)),
+#endif
         };
-#else
+#if !CERBERUS_SERVER_PROFILE
     public static IReadOnlyList<ICommandHandler> CreateDesktop(
         AgentApiClient api,
         AgentIdentity identity,

@@ -15,6 +15,10 @@ namespace Cerberus.Agent.Security;
 public sealed class DpapiSecretStore : ISecretStore
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
+    // A separate authenticated DPAPI entropy and prefix prevent an old Cerberus-only
+    // binary from silently treating a Secondary enrollment as its own on rollback.
+    private static readonly byte[] SecondaryPrefix = Encoding.ASCII.GetBytes("secondary-agent-secret.v3\n");
+    private static readonly byte[] SecondaryEntropy = Encoding.UTF8.GetBytes("secondary-agent-secret.v3");
     private readonly string _path;
     private readonly SecretStoreScope _scope;
     private readonly bool _canonicalMachine;
@@ -72,20 +76,26 @@ public sealed class DpapiSecretStore : ISecretStore
     {
         using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
         if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path, allowMissing: true);
+        if (!AgentProducts.IsKnown(identity.Product))
+            throw new InvalidOperationException("Unknown agent product profile.");
+        var secondary = identity.Product == AgentProducts.Secondary;
         var payload = new SecretPayload(
-            "cerberus-agent-secret.v2",
+            secondary ? "secondary-agent-secret.v3" : "cerberus-agent-secret.v2",
             identity.AgentId,
             identity.TenantId,
             refreshToken,
             privateKeyPem,
             backendUrl,
             tailscaleLoginServer,
-            tailscaleAuthkey);
+            tailscaleAuthkey,
+            secondary ? AgentProducts.Secondary : null);
         var raw = JsonSerializer.SerializeToUtf8Bytes(payload, JsonOpts);
         var enc = ProtectedData.Protect(
             raw,
-            optionalEntropy: null,
+            optionalEntropy: secondary ? SecondaryEntropy : null,
             _scope == SecretStoreScope.User ? DataProtectionScope.CurrentUser : DataProtectionScope.LocalMachine);
+        if (secondary)
+            enc = SecondaryPrefix.Concat(enc).ToArray();
 
         // Publish complete encrypted payloads atomically. A cancelled/failed
         // enrollment or refresh must not truncate the previous registration.
@@ -123,15 +133,21 @@ public sealed class DpapiSecretStore : ISecretStore
         using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
         if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path);
         var enc = await File.ReadAllBytesAsync(_path, ct).ConfigureAwait(false);
+        var secondary = enc.AsSpan().StartsWith(SecondaryPrefix);
         var raw = ProtectedData.Unprotect(
-            enc,
-            optionalEntropy: null,
+            secondary ? enc.AsSpan(SecondaryPrefix.Length).ToArray() : enc,
+            optionalEntropy: secondary ? SecondaryEntropy : null,
             _scope == SecretStoreScope.User ? DataProtectionScope.CurrentUser : DataProtectionScope.LocalMachine);
         var payload = JsonSerializer.Deserialize<SecretPayload>(raw, JsonOpts)
                       ?? throw new InvalidOperationException("Secret payload decode failed.");
 
+        if (secondary
+            ? payload.SchemaVersion != "secondary-agent-secret.v3" || payload.Product != AgentProducts.Secondary
+            : payload.Product is not (null or AgentProducts.Cerberus))
+            throw new InvalidOperationException("Secret payload product profile mismatch.");
+
         return (
-            new AgentIdentity(payload.AgentId, payload.TenantId),
+            new AgentIdentity(payload.AgentId, payload.TenantId, secondary ? AgentProducts.Secondary : AgentProducts.Cerberus),
             payload.RefreshToken,
             payload.PrivateKeyPem,
             payload.BackendUrl,
@@ -229,5 +245,6 @@ public sealed class DpapiSecretStore : ISecretStore
         string PrivateKeyPem,
         string BackendUrl,
         string? TailscaleLoginServer,
-        string? TailscaleAuthkey);
+        string? TailscaleAuthkey,
+        string? Product = null);
 }

@@ -64,7 +64,7 @@ public enum ReplayUpdateOutcome
 /// A write never produces a file the reader rejects: unsubmitted result bytes are bounded by
 /// <see cref="MaxUnsubmittedResultBytes"/> at reservation, and a serialization above the read cap fails like a failed write.
 /// </summary>
-public sealed class CommandReplayStore
+public sealed partial class CommandReplayStore
 {
     public const string FileName = "command-envelopes.v1.json";
     public const int MaxRecords = 1024;
@@ -113,6 +113,14 @@ public sealed class CommandReplayStore
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
     public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
+    public static string DefaultLegacyAsyncPath() => ProtectedMachineFile.DefaultPath("legacy-async.v1.json");
+
+    public static string DefaultPathForProduct(string product) => product switch
+    {
+        AgentProducts.Cerberus => DefaultPath(),
+        AgentProducts.Secondary => ProtectedMachineFile.DefaultPath("secondary-command-envelopes.v1.json"),
+        _ => throw new InvalidOperationException("Unknown agent product profile."),
+    };
 
     /// <summary>Envelopes issued before this Unix time are rejected (step 15). 0 for a store that never existed.</summary>
     public long ResetAt { get { lock (_gate) { EnsureLoaded(); return _resetAt; } } }
@@ -424,22 +432,6 @@ public sealed class CommandReplayStore
             return false;
         }
     }
-
-    /// <summary>A record ends its retention at <c>expires_at + 24 h</c>; the outbox stops then too.</summary>
-    private static List<CommandReplayRecord> Purge(IEnumerable<CommandReplayRecord> records, long now)
-        => records.Where(r => now <= r.ExpiresAt + RetentionSeconds).ToList();
-
-    /// <summary>Only records past their window and without a pending result may make room.</summary>
-    private static bool IsEvictable(CommandReplayRecord record, long now)
-        => now > record.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds && !record.HasPendingResult;
-
-    /// <summary>Result bytes never submitted for an agent id other than the current one can no longer be delivered.</summary>
-    private static List<CommandReplayRecord> DropForeignPending(List<CommandReplayRecord> records, string agentId)
-        => records.Any(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal))
-            ? records.Select(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal)
-                ? r with { ResultB64 = null }
-                : r).ToList()
-            : records;
 
     /// <summary>Above 4 MiB of held result bytes, the oldest submitted results drop their bytes.</summary>
     private static List<CommandReplayRecord> CapHeldResults(List<CommandReplayRecord> records)

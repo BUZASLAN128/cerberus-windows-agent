@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;

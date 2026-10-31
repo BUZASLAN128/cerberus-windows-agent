@@ -245,6 +245,17 @@ public sealed class AgentSignedStateTests : IDisposable
     }
 
     [Fact]
+    public void StoreRejectsAStaleWriteAfterANewerStateWasCommitted()
+    {
+        var store = new AgentSignedStateStore(StatePath);
+        Assert.Equal(0, store.Load("agent-a").StateSeq);
+        Assert.True(store.TrySave(new AgentSignedState("agent-a", 2, true, "claimed")));
+        Assert.False(store.TrySave(new AgentSignedState("agent-a", 1, false, "claimed")));
+        Assert.True(store.Load("agent-a").QuarantineActive);
+        Assert.Equal(2, store.Load("agent-a").StateSeq);
+    }
+
+    [Fact]
     public async Task RevokePending_DoesNotCarryOverToAnotherAgentId()
     {
         var f = new Fixture(StatePath);

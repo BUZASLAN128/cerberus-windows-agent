@@ -135,6 +135,12 @@ function Test-CommandAnchorsAreTestFixture([string]$AnchorsB64) {
     ForEach-Object { try { [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($_))) } catch { } } }
   try { $fixture = @(& $lines (Get-Content -LiteralPath $fixtureFile -Raw)) } catch { $fixture = @() }
   if ($fixture.Count -eq 0) { throw "The command trust anchor test fixture cannot be decoded ($fixtureFile); cannot verify that a preview or stable build does not use it." }
+  $vectorFile = Join-Path $PSScriptRoot "..\tests\fixtures\agent-command-vectors.v1.json"
+  try {
+    $vectorKey = (Get-Content -LiteralPath $vectorFile -Raw | ConvertFrom-Json).test_key.spki_der_b64
+    if ([string]::IsNullOrWhiteSpace($vectorKey)) { throw "missing vector public key" }
+    $fixture += [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Convert]::FromBase64String($vectorKey)))
+  } catch { throw "The signed-command vector public key cannot be checked ($vectorFile)." }
   try {
     foreach ($line in @(& $lines $AnchorsB64)) { if ($fixture -contains $line) { return $true } }
   } catch { return $false }
@@ -200,7 +206,9 @@ function Get-ReleaseProfileBuild(
   [string]$ProductName,
   [string]$EulaRtf,
   [string]$Channel = "dev",
-  [string]$BackendAnchorsFile = ""
+  [string]$BackendAnchorsFile = "",
+  [string]$SecondaryBackendUrl = "",
+  [string]$SecondaryAnchorsFile = ""
 ) {
   $shared = @()
   $backendAnchors = Get-BackendTrustAnchorsValue $BackendAnchorsFile
@@ -228,6 +236,40 @@ function Get-ReleaseProfileBuild(
     if ($anchors -notmatch '^[A-Za-z0-9+/=]+$') { throw "Command trust anchors must be one line of base64." }
     $shared += "-p:AgentCommandTrustAnchorsB64=$anchors"
   }
+  $secondaryAnchors = ""
+  if (-not [string]::IsNullOrWhiteSpace($SecondaryBackendUrl) -or -not [string]::IsNullOrWhiteSpace($SecondaryAnchorsFile)) {
+    if ([string]::IsNullOrWhiteSpace($SecondaryBackendUrl) -or [string]::IsNullOrWhiteSpace($SecondaryAnchorsFile)) {
+      throw "The secondary backend URL and command trust anchors must be supplied together."
+    }
+    $uri = $null
+    if (-not [Uri]::TryCreate($SecondaryBackendUrl, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -ne "https" -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.AbsolutePath -ne "/") {
+      throw "The secondary backend must be a root HTTPS URL without credentials, path, query or fragment."
+    }
+    if (-not (Test-Path -LiteralPath $SecondaryAnchorsFile -PathType Leaf)) { throw "Secondary command trust anchors file was not found." }
+    $secondaryAnchors = (Get-Content -LiteralPath $SecondaryAnchorsFile -Raw).Trim()
+    if ($secondaryAnchors -notmatch '^[A-Za-z0-9+/=]+$') { throw "Secondary command trust anchors must be one line of base64." }
+    $secondaryKeyIds = Assert-ServerCommandAnchors $secondaryAnchors
+    if ($Channel -in @("preview", "stable") -and (Test-CommandAnchorsAreTestFixture $secondaryAnchors)) {
+      throw "The secondary command trust anchors include a repository test fixture."
+    }
+    if ($anchors) {
+      $null = Assert-ServerCommandAnchors $anchors
+      $primaryPems = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($anchors)).Split("`n") | Where-Object { $_.Trim() } | ForEach-Object {
+        $rsa = [System.Security.Cryptography.RSA]::Create()
+        try {
+          $read = 0
+          $rsa.ImportSubjectPublicKeyInfo([Convert]::FromBase64String($_.Trim()), [ref]$read)
+          [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rsa.ExportSubjectPublicKeyInfoPem()))
+        } finally { $rsa.Dispose() }
+      })
+      try { Assert-CommandAnchorsNotManifestKeys $secondaryAnchors $primaryPems }
+      catch { throw "Secondary command signing anchors must be distinct from primary product anchors." }
+    }
+    Write-Host "Secondary command trust anchors: $($secondaryKeyIds -join ', ')"
+    $shared += "-p:SecondaryCommandTrustAnchorsB64=$secondaryAnchors"
+    $shared += "-p:AgentSecondaryBackendUrlBase64=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($SecondaryBackendUrl)))"
+  }
   foreach ($key in $Timing.Keys) {
     if ($key -notin $script:ReleaseTimingKeys -or "$($Timing[$key])" -notmatch '^\d+$') {
       throw "Timing override '$key' must be one of $($script:ReleaseTimingKeys -join ', ') with an integer value."
@@ -241,6 +283,7 @@ function Get-ReleaseProfileBuild(
     MsBuildArgs = $shared
     MsiArgs = $msi
     AnchorsB64 = $anchors
+    SecondaryAnchorsB64 = $secondaryAnchors
     AssetSuffix = $(if ($BuildProfile -eq "server") { "-server" } else { "" })
   }
 }

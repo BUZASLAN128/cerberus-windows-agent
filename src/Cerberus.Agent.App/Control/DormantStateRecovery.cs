@@ -104,10 +104,15 @@ internal static class DormantStateRecovery
         if (!AgentBuildProfile.IsServer || !IsLocalConfigBlock(snapshot))
             return snapshot;
         string? storedBackendUrl = null;
+        string? storedProduct = null;
         try
         {
             if (!await lifecycle.ExecuteIfCurrentAsync(snapshot.Generation, async cancel =>
-                    storedBackendUrl = (await secrets.LoadAsync(cancel).ConfigureAwait(false)).BackendUrl, ct).ConfigureAwait(false))
+                {
+                    var registration = await secrets.LoadAsync(cancel).ConfigureAwait(false);
+                    storedBackendUrl = registration.BackendUrl;
+                    storedProduct = registration.Identity.Product;
+                }, ct).ConfigureAwait(false))
                 return await lifecycle.LoadAsync(ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ServerBackendMigration.IsStoreFailure(ex))
@@ -115,7 +120,10 @@ internal static class DormantStateRecovery
             log.Warn($"Registered backend address could not be read ({ex.GetType().Name}).");
             return snapshot;
         }
-        if (storedBackendUrl is null || BackendConfigCheck.BlockReason(environmentBackendUrl, storedBackendUrl, compiledBackendUrl) is not null)
+        var secondary = storedProduct == AgentProducts.Secondary;
+        var expectedBackend = secondary ? AgentBuildConfig.SecondaryBackendUrl : compiledBackendUrl;
+        if (storedBackendUrl is null || (secondary && string.IsNullOrWhiteSpace(expectedBackend)) ||
+            BackendConfigCheck.BlockReason(secondary ? null : environmentBackendUrl, storedBackendUrl, expectedBackend) is not null)
             return snapshot;
 
         var current = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
@@ -150,7 +158,8 @@ internal static class DormantStateRecovery
             return false;
         }
         var response = await AgentLocalControlService.ProbeAsync(secrets, probeState, quiesce: null, ct).ConfigureAwait(false);
-        return AgentLocalControlService.Claimed(response) &&
+        var (identity, _, _, _, _, _) = await secrets.LoadAsync(ct).ConfigureAwait(false);
+        return AgentLocalControlService.AcceptsCredentialProbe(response, identity.Product) &&
             !AgentLifecycleStates.IsDormant((await probeState.LoadAsync(ct).ConfigureAwait(false)).State);
     }
 

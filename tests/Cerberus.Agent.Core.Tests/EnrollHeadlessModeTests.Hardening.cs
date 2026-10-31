@@ -7,6 +7,56 @@ namespace Cerberus.Agent.Core.Tests;
 // Cancelled-but-committed adopt, service-state rechecks, data-root gate and stale-pending cleanup of the enroll run.
 public sealed partial class EnrollHeadlessModeTests
 {
+#if !CERBERUS_SERVER_PROFILE
+    [Fact]
+    public void Machine_consent_requires_trusted_owner_and_permissions_before_reading()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        if (!new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) return;
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-consent-provenance-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            var path = Path.Combine(root, "consent-fixture.json");
+            File.WriteAllText(path, "synthetic fixture");
+            Assert.True(WindowsHeadlessHost.HasTrustedMachineConsent(path, () => true));
+            var file = new FileInfo(path);
+            var acl = System.IO.FileSystemAclExtensions.GetAccessControl(file);
+            acl.SetOwner(identity.User!);
+            System.IO.FileSystemAclExtensions.SetAccessControl(file, acl);
+            var read = false;
+            Assert.False(WindowsHeadlessHost.HasTrustedMachineConsent(path, () => { read = true; return true; }));
+            Assert.False(read);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Missing_legal_consent_refuses_before_bootstrap_and_proof_is_sent()
+    {
+        var host = new FakeHost { Consent = false };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("legal_consent_required", result.Stderr);
+        Assert.Equal(0, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+
+    [Fact]
+    public async Task Bootstrap_failure_refuses_before_proof_is_sent_or_service_installed()
+    {
+        var host = new FakeHost { BootstrapThrows = true };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("bootstrap_unavailable", result.Stderr);
+        Assert.Equal(1, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+#endif
     private static readonly AgentLifecycleSnapshot Gen0 = new();
 
     [Fact]
@@ -187,6 +237,10 @@ public sealed partial class EnrollHeadlessModeTests
 
         public bool IsAdministrator => inner.IsAdministrator;
         public bool IsLocalSystem => inner.IsLocalSystem;
+#if !CERBERUS_SERVER_PROFILE
+        public bool HasCurrentEnrollmentConsent() => inner.HasCurrentEnrollmentConsent();
+        public void PrepareDesktopEnrollment(bool installService) => inner.PrepareDesktopEnrollment(installService);
+#endif
 
         public HeadlessServiceState GetServiceState()
             => ServiceStates is { Count: > 0 } s ? s[Math.Min(_stateReads++, s.Count - 1)] : inner.GetServiceState();
