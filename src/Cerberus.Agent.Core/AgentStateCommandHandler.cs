@@ -25,6 +25,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     private readonly Action _stopAutomaticNetwork;
     private readonly AgentRevokeFinalResults _finalResults;
     private readonly Func<CancellationToken, Task<AgentRevokeRegistration>>? _currentRegistration;
+    private int _holdReported;
 
     /// <param name="currentAgentId">The current credential's agent id, read per call (pass the provider wrapped by <see cref="AgentSignedStateStore.Track"/>).</param>
     /// <param name="lifecycle">Records the revoke. Its quiesce delegate runs on the queue worker, so it must not await
@@ -174,7 +175,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
                     cancelExecution = false;
                 }
                 else
-                    HoldRevoke(commandId);
+                    HoldRevoke(commandId, "the worker binding changed without proof of a different registration");
                 return;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -182,7 +183,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
                 // Only an already-retired state proves an interrupted credential cleanup is safe to finish.
                 if (lifecycle.State != AgentLifecycleState.Retired)
                 {
-                    HoldRevoke(commandId);
+                    HoldRevoke(commandId, "current credential metadata is unavailable");
                     return;
                 }
             }
@@ -203,7 +204,9 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             }
             if ((changed is null || pending.Registration is null) && lifecycle.State != AgentLifecycleState.Retired)
             {
-                HoldRevoke(commandId);
+                HoldRevoke(commandId, pending.Registration is null
+                    ? "a legacy revoke has no enrollment context; successful verified re-enrollment is required"
+                    : "registration metadata could not be re-read");
                 return;
             }
 
@@ -220,7 +223,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
                         cancelExecution = false;
                     }
                     else
-                        HoldRevoke(commandId);
+                        HoldRevoke(commandId, "the lifecycle generation changed without proof of a different registration");
                     return;
                 }
 
@@ -284,14 +287,14 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.Warn($"agent_state id={pending.CommandId} registration proof unavailable ({ex.GetType().Name}); pending revoke is retained.");
             return null;
         }
     }
 
-    private void HoldRevoke(string commandId)
+    private void HoldRevoke(string commandId, string reason)
     {
-        _log.Warn($"agent_state id={commandId} registration change is unproven; pending revoke is retained and automatic network stops.");
+        if (Interlocked.Exchange(ref _holdReported, 1) == 0)
+            _log.Warn($"agent_state id={commandId} pending revoke retained: {reason}; automatic network stays off.");
         _stopAutomaticNetwork();
     }
 

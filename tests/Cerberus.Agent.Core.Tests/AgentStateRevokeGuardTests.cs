@@ -180,10 +180,11 @@ public sealed partial class AgentStateRevokeGuardTests : IDisposable
     private sealed class CaptureLog : IAgentLogger
     {
         public List<string> Errors { get; } = new();
+        public List<string> Warnings { get; } = new();
 
         public void Info(string message) { }
 
-        public void Warn(string message) { }
+        public void Warn(string message) => Warnings.Add(message);
 
         public void Error(string message, Exception? ex = null) => Errors.Add(message);
     }

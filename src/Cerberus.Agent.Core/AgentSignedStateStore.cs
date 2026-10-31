@@ -212,6 +212,19 @@ public sealed class AgentSignedStateStore
         }
     }
 
+    /// <summary>Only the verified enrollment owner may complete a context-free legacy revoke after publication.</summary>
+    public bool TryClearLegacyRevokeAfterEnrollment(string agentId)
+    {
+        lock (_gate)
+        {
+            EnsureLoaded();
+            if (_unreadable) return false;
+            if (_state is not { PendingRevoke: { Registration: null } pending } state || state.AgentId != agentId)
+                return true;
+            return TryClearPendingRevoke(agentId, pending.CommandId);
+        }
+    }
+
     private bool IsQuarantinedLocked(string agentId)
         => _state is { } state
            && (string.Equals(state.AgentId, agentId, StringComparison.Ordinal)
