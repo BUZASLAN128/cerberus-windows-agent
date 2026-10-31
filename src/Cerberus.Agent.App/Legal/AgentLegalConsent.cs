@@ -217,7 +217,7 @@ internal static class AgentLegalConsent
     internal static bool IsCurrentMachineMsiConsent(IReadOnlyDictionary<string, string?> values)
         => AreCurrentMsiValues(values) &&
            string.Equals(GetValue(values, "acceptedVia"), "msi_explicit", StringComparison.Ordinal) &&
-           string.Equals(GetValue(values, "acceptanceEvidence"), "explicit-v1", StringComparison.Ordinal);
+           (GetValue(values, "acceptanceEvidence") is "explicit-v1" or "1");
 
     private static bool AreCurrentMsiValues(IReadOnlyDictionary<string, string?> values)
         => string.Equals(GetValue(values, "accepted"), "1", StringComparison.Ordinal) &&

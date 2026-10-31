@@ -32,6 +32,19 @@ public sealed class MsiMachineConsentTests
     }
 
     [Theory]
+    [InlineData("explicit-v1", true)]
+    [InlineData("1", true)]
+    [InlineData("0", false)]
+    [InlineData("", false)]
+    [InlineData("msi_eula_dialog", false)]
+    public void Machine_record_only_accepts_explicit_evidence(string marker, bool expected)
+    {
+        var values = Current();
+        values["acceptanceEvidence"] = marker;
+        Assert.Equal(expected, AgentLegalConsent.IsCurrentMachineMsiConsent(values));
+    }
+
+    [Theory]
     [InlineData("O:SYG:SYD:(A;;0xF003F;;;SY)(A;;0xF003F;;;BA)(A;;0x20019;;;BU)", true)]
     [InlineData("O:BAG:SYD:(A;;0xF003F;;;SY)(A;;0xF003F;;;BA)(A;;0x2001B;;;BU)", false)]
     [InlineData("O:BUG:SYD:(A;;0xF003F;;;SY)(A;;0xF003F;;;BA)(A;;0x20019;;;BU)", false)]
@@ -64,11 +77,21 @@ public sealed class MsiMachineConsentTests
         var publish = package.Descendants(wix + "Publish").Single(x => (string?)x.Attribute("Property") == "CERBERUS_EXPLICIT_CONSENT");
         Assert.Equal("LicenseAgreementDlg", (string?)publish.Attribute("Dialog"));
         Assert.Equal("LicenseAccepted = \"1\"", (string?)publish.Attribute("Condition"));
-        foreach (var id in new[] { "ServerLegalConsentRegistryComponent", "LegalConsentRegistryComponent" })
+        var reset = package.Descendants(wix + "SetProperty").Single(x => (string?)x.Attribute("Id") == "CERBERUS_EXPLICIT_CONSENT");
+        Assert.Equal("0", (string?)reset.Attribute("Value"));
+        Assert.Equal("WIX_UPGRADE_DETECTED", (string?)reset.Attribute("Condition"));
+        Assert.Equal("FindRelatedProducts", (string?)reset.Attribute("After"));
+        Assert.Equal("execute", (string?)reset.Attribute("Sequence"));
+        foreach (var (id, guid) in new[] {
+            ("ServerLegalConsentRegistryComponent", "{D3741C30-B58B-4F95-940E-F51B5BA80F84}"),
+            ("LegalConsentRegistryComponent", "{6FD72DD1-B76B-4E07-94A2-4355A5FB403D}") })
         {
             var component = package.Descendants(wix + "Component").Single(x => (string?)x.Attribute("Id") == id);
-            Assert.Equal("CERBERUS_EXPLICIT_CONSENT = 1 AND NOT WIX_UPGRADE_DETECTED AND NOT Installed", (string?)component.Attribute("Condition"));
-            Assert.Contains(component.Elements(wix + "RegistryValue"), x => (string?)x.Attribute("Name") == "acceptanceEvidence" && (string?)x.Attribute("Value") == "explicit-v1");
+            Assert.Equal(guid, (string?)component.Attribute("Guid"));
+            Assert.Equal("yes", (string?)component.Attribute("NeverOverwrite"));
+            Assert.Equal("(CERBERUS_EXPLICIT_CONSENT = 1 AND NOT Installed AND NOT WIX_UPGRADE_DETECTED) OR WIX_UPGRADE_DETECTED", (string?)component.Attribute("Condition"));
+            Assert.Contains(component.Elements(wix + "RegistryValue"), x => (string?)x.Attribute("Name") == "accepted" && (string?)x.Attribute("KeyPath") == "yes");
+            Assert.Contains(component.Elements(wix + "RegistryValue"), x => (string?)x.Attribute("Name") == "acceptanceEvidence" && (string?)x.Attribute("Value") == "[CERBERUS_EXPLICIT_CONSENT]");
         }
         var updater = File.ReadAllText(Path.Combine(dir.FullName, "src", "Cerberus.Agent.Updater", "Program.cs"));
         Assert.DoesNotContain("CERBERUS_EXPLICIT_CONSENT", updater);
