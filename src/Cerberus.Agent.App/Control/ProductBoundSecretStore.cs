@@ -10,7 +10,7 @@ internal sealed class ProductBoundSecretStore(ISecretStore inner, AgentIdentity 
         var value = await inner.LoadAsync(ct).ConfigureAwait(false);
         if (value.Identity != identity || !AgentBuildConfig.SameEndpoint(value.BackendUrl, backendUrl)
             || (expectedPrivateKeyPem is not null && !string.Equals(value.PrivateKeyPem, expectedPrivateKeyPem, StringComparison.Ordinal)))
-            throw new InvalidOperationException("The active product enrollment changed; restart is required.");
+            throw new AgentRegistrationChangedException();
         return value;
     }
 
@@ -19,7 +19,7 @@ internal sealed class ProductBoundSecretStore(ISecretStore inner, AgentIdentity 
     {
         if (value != identity || !AgentBuildConfig.SameEndpoint(destination, backendUrl)
             || (expectedPrivateKeyPem is not null && !string.Equals(privateKeyPem, expectedPrivateKeyPem, StringComparison.Ordinal)))
-            throw new InvalidOperationException("The active product enrollment changed; restart is required.");
+            throw new AgentRegistrationChangedException();
         await LoadAsync(ct).ConfigureAwait(false);
         await inner.SaveAsync(value, refreshToken, privateKeyPem, destination, tailscaleLoginServer, tailscaleAuthkey, ct)
             .ConfigureAwait(false);

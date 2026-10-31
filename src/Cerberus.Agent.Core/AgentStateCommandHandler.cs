@@ -157,6 +157,12 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             {
                 currentId = await _currentAgentId(ct).ConfigureAwait(false);
             }
+            catch (AgentRegistrationChangedException)
+            {
+                SkipStale(agentId, commandId);
+                cancelExecution = false;
+                return;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Credential already cleared by an interrupted earlier run: keep the idempotent path.

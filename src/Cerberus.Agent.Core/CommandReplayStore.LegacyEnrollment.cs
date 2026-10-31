@@ -88,6 +88,8 @@ public sealed partial class CommandReplayStore
                     Path.GetFileNameWithoutExtension(originalPath) + "-enrolled-" +
                     Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(current.Identity))) + ".json");
             var store = new CommandReplayStore(storePath, log: log) { _legacyBoundAgentId = identity.AgentId };
+            if (store.IsAvailable && store.ResetAt == 0 && !store._file.Exists())
+                store._persistPending = !store.TryPersist(store._records, 0);
             if (!store.IsAvailable || store.ResetAt != 0)
                 log.Warn("Async commands disabled: replay state is unavailable or reset; recovery requires verified re-enrollment with a new agent identity.");
             return store;

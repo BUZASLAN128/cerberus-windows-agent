@@ -325,16 +325,7 @@ internal static partial class ServiceMode
             maxEntries: 200, maxBytes: 8 * AgentTelemetryLimits.MaxSnapshotBytes, ttl: TimeSpan.FromHours(24));
 
         var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(loadedSecrets.Identity.Product), log);
-        var rawAgentId = EnvelopeWiring.CurrentAgentId(secrets);
-        var currentAgentId = signedState.Track(async cancel =>
-        {
-            var before = await lifecycleState.LoadAsync(cancel).ConfigureAwait(false);
-            if (before.Generation != persistedLifecycle.Generation) throw new AgentLifecycleDormantException(before);
-            var id = await rawAgentId(cancel).ConfigureAwait(false);
-            var after = await lifecycleState.LoadAsync(cancel).ConfigureAwait(false);
-            if (after.Generation != persistedLifecycle.Generation) throw new AgentLifecycleDormantException(after);
-            return id;
-        });
+        var currentAgentId = EnvelopeWiring.CurrentAgentId(secrets, lifecycleState, persistedLifecycle.Generation, signedState);
         // Declared before the queue so it is disposed after the queue worker has drained.
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         EnvelopeExecutionQueue? queue = null;
@@ -356,13 +347,8 @@ internal static partial class ServiceMode
 #endif
         var dispatcher = new CommandDispatcher(handlers, idempotency);
 #if !CERBERUS_SERVER_PROFILE
-        // Observation only: managed commands remain on their existing authority path.
-        // Default off until the operator enables this diagnostic for the deployment.
-        var managedDelayLog = string.Equals(Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC"), "1",
-            StringComparison.Ordinal) ? log : null;
-        legacyAsync = secondary ? null : new LegacyAsyncCommandProcessor(api, dispatcher,
-            new LegacyHeartbeatCommandProcessor(api, dispatcher, TimeSpan.FromSeconds(120), 2, managedDelayLog),
-            CommandReplayStore.OpenLegacyAsyncForEnrollment(loadedSecrets.Identity, persistedLifecycle, log), currentAgentId, log);
+        legacyAsync = secondary ? null : EnvelopeWiring.CreateLegacyAsync(api, dispatcher,
+            loadedSecrets.Identity, persistedLifecycle, currentAgentId, log);
         await using var legacyAsyncLifetime = legacyAsync;
 #endif
         await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log, loadedSecrets.Identity.Product);
@@ -426,7 +412,7 @@ internal static partial class ServiceMode
                 AgentProfileMetadata.LoadProductCommandAnchors(loadedSecrets.Identity.Product,
                     EnvelopeWiring.ManifestPublicKeyPems(log), log).Count > 0,
             signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
-            legacyAsyncSupported: legacyAsync is not null);
+            legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true);
 
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;

@@ -43,13 +43,13 @@ public sealed class ProductCommandTrustTests
         var bound = new ProductBoundSecretStore(inner, identity, "https://collector.example");
         Assert.Equal(identity, (await bound.LoadAsync(default)).Identity);
         inner.Identity = identity with { Product = AgentProducts.Cerberus };
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.LoadAsync(default));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.ClearAsync(default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.LoadAsync(default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.ClearAsync(default));
         Assert.False(inner.Cleared);
         inner.Identity = identity;
         inner.Backend = "https://other.example";
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.LoadAsync(default));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.SaveAsync(identity, "t", "k", "https://collector.example", null, null, default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.LoadAsync(default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.SaveAsync(identity, "t", "k", "https://collector.example", null, null, default));
     }
 
     [Fact]
@@ -60,8 +60,8 @@ public sealed class ProductCommandTrustTests
         var bound = new ProductBoundSecretStore(inner, identity, "https://collector.example", "fixture-key");
         Assert.Equal(identity, (await bound.LoadAsync(default)).Identity);
         inner.PrivateKey = "another-fixture-key";
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.LoadAsync(default));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => bound.ClearAsync(default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.LoadAsync(default));
+        await Assert.ThrowsAsync<AgentRegistrationChangedException>(() => bound.ClearAsync(default));
         Assert.False(inner.Cleared);
     }
 
