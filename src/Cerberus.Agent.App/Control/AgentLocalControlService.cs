@@ -147,6 +147,9 @@ internal sealed class AgentLocalControlService
             throw new InvalidOperationException("Machine enrollment requires the durable lifecycle authority.");
         var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
             cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
+        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(marker.Product ?? AgentProducts.Cerberus));
+        if (!AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, current, adopted, signedState))
+            return StateResponse(false, "legacy_revoke_cleanup_pending", adopted);
         return StateResponse(true, "enrollment_adopted", adopted);
     }
 
