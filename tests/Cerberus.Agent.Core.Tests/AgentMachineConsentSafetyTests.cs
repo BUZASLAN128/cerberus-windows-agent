@@ -58,6 +58,7 @@ public sealed partial class EnrollHeadlessModeTests
             using var identity = WindowsIdentity.GetCurrent();
             acl.SetOwner(identity.User!);
             file.SetAccessControl(acl);
+            Assert.False(AgentLegalConsent.IsTrustedOrMissingMachineFile(path));
             Assert.False(AgentLegalConsent.TryLoadCurrent(LegalConsentScope.Machine, root, out _));
             Assert.Throws<InvalidOperationException>(() => AgentLegalConsent.Accept(LegalConsentScope.Machine, "fixture", root));
 
@@ -85,6 +86,7 @@ public sealed partial class EnrollHeadlessModeTests
             var target = Path.Combine(root, "sentinel.txt");
             File.WriteAllText(target, "unchanged");
             File.CreateSymbolicLink(path, target);
+            Assert.False(AgentLegalConsent.IsTrustedOrMissingMachineFile(path));
             Assert.Throws<InvalidOperationException>(() => AgentLegalConsent.Accept(LegalConsentScope.Machine, "fixture", root));
             var host = new FakeHost { BootstrapAction = _ => AgentLegalConsent.EnsureMachineConsentForInstall(root, () => true) };
             var result = await Execute(host, installService: true);

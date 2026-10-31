@@ -16,6 +16,14 @@ handles this uncertainty, revoke, re-enrollment and late results; it must be
 validated with a controlled AD environment before enabling it. No such managed
 async feature is enabled by this candidate.
 
+The locally inspected Cerberus backend snapshot `16af89fa01ad6f581e7e8eff04ad998ec66f5c4e`
+also contains an AD lease-recovery branch that can requeue an expired command
+while attempts remain and the desired intent is current. A remote directory
+operation can have an unknown outcome when a lease expires; safe decoupling
+therefore needs coordinated backend and agent reconciliation and duplicate
+execution analysis. This is a source observation, not proof of a live retry or
+an incident. Neither backend retry behavior nor managed execution was changed.
+
 ## Optional local observation
 
 `CERBERUS_MANAGED_DELAY_DIAGNOSTIC=1` enables a best-effort warning after a

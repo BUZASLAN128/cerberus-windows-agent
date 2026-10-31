@@ -187,8 +187,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
     {
         if (AgentLegalConsent.HasCurrentConsent(LegalConsentScope.User))
             return true;
-        var path = AgentLegalConsent.GetDefaultPath(LegalConsentScope.Machine);
-        return HasTrustedMachineConsent(path, () => AgentLegalConsent.HasCurrentConsent(LegalConsentScope.Machine));
+        return AgentLegalConsent.HasCurrentConsent(LegalConsentScope.Machine);
     }
 
     internal static bool HasTrustedMachineConsent(string path, Func<bool> currentConsent)

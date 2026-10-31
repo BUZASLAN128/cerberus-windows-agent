@@ -37,6 +37,7 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="WIXUI_ACCEPT_LICENSE_AGREEMENT" Secure="yes" />
     <Property Id="CERBERUS_EULA_ACCEPTED" Secure="yes" />
+    <Property Id="CERBERUS_EXPLICIT_CONSENT" Secure="yes" />
     <Property Id="CERBERUS_BACKEND_URL" Secure="yes" />
     <Property Id="CERBERUS_SSO_BASE_URL" Secure="yes" />
     <Property Id="CERBERUS_SSO_CLIENT_ID" Secure="yes" />
@@ -63,6 +64,8 @@
     <?endif ?>
     <UI>
       <ui:WixUI Id="WixUI_InstallDir" />
+      <!-- Copy the explicit license-dialog acceptance to a secure public property before leaving the dialog. -->
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Property="CERBERUS_EXPLICIT_CONSENT" Value="1" Order="0" Condition='LicenseAccepted = "1"' />
       <?if $(var.AgentBuildProfile) != server ?>
       <Publish
           Dialog="ExitDialog"
@@ -346,13 +349,14 @@
 
   <Fragment>
     <!-- The consent product value is the legal-document identifier the agent validates (AgentLegalConsent.ProductName), not the installer display name. -->
-    <Component Id="ServerLegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{D3741C30-B58B-4F95-940E-F51B5BA80F84}">
+    <Component Id="ServerLegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{D3741C30-B58B-4F95-940E-F51B5BA80F84}" Condition="CERBERUS_EXPLICIT_CONSENT = 1 AND NOT WIX_UPGRADE_DETECTED AND NOT Installed">
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="accepted" Type="integer" Value="1" KeyPath="yes" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Server Agent" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
-      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_eula_dialog" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_explicit" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptanceEvidence" Type="string" Value="explicit-v1" />
     </Component>
   </Fragment>
 
@@ -413,13 +417,14 @@
   </Fragment>
 
   <Fragment>
-    <Component Id="LegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{6FD72DD1-B76B-4E07-94A2-4355A5FB403D}">
+    <Component Id="LegalConsentRegistryComponent" Directory="INSTALLFOLDER" Guid="{6FD72DD1-B76B-4E07-94A2-4355A5FB403D}" Condition="CERBERUS_EXPLICIT_CONSENT = 1 AND NOT WIX_UPGRADE_DETECTED AND NOT Installed">
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="accepted" Type="integer" Value="1" KeyPath="yes" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Windows Agent" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
-      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_eula_dialog" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_explicit" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptanceEvidence" Type="string" Value="explicit-v1" />
     </Component>
   </Fragment>
 

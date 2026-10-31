@@ -58,7 +58,14 @@ internal static class AgentLegalConsent
     }
 
     public static bool HasCurrentConsent(LegalConsentScope scope)
-        => TryLoadCurrent(scope, baseDir: null, out _) || TryImportCurrentMsiConsent(scope, baseDir: null, out _);
+    {
+        if (scope == LegalConsentScope.Machine && !IsTrustedOrMissingMachineFile(GetPath(scope, baseDir: null)))
+            return false;
+        return TryLoadCurrent(scope, baseDir: null, out _) ||
+               (scope == LegalConsentScope.Machine
+                   ? MsiMachineConsent.TryReadCurrent(MsiConsentRegistryPath, IsCurrentMachineMsiConsent)
+                   : TryImportCurrentMsiConsent(scope, baseDir: null, out _));
+    }
 
     public static bool HasCurrentInstallConsent()
         => HasCurrentConsent(LegalConsentScope.Machine) || HasCurrentConsent(LegalConsentScope.User);
@@ -97,11 +104,28 @@ internal static class AgentLegalConsent
 
     internal static void EnsureMachineConsentForInstall(string? machineBaseDir, Func<bool> hasUserConsent)
     {
+        if (!IsTrustedOrMissingMachineFile(GetPath(LegalConsentScope.Machine, machineBaseDir)))
+            throw new UnauthorizedAccessException("Machine consent storage is untrusted.");
         if (TryLoadCurrent(LegalConsentScope.Machine, machineBaseDir, out _))
+            return;
+        if (machineBaseDir is null && MsiMachineConsent.TryReadCurrent(MsiConsentRegistryPath, IsCurrentMachineMsiConsent))
             return;
         if (!hasUserConsent())
             throw new InvalidOperationException(ConsentRequiredMessage);
         Accept(LegalConsentScope.Machine, "install_service", machineBaseDir);
+    }
+
+    internal static bool IsTrustedOrMissingMachineFile(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) return false;
+            AgentUpdateSecurity.ValidateProtectedPath(path, Path.GetDirectoryName(path)!, allowMissing: false);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { return false; }
     }
 
     internal static bool TryLoadCurrent(LegalConsentScope scope, string? baseDir, out AgentLegalConsentRecord? record)
@@ -177,15 +201,8 @@ internal static class AgentLegalConsent
         out AgentLegalConsentRecord? record)
     {
         record = null;
-        if (!string.Equals(GetValue(values, "accepted"), "1", StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "product"), ProductName, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "eulaVersion"), EulaVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "privacyNoticeVersion"), PrivacyNoticeVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "securityDisclosureVersion"), SecurityDisclosureVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "acceptedVia"), MsiConsentSource, StringComparison.Ordinal))
-        {
+        if (!AreCurrentMsiValues(values) || !string.Equals(GetValue(values, "acceptedVia"), MsiConsentSource, StringComparison.Ordinal))
             return false;
-        }
 
         record = WriteRecord(
             LegalConsentScope.User,
@@ -196,6 +213,18 @@ internal static class AgentLegalConsent
             baseDir);
         return true;
     }
+
+    internal static bool IsCurrentMachineMsiConsent(IReadOnlyDictionary<string, string?> values)
+        => AreCurrentMsiValues(values) &&
+           string.Equals(GetValue(values, "acceptedVia"), "msi_explicit", StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "acceptanceEvidence"), "explicit-v1", StringComparison.Ordinal);
+
+    private static bool AreCurrentMsiValues(IReadOnlyDictionary<string, string?> values)
+        => string.Equals(GetValue(values, "accepted"), "1", StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "product"), ProductName, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "eulaVersion"), EulaVersion, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "privacyNoticeVersion"), PrivacyNoticeVersion, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "securityDisclosureVersion"), SecurityDisclosureVersion, StringComparison.Ordinal);
 
     private static string? GetValue(IReadOnlyDictionary<string, string?> values, string key)
         => values.TryGetValue(key, out var value) ? value : null;
