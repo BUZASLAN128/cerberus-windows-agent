@@ -45,6 +45,8 @@ internal interface IHeadlessHost
     /// <summary>Server profile: the cross-process enroll lock. Null when another run holds it after <paramref name="wait"/>. Throws UnauthorizedAccessException when the lock cannot be trusted. The desktop has no such lock.</summary>
     IDisposable? TryAcquireEnrollLock(TimeSpan wait) => NoLock.Instance;
 #if !CERBERUS_SERVER_PROFILE
+    bool HasCurrentEnrollmentConsent();
+    void PrepareDesktopEnrollment(bool installService);
     void InstallDesktopService();
 #endif
 }
@@ -119,7 +121,7 @@ internal static class EnrollHeadlessMode
         if (!AgentProducts.IsKnown(product))
             return HeadlessEnrollmentExit.BadInput;
         // The file logger writes under the data folder, so it opens only after the gate and the lock.
-        var refused = Preflight(rawProof, fromInstaller, host, out var runLock);
+        var refused = Preflight(rawProof, fromInstaller, installService, host, out var runLock);
         if (refused is { } early)
         {
             stderr.WriteLine($"Enrollment not completed: {early.Code} (exit {early.ExitCode}).{Hint(early.ExitCode)}");
@@ -149,9 +151,9 @@ internal static class EnrollHeadlessMode
         }
     }
 
-    // Nothing here writes under the data folder: the gate runs first, then the lock (a file inside the gated folder).
+    // Desktop bootstrap establishes the protected namespace; the Server gate precedes its lock and logger.
     // A null result hands the lock to the caller, who holds it to the end of the run, adopt included.
-    private static HeadlessEnrollmentResult? Preflight(string rawProof, bool fromInstaller, IHeadlessHost host, out IDisposable? lease)
+    private static HeadlessEnrollmentResult? Preflight(string rawProof, bool fromInstaller, bool installService, IHeadlessHost host, out IDisposable? lease)
     {
         lease = null;
         if (fromInstaller && !host.IsLocalSystem)
@@ -160,6 +162,15 @@ internal static class EnrollHeadlessMode
             return new(HeadlessEnrollmentExit.BadInput, "administrator_required");
         if (!HeadlessEnrollmentProof.TryNormalize(rawProof, out _))
             return new(HeadlessEnrollmentExit.BadInput, "proof_invalid");
+#if !CERBERUS_SERVER_PROFILE
+        if (!host.HasCurrentEnrollmentConsent())
+            return new(HeadlessEnrollmentExit.Refused, "legal_consent_required");
+        try { host.PrepareDesktopEnrollment(installService); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return new(HeadlessEnrollmentExit.Refused, "bootstrap_unavailable");
+        }
+#endif
         // A standard user must not have pre-created the data folder or entries in it.
         if (!host.EnsureDataRootProtected())
             return new(HeadlessEnrollmentExit.Refused, "data_root_untrusted");

@@ -357,6 +357,8 @@ public sealed partial class EnrollHeadlessModeTests
         public HeadlessServiceState State { get; init; } = HeadlessServiceState.Running;
         public HeadlessServiceState StateAfterEnsure { get; init; } = HeadlessServiceState.Running;
         public bool Admin { get; init; } = true;
+        public bool Consent { get; init; } = true;
+        public bool BootstrapThrows { get; init; }
         public bool LocalSystem { get; init; } = true;
         public string? Backend { get; init; } = "https://backend.example";
         public bool BackendThrows { get; init; }
@@ -381,10 +383,19 @@ public sealed partial class EnrollHeadlessModeTests
         public List<bool> ActivateCalls { get; } = [];
         public bool UserScope { get; private set; }
         public int InstallCalls { get; private set; }
+        public int BootstrapCalls { get; private set; }
         public string? FingerprintFile { get; private set; }
 
         public bool IsAdministrator => Admin;
         public bool IsLocalSystem => LocalSystem;
+#if !CERBERUS_SERVER_PROFILE
+        public bool HasCurrentEnrollmentConsent() => Consent;
+        public void PrepareDesktopEnrollment(bool installService)
+        {
+            BootstrapCalls++;
+            if (BootstrapThrows) throw new UnauthorizedAccessException();
+        }
+#endif
         public HeadlessServiceState GetServiceState() => State;
 
         public Task<HeadlessServiceState> EnsureRunningAsync(bool startIfStopped, CancellationToken ct)

@@ -24,6 +24,13 @@ internal static class Program
             return 2;
         }
 
+        // Enrollment is a machine operation: reject before recording CLI consent or reading a proof.
+        if (parsed.EnrollHeadless && !Elevation.IsAdministrator())
+        {
+            Console.Error.WriteLine("Enrollment not completed: administrator_required (exit 2).");
+            return 2;
+        }
+
         if (parsed.AcceptEula)
         {
             var scope = (parsed.InstallService || parsed.Service) && Elevation.IsAdministrator()

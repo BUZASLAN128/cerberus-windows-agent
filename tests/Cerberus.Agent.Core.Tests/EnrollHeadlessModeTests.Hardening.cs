@@ -7,6 +7,33 @@ namespace Cerberus.Agent.Core.Tests;
 // Cancelled-but-committed adopt, service-state rechecks, data-root gate and stale-pending cleanup of the enroll run.
 public sealed partial class EnrollHeadlessModeTests
 {
+#if !CERBERUS_SERVER_PROFILE
+    [Fact]
+    public async Task Missing_legal_consent_refuses_before_bootstrap_and_proof_is_sent()
+    {
+        var host = new FakeHost { Consent = false };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("legal_consent_required", result.Stderr);
+        Assert.Equal(0, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+
+    [Fact]
+    public async Task Bootstrap_failure_refuses_before_proof_is_sent_or_service_installed()
+    {
+        var host = new FakeHost { BootstrapThrows = true };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("bootstrap_unavailable", result.Stderr);
+        Assert.Equal(1, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+#endif
     private static readonly AgentLifecycleSnapshot Gen0 = new();
 
     [Fact]
@@ -187,6 +214,10 @@ public sealed partial class EnrollHeadlessModeTests
 
         public bool IsAdministrator => inner.IsAdministrator;
         public bool IsLocalSystem => inner.IsLocalSystem;
+#if !CERBERUS_SERVER_PROFILE
+        public bool HasCurrentEnrollmentConsent() => inner.HasCurrentEnrollmentConsent();
+        public void PrepareDesktopEnrollment(bool installService) => inner.PrepareDesktopEnrollment(installService);
+#endif
 
         public HeadlessServiceState GetServiceState()
             => ServiceStates is { Count: > 0 } s ? s[Math.Min(_stateReads++, s.Count - 1)] : inner.GetServiceState();

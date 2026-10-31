@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Text.RegularExpressions;
 using Cerberus.Agent.App.Actions;
 using Cerberus.Agent.App.Control;
+using Cerberus.Agent.App.Legal;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
@@ -182,6 +183,16 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     public Task<bool> DiscardStalePendingEnrollmentAsync(CancellationToken ct) => ServerEnrollmentArtifacts.DiscardStalePendingAsync(ct);
 #else
+    public bool HasCurrentEnrollmentConsent() => AgentLegalConsent.HasCurrentInstallConsent();
+
+    public void PrepareDesktopEnrollment(bool installService)
+    {
+        // This is the same protected namespace bootstrap used by the MSI helper.
+        AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        if (installService)
+            AgentLegalConsent.EnsureMachineConsentForInstall();
+    }
+
     public void InstallDesktopService() => AgentServiceProvisioning.InstallOrThrow();
 #endif
 

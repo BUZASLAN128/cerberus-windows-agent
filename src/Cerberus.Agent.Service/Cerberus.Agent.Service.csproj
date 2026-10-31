@@ -3,6 +3,8 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <AssemblyName>Cerberus.Agent.Service</AssemblyName>
     <RootNamespace>Cerberus.Agent.Service</RootNamespace>
