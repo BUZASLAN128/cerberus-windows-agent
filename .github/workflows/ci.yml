@@ -34,6 +34,7 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }
           foreach ($project in $projects) {
             dotnet restore $project.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       - name: Build Projects
@@ -43,6 +44,7 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }
           foreach ($project in $projects) {
             dotnet build $project.FullName -c Release --no-restore
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       - name: Run Tests
@@ -53,6 +55,7 @@ jobs:
           foreach ($project in $testProjects) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($project.Name)
             dotnet test $project.FullName -c Release --no-build --logger "trx;LogFileName=$name.trx"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       - name: Publish Win-x64 Single File

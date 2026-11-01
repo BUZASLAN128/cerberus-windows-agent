@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Core, Observability declare InternalsVisibleTo("Cerberus.Agent.Core.Tests"); the linked tests use those internals. -->
+    <AssemblyName>Cerberus.Agent.Core.Tests</AssemblyName>
+    <RootNamespace>Cerberus.Agent.Core.Tests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="10.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- OS-neutral subset of Cerberus.Agent.Core.Tests, linked (not copied). Each file compiles against Core and Observability only. -->
+  <ItemGroup>
+    <Compile Include="..\Cerberus.Agent.Core.Tests\TelemetryContractsTests.cs" Link="TelemetryContractsTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\SanitizerTests.cs" Link="SanitizerTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\RetryHelperTests.cs" Link="RetryHelperTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatResponseHandlerTests.cs" Link="HeartbeatResponseHandlerTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.cs" Link="HeartbeatLoopTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.Support.cs" Link="HeartbeatLoopTests.Support.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatLoopTests.Handlers.cs" Link="HeartbeatLoopTests.Handlers.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeartbeatBackoffResetSignalTests.cs" Link="HeartbeatBackoffResetSignalTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeadlessEnrollmentUnusableSuccessTests.cs" Link="HeadlessEnrollmentUnusableSuccessTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeadlessEnrollmentUnreadableStringTests.cs" Link="HeadlessEnrollmentUnreadableStringTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\HeadlessEnrollmentTests.cs" Link="HeadlessEnrollmentTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\GovernedWindowsMutationGuardTests.cs" Link="GovernedWindowsMutationGuardTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\DormantRecoveryTestSupport.cs" Link="DormantRecoveryTestSupport.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\DormantRecoveryPolicyTests.cs" Link="DormantRecoveryPolicyTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandReplayStoreTests.cs" Link="CommandReplayStoreTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandReplayStoreBudgetTests.cs" Link="CommandReplayStoreBudgetTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeWireTests.cs" Link="CommandEnvelopeWireTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeVectorsTests.cs" Link="CommandEnvelopeVectorsTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeTestSupport.cs" Link="CommandEnvelopeTestSupport.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeProcessorTests.cs" Link="CommandEnvelopeProcessorTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeProcessorTests.Replay.cs" Link="CommandEnvelopeProcessorTests.Replay.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CommandEnvelopeProcessorTests.Liveness.cs" Link="CommandEnvelopeProcessorTests.Liveness.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CasdoorTokenResolverTests.cs" Link="CasdoorTokenResolverTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\CancellingBodyContent.cs" Link="CancellingBodyContent.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentVersionComparerTests.cs" Link="AgentVersionComparerTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentUpdateStateStoreTests.cs" Link="AgentUpdateStateStoreTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentUpdateManifestValidatorTests.cs" Link="AgentUpdateManifestValidatorTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentUpdateCeilingTests.cs" Link="AgentUpdateCeilingTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentUiContextStoreTests.cs" Link="AgentUiContextStoreTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentTimingPolicyTests.cs" Link="AgentTimingPolicyTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentSignedStateTests.cs" Link="AgentSignedStateTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentSignedStateResetTests.cs" Link="AgentSignedStateResetTests.cs" />
+    <Compile Include="..\Cerberus.Agent.Core.Tests\AgentFileLoggerTests.cs" Link="AgentFileLoggerTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\Cerberus.Agent.Core.Tests\xunit.runner.json" Link="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-wire-vectors.v1.json" Link="fixtures\agent-wire-vectors.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-command-vectors.v1.json" Link="fixtures\agent-command-vectors.v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\agent-command-test-anchors.b64" Link="fixtures\agent-command-test-anchors.b64" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
+    <ProjectReference Include="..\..\src\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />
+  </ItemGroup>
+
+</Project>
