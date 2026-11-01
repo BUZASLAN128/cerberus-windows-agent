@@ -7,17 +7,136 @@ namespace Cerberus.Agent.Core.Tests;
 // Cancelled-but-committed adopt, service-state rechecks, data-root gate and stale-pending cleanup of the enroll run.
 public sealed partial class EnrollHeadlessModeTests
 {
+#if !CERBERUS_SERVER_PROFILE
+    [Fact]
+    public void Machine_consent_requires_trusted_owner_and_permissions_before_reading()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        if (!new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) return;
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-consent-provenance-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            var path = Path.Combine(root, "consent-fixture.json");
+            File.WriteAllText(path, "synthetic fixture");
+            Assert.True(WindowsHeadlessHost.HasTrustedMachineConsent(path, () => true));
+            var file = new FileInfo(path);
+            var acl = System.IO.FileSystemAclExtensions.GetAccessControl(file);
+            acl.SetOwner(identity.User!);
+            System.IO.FileSystemAclExtensions.SetAccessControl(file, acl);
+            var read = false;
+            Assert.False(WindowsHeadlessHost.HasTrustedMachineConsent(path, () => { read = true; return true; }));
+            Assert.False(read);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Missing_legal_consent_refuses_before_bootstrap_and_proof_is_sent()
+    {
+        var host = new FakeHost { Consent = false };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("legal_consent_required", result.Stderr);
+        Assert.Equal(0, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+
+    [Fact]
+    public async Task Bootstrap_failure_refuses_before_proof_is_sent_or_service_installed()
+    {
+        var host = new FakeHost { BootstrapThrows = true };
+        var result = await Execute(host, installService: true);
+        Assert.Equal(HeadlessEnrollmentExit.Refused, result.Exit);
+        Assert.Contains("bootstrap_unavailable", result.Stderr);
+        Assert.Equal(1, host.BootstrapCalls);
+        Assert.Empty(host.Http.Requests);
+        Assert.Equal(0, host.Store.SaveCount);
+        Assert.Equal(0, host.InstallCalls);
+    }
+#endif
     private static readonly AgentLifecycleSnapshot Gen0 = new();
+
+    [Theory]
+    [InlineData("unrelated_generation")]
+    [InlineData("old_credential")]
+    [InlineData("missing_active_credential")]
+    public async Task ActivationFailureCannotUseAnotherRegistrationsGenerationOrCredential(string scenario)
+    {
+        var nonce = Guid.NewGuid().ToString("N");
+        var active = new HeadlessEnrollmentTests.MemoryStore();
+        if (scenario != "missing_active_credential")
+            active.Saved = (new AgentIdentity("agent-0001", "tenant-A"), "owned", "owned", "https://backend.example", null, null);
+        var before = new AgentLifecycleSnapshot(AgentLifecycleState.NeedsReenrollment);
+        var after = new AgentLifecycleSnapshot { Generation = 1,
+            LastEnrollmentNonce = scenario == "unrelated_generation" ? Guid.NewGuid().ToString("N") : nonce };
+        var inner = new FakeHost { ActivateResult = "legacy_revoke_cleanup_pending", ActivationNonce = nonce,
+            ActiveStore = active, LifecycleSequence = [before, after] };
+        var (exit, stdout, stderr) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [true] });
+        Assert.Equal(4, exit);
+        Assert.Contains("legacy_revoke_cleanup_pending", stderr);
+        Assert.Equal("", stdout);
+        Assert.Null(inner.FingerprintFile);
+        Assert.Equal(AgentBuildProfile.IsServer ? 1 : 0, inner.DiscardCalls);
+        if (scenario != "missing_active_credential") Assert.Equal("tenant-A", active.Saved!.Value.Identity.TenantId);
+    }
+
+    [Fact]
+    public async Task CommittedDirectEnrollmentWithUnreadableSignedStateExitsZeroAndWritesFingerprint()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-enrollment-result-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "state.json");
+            File.WriteAllText(path, "{owned malformed signed state");
+            var nonce = Guid.NewGuid().ToString("N");
+            var adopted = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce };
+            var marker = new Cerberus.Agent.App.Control.AgentEnrollmentMarker("agent.enrollment-promotion.v1", 0,
+                "agent-a", "t1", new string('a', 64), nonce, DateTimeOffset.UtcNow.AddMinutes(5));
+            var state = new AgentSignedStateStore(path);
+            var activation = WindowsHeadlessHost.CompleteDirectEnrollment(marker, Gen0, adopted, state);
+            Assert.Null(activation);
+            Assert.True(state.IsQuarantined("agent-a"));
+            var inner = new FakeHost { ActivateResult = activation, LifecycleSequence = [Gen0, adopted] };
+            var (exit, stdout, _) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [false, true] });
+            Assert.Equal(0, exit);
+            Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
+            Assert.NotNull(inner.FingerprintFile);
+            Assert.True(inner.Store.SaveCount > 0);
+            Assert.Equal(0, inner.DiscardCalls);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReportedActivationFailureAfterVisibleCommitPreservesSuccessfulEnrollment(bool throws)
+    {
+        var nonce = Guid.NewGuid().ToString("N");
+        var inner = new FakeHost { ActivateResult = "legacy_revoke_cleanup_pending", ActivateThrows = throws,
+            ActivationNonce = nonce, LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce }] };
+        var (exit, stdout, _) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [false, true] });
+        Assert.Equal(0, exit);
+        Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
+        Assert.NotNull(inner.FingerprintFile);
+        Assert.Equal(0, inner.DiscardCalls);
+    }
 
     [Fact]
     public async Task Cancelled_activation_after_the_service_committed_the_adoption_reports_success()
     {
         using var cts = new CancellationTokenSource();
+        var nonce = Guid.NewGuid().ToString("N");
         var inner = new FakeHost
         {
             CancelOnActivate = cts,
             DiscardThrows = true,
-            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1 }],
+            ActivationNonce = nonce,
+            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce }],
         };
         var host = new SeamHost(inner) { CredentialStates = [false, true] };
 
@@ -187,6 +306,10 @@ public sealed partial class EnrollHeadlessModeTests
 
         public bool IsAdministrator => inner.IsAdministrator;
         public bool IsLocalSystem => inner.IsLocalSystem;
+#if !CERBERUS_SERVER_PROFILE
+        public bool HasCurrentEnrollmentConsent() => inner.HasCurrentEnrollmentConsent();
+        public void PrepareDesktopEnrollment(bool installService) => inner.PrepareDesktopEnrollment(installService);
+#endif
 
         public HeadlessServiceState GetServiceState()
             => ServiceStates is { Count: > 0 } s ? s[Math.Min(_stateReads++, s.Count - 1)] : inner.GetServiceState();
@@ -209,6 +332,8 @@ public sealed partial class EnrollHeadlessModeTests
         }
 
         public Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct) => inner.ActivateAsync(commitDirectly, ct);
+        public Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct)
+            => inner.IsEnrollmentCommittedAsync(before, ct);
         public string? ReadFingerprintLine() => inner.ReadFingerprintLine();
         public void WriteFingerprintFile(string content) => inner.WriteFingerprintFile(content);
         public Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct)

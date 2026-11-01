@@ -1,11 +1,13 @@
 using System.Text.Json;
+using Cerberus.Agent.App;
+using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
 // Unit/support evidence: a signed revoke applies only to the registration (agent id and lifecycle generation) it was
-// issued for, and a revoke whose Retired state was saved counts as recorded. ServiceMode wiring is not covered here.
-public sealed class AgentStateRevokeGuardTests : IDisposable
+// issued for, including the production current-id guard. No installed service is exercised here.
+public sealed partial class AgentStateRevokeGuardTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
 
@@ -32,16 +34,16 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
 
         Assert.NotEqual(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
         Assert.False(f.Secrets.Cleared);
-        Assert.Equal(0, f.Cancels);
-        Assert.Equal(0, f.Stops);
-        Assert.Null(f.Store.Load("agent-a").PendingRevoke);
+        Assert.Equal(1, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.NotNull(f.Store.Load("agent-a").PendingRevoke);
     }
 
     [Fact]
     public async Task Recovery_WhenTheAgentIdChangesBetweenTheRecoveryReadAndTheFollowUp_DoesNotRetire()
     {
         var f = await Fixture.WithPendingRevokeAsync(_dir);
-        var replay = new CommandReplayStore(Path.Combine(_dir, CommandReplayStore.FileName), TimeProvider.System);
+        var replay = ConfirmedReplay(_dir);
         Assert.True(replay.IsAvailable);
         f.IdReadsBeforeSwitch = 1;
 
@@ -69,20 +71,56 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
         Assert.Empty(f.Log.Errors);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ProductionEnrollmentGuardDoesNotTreatNewRegistrationAsMissingCredentials(bool generationChanged)
+    {
+        var f = await Fixture.WithPendingRevokeAsync(_dir, productionBinding: true);
+        f.Secrets.Identity = new AgentIdentity("agent-b", "t1");
+        if (generationChanged)
+        {
+            var before = await f.LifecycleStore.LoadAsync(default);
+            Assert.NotNull(await f.LifecycleStore.TrySaveAsync(before with { Generation = before.Generation + 1 }, before.Revision, default));
+        }
+
+        await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
+
+        Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.False(f.Secrets.Cleared);
+        Assert.Equal(0, f.Cancels);
+        Assert.Equal(0, f.Stops);
+        Assert.Null(f.Store.Load("agent-a").PendingRevoke);
+        Assert.Empty(f.Log.Errors);
+    }
+
+    private static CommandReplayStore ConfirmedReplay(string dir)
+    {
+        var path = Path.Combine(dir, CommandReplayStore.FileName);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        StoreFileWriter.Write(path, 0, [StoreFileWriter.Record("agent-a", "c1", "n-c1", issuedAt: now,
+            expiresAt: now + 120, resultB64: "e30=")
+            with { Type = EnvelopeTypes.AgentState }]);
+        return new CommandReplayStore(path);
+    }
+
     private sealed class Fixture
     {
-        private Fixture(string dir)
+        private Fixture(string dir, bool productionBinding)
         {
             Store = new AgentSignedStateStore(Path.Combine(dir, AgentSignedStateStore.FileName));
             Lifecycle = new AgentLifecycleController(LifecycleStore, Secrets, quiesce: _ => Task.CompletedTask);
             Handler = new AgentStateCommandHandler(
                 Store,
-                Store.Track(_ => Task.FromResult(ReadAgentId())),
+                productionBinding ? EnvelopeWiring.CurrentAgentId(
+                    new ProductBoundSecretStore(Secrets, Secrets.Identity, "https://backend.invalid", "key"), LifecycleStore, 0, Store)
+                    : Store.Track(_ => Task.FromResult(ReadAgentId())),
                 Lifecycle,
                 () => Cancels++,
                 Log,
                 () => Stops++,
-                new AgentRevokeFinalResults());
+                new AgentRevokeFinalResults(),
+                productionBinding ? EnvelopeWiring.RegistrationContext(Secrets, LifecycleStore) : null);
         }
 
         private string ReadAgentId()
@@ -99,9 +137,14 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
         public int Cancels { get; private set; }
         public int Stops { get; private set; }
 
-        public static async Task<Fixture> WithPendingRevokeAsync(string dir)
+        public AgentStateCommandHandler FreshWorker(AgentSignedStateStore store, long generation)
+            => new(store, EnvelopeWiring.CurrentAgentId(new ProductBoundSecretStore(Secrets, Secrets.Identity,
+                    "https://backend.invalid"), LifecycleStore, generation, store), Lifecycle, () => Cancels++, Log,
+                () => Stops++, new AgentRevokeFinalResults(), EnvelopeWiring.RegistrationContext(Secrets, LifecycleStore));
+
+        public static async Task<Fixture> WithPendingRevokeAsync(string dir, bool productionBinding = false)
         {
-            var f = new Fixture(dir);
+            var f = new Fixture(dir, productionBinding);
             var payload = JsonDocument.Parse("""{"state_seq":1,"revoke":{"reason_code":"agent_revoked"}}""").RootElement.Clone();
             var result = await f.Handler.HandleAsync(new AgentCommand("c1", "agent_state", "c1", payload), CancellationToken.None);
             Assert.Equal("DONE", result.Status);
@@ -147,10 +190,11 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
     private sealed class CaptureLog : IAgentLogger
     {
         public List<string> Errors { get; } = new();
+        public List<string> Warnings { get; } = new();
 
         public void Info(string message) { }
 
-        public void Warn(string message) { }
+        public void Warn(string message) => Warnings.Add(message);
 
         public void Error(string message, Exception? ex = null) => Errors.Add(message);
     }
@@ -158,9 +202,13 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
     private sealed class Secrets : ISecretStore
     {
         public bool Cleared { get; private set; }
+        public int ClearCalls { get; private set; }
+        public AgentIdentity Identity { get; set; } = new("agent-a", "t1");
+        public string Key { get; set; } = "key";
+        public string Backend { get; set; } = "https://backend.invalid";
 
         public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
-            => Task.FromResult((new AgentIdentity("agent-a", "t1"), "refresh", "key", "https://backend.invalid", (string?)null, (string?)null));
+            => Task.FromResult((Identity, "refresh", Key, Backend, (string?)null, (string?)null));
 
         public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl, string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
             => Task.CompletedTask;
@@ -168,6 +216,7 @@ public sealed class AgentStateRevokeGuardTests : IDisposable
         public Task ClearAsync(CancellationToken ct)
         {
             Cleared = true;
+            ClearCalls++;
             return Task.CompletedTask;
         }
     }

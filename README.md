@@ -20,7 +20,7 @@ The profile is fixed at build time (`-p:AgentBuildProfile=server`, or `-BuildPro
 | Data directory | `%ProgramData%\CerberusAgent` | `%ProgramData%\CerberusServerAgent` |
 | Enrollment | Browser sign-in (Casdoor PKCE) from the tray panel | Headless, with a one-time enrollment proof entered in the MSI |
 | User interface | Tray client and control panel | None |
-| Commands | See [Commands](#commands) | `ping`, `collect_facts`, `agent_state` only |
+| Commands | See [Commands](#commands) | `ping`, `collect_facts`, `agent_state`, `agent.update.request` (install only) |
 | Snapshot interval | Default 60 s (60 s–24 h) | Default 3600 s (300–3600 s) |
 | Release asset suffix | none | `-server` |
 
@@ -112,7 +112,7 @@ Desktop:
 - `windows.local_user.create`, `.disable`, `.delete`. Local user creation is controlled on the device with `--enable-local-user-create` / `--disable-local-user-create`.
 - `windows.ad_user.create`, `.disable`, `.delete`: each command needs a short-lived authority from the backend.
 
-Server: `ping`, `collect_facts` (one telemetry collection), `agent_state`. Server commands arrive in signed envelopes verified against the trust anchors built into the package.
+Server: `ping`, `collect_facts` (one telemetry collection), `agent_state`, `agent.update.request` (mode `install`: install the newest signed release now; the agent records the request and its update scheduler installs it). Server commands arrive in signed envelopes verified against the trust anchors built into the package.
 
 ## Telemetry
 

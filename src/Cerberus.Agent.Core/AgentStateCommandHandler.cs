@@ -24,6 +24,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     private readonly IAgentLogger _log;
     private readonly Action _stopAutomaticNetwork;
     private readonly AgentRevokeFinalResults _finalResults;
+    private readonly Func<CancellationToken, Task<AgentRevokeRegistration>>? _currentRegistration;
+    private int _holdReported;
 
     /// <param name="currentAgentId">The current credential's agent id, read per call (pass the provider wrapped by <see cref="AgentSignedStateStore.Track"/>).</param>
     /// <param name="lifecycle">Records the revoke. Its quiesce delegate runs on the queue worker, so it must not await
@@ -41,7 +43,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         Action cancelExecution,
         IAgentLogger? log,
         Action stopAutomaticNetwork,
-        AgentRevokeFinalResults finalResults)
+        AgentRevokeFinalResults finalResults,
+        Func<CancellationToken, Task<AgentRevokeRegistration>>? currentRegistration = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _currentAgentId = currentAgentId ?? throw new ArgumentNullException(nameof(currentAgentId));
@@ -50,6 +53,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         _log = log ?? NullAgentLogger.Instance;
         _stopAutomaticNetwork = stopAutomaticNetwork ?? throw new ArgumentNullException(nameof(stopAutomaticNetwork));
         _finalResults = finalResults ?? throw new ArgumentNullException(nameof(finalResults));
+        _currentRegistration = currentRegistration;
     }
 
     public string Type => EnvelopeTypes.AgentState;
@@ -71,7 +75,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
 
         var applied = new List<string>(3);
-        var next = current with { StateSeq = seq };
+        var next = current with { StateSeq = seq, LastAppliedCommandId = command.Id };
         if (payload.TryGetProperty("registration_state", out var registration))
         {
             next = next with { RegistrationState = registration.GetString() };
@@ -87,7 +91,11 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         if (payload.TryGetProperty("revoke", out var revoke))
         {
             // Stored by the same write as state_seq: the revoke and its quarantine survive a restart.
-            next = next with { PendingRevoke = new AgentPendingRevoke(command.Id, revoke.GetProperty("reason_code").GetString()!) };
+            var registrationContext = await ReadRegistrationAsync(ct).ConfigureAwait(false);
+            if (registrationContext.AgentId != agentId || await _currentAgentId(ct).ConfigureAwait(false) != agentId)
+                throw new AgentRegistrationChangedException();
+            next = next with { PendingRevoke = new AgentPendingRevoke(command.Id,
+                revoke.GetProperty("reason_code").GetString()!, registrationContext) };
             applied.Add("revoke");
         }
 
@@ -101,8 +109,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// <summary>
     /// Startup recovery for a crash after the DONE result was delivered and marked submitted, but before the
     /// revoke ran: run the follow-up now. A result still waiting in the outbox is left to the outbox, which
-    /// needs the credential. A missing record (retention ended) with a readable store can never be delivered, so
-    /// the signed revoke is applied. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
+    /// needs the credential. Missing replay evidence cannot prove delivery; pending control records are retained
+    /// until confirmation. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
     /// is applied whatever the replay record says.
     /// </summary>
     public async Task RecoverPendingRevokeAsync(CommandReplayStore replay, CancellationToken ct)
@@ -115,16 +123,23 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.Warn($"agent_state revoke recovery skipped: agent id unavailable ({ex.GetType().Name}).");
+            _stopAutomaticNetwork();
+            _log.Warn($"agent_state revoke recovery blocked: agent id unavailable ({ex.GetType().Name}); automatic network stays off.");
             return;
         }
 
         if (_store.Load(agentId).PendingRevoke is not { } pending)
             return;
+        // An old registration cannot deliver its outbox through the new credential.
+        // Reconcile only the bound marker; this does not prove a final result.
+        if (pending.Registration is not null && await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false) == true)
+        {
+            SkipStale(agentId, pending.CommandId);
+            return;
+        }
         var record = replay.Find(agentId, pending.CommandId);
         var settled = _finalResults.Contains(agentId, pending.CommandId)
-                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
-                      || (record is null && replay.IsAvailable);
+                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true };
         if (settled)
             await OnResultFinalAsync(agentId, pending.CommandId, ct).ConfigureAwait(false);
     }
@@ -134,9 +149,10 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// queue. Ids without a stored pending revoke are ignored. The pending revoke is looked up by
     /// <paramref name="agentId"/>, because the revoke clears the current credential. A revoke applies only to
     /// the registration it was issued for: when the current credential belongs to a different agent id (a
-    /// re-enrollment landed first) or the lifecycle generation moved on before the write, the pending revoke is
-    /// cleared without retiring or cancelling anything. If
-    /// the current agent id is unavailable (credential already cleared), the revoke is recorded as before.
+    /// re-enrollment landed first), tenant, or captured enrollment nonce changed, the pending revoke is
+    /// cleared without retiring or cancelling anything. Generation alone is not evidence of another registration. If
+    /// current credential metadata is unavailable, the revoke stays pending and the automatic network stops.
+    /// Only an already-retired lifecycle permits finishing cleanup without readable credentials.
     /// The result is marked final in the process-lifetime record before the first attempt. If recording fails,
     /// the pending revoke stays stored and the automatic network is stopped.
     /// </summary>
@@ -147,19 +163,37 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             return;
 
         var cancelExecution = true;
+        _finalResults.Mark(agentId, commandId);
         try
         {
             // Read before the id: a re-enrollment landing after this read is refused by the generation check below,
             // one landing before it shows as another id.
-            var generation = (await _lifecycle.LoadAsync(ct).ConfigureAwait(false)).Generation;
+            var lifecycle = await _lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var generation = lifecycle.Generation;
             string? currentId = null;
             try
             {
                 currentId = await _currentAgentId(ct).ConfigureAwait(false);
             }
+            catch (AgentRegistrationChangedException)
+            {
+                if (await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false) == true)
+                {
+                    SkipStale(agentId, commandId);
+                    cancelExecution = false;
+                }
+                else
+                    HoldRevoke(commandId, "the worker binding changed without proof of a different registration");
+                return;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Credential already cleared by an interrupted earlier run: keep the idempotent path.
+                // Only an already-retired state proves an interrupted credential cleanup is safe to finish.
+                if (lifecycle.State != AgentLifecycleState.Retired)
+                {
+                    HoldRevoke(commandId, "current credential metadata is unavailable");
+                    return;
+                }
             }
 
             if (!string.IsNullOrEmpty(currentId) && !string.Equals(currentId, agentId, StringComparison.Ordinal))
@@ -169,16 +203,35 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
                 return;
             }
 
+            var changed = await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false);
+            if (changed == true)
+            {
+                SkipStale(agentId, commandId);
+                cancelExecution = false;
+                return;
+            }
+            if ((changed is null || pending.Registration is null) && lifecycle.State != AgentLifecycleState.Retired)
+            {
+                HoldRevoke(commandId, pending.Registration is null
+                    ? "a legacy revoke has no enrollment context; successful verified re-enrollment is required"
+                    : "registration metadata could not be re-read");
+                return;
+            }
+
             var reasonCode = pending.ReasonCode;
-            _finalResults.Mark(agentId, commandId);
             var recorded = false;
             try
             {
                 var snapshot = await _lifecycle.RecordTerminalResponseAsync(reasonCode, requestId: null, ct, generation).ConfigureAwait(false);
                 if (snapshot.State != AgentLifecycleState.Retired && snapshot.Generation != generation)
                 {
-                    SkipStale(agentId, commandId);
-                    cancelExecution = false;
+                    if (await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false) == true)
+                    {
+                        SkipStale(agentId, commandId);
+                        cancelExecution = false;
+                    }
+                    else
+                        HoldRevoke(commandId, "the lifecycle generation changed without proof of a different registration");
                     return;
                 }
 
@@ -223,6 +276,38 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     {
         _log.Warn($"agent_state id={commandId} signed revoke skipped: the registration it was issued for is no longer current.");
         _store.TryClearPendingRevoke(agentId, commandId);
+    }
+
+    private async Task<AgentRevokeRegistration> ReadRegistrationAsync(CancellationToken ct)
+        => _currentRegistration is not null ? await _currentRegistration(ct).ConfigureAwait(false)
+            : new AgentRevokeRegistration(await _currentAgentId(ct).ConfigureAwait(false), null,
+                (await _lifecycle.LoadAsync(ct).ConfigureAwait(false)).LastEnrollmentNonce);
+
+    private async Task<bool?> DifferentRegistrationAsync(string agentId, AgentPendingRevoke pending, CancellationToken ct)
+    {
+        try
+        {
+            var current = await ReadRegistrationAsync(ct).ConfigureAwait(false);
+            // An old file has no context. Only a definitely different agent id can discard it.
+            if (current.AgentId != agentId) return true;
+            if (pending.Registration is not { } prior) return false;
+            if (prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId) return true;
+            if (prior.EnrollmentNonce == current.EnrollmentNonce) return false;
+            // Missing current metadata cannot prove replacement of a known registration.
+            return current.EnrollmentNonce is null ? null : true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warn($"Signed revoke registration could not be read ({ex.GetType().Name}).");
+            return null;
+        }
+    }
+
+    private void HoldRevoke(string commandId, string reason)
+    {
+        if (Interlocked.Exchange(ref _holdReported, 1) == 0)
+            _log.Warn($"agent_state id={commandId} pending revoke retained: {reason}; automatic network stays off.");
+        _stopAutomaticNetwork();
     }
 
     private async Task<bool> IsRetiredAsync()

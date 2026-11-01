@@ -1,12 +1,48 @@
 using System.Globalization;
 using System.IO;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.App.Updates;
 
 /// <summary>Bounded recovery so one transient failure never stops automatic updates for good.</summary>
 internal static partial class AgentUpdateLocalService
 {
+    private static bool PendingStateDelivery(AgentLifecycleSnapshot lifecycle)
+        => PendingStateDelivery(lifecycle, new DpapiSecretStore(SecretStoreScope.Machine));
+
+    internal static bool PendingStateDelivery(AgentLifecycleSnapshot lifecycle, ISecretStore secrets,
+        Func<string, CommandReplayStore>? replayStore = null, Func<string, AgentSignedStateStore>? stateStore = null)
+    {
+        try
+        {
+            AgentIdentity identity;
+            try { identity = secrets.LoadAsync(CancellationToken.None).GetAwaiter().GetResult().Identity; }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return false; }
+            if (string.IsNullOrWhiteSpace(identity.AgentId) || string.IsNullOrWhiteSpace(identity.TenantId)) return true;
+            var replay = replayStore?.Invoke(identity.Product) ?? new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(identity.Product));
+            var state = stateStore?.Invoke(identity.Product) ?? new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(identity.Product));
+            return state.HasPendingRevokeOrRecovery(new(identity.AgentId, identity.TenantId, lifecycle.LastEnrollmentNonce)) ||
+                replay.HasPendingStateDelivery(lifecycle.Generation, lifecycle.LastEnrollmentNonce, identity.AgentId);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return true; }
+    }
+
+    // Both the service and support tests enter the real launch fence and this final authorization boundary.
+    internal static async Task LaunchUnderFenceAsync(AgentUpdateJournal active, bool automatic,
+        Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle, Func<AgentLifecycleSnapshot, bool> pendingState,
+        Action<AgentLifecycleSnapshot> launch, CancellationToken ct, string? fenceRoot = null)
+    {
+        using (await AgentUpdateLaunchFence.AcquireAsync(ct, fenceRoot).ConfigureAwait(false))
+        {
+            var lifecycle = await loadLifecycle(ct).ConfigureAwait(false);
+            if (pendingState(lifecycle) || automatic && (!AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) ||
+                    !lifecycle.QuiescenceComplete || active.LifecycleGeneration != lifecycle.Generation))
+                throw new InvalidOperationException("Automatic update authorization changed.");
+            launch(lifecycle);
+        }
+    }
+
     /// <summary>How long a failed local readiness probe is retried after the installer result was recorded.</summary>
     private static readonly TimeSpan HealthRetryWindow = TimeSpan.FromMinutes(15);
     /// <summary>Quiet time after the last recorded install activity before recovery_required is closed.</summary>

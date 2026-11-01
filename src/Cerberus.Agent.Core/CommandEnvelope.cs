@@ -24,6 +24,7 @@ public static class EnvelopeCodes
     public const string Expired = "expired";
     public const string IssuedBeforeReset = "issued_before_reset";
     public const string NonceReused = "nonce_reused";
+    public const string StaleStateSeq = "stale_state_seq";
     public const string Quarantined = "quarantined";
     public const string ReplayStoreFull = "replay_store_full";
     public const string ReplayStoreUnavailable = "replay_store_unavailable";
@@ -35,10 +36,11 @@ public static class EnvelopeTypes
     public const string Ping = "ping";
     public const string CollectFacts = "collect_facts";
     public const string AgentState = "agent_state";
+    public const string AgentUpdateRequest = "agent.update.request";
 
     /// <summary>The server profile accepts exactly these types inside an envelope.</summary>
     public static readonly IReadOnlySet<string> ServerSet =
-        new HashSet<string>(StringComparer.Ordinal) { Ping, CollectFacts, AgentState };
+        new HashSet<string>(StringComparer.Ordinal) { Ping, CollectFacts, AgentState, AgentUpdateRequest };
 
     /// <summary>Fact section names a <c>collect_facts</c> payload may request (contract (e)).</summary>
     public static readonly IReadOnlySet<string> ServerFactSections = new HashSet<string>(StringComparer.Ordinal)
@@ -70,6 +72,8 @@ public sealed record SignedEnvelope(
 public static class CommandEnvelope
 {
     public const string Header = "cerberus-agent-envelope.v1";
+    public const string Capability = "agent.command-envelope.v1";
+    public const string SignedOnlyCapability = "agent.commands.signed-only.v1";
     public const string Algorithm = "rsa-pkcs1v15-sha256";
     public const int MaxSignedBytes = 8192;
     public const int MaxPayloadBytes = 4096;

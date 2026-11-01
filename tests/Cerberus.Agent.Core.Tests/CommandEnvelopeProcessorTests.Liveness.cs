@@ -91,7 +91,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task HandlerThatNeverReturns_FailsWithCommandTimeoutOnceItsBoundPasses()
+    public async Task HandlerThatNeverReturns_ReportsUnknownOnceItsBoundPasses()
     {
         await using var h = EnvelopeHarness.Create();
         h.Facts.Block();
@@ -103,8 +103,91 @@ public sealed partial class CommandEnvelopeProcessorTests
         await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "timeout result");
 
         var result = h.Backend.Results[0].Json;
-        Assert.Equal("FAILED", result.GetProperty("status").GetString());
+        Assert.Equal("OUTCOME_UNKNOWN", result.GetProperty("status").GetString());
         Assert.Equal("command_timeout", result.GetProperty("stderr").GetString());
+        await h.Process(cmd);
+        Assert.Equal(1, h.Facts.Calls);
+        Assert.Single(h.Backend.Results);
+    }
+
+    [Fact]
+    public async Task TimedOutHandlerIgnoringCancellation_BlocksAnotherFactsHandlerUntilItActuallyReturns()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Facts.Body = async (_, _) =>
+        {
+            h.Facts.Started.TrySetResult();
+            await h.Facts.Gate.Task;
+            return FakeCommandHandler.Done();
+        };
+        var first = h.Cmd(p => p.Type = "collect_facts");
+        var second = h.Cmd(p => p.Type = "collect_facts");
+        await h.Process(first, second);
+        await h.Facts.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        h.Time.Advance(TimeSpan.FromSeconds(120));
+        await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "first timeout result");
+        await Wait.UntilAsync(() => h.Record(second)?.State == EnvelopeRecordStates.Started,
+            "second command waiting at the execution gate");
+        Assert.Equal("OUTCOME_UNKNOWN", h.Backend.Results[0].Json.GetProperty("status").GetString());
+        Assert.Equal(1, h.Facts.Calls);
+
+        h.Facts.Gate.TrySetResult();
+        await Wait.UntilAsync(() => h.Backend.Results.Count == 2, "second result after first returns");
+        Assert.Equal(2, h.Facts.Calls);
+        Assert.Equal("DONE", h.Backend.Results[1].Json.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task StuckFactsHandlerDoesNotBlockSignedStateControl()
+    {
+        await using var h = EnvelopeHarness.Create();
+        h.Facts.Body = async (_, _) =>
+        {
+            h.Facts.Started.TrySetResult();
+            await h.Facts.Gate.Task;
+            return FakeCommandHandler.Done();
+        };
+        await h.Process(h.Cmd(p => p.Type = "collect_facts"));
+        await h.Facts.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var state = h.Cmd(p =>
+        {
+            p.Type = "agent_state";
+            p.PayloadJson = "{\"state_seq\":1,\"quarantine\":{\"active\":true}}";
+        });
+
+        await h.Process(state);
+
+        Assert.Equal(1, h.State.Calls);
+        Assert.Contains(h.Backend.Acks, ack => ack.CommandId == state.Id);
+        h.Facts.Gate.TrySetResult();
+    }
+
+    [Fact]
+    public async Task SynchronouslyBlockedSignedHandlerReportsUnknownAtTimeout()
+    {
+        await using var h = EnvelopeHarness.Create();
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Facts.Body = (_, _) =>
+        {
+            h.Facts.Started.TrySetResult();
+            h.Facts.Gate.Task.GetAwaiter().GetResult();
+            finished.TrySetResult();
+            return Task.FromResult(FakeCommandHandler.Done());
+        };
+        try
+        {
+            await h.Process(h.Cmd(p => p.Type = "collect_facts"));
+            await h.Facts.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            h.Time.Advance(TimeSpan.FromSeconds(120));
+            await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "synchronous handler timeout");
+            Assert.Equal("OUTCOME_UNKNOWN", h.Backend.Results[0].Json.GetProperty("status").GetString());
+        }
+        finally
+        {
+            h.Facts.Gate.TrySetResult();
+            if (h.Facts.Started.Task.IsCompleted) await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
     }
 
     [Fact]

@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <AssemblyName>Cerberus.Agent.Uninstall</AssemblyName>
     <RootNamespace>Cerberus.Agent.Uninstall</RootNamespace>
     <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>

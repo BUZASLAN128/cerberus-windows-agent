@@ -9,7 +9,9 @@ using Cerberus.Agent.Security;
 namespace Cerberus.Agent.App.Control;
 
 internal sealed record AgentEnrollmentMarker(string SchemaVersion, long ExpectedGeneration, string AgentId,
-    string TenantId, string PublicKeyDigest, string Nonce, DateTimeOffset ExpiresUtc);
+    string TenantId, string PublicKeyDigest, string Nonce, DateTimeOffset ExpiresUtc,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Product = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? BackendUrl = null);
 
 /// <summary>Non-secret proof of the existing elevated PKCE credential promotion; never accepts a caller-selected path.</summary>
 internal static class AgentEnrollmentPromotion
@@ -33,15 +35,37 @@ internal static class AgentEnrollmentPromotion
     internal static bool IsAwaitingAdoption(AgentEnrollmentMarker? marker, AgentLifecycleSnapshot state)
         => marker is not null && marker.ExpectedGeneration == state.Generation && marker.Nonce != state.LastEnrollmentNonce;
 
+    /// <summary>Caller holds the launch fence and has verified the enrollment identity and central proof.</summary>
+    internal static Task<AgentLifecycleSnapshot> CommitVerifiedAsync(DurableAgentLifecycleStateStore lifecycle,
+        AgentEnrollmentMarker marker, CancellationToken ct,
+        Func<long, string, string, string, CancellationToken, Task<IAsyncDisposable>>? publication = null)
+        => lifecycle.CommitEnrollmentAsync(marker.ExpectedGeneration, marker.Nonce,
+            cancel => publication is null
+                ? AgentCredentialPublication.BeginAsync(lifecycle, marker.ExpectedGeneration, marker.Nonce, cancel,
+                    marker.AgentId, marker.Product ?? AgentProducts.Cerberus)
+                : publication(marker.ExpectedGeneration, marker.Nonce, marker.AgentId,
+                    marker.Product ?? AgentProducts.Cerberus, cancel), ct);
+
+    /// <summary>After credential publication and lifecycle commit; failed/incomplete enrollment cannot drop a revoke.</summary>
+    internal static bool CompleteLegacyRevoke(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
+        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState, bool verifiedEnrollment)
+        => marker.ExpectedGeneration == before.Generation && adopted.Generation == before.Generation + 1 &&
+           adopted.State == AgentLifecycleState.Active && adopted.QuiescenceComplete &&
+           Guid.TryParseExact(marker.Nonce, "N", out _) && marker.Nonce != before.LastEnrollmentNonce &&
+           adopted.LastEnrollmentNonce == marker.Nonce &&
+           signedState.TryClearLegacyRevokeAfterEnrollment(marker.AgentId, verifiedEnrollment);
+
     internal static async Task WriteAsync(long generation, ISecretStore promoted, CancellationToken ct)
     {
         RequireElevated();
         EnsureDirectory();
         AgentCredentialPublication.RequireNoUnresolvedPublication();
         AgentCredentialPublication.ValidateProtectedItem(MarkerPath, allowMissing: true);
-        var (identity, _, key, _, _, _) = await promoted.LoadAsync(ct).ConfigureAwait(false);
+        var (identity, _, key, backend, _, _) = await promoted.LoadAsync(ct).ConfigureAwait(false);
         var marker = new AgentEnrollmentMarker(Schema, generation, identity.AgentId, identity.TenantId,
-            PublicKeyDigest(key), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow.AddMinutes(5));
+            PublicKeyDigest(key), Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow.AddMinutes(5),
+            identity.Product == AgentProducts.Secondary ? identity.Product : null,
+            identity.Product == AgentProducts.Secondary ? backend : null);
         await AgentCredentialPublication.PublishPromotionMarkerAsync(JsonSerializer.SerializeToUtf8Bytes(marker, Options), ct).ConfigureAwait(false);
     }
 
@@ -70,10 +94,15 @@ internal static class AgentEnrollmentPromotion
 
     internal static async Task<bool> MatchesAsync(AgentEnrollmentMarker marker, ISecretStore store, CancellationToken ct)
     {
-        var (identity, _, key, _, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+        var (identity, _, key, backend, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
         return marker.AgentId == identity.AgentId && marker.TenantId == identity.TenantId &&
-            marker.PublicKeyDigest == PublicKeyDigest(key);
+            marker.PublicKeyDigest == PublicKeyDigest(key) && MatchesProduct(marker, identity, backend);
     }
+
+    internal static bool MatchesProduct(AgentEnrollmentMarker marker, AgentIdentity identity, string backend)
+        => (marker.Product ?? AgentProducts.Cerberus) == identity.Product &&
+           (marker.BackendUrl is null ? identity.Product == AgentProducts.Cerberus
+               : AgentBuildConfig.SameEndpoint(marker.BackendUrl, backend));
 
     private static string PublicKeyDigest(string privateKey)
     {
@@ -113,7 +142,8 @@ internal static class AgentEnrollmentPromotion
         {
             using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
             await RequireCurrentAsync(ct).ConfigureAwait(false);
-            if (identity.AgentId != marker.AgentId || identity.TenantId != marker.TenantId || PublicKeyDigest(privateKeyPem) != marker.PublicKeyDigest)
+            if (identity.AgentId != marker.AgentId || identity.TenantId != marker.TenantId || PublicKeyDigest(privateKeyPem) != marker.PublicKeyDigest ||
+                !MatchesProduct(marker, identity, backendUrl))
                 throw new InvalidDataException("Pending enrollment identity changed.");
             // Preserve refresh rotation even when the subsequent heartbeat is
             // rejected, without publishing anything to the active machine file.

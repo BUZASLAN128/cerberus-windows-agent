@@ -53,6 +53,8 @@ internal static class ServerBackendMigration
         var current = await lifecycle.ExecuteIfCurrentAsync(generation, async cancel =>
         {
             var registered = await secrets.LoadAsync(cancel).ConfigureAwait(false);
+            if (registered.Identity.Product != AgentProducts.Cerberus)
+                return;
             if (ShouldMigrate(registered.BackendUrl, compiledBackendUrl, environmentBackendUrl))
             {
                 await MigrateAsync(secrets, registered, compiledBackendUrl, cancel).ConfigureAwait(false);
@@ -82,6 +84,8 @@ internal static class ServerBackendMigration
         string compiledBackendUrl,
         CancellationToken ct)
     {
+        if (current.Identity.Product != AgentProducts.Cerberus)
+            throw new InvalidOperationException("Backend migration is not allowed for this product profile.");
         var target = compiledBackendUrl.Trim();
         await secrets.SaveAsync(current.Identity, current.RefreshToken, current.PrivateKeyPem, target,
             current.TailscaleLoginServer, current.TailscaleAuthkey, ct).ConfigureAwait(false);

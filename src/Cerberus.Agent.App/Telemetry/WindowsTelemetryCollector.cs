@@ -8,6 +8,7 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
 {
     private readonly IReadOnlyList<IWindowsTelemetrySectionCollector> _sections;
     private readonly IAgentTelemetrySnapshotTrigger? _snapshotTrigger;
+    private readonly bool _signedFacts;
 
     public WindowsTelemetryCollector()
         : this(WindowsTelemetrySectionCatalog.CreateDefault(publishServiceObservation: false))
@@ -19,12 +20,13 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
     {
     }
 
-    internal WindowsTelemetryCollector(IReadOnlyList<IWindowsTelemetrySectionCollector> sections)
+    internal WindowsTelemetryCollector(IReadOnlyList<IWindowsTelemetrySectionCollector> sections, bool signedFacts = false)
     {
         _sections = sections.Count == 0
             ? throw new ArgumentException("At least one telemetry section is required.", nameof(sections))
             : sections;
         _snapshotTrigger = sections.OfType<IAgentTelemetrySnapshotTrigger>().FirstOrDefault();
+        _signedFacts = signedFacts;
     }
 
     public bool IsSnapshotRefreshRequired()
@@ -54,6 +56,6 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
 
         // Only a failed_logons object that is in this snapshot can have its window committed after the upload.
         FailedLogonSection.KeepPendingIfReported(payload.GetValueOrDefault("security"));
-        return AgentSnapshotFactory.Create(metadata, DateTimeOffset.UtcNow, payload);
+        return AgentSnapshotFactory.Create(metadata, DateTimeOffset.UtcNow, payload, _signedFacts);
     }
 }

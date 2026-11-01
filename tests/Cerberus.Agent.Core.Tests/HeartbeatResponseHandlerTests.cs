@@ -6,6 +6,17 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class HeartbeatResponseHandlerTests
 {
     [Fact]
+    public async Task SignedStateOnlyIgnoresUnsignedRevokeAndQuarantine()
+    {
+        var secrets = new CaptureSecretStore();
+        var handler = new HeartbeatResponseHandler(secrets, signedStateOnly: true);
+        var response = Response(
+            revoke: """{"revoked":true,"clear_local_credentials":true,"reason_code":"agent_revoked","clear_local_credentials_confirmation":"cerberus-agent-clear-local-credentials-v1"}""",
+            quarantine: """{"active":true}""");
+        Assert.Equal(HeartbeatControlAction.Continue, await handler.HandleAsync(response, default));
+        Assert.False(secrets.Cleared);
+    }
+    [Fact]
     public async Task HandleAsync_DoesNotClearSecrets_WhenRevokedWithoutConfirmation()
     {
         var secrets = new CaptureSecretStore();
