@@ -27,7 +27,7 @@ function Read-AssemblyMetadataValues {
   # Reads AssemblyMetadata(key, value) attributes from the file without loading the assembly.
   $tokens = [System.Reflection.Metadata.Ecma335.MetadataTokens]
   if (-not $BundlePath) {
-    $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.exe' }
+    $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.Service.exe' }
       else { [IO.Path]::GetFileNameWithoutExtension($AssemblyPath) + '.exe' }
     $candidate = Join-Path ([IO.Path]::GetDirectoryName($AssemblyPath)) $hostName
     if (Test-Path -LiteralPath $candidate -PathType Leaf) {
@@ -37,7 +37,7 @@ function Read-AssemblyMetadataValues {
   }
   if ($BundlePath -or -not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
     if (-not $BundlePath) {
-      $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.exe' }
+      $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.Service.exe' }
         else { [IO.Path]::GetFileNameWithoutExtension($AssemblyPath) + '.exe' }
       $BundlePath = Join-Path ([IO.Path]::GetDirectoryName($AssemblyPath)) $hostName
     }
