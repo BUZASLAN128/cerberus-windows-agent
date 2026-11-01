@@ -30,11 +30,15 @@ public sealed class AgentUpdatePlanMismatchException() : InvalidOperationExcepti
 
 public sealed record AgentUpdateStagingResult(AgentUpdatePlan? Plan, AgentUpdateExpectedPlan? Release, bool IsCurrent);
 
-/// <summary>One bounded request record survives scheduling, retries, attempt selection and terminal reporting.</summary>
+/// <summary>
+/// Pending until bound; a bound request follows the attempt's actual final phase. Expiry removes only pre-launch
+/// request authority. Terminal phase/attempt anchors bound the projection overlay without deleting the receipt.
+/// </summary>
 public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long LifecycleGeneration,
     DateTimeOffset ExpiresUtc, int Attempts = 0, string? CommandId = null, string? CampaignId = null,
     string? IdempotencyKey = null, AgentUpdateExpectedPlan? ExpectedPlan = null, string? BoundAttemptId = null,
-    AgentUpdateExpectedPlan? VerifiedRelease = null, string? TerminalReason = null, DateTimeOffset? TerminalUtc = null)
+    AgentUpdateExpectedPlan? VerifiedRelease = null, string? TerminalReason = null, DateTimeOffset? TerminalUtc = null,
+    string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null)
 {
     [JsonIgnore] public bool IsPending => BoundAttemptId is null && TerminalReason is null;
     [JsonIgnore] public bool IsCorrelated => CommandId is not null;
@@ -46,6 +50,8 @@ public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long
           AgentUpdateExpectedPlan.Bounded(IdempotencyKey, 255))) &&
         (ExpectedPlan is null || ExpectedPlan.IsValid()) && (VerifiedRelease is null || VerifiedRelease.IsValid()) &&
         (BoundAttemptId is null || AgentUpdateSecurity.IsSafeAttemptId(BoundAttemptId)) &&
+        (TerminalJournalPhase is null || TerminalReason is not null && AgentUpdateJournalStore.KnownPhase(TerminalJournalPhase)) &&
+        (TerminalJournalAttemptId is null || TerminalJournalPhase is not null && AgentUpdateSecurity.IsSafeAttemptId(TerminalJournalAttemptId)) &&
         ((TerminalReason is null && TerminalUtc is null) || TerminalUtc is not null && TerminalReason is
             "current" or "installed" or "expired" or "lifecycle_changed" or "automatic_updates_disabled" or
             "staging_failed" or "plan_mismatch" or "release_unavailable" or "attempt_failed" or "superseded");

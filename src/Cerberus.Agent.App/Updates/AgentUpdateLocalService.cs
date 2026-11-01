@@ -234,30 +234,53 @@ internal static partial class AgentUpdateLocalService
     {
         RequireService();
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
-        while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+        await RunScheduledAsync(ct, timer.WaitForNextTickAsync, async token =>
+        {
+            await ReconcileOwnedAsync(token).ConfigureAwait(false);
+            var lifecycle = await LoadLifecycleAsync(token).ConfigureAwait(false);
+            await RunScheduledTickAsync(Journal, lifecycle, Quarantined,
+                async required => (await CheckAndStageOwnedAsync(automatic: true, required, token,
+                    bypassSchedule: true, installRequest: Journal.Read().InstallRequest).ConfigureAwait(false)) is not null,
+                id => ApplyAsync(id, automatic: true, token),
+                () => CheckAndStageOwnedAsync(automatic: true, required: false, token), token).ConfigureAwait(false);
+        }, ReportFailureAsync).ConfigureAwait(false);
+    }
+
+    internal static async Task RunScheduledAsync(CancellationToken ct, Func<CancellationToken, ValueTask<bool>> nextTick,
+        Func<CancellationToken, Task> iteration, Func<Exception, Task> reportFailure)
+    {
+        while (await nextTick(ct).ConfigureAwait(false))
         {
             if (!await OperationGate.WaitAsync(0, ct).ConfigureAwait(false)) continue;
             try
             {
-                await ReconcileOwnedAsync(ct).ConfigureAwait(false);
-                var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-                var active = Journal.Read();
-                if (await HoldOrRunInstallRequestAsync(active, lifecycle, ct).ConfigureAwait(false)) continue;
-                active = Journal.Read();
-                var now = DateTimeOffset.UtcNow;
-                if (active.AttemptId is not null &&
-                    ((active.Required && active.Phase == AgentUpdateStates.AwaitingConsent && active.ApplyNotBeforeUtc <= now) ||
-                     (active.Phase == AgentUpdateStates.RetryableBusy && active.NextRetryUtc <= now)))
-                    await ApplyAsync(active.AttemptId, automatic: true, ct).ConfigureAwait(false);
-                else if (!active.HasUnfinishedAttempt && active.NextCheckUtc <= now)
-                    await CheckAndStageOwnedAsync(automatic: true, required: false, ct).ConfigureAwait(false);
+                await iteration(ct).ConfigureAwait(false);
             }
             catch (IntentionalUpdateCancellationException) when (!ct.IsCancellationRequested) { }
             catch (AgentUpdateReconciliationDeferredException) when (!ct.IsCancellationRequested) { }
+            catch (AgentUpdatePlanMismatchException) when (!ct.IsCancellationRequested) { }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }
+            catch (Exception ex) { await reportFailure(ex).ConfigureAwait(false); }
             finally { OperationGate.Release(); }
         }
+    }
+
+    internal static async Task RunScheduledTickAsync(AgentUpdateJournalStore journal, AgentLifecycleSnapshot lifecycle,
+        Func<bool> quarantined, Func<bool, Task<bool>> stageRequest, Func<string, Task> apply, Func<Task> check, CancellationToken ct)
+    {
+        var active = journal.Read();
+        if (await HoldOrRunInstallRequestAsync(active, lifecycle, quarantined, journal.Change, stageRequest,
+            _requestLog, ct).ConfigureAwait(false)) return;
+        active = journal.Read();
+        var now = DateTimeOffset.UtcNow;
+        if (active.AttemptId is not null &&
+            ((active.Required && active.Phase == AgentUpdateStates.AwaitingConsent && active.ApplyNotBeforeUtc <= now) ||
+             (active.Phase == AgentUpdateStates.RetryableBusy && active.NextRetryUtc <= now)))
+        {
+            HoldExpiredInstallRequest(active, automatic: true, ct);
+            await apply(active.AttemptId).ConfigureAwait(false);
+        }
+        else if (!active.HasUnfinishedAttempt && active.NextCheckUtc <= now) await check().ConfigureAwait(false);
     }
 
     private static async Task ApplyAsync(string attemptId, bool automatic, CancellationToken ct)
@@ -274,6 +297,7 @@ internal static partial class AgentUpdateLocalService
             throw new InvalidOperationException("Automatic update authorization changed.");
         if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Update installer retry is not admitted.");
+        HoldExpiredInstallRequest(active, automatic, ct);
         var plan = ReadPlan(active) ?? throw new InvalidOperationException("Update plan is missing.");
         var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(Root, attemptId);
         var runtimeDirectory = Path.GetDirectoryName(AgentUpdateCoordinator.ResolveUpdaterPath())!;
@@ -283,6 +307,9 @@ internal static partial class AgentUpdateLocalService
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
+            var latest = Journal.Read();
+            if (latest.AttemptId != attemptId) throw new InvalidOperationException("Update attempt changed before launch.");
+            HoldExpiredInstallRequest(latest, automatic, ct);
             HoldWhileQuarantined(automatic, ct);
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
@@ -310,12 +337,15 @@ internal static partial class AgentUpdateLocalService
             WindowsDeviceInfo.GetAgentVersion(), state.TargetVersion, lifecycle.Generation);
     }
 
-    private static async Task ReportFailureAsync(Exception error)
+    private static Task ReportFailureAsync(Exception error)
+        => ReportFailureAsync(Journal, () => ProjectAsync(CancellationToken.None), error);
+
+    internal static async Task ReportFailureAsync(AgentUpdateJournalStore journal, Func<Task> project, Exception error)
     {
         try
         {
-            Journal.Change(TransitionFailure);
-            await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
+            journal.Change(TransitionFailure);
+            await project().ConfigureAwait(false);
         }
         catch (Exception) { /* A corrupt/unwritable journal stays unavailable; never create replacement success state. */ }
     }

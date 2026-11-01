@@ -261,6 +261,7 @@ internal static partial class AgentUpdateLocalService
             await ReportFailureAsync(ex).ConfigureAwait(false);
             throw;
         }
+        catch (AgentUpdatePlanMismatchException) { throw; }
         catch (Exception ex)
         {
             await ReportFailureAsync(ex).ConfigureAwait(false);
@@ -273,7 +274,7 @@ internal static partial class AgentUpdateLocalService
         }
     }
 
-    private static void RequireExpectedRelease(AgentUpdateInstallRequest? request, AgentUpdateExpectedPlan actual)
+    internal static void RequireExpectedRelease(AgentUpdateInstallRequest? request, AgentUpdateExpectedPlan actual)
     {
         if (request?.ExpectedPlan is { } expected && !expected.Matches(actual))
             throw new AgentUpdatePlanMismatchException();

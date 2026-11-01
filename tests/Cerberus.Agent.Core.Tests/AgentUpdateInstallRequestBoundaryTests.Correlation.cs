@@ -174,6 +174,118 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         Assert.Equal(request, active.InstallRequest);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BoundRequestWaitsForActualFinalPhaseAndExpiredReceiptCanRecover(bool pendingReboot)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var request = CorrelatedRequest() with { BoundAttemptId = Attempt, VerifiedRelease = Release,
+            ExpiresUtc = pendingReboot ? now.AddMinutes(-1) : now.AddHours(1) };
+        var active = new AgentUpdateJournal { AttemptId = Attempt, LifecycleGeneration = 7, InstallRequest = request,
+            Phase = pendingReboot ? AgentUpdateStates.PendingReboot : AgentUpdateStates.AwaitingConsent };
+        if (!pendingReboot) active = AgentUpdateLocalService.TransitionReconciliationDeferred(active, now.AddMinutes(5));
+        Assert.Equal(active, AgentUpdateLocalService.CompleteInstallRequest(active, Plan(), now));
+        if (!pendingReboot) active = AgentUpdateLocalService.RestoreReconciliationSnapshot(active, 7);
+        else active = active with { InstallRequest = request with { TerminalReason = "expired", TerminalUtc = now } };
+        foreach (var phase in new[] { AgentUpdateStates.Installed, AgentUpdateStates.Failed })
+        {
+            var completed = AgentUpdateLocalService.CompleteInstallRequest(active with { Phase = phase }, Plan(), now);
+            Assert.Equal(phase == AgentUpdateStates.Installed ? "installed" : "attempt_failed", completed.InstallRequest!.TerminalReason);
+            var projected = AgentUpdateLocalService.ProjectInstallRequest(completed, Plan(), AgentUpdateState.NotChecked() with { State = phase });
+            Assert.Equal(phase, projected.State);
+            Assert.Equal("command", projected.CommandId);
+        }
+    }
+
+    [Theory]
+    [InlineData("staging_failed", "downloading")]
+    [InlineData("current", "failed")]
+    public void TerminalOverlayEndsWhenItsJournalPhaseOrAttemptAdvances(string reason, string laterPhase)
+    {
+        var request = CorrelatedRequest() with { TerminalReason = reason, TerminalUtc = DateTimeOffset.UtcNow,
+            VerifiedRelease = reason == "current" ? Release : null, TerminalJournalPhase = AgentUpdateStates.Current };
+        var active = new AgentUpdateJournal { InstallRequest = request, Phase = laterPhase,
+            AttemptId = reason == "staging_failed" ? "attempt-B" : null };
+        var projected = AgentUpdateLocalService.ProjectInstallRequest(active, null, AgentUpdateState.NotChecked() with { State = laterPhase });
+        Assert.Equal(laterPhase, projected.State);
+        Assert.Null(projected.CommandId);
+        Assert.Equal(request, active.InstallRequest);
+    }
+
+    [Theory]
+    [InlineData(AgentUpdateStates.AwaitingConsent)]
+    [InlineData(AgentUpdateStates.RetryableBusy)]
+    public Task RealSchedulerTickPlanMismatchPreservesExistingAttemptPolicyAndRetry(string phase)
+        => WithCorrelationJournal(async root =>
+        {
+            var journal = new AgentUpdateJournalStore(root);
+            var original = journal.Change(_ => new() { Phase = phase, AttemptId = Attempt, LifecycleGeneration = 7,
+                Required = true, RequiredPolicyGeneration = 7, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+                RetryCount = 1, NextRetryUtc = DateTimeOffset.UtcNow.AddSeconds(-1),
+                InstallRequest = CorrelatedRequest() with { ExpectedPlan = Release with { ReleaseId = "stable:43" } } });
+            var reports = 0;
+            var ticks = 0;
+            await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
+                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+                    _ => { AgentUpdateLocalService.RequireExpectedRelease(journal.Read().InstallRequest, Release); return Task.FromResult(true); },
+                    _ => throw new InvalidOperationException("No installer call expected."), () => Task.CompletedTask, ct),
+                error => { reports++; return AgentUpdateLocalService.ReportFailureAsync(journal, () => Task.CompletedTask, error); });
+            var after = journal.Read();
+            Assert.Equal("plan_mismatch", after.InstallRequest!.TerminalReason);
+            Assert.Equal(0, reports);
+            Assert.Equal((original.AttemptId, original.Phase, original.RequiredPolicyGeneration, original.ApplyNotBeforeUtc,
+                original.RetryCount, original.NextRetryUtc), (after.AttemptId, after.Phase, after.RequiredPolicyGeneration,
+                after.ApplyNotBeforeUtc, after.RetryCount, after.NextRetryUtc));
+        }, protectedJournal: true);
+
+    [Fact]
+    public Task RealSchedulerTickDoesNotLaunchExpiredBoundRequestAfterQuarantine() => WithCorrelationJournal(async root =>
+    {
+        var journal = new AgentUpdateJournalStore(root);
+        journal.Change(_ => new() { AttemptId = Attempt, Phase = AgentUpdateStates.AwaitingConsent, LifecycleGeneration = 7,
+            Required = true, RequiredInstallAttemptId = Attempt, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            InstallRequest = CorrelatedRequest() with { BoundAttemptId = Attempt, VerifiedRelease = Release } });
+        var tick = 0;
+        var launches = 0;
+        await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(++tick <= 3), async ct =>
+        {
+            if (tick == 2) journal.Change(before => before with { InstallRequest = before.InstallRequest! with
+                { ExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } });
+            journal.Change(before => AgentUpdateLocalService.CompleteInstallRequest(before, Plan(), DateTimeOffset.UtcNow));
+            await AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => tick < 3,
+                _ => throw new InvalidOperationException("No new stage expected."),
+                _ => { launches++; return Task.CompletedTask; }, () => Task.CompletedTask, ct);
+        }, _ => throw new InvalidOperationException("Expiration is a hold, not an installation failure."));
+        Assert.Equal(0, launches);
+        var ended = journal.Read();
+        Assert.Equal("expired", ended.InstallRequest!.TerminalReason);
+        Assert.Equal(AgentUpdateStates.AwaitingConsent, ended.Phase);
+        Assert.True(ended.Required);
+        Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(ended, true, default));
+        AgentUpdateLocalService.HoldExpiredInstallRequest(ended, false, default);
+    }, protectedJournal: true);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RealSchedulerTickStillReportsStageAndInstallerFailures(bool installer) => WithCorrelationJournal(async root =>
+    {
+        var journal = new AgentUpdateJournalStore(root);
+        journal.Change(_ => new() { AttemptId = Attempt, Phase = AgentUpdateStates.AwaitingConsent, LifecycleGeneration = 7,
+            Required = true, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            InstallRequest = installer ? null : CorrelatedRequest() });
+        var reports = 0;
+        var ticks = 0;
+        await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
+            ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+                _ => throw new IOException("fixture stage I/O"), _ => throw new IOException("fixture installer I/O"),
+                () => Task.CompletedTask, ct),
+            error => { reports++; return AgentUpdateLocalService.ReportFailureAsync(journal, () => Task.CompletedTask, error); });
+        Assert.Equal(1, reports);
+        Assert.Equal(AgentUpdateStates.Failed, journal.Read().Phase);
+    }, protectedJournal: true);
+
 #if CERBERUS_SERVER_PROFILE
     [Fact]
     public Task ServerOptionalPlanPersistsAndMalformedShapesNeverReachAdmission() => WithCorrelationJournal(async root =>
@@ -210,11 +322,12 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
     private static AgentUpdatePlan Plan() => new("msi", Release.Version, "stable", "fixture.msi", Release.ArtifactSha256,
         DateTimeOffset.UtcNow.ToString("O"), "fixture", AttemptId: Attempt, Sequence: 42);
 
-    private static async Task WithCorrelationJournal(Func<string, Task> assertion)
+    private static async Task WithCorrelationJournal(Func<string, Task> assertion, bool protectedJournal = false)
     {
         var prefix = Path.Combine(Path.GetTempPath(), "agent-install-correlation-");
         var root = prefix + Guid.NewGuid().ToString("N");
-        Directory.CreateDirectory(root);
+        if (protectedJournal) AgentUpdateSecurity.EnsureProtectedRoot(root);
+        else Directory.CreateDirectory(root);
         try { await assertion(root); }
         finally
         {

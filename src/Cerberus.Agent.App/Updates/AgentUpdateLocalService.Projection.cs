@@ -52,18 +52,26 @@ internal static partial class AgentUpdateLocalService
 
     internal static AgentUpdateJournal CompleteInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, DateTimeOffset now)
     {
-        if (active.InstallRequest is not { IsCorrelated: true, BoundAttemptId: not null, TerminalReason: null } request)
+        if (active.InstallRequest is not { IsCorrelated: true, BoundAttemptId: not null } request ||
+            request.TerminalReason is not (null or "expired"))
             return active;
         var bound = active.AttemptId == request.BoundAttemptId && active.LifecycleGeneration == request.LifecycleGeneration &&
             plan is not null && request.VerifiedRelease is { } release &&
             release.Matches(AgentUpdateExpectedPlan.FromPlan(plan));
-        var reason = !bound ? "superseded" : active.Phase switch
+        // A deferred Blocked state preserves a pre-install attempt; it is not a final outcome.
+        var reason = !bound ? null : active.Phase switch
         {
             AgentUpdateStates.Installed => "installed",
-            AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined => "attempt_failed",
-            _ => request.ExpiresUtc <= now ? "expired" : null,
+            AgentUpdateStates.Failed or AgentUpdateStates.Quarantined => "attempt_failed",
+            AgentUpdateStates.Blocked when active.ReconciliationSnapshot is null => "attempt_failed",
+            _ => null,
         };
-        return reason is null ? active : active with { InstallRequest = request with { TerminalReason = reason, TerminalUtc = now } };
+        if (reason is null && !RequestInstallationStarted(active, request) && request.ExpiresUtc <= now)
+            reason = "expired";
+        return reason is null || reason == request.TerminalReason ? active : active with
+        {
+            InstallRequest = AnchorTerminal(active, request with { TerminalReason = reason, TerminalUtc = now }),
+        };
     }
 
     internal static AgentUpdateState ProjectInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, AgentUpdateState state)
@@ -74,7 +82,9 @@ internal static partial class AgentUpdateLocalService
             active.LifecycleGeneration == request.LifecycleGeneration && plan is not null &&
             request.VerifiedRelease is { } release && release.Matches(AgentUpdateExpectedPlan.FromPlan(plan));
         if (request.TerminalReason is not null &&
-            (request.BoundAttemptId is not null && !bound ||
+            (request.TerminalJournalPhase != active.Phase || request.TerminalJournalAttemptId != active.AttemptId ||
+             request.TerminalReason == "expired" && RequestInstallationStarted(active, request) ||
+             request.BoundAttemptId is not null && !bound ||
              plan is not null && request.VerifiedRelease is { } completedRelease &&
              !completedRelease.Matches(AgentUpdateExpectedPlan.FromPlan(plan))))
             return state with { CampaignId = null, CommandId = null }; // Keep the old receipt local to its own attempt.
@@ -105,4 +115,13 @@ internal static partial class AgentUpdateLocalService
             HealthState = bound ? state.HealthState : "unknown",
         };
     }
+
+    private static bool RequestInstallationStarted(AgentUpdateJournal journal, AgentUpdateInstallRequest request)
+        => journal.AttemptId == request.BoundAttemptId &&
+           (journal.MayHaveStartedInstallation || journal.Phase == "launch_requested");
+
+    private static AgentUpdateInstallRequest? AnchorTerminal(AgentUpdateJournal journal, AgentUpdateInstallRequest? request)
+        => request?.TerminalReason is not null
+            ? request with { TerminalJournalPhase = journal.Phase, TerminalJournalAttemptId = journal.AttemptId }
+            : request;
 }

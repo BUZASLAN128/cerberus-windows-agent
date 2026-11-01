@@ -93,7 +93,7 @@ public sealed class AgentUpdateJournalStore
            snapshot.LifecycleGeneration >= 0 &&
            snapshot.RetryCount is >= 0 and <= 3;
 
-    private static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
+    internal static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or

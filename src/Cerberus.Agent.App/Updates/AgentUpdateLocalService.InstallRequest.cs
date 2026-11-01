@@ -179,11 +179,11 @@ internal static partial class AgentUpdateLocalService
             : request.IsCorrelated && (before.InstallRequest!.VerifiedRelease is not { } verified ||
                 request.ExpectedPlan is { } expected && !expected.Matches(verified) ||
                 staged && (before.AttemptId is null || before.LifecycleGeneration != lifecycleGeneration))
-                ? before with { InstallRequest = Finish(before.InstallRequest!, "release_unavailable") }
+                ? before with { InstallRequest = AnchorTerminal(before, Finish(before.InstallRequest!, "release_unavailable")) }
             : staged ? TransitionInstallRequested(before with { InstallRequest = request.IsCorrelated
                     ? before.InstallRequest! with { BoundAttemptId = before.AttemptId }
                     : null }, lifecycleGeneration, DateTimeOffset.UtcNow)
-                : before with { InstallRequest = Finish(before.InstallRequest!, "current") });
+                : before with { InstallRequest = AnchorTerminal(before, Finish(before.InstallRequest!, "current")) });
         log.Info($"Install request {request.CommandId ?? "legacy"} handled: update state {after.Phase}.");
         return true;
     }
@@ -195,9 +195,18 @@ internal static partial class AgentUpdateLocalService
             throw new IntentionalUpdateCancellationException("Update held while quarantined.", ct);
     }
 
+    internal static void HoldExpiredInstallRequest(AgentUpdateJournal active, bool automatic, CancellationToken ct)
+    {
+        if (automatic && active.RequiredPolicyGeneration is null &&
+            active.InstallRequest is { BoundAttemptId: not null } request &&
+            request.BoundAttemptId == active.AttemptId && !RequestInstallationStarted(active, request) &&
+            (request.ExpiresUtc <= DateTimeOffset.UtcNow || request.TerminalReason == "expired"))
+            throw new IntentionalUpdateCancellationException("Install request expired before launch.", ct);
+    }
+
     private static AgentUpdateJournal Replace(
         AgentUpdateJournal journal, AgentUpdateInstallRequest expected, AgentUpdateInstallRequest? next)
-        => MatchesPending(journal.InstallRequest, expected) ? journal with { InstallRequest = next } : journal;
+        => MatchesPending(journal.InstallRequest, expected) ? journal with { InstallRequest = AnchorTerminal(journal, next) } : journal;
 
     private static bool MatchesPending(AgentUpdateInstallRequest? current, AgentUpdateInstallRequest expected)
         => current is { IsPending: true } && current.SameIdentity(expected) && current.Attempts == expected.Attempts &&
