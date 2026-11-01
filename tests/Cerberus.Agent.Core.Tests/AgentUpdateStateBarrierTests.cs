@@ -266,7 +266,7 @@ public sealed class AgentUpdateStateBarrierTests
             var denied = await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.LaunchUnderFenceAsync(
                 new() { Phase = AgentUpdateStates.Staged }, true, _ => { probes++; return Task.FromResult(new AgentLifecycleSnapshot()); },
                 _ => false, _ => launches++, default, root));
-            Assert.Contains("untrusted ownership or permissions", denied.Message);
+            Assert.StartsWith("Protected update object", denied.Message);
             Assert.Equal(0, probes);
             Assert.Equal(0, launches);
         }
