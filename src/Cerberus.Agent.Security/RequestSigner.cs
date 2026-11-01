@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Cerberus.Agent.Security;
 
-public sealed class RequestSigner : Cerberus.Agent.Core.IRequestSigner
+public sealed class RequestSigner : Cerberus.Agent.Core.IRequestSigner, IDisposable
 {
     private readonly RSA _rsa;
 
@@ -30,5 +30,7 @@ public sealed class RequestSigner : Cerberus.Agent.Core.IRequestSigner
         var sig = _rsa.SignData(data, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         return Convert.ToBase64String(sig);
     }
+
+    public void Dispose() => _rsa.Dispose();
 }
 

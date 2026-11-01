@@ -48,7 +48,7 @@ public sealed partial class AgentApiClient
         {
             handler.AllowAutoRedirect = false;
             socket.Options.CollectHttpResponseDetails = true;
-            foreach (var name in new[] { "Authorization", "X-Agent-Id", "X-Nonce", "X-Timestamp", "X-Body-Hash", "X-Signature" })
+            foreach (var name in new[] { "Authorization", "X-Agent-Id", "X-Nonce", "X-Timestamp", "X-Body-Hash", "X-Signature", "X-Signature-V2" })
             {
                 if (!request.Headers.TryGetValues(name, out var values))
                     throw new InvalidOperationException("Wakeup signing header is missing.");
