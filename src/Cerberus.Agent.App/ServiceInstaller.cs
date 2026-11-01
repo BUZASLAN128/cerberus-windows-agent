@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Principal;
 using System.ServiceProcess;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.App.Updates;
 using Microsoft.Win32;
 
 namespace Cerberus.Agent.App;
@@ -16,6 +17,8 @@ internal static class ServiceInstaller
 
     public static void InstallOrThrow()
     {
+        if (AgentBuildProfile.IsServer)
+            throw new InvalidOperationException("Server service installation is owned by the MSI.");
         RequireAdminOrThrow();
 
         var currentExePath = Process.GetCurrentProcess().MainModule?.FileName
@@ -181,15 +184,24 @@ internal static class ServiceInstaller
     internal static string ResolveServiceExecutablePath(string currentProcessPath)
     {
         var current = Path.GetFullPath(currentProcessPath);
-        var dir = Path.GetDirectoryName(current);
-        if (string.IsNullOrWhiteSpace(dir))
-            return current;
-
-        // The MSI's canonical layout places all protected runtime binaries in
-        // the app directory. Never accept a user/environment-selected service
-        // path or silently register the UI binary as the service.
-        return Path.Combine(dir, "Cerberus.Agent.Service.exe");
+        using var key = Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath, writable: false);
+        var runtime = AgentUpdateSecurity.ResolveRegisteredRuntimeRoot(
+            key?.GetValue("runtimeRoot") as string, key?.GetValue("installRoot") as string);
+        if (!string.Equals(Path.GetDirectoryName(current), runtime, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Service setup must run from the registered runtime directory.");
+        var service = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
+        foreach (var path in new[] { current, service, Path.Combine(runtime, "Cerberus.Agent.Service.dll") })
+        {
+            AgentUpdateSecurity.ValidateInstalledServiceSource(path, runtime);
+            AgentUpdateAuthenticode.Verify(path, AgentUpdateDefaults.ReleaseChannel,
+                AgentUpdateDefaults.AllowedSignerKeyIdentity, allowUnsignedDevBuild: false);
+        }
+        return service;
     }
+
+    internal static void RequireInstalledRuntime()
+        => _ = ResolveServiceExecutablePath(Environment.ProcessPath
+            ?? throw new InvalidOperationException("Could not determine executable path."));
 
     private static string? GetInstalledExecutablePath()
     {
@@ -224,7 +236,7 @@ internal static class ServiceInstaller
     {
         var psi = new ProcessStartInfo
         {
-            FileName = "sc.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "sc.exe"),
             Arguments = args,
             UseShellExecute = false,
             RedirectStandardOutput = true,

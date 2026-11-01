@@ -161,6 +161,18 @@ public static class AgentUpdateSecurity
         }
     }
 
+    /// <summary>Read-only service gate: the runtime belongs to SYSTEM/Admin and ancestors cannot replace it.</summary>
+    public static void ValidateInstalledServiceSource(string path, string runtimeDirectory)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        if (AgentBuildProfile.IsServer && !string.Equals(NormalizeRoot(runtimeDirectory),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Cerberus", "Server Agent", "app"),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Server runtime must use the canonical Program Files directory.");
+        ValidateProtectedPath(runtimeDirectory, runtimeDirectory, allowMissing: false);
+        ValidateInstalledSource(path, runtimeDirectory);
+    }
+
     public static FileStream AcquireGlobalLock(string root)
     {
         var fullRoot = NormalizeRoot(root);

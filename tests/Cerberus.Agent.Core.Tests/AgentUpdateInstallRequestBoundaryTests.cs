@@ -64,7 +64,9 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         Assert.Equal(0, changes);
         Assert.Equal(request, active.InstallRequest);
         Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldWhileQuarantined(true, default, gate));
-        AgentUpdateLocalService.HoldWhileQuarantined(false, default, gate);
+        if (AgentBuildProfile.IsServer)
+            Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldWhileQuarantined(false, default, gate));
+        else AgentUpdateLocalService.HoldWhileQuarantined(false, default, gate);
 
         quarantined = false;
         AgentUpdateLocalService.HoldWhileQuarantined(true, default, gate);

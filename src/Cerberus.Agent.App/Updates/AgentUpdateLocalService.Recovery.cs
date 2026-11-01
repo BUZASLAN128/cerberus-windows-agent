@@ -36,7 +36,7 @@ internal static partial class AgentUpdateLocalService
         using (await AgentUpdateLaunchFence.AcquireAsync(ct, fenceRoot).ConfigureAwait(false))
         {
             var lifecycle = await loadLifecycle(ct).ConfigureAwait(false);
-            if (pendingState(lifecycle) || automatic && (!AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) ||
+            if (pendingState(lifecycle) || (automatic || AgentBuildProfile.IsServer) && (!AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) ||
                     !lifecycle.QuiescenceComplete || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
             launch(lifecycle);

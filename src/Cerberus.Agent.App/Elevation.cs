@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Principal;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
 
@@ -15,6 +16,7 @@ internal static class Elevation
 
     public static bool TryRunElevated(string arguments)
     {
+        if (AgentBuildProfile.IsServer) return false;
         var exePath = Process.GetCurrentProcess().MainModule?.FileName;
         if (string.IsNullOrWhiteSpace(exePath))
             return false;
@@ -40,6 +42,7 @@ internal static class Elevation
     public static async Task<int?> RunElevatedAndWaitAsync(string arguments, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (AgentBuildProfile.IsServer) return null;
         var exePath = Process.GetCurrentProcess().MainModule?.FileName;
         if (string.IsNullOrWhiteSpace(exePath))
             return null;

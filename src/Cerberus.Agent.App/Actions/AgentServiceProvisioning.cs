@@ -308,8 +308,12 @@ internal static class AgentServiceProvisioning
 
     public static void InstallOrThrow()
     {
+        if (AgentBuildProfile.IsServer)
+            throw new InvalidOperationException("Server service installation is owned by the MSI.");
         if (!Elevation.IsAdministrator())
             throw new InvalidOperationException("Administrator privileges are required for service install/uninstall.");
+
+        ServiceInstaller.RequireInstalledRuntime();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         var userStore = new DpapiSecretStore(SecretStoreScope.User);

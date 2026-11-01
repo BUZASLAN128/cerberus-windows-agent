@@ -63,6 +63,7 @@ internal static partial class Program
     private static async Task VerifyRuntimeAsync(ServiceHandle service, string runtime, string expectedVersion, string executableHash, string assemblyHash,
         HealthOptions options, HealthTrace trace)
     {
+        if (AgentBuildProfile.IsServer) ValidateRuntimeFiles(runtime);
         var executable = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
         var assembly = Path.Combine(runtime, "Cerberus.Agent.Service.dll");
         trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;

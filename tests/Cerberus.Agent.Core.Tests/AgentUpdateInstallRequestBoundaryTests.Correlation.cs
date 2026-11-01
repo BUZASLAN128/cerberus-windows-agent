@@ -306,7 +306,9 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         Assert.False(ended.Required);
         Assert.Null(ended.RequiredInstallAttemptId);
         Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(ended, true, default));
-        AgentUpdateLocalService.HoldExpiredInstallRequest(ended, false, default);
+        if (AgentBuildProfile.IsServer)
+            Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(ended, false, default));
+        else AgentUpdateLocalService.HoldExpiredInstallRequest(ended, false, default);
     }, protectedJournal: true);
 
     [Theory]
@@ -392,7 +394,9 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
                 Assert.Throws<AgentUpdatePlanMismatchException>(() => AgentUpdateLocalService.RequireExpectedRelease(after.InstallRequest, Release));
             if (independentPolicy) AgentUpdateLocalService.HoldExpiredInstallRequest(after, true, default);
             else Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(after, true, default));
-            AgentUpdateLocalService.HoldExpiredInstallRequest(after, false, default);
+            if (AgentBuildProfile.IsServer)
+                Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(after, false, default));
+            else AgentUpdateLocalService.HoldExpiredInstallRequest(after, false, default);
         });
 
     // Real protected journal + projection owner helpers; this does not call CheckAndStageOwnedAsync.

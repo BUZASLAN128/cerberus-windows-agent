@@ -43,6 +43,8 @@ public static class AgentLocalControlProtocol
         if (request.AttemptId is not null &&
             (request.Operation != "apply" || !Guid.TryParseExact(request.AttemptId, "N", out _)))
             return false;
+        if (AgentBuildProfile.IsServer && !privileged && request.Operation is "check" or "apply")
+            return false;
         return request.Operation is "status" or "readiness" or "check" or "apply" ||
             (privileged && request.Operation is "retry" or "enrollment-adopt" or "unregister");
     }

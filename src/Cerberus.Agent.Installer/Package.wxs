@@ -49,6 +49,9 @@
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_URL" Value="$(var.UpdateManifestUrl)" Secure="yes" />
     <Property Id="CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64" Value="$(var.UpdateManifestPublicKeyB64)" Secure="yes" />
     <?if $(var.AgentBuildProfile) = server ?>
+    <!-- UI and command-line directory properties cannot select a server service location. -->
+    <SetProperty Id="INSTALLFOLDER" Value="[ProgramFiles64Folder]Cerberus\Server Agent\" Before="CostFinalize" Sequence="both" />
+    <SetProperty Id="APPFOLDER" Value="[ProgramFiles64Folder]Cerberus\Server Agent\app\" Before="CostFinalize" Sequence="both" />
     <Property Id="CERBERUS_ENROLLMENT_PROOF" Secure="yes" Hidden="yes" />
     <Property Id="CERBERUS_UPDATE_REQUIRE_BACKEND" Secure="yes" />
     <?else ?>
@@ -124,6 +127,7 @@
       <ComponentRef Id="ServerLegalConsentRegistryComponent" />
       <ComponentRef Id="ServerDataCleanupComponent" />
       <ComponentRef Id="ServerDataFolderComponent" />
+      <ComponentRef Id="ServerRuntimeFolderComponent" />
     </Feature>
     <?else ?>
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
@@ -176,6 +180,9 @@
         Return="ignore" />
     <!-- Upgrade health gate inside the install transaction: a non-zero exit fails msiexec and Windows Installer rolls the new files back
          before RemoveExistingProducts, so the previous product stays installed. CERBERUS_UPDATE_REQUIRE_BACKEND=1 also waits for backend contact. -->
+    <CustomAction Id="ValidateServerRuntime" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='validate-runtime "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction
         Id="CheckServerAgentHealth"
         BinaryRef="CerberusInstallerHelper"
@@ -246,6 +253,7 @@
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
       <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
       <?if $(var.AgentBuildProfile) = server ?>
+      <Custom Action="ValidateServerRuntime" Before="InstallServices" Condition="NOT REMOVE" />
       <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="ServerEnrollRollback" After="ServerEnrollFromInstaller" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="CheckServerAgentHealth" After="StartServices" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
@@ -370,6 +378,11 @@
     <Component Id="ServerDataFolderComponent" Directory="SERVERDATADIR" Guid="{5E0B6A57-2C1D-4B8E-9A43-7D1F6C2E8B90}">
       <CreateFolder>
         <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+    </Component>
+    <Component Id="ServerRuntimeFolderComponent" Directory="APPFOLDER" Guid="{F8BC1734-609C-4638-9E69-80BB1AE65528}">
+      <CreateFolder>
+        <PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)" />
       </CreateFolder>
     </Component>
     <Component Id="ServerDataCleanupComponent" Directory="INSTALLFOLDER" Guid="{1A8485C8-A5AC-4C0D-94E2-D17390941535}">

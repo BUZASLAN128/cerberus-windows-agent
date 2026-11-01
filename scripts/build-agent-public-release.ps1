@@ -340,7 +340,7 @@ Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
 dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:Version=$Version @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
+  -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 # Built after the payload pass and packed into the MSI: sign and gate it here.

@@ -11,6 +11,14 @@
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
   <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentReleaseChannel</_Parameter1>
+      <_Parameter2>$(AgentReleaseChannel)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedSignerKeyIdentity</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedSignerKeyIdentity)</_Parameter2>
+    </AssemblyAttribute>
     <ProjectReference Include="..\..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
   </ItemGroup>
 </Project>

@@ -194,13 +194,22 @@ internal static partial class AgentUpdateLocalService
     /// <summary>An automatic install about to launch waits while the agent is quarantined.</summary>
     internal static void HoldWhileQuarantined(bool automatic, CancellationToken ct, Func<bool>? quarantined = null)
     {
-        if (automatic && (quarantined ?? Quarantined)())
+        if ((automatic || AgentBuildProfile.IsServer) && (quarantined ?? Quarantined)())
             throw new IntentionalUpdateCancellationException("Update held while quarantined.", ct);
     }
 
     internal static void HoldExpiredInstallRequest(AgentUpdateJournal active, bool automatic, CancellationToken ct)
     {
-        if (!automatic || active.MayHaveStartedInstallation || active.Phase == "launch_requested") return;
+        if (active.MayHaveStartedInstallation || active.Phase == "launch_requested") return;
+        if (!automatic)
+        {
+            if (!AgentBuildProfile.IsServer) return;
+            var now = DateTimeOffset.UtcNow;
+            if (active.ApplyNotBeforeUtc > now || active.InstallRequest is { IsPending: true } pending && pending.NotBeforeUtc > now)
+                throw new IntentionalUpdateCancellationException("Update start window has not opened.", ct);
+            // Admin consent can apply an optional release, but cannot erase an existing signed request deadline.
+            if (active.RequiredInstallAttemptId is null && active.InstallRequestAuthorityExpiresUtc is null) return;
+        }
         active = ExpireInstallRequestAuthority(active, DateTimeOffset.UtcNow);
         var policy = active.Required && active.RequiredPolicyGeneration == active.LifecycleGeneration;
         var request = active.Required && active.RequiredInstallAttemptId == active.AttemptId &&
@@ -241,12 +250,13 @@ internal static partial class AgentUpdateLocalService
     {
         before = ExpireInstallRequestAuthority(before, DateTimeOffset.UtcNow);
         HoldExpiredInstallRequest(before, automatic, ct);
+        var preserveAuthority = automatic || AgentBuildProfile.IsServer;
         // Explicit local consent is its own source; an old signed request must not obstruct its later busy retries.
         return before with { Phase = "launch_requested", LifecycleGeneration = generation, Automatic = automatic,
             InstallerResult = null, NextRetryUtc = null,
-            Required = before.Required && (automatic || before.RequiredPolicyGeneration is not null),
-            RequiredInstallAttemptId = automatic ? before.RequiredInstallAttemptId : null,
-            InstallRequestAuthorityExpiresUtc = automatic ? before.InstallRequestAuthorityExpiresUtc : null };
+            Required = before.Required && (preserveAuthority || before.RequiredPolicyGeneration is not null),
+            RequiredInstallAttemptId = preserveAuthority ? before.RequiredInstallAttemptId : null,
+            InstallRequestAuthorityExpiresUtc = preserveAuthority ? before.InstallRequestAuthorityExpiresUtc : null };
     }
 
     private static AgentUpdateJournal Replace(

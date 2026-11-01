@@ -1,9 +1,20 @@
 using Cerberus.Agent.App;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
 public sealed class ServiceInstallerTests
 {
+    [Fact]
+    public async Task ServerLauncherCannotInstallOrSelfElevate()
+    {
+        if (!AgentBuildProfile.IsServer) return;
+        Assert.Equal(2, Cerberus.Agent.App.Program.Main(["--install-service"]));
+        Assert.Throws<InvalidOperationException>(ServiceInstaller.InstallOrThrow);
+        Assert.False(Elevation.TryRunElevated("--install-service"));
+        Assert.Null(await Elevation.RunElevatedAndWaitAsync("--install-service", default));
+    }
+
     [Theory]
     [InlineData("\"C:\\Program Files\\Cerberus\\Cerberus.Agent.exe\" --service", "C:\\Program Files\\Cerberus\\Cerberus.Agent.exe")]
     [InlineData("\"C:\\Program Files\\Cerberus\\Windows Agent\\Cerberus.Agent.Service.exe\"", "C:\\Program Files\\Cerberus\\Windows Agent\\Cerberus.Agent.Service.exe")]
@@ -31,7 +42,7 @@ public sealed class ServiceInstallerTests
     }
 
     [Fact]
-    public void ResolveServiceExecutablePath_PrefersSiblingServiceExe()
+    public void ResolveServiceExecutablePath_RejectsCopiedLauncherAndSiblingService()
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-service-path-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -40,6 +51,12 @@ public sealed class ServiceInstallerTests
         File.WriteAllText(setupPath, "");
         File.WriteAllText(servicePath, "");
 
-        Assert.Equal(servicePath, ServiceInstaller.ResolveServiceExecutablePath(setupPath));
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => ServiceInstaller.ResolveServiceExecutablePath(setupPath));
+            Assert.Throws<InvalidOperationException>(() =>
+                AgentUpdateSecurity.ValidateInstalledServiceSource(servicePath, root));
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 }
