@@ -132,7 +132,7 @@ public sealed class AgentUpdateInstallRequestTests
         var journal = new MemoryJournal(new AgentUpdateJournal { InstallRequest = request });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.RunInstallRequestAsync(
-            journal.Value, 7, true, journal.Change, () => throw new InvalidOperationException("manifest unavailable"),
+            journal.Value, 7, true, journal.Change, _ => throw new InvalidOperationException("manifest unavailable"),
             NullAgentLogger.Instance, CancellationToken.None));
 
         var kept = journal.Value.InstallRequest;
@@ -147,21 +147,112 @@ public sealed class AgentUpdateInstallRequestTests
     public async Task Run_StagedRequestIsClearedAndTheAttemptMadeDue()
     {
         var journal = new MemoryJournal(new AgentUpdateJournal { InstallRequest = DueRequest() });
-        Task Stage()
+        Task<bool> Stage(bool required)
         {
+            Assert.False(required);
             journal.Value = journal.Value with
             {
-                AttemptId = "attempt-1", Phase = AgentUpdateStates.AwaitingConsent, Required = true,
+                AttemptId = "attempt-1", Phase = AgentUpdateStates.AwaitingConsent, Required = false,
                 LifecycleGeneration = 7, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddHours(20),
             };
-            return Task.CompletedTask;
+            return Task.FromResult(true);
         }
 
         Assert.True(await AgentUpdateLocalService.RunInstallRequestAsync(
             journal.Value, 7, true, journal.Change, Stage, NullAgentLogger.Instance, CancellationToken.None));
 
         Assert.Null(journal.Value.InstallRequest);
+        Assert.True(journal.Value.Required);
         Assert.True(journal.Value.ApplyNotBeforeUtc <= DateTimeOffset.UtcNow);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedReconciliationExhaustsRequestWithoutInventingOrErasingRequiredPolicy(bool independentRequired)
+    {
+        var journal = new MemoryJournal(Awaiting(independentRequired, 7, Now.AddHours(20)) with
+        {
+            RequiredPolicyGeneration = independentRequired ? 7 : null,
+            InstallRequest = DueRequest(),
+        });
+        Task<bool> Stage(bool required)
+        {
+            journal.Change(before => AgentUpdateLocalService.TransitionReconciliationDeferred(
+                before, DateTimeOffset.UtcNow.AddMinutes(5), required, required ? 7 : null));
+            throw new InvalidOperationException("manifest verification unavailable");
+        }
+        for (var attempt = 0; attempt < AgentUpdateLocalService.MaxInstallRequestAttempts; attempt++)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.RunInstallRequestAsync(
+                journal.Value, 7, true, journal.Change, Stage, NullAgentLogger.Instance, default));
+            Assert.Equal(independentRequired, journal.Value.Required);
+            Assert.Equal(independentRequired, AgentUpdateLocalService.CarryRequiredBlockedIntent(journal.Value, false, 7));
+            if (attempt + 1 < AgentUpdateLocalService.MaxInstallRequestAttempts)
+            {
+                var retry = Assert.IsType<AgentUpdateInstallRequest>(journal.Value.InstallRequest);
+                Assert.Equal(attempt + 1, retry.Attempts);
+                journal.Value = journal.Value with { InstallRequest = retry with { NotBeforeUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } };
+            }
+        }
+        Assert.Null(journal.Value.InstallRequest);
+        Assert.Equal(independentRequired ? 7L : (long?)null, journal.Value.RequiredPolicyGeneration);
+        Assert.NotNull(journal.Value.ReconciliationSnapshot);
+        Assert.Equal(independentRequired, journal.Value.ReconciliationSnapshot.Required);
+    }
+
+    [Fact]
+    public async Task NoVerifiedPlanCannotPromoteAnExistingRecommendedAttempt()
+    {
+        var journal = new MemoryJournal(Awaiting(false, 7, Now.AddHours(20)) with { InstallRequest = DueRequest() });
+        Assert.False(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value, 7, true,
+            journal.Change, _ => Task.FromResult(false), NullAgentLogger.Instance, default));
+        Assert.Null(journal.Value.InstallRequest);
+        Assert.False(journal.Value.Required);
+        Assert.Equal(Now.AddHours(20), journal.Value.ApplyNotBeforeUtc);
+    }
+
+    [Theory]
+    [InlineData("expiry")]
+    [InlineData("generation")]
+    [InlineData("disabled")]
+    public async Task DeferredRecommendedAttemptHasNoRequiredAuthorityAfterRequestLapses(string reason)
+    {
+        var journal = new MemoryJournal(Awaiting(false, 7, Now.AddHours(20)) with { InstallRequest = DueRequest() });
+        await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.RunInstallRequestAsync(
+            journal.Value, 7, true, journal.Change, required =>
+            {
+                journal.Change(before => AgentUpdateLocalService.TransitionReconciliationDeferred(
+                    before, DateTimeOffset.UtcNow.AddMinutes(5), required, required ? 7 : null));
+                throw new InvalidOperationException("manifest unavailable");
+            }, NullAgentLogger.Instance, default));
+        if (reason == "expiry")
+            journal.Value = journal.Value with { InstallRequest = journal.Value.InstallRequest! with { ExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } };
+        Assert.False(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value,
+            reason == "generation" ? 8 : 7, reason != "disabled", journal.Change,
+            _ => throw new InvalidOperationException("lapsed request must not stage"), NullAgentLogger.Instance, default));
+        Assert.Null(journal.Value.InstallRequest);
+        Assert.False(journal.Value.Required);
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(journal.Value, false, 7));
+    }
+
+    [Fact]
+    public async Task CancelledReconciliationKeepsRequestWithoutPromotingRecommendedPolicy()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var request = DueRequest();
+        var journal = new MemoryJournal(Awaiting(false, 7, null) with { InstallRequest = request });
+        await Assert.ThrowsAsync<OperationCanceledException>(() => AgentUpdateLocalService.RunInstallRequestAsync(
+            journal.Value, 7, true, journal.Change, required =>
+            {
+                journal.Change(before => AgentUpdateLocalService.TransitionReconciliationDeferred(
+                    before, DateTimeOffset.UtcNow, required, required ? 7 : null));
+                cancellation.Cancel();
+                throw new OperationCanceledException(cancellation.Token);
+            }, NullAgentLogger.Instance, cancellation.Token));
+        Assert.Equal(request, journal.Value.InstallRequest);
+        Assert.False(journal.Value.Required);
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(journal.Value, false, 7));
     }
 
     [Fact]
@@ -169,7 +260,7 @@ public sealed class AgentUpdateInstallRequestTests
     {
         var journal = new MemoryJournal(new AgentUpdateJournal { InstallRequest = DueRequest() });
         var newer = DueRequest() with { NotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(30) };
-        Task Stage()
+        Task<bool> Stage(bool required)
         {
             journal.Value = journal.Value with { InstallRequest = newer };
             throw new InvalidOperationException("download failed");
@@ -181,9 +272,12 @@ public sealed class AgentUpdateInstallRequestTests
 
         journal.Value = new AgentUpdateJournal { InstallRequest = DueRequest() };
         Assert.True(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value, 7, true, journal.Change,
-            () => { journal.Value = journal.Value with { InstallRequest = newer }; return Task.CompletedTask; },
+            _ => { journal.Value = journal.Value with { InstallRequest = newer, AttemptId = "attempt-1",
+                Phase = AgentUpdateStates.AwaitingConsent, LifecycleGeneration = 7 }; return Task.FromResult(true); },
             NullAgentLogger.Instance, CancellationToken.None));
         Assert.Equal(newer, journal.Value.InstallRequest);
+        Assert.False(journal.Value.Required);
+        Assert.Null(journal.Value.ApplyNotBeforeUtc);
     }
 
     [Fact]
@@ -195,7 +289,7 @@ public sealed class AgentUpdateInstallRequestTests
         cts.Cancel();
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => AgentUpdateLocalService.RunInstallRequestAsync(
-            journal.Value, 7, true, journal.Change, () => throw new OperationCanceledException(cts.Token),
+            journal.Value, 7, true, journal.Change, _ => throw new OperationCanceledException(cts.Token),
             NullAgentLogger.Instance, cts.Token));
         Assert.Equal(request, journal.Value.InstallRequest);
     }
@@ -209,7 +303,7 @@ public sealed class AgentUpdateInstallRequestTests
         var staged = false;
 
         Assert.False(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value, 7, allowed, journal.Change,
-            () => { staged = true; return Task.CompletedTask; }, NullAgentLogger.Instance, CancellationToken.None));
+            _ => { staged = true; return Task.FromResult(true); }, NullAgentLogger.Instance, CancellationToken.None));
         Assert.False(staged);
         Assert.Null(journal.Value.InstallRequest);
     }
@@ -229,6 +323,10 @@ public sealed class AgentUpdateInstallRequestTests
     {
         Assert.Equal(Now, AgentUpdateLocalService.TransitionInstallRequested(Awaiting(true, 7, Now.AddHours(20)), 7, Now).ApplyNotBeforeUtc);
         Assert.Equal(Now, AgentUpdateLocalService.TransitionInstallRequested(Awaiting(true, 7, null), 7, Now).ApplyNotBeforeUtc);
+        var promoted = AgentUpdateLocalService.TransitionInstallRequested(Awaiting(false, 7, null), 7, Now);
+        Assert.True(promoted.Required);
+        Assert.Null(promoted.RequiredPolicyGeneration);
+        Assert.Equal(Now, promoted.ApplyNotBeforeUtc);
     }
 
     [Fact]
@@ -237,7 +335,6 @@ public sealed class AgentUpdateInstallRequestTests
         var cases = new[]
         {
             Awaiting(true, 7, Now.AddMinutes(-5)),
-            Awaiting(false, 7, null),
             Awaiting(true, 6, Now.AddHours(20)),
             Awaiting(true, 7, Now.AddHours(20), AgentUpdateStates.RetryableBusy),
             Awaiting(true, 7, Now.AddHours(20)) with { AttemptId = null },

@@ -152,7 +152,7 @@ public sealed class AgentSignedStateTests : IDisposable
     }
 
     [Fact]
-    public async Task OnResultFinal_WhenTheCredentialIdIsUnavailable_StillRecordsTheRevoke()
+    public async Task OnResultFinal_WhenTheCredentialIdIsUnavailable_HoldsUntilRegistrationCanBeVerified()
     {
         var f = new Fixture(StatePath);
         await f.Handle("c1", P(1, Revoke(Revoked)));
@@ -160,8 +160,22 @@ public sealed class AgentSignedStateTests : IDisposable
 
         await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
 
-        Assert.Equal(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
         Assert.Equal(1, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.Equal(0, f.Quiesces);
+        Assert.False(f.Secrets.Cleared);
+        Assert.NotNull(f.Store.Load("agent-a").PendingRevoke);
+        Assert.True(f.Store.IsQuarantined("agent-a"));
+
+        f.AgentIdUnavailable = false;
+        await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
+
+        Assert.Equal(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(2, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.Equal(1, f.Quiesces);
+        Assert.True(f.Secrets.Cleared);
         Assert.Null(f.Store.Load("agent-a").PendingRevoke);
     }
 
@@ -423,7 +437,7 @@ public sealed class AgentSignedStateTests : IDisposable
                 Quiesces++;
                 return failQuiesce ? throw new IOException("quiesce failed") : Task.CompletedTask;
             });
-            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++, null, () => { }, new AgentRevokeFinalResults());
+            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++, null, () => Stops++, new AgentRevokeFinalResults());
         }
 
         public string AgentId { get; set; } = "agent-a";
@@ -434,6 +448,7 @@ public sealed class AgentSignedStateTests : IDisposable
         public Secrets Secrets { get; } = new();
         public int Cancels { get; private set; }
         public int Quiesces { get; private set; }
+        public int Stops { get; private set; }
 
         public Task<string> Track(CancellationToken ct) => _track(ct);
 

@@ -3,8 +3,8 @@ using Cerberus.Agent.Core;
 namespace Cerberus.Agent.App.Updates;
 
 /// <summary>
-/// Signed operator request to install the newest release. The command only records it; the scheduler stages it as
-/// required and applies it through the same path as a required policy, so the serial command queue never waits on a download.
+/// Signed operator request to install the newest release. The scheduler preserves existing policy while staging;
+/// only a verified stage promotes the request to an immediately due install, without blocking the command queue.
 /// </summary>
 internal static partial class AgentUpdateLocalService
 {
@@ -79,11 +79,11 @@ internal static partial class AgentUpdateLocalService
         return next.Attempts >= MaxInstallRequestAttempts || next.NotBeforeUtc >= request.ExpiresUtc ? null : next;
     }
 
-    /// <summary>Makes a required attempt of the request's generation due now; any other journal is returned unchanged.</summary>
+    /// <summary>After successful staging, promotes this generation's consent-waiting attempt to an immediately due install.</summary>
     internal static AgentUpdateJournal TransitionInstallRequested(AgentUpdateJournal before, long lifecycleGeneration, DateTimeOffset now)
-        => before.AttemptId is not null && before.Phase == AgentUpdateStates.AwaitingConsent && before.Required &&
-           before.LifecycleGeneration == lifecycleGeneration && (before.ApplyNotBeforeUtc is null || before.ApplyNotBeforeUtc > now)
-            ? before with { ApplyNotBeforeUtc = now }
+        => before.AttemptId is not null && before.Phase == AgentUpdateStates.AwaitingConsent &&
+           before.LifecycleGeneration == lifecycleGeneration && (!before.Required || before.ApplyNotBeforeUtc is null || before.ApplyNotBeforeUtc > now)
+            ? before with { Required = true, ApplyNotBeforeUtc = now }
             : before;
 
     /// <summary>
@@ -93,13 +93,14 @@ internal static partial class AgentUpdateLocalService
     private static async Task<bool> HoldOrRunInstallRequestAsync(
         AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
         => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, Journal.Change,
-            () => CheckAndStageOwnedAsync(automatic: true, required: true, ct, bypassSchedule: true,
-                requiredPolicyGeneration: lifecycle.Generation), _requestLog, ct).ConfigureAwait(false);
+            async required => (await CheckAndStageOwnedAsync(automatic: true, required, ct,
+                bypassSchedule: true).ConfigureAwait(false)) is not null,
+            _requestLog, ct).ConfigureAwait(false);
 
     internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
         AgentLifecycleSnapshot lifecycle, Func<bool> quarantined,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
-        Func<Task> stage, IAgentLogger log, CancellationToken ct)
+        Func<bool, Task<bool>> stage, IAgentLogger log, CancellationToken ct)
     {
         if (quarantined())
             return true;
@@ -109,7 +110,7 @@ internal static partial class AgentUpdateLocalService
     }
 
     /// <summary>
-    /// Drops a lapsed request or stages a due one as required, which also lifts an attempt already waiting as recommended.
+    /// Drops a lapsed request or stages a due one without inventing required-policy provenance on a failed check.
     /// The request is cleared once staging returns; a failed staging keeps it for a later try and rethrows, so the failure
     /// is reported like any other. True when it staged.
     /// </summary>
@@ -118,7 +119,7 @@ internal static partial class AgentUpdateLocalService
         long lifecycleGeneration,
         bool allowed,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
-        Func<Task> stage,
+        Func<bool, Task<bool>> stage,
         IAgentLogger log,
         CancellationToken ct)
     {
@@ -134,9 +135,12 @@ internal static partial class AgentUpdateLocalService
             return false;
         }
 
+        bool staged;
         try
         {
-            await stage().ConfigureAwait(false);
+            // Existing independent required policy is carried by the staging owner.
+            // The request's install authority is granted only after staging succeeds.
+            staged = await stage(false).ConfigureAwait(false);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
@@ -148,10 +152,13 @@ internal static partial class AgentUpdateLocalService
             throw;
         }
 
-        var after = change(before => TransitionInstallRequested(Replace(before, request, null), lifecycleGeneration,
-            DateTimeOffset.UtcNow));
+        var after = change(before => before.InstallRequest == request
+            ? staged
+                ? TransitionInstallRequested(before with { InstallRequest = null }, lifecycleGeneration, DateTimeOffset.UtcNow)
+                : before with { InstallRequest = null }
+            : before);
         log.Info($"Install request handled: update state {after.Phase}.");
-        return true;
+        return staged;
     }
 
     /// <summary>An automatic install about to launch waits while the agent is quarantined.</summary>

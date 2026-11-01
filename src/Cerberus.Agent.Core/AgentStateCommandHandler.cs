@@ -144,7 +144,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// the registration it was issued for: when the current credential belongs to a different agent id (a
     /// re-enrollment landed first), tenant, or captured enrollment nonce changed, the pending revoke is
     /// cleared without retiring or cancelling anything. Generation alone is not evidence of another registration. If
-    /// the current agent id is unavailable (credential already cleared), the revoke is recorded as before.
+    /// current credential metadata is unavailable, the revoke stays pending and the automatic network stops.
+    /// Only an already-retired lifecycle permits finishing cleanup without readable credentials.
     /// The result is marked final in the process-lifetime record before the first attempt. If recording fails,
     /// the pending revoke stays stored and the automatic network is stopped.
     /// </summary>

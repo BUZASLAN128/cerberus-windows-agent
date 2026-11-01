@@ -26,7 +26,7 @@ public sealed class AgentUpdateInstallRequestBoundaryTests
             changes++;
             return active = update(active);
         }
-        Task Stage() { staged++; return Task.CompletedTask; }
+        Task<bool> Stage(bool required) { Assert.False(required); staged++; return Task.FromResult(true); }
 
         // A true result ends the whole scheduler tick, including when no request exists.
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(new AgentUpdateJournal(), lifecycle,
