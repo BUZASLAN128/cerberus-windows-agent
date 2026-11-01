@@ -79,6 +79,68 @@ public sealed class AgentUpdateRequiredIntentTests : IDisposable
         Assert.Null(retired.RequiredPolicyGeneration);
     }
 
+    [Theory]
+    [InlineData(AgentUpdateStates.AwaitingConsent, false)]
+    [InlineData(AgentUpdateStates.AwaitingConsent, true)]
+    [InlineData(AgentUpdateStates.RetryableBusy, false)]
+    [InlineData(AgentUpdateStates.RetryableBusy, true)]
+    [InlineData(AgentUpdateStates.Staged, false)]
+    [InlineData(AgentUpdateStates.Staged, true)]
+    public void VerifiedIndependentPolicyPersistsThroughRetirementWithoutDelayingAnExistingRequest(string phase, bool requested)
+    {
+        var current = requested
+            ? AgentUpdateLocalService.TransitionInstallRequested(Recommended(), 7, Now.AddMinutes(-5))
+            : Recommended() with { ApplyNotBeforeUtc = null };
+        current = current with { Phase = phase, NextRetryUtc = Now.AddMinutes(3) };
+        var policy = Persist(AgentUpdateLocalService.TransitionVerifiedRequiredPolicy(current, true, 7, 7, Now));
+        Assert.True(policy.Required);
+        Assert.Equal(7, policy.RequiredPolicyGeneration);
+        Assert.Null(policy.RequiredInstallAttemptId);
+        Assert.Equal(current.NextRetryUtc, policy.NextRetryUtc);
+        if (requested || phase != AgentUpdateStates.AwaitingConsent)
+            Assert.Equal(current.ApplyNotBeforeUtc, policy.ApplyNotBeforeUtc);
+        else
+            Assert.InRange(policy.ApplyNotBeforeUtc!.Value, Now, Now.AddHours(24));
+        Assert.Equal(policy, AgentUpdateLocalService.TransitionVerifiedRequiredPolicy(policy, true, 7, 7, Now.AddHours(3)));
+        var retired = Persist(AgentUpdateLocalService.TransitionReconciliationFailure(policy, Now));
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(retired, false, 7));
+        var successor = AgentUpdateLocalService.TransitionStageStart(retired, true,
+            AgentUpdateLocalService.CarryRequiredBlockedIntent(retired, false, 7), 7, Now.AddDays(1));
+        Assert.True(successor.Required);
+        Assert.Equal(7, successor.RequiredPolicyGeneration);
+        Assert.Null(successor.RequiredInstallAttemptId);
+    }
+
+    [Fact]
+    public void VerifiedPolicyDuringDeferredRequestBecomesIndependentWithoutPostponingTheDueTime()
+    {
+        var granted = AgentUpdateLocalService.TransitionInstallRequested(Recommended(), 7, Now.AddMinutes(-5));
+        var deferred = AgentUpdateLocalService.TransitionReconciliationDeferred(granted, Now);
+        var restored = Persist(AgentUpdateLocalService.RestoreReconciliationSnapshot(deferred, 7,
+            required: true, requiredPolicyGeneration: 7));
+        Assert.Equal(granted.ApplyNotBeforeUtc, restored.ApplyNotBeforeUtc);
+        Assert.Equal(7, restored.RequiredPolicyGeneration);
+        Assert.Null(restored.RequiredInstallAttemptId);
+        var retired = AgentUpdateLocalService.TransitionReconciliationFailure(restored, Now);
+        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(retired, false, 7));
+    }
+
+    [Theory]
+    [InlineData(false, 7L, 7L, AgentUpdateStates.AwaitingConsent)]
+    [InlineData(true, null, 7L, AgentUpdateStates.AwaitingConsent)]
+    [InlineData(true, 8L, 7L, AgentUpdateStates.AwaitingConsent)]
+    [InlineData(true, 7L, 8L, AgentUpdateStates.AwaitingConsent)]
+    [InlineData(true, 7L, 7L, "launch_requested")]
+    [InlineData(true, 7L, 7L, AgentUpdateStates.Blocked)]
+    public void UnverifiedGenerationOrProtectedAttemptCannotReceiveIndependentPolicy(bool required,
+        long? signalGeneration, long currentGeneration, string phase)
+    {
+        var granted = AgentUpdateLocalService.TransitionInstallRequested(Recommended(), 7, Now);
+        var current = granted with { LifecycleGeneration = currentGeneration, Phase = phase };
+        Assert.Equal(current, AgentUpdateLocalService.TransitionVerifiedRequiredPolicy(current,
+            required, signalGeneration, 7, Now));
+    }
+
     [Fact]
     public async Task NoPlanEndsSchedulerTickAfterJournalBecomesCurrent()
     {

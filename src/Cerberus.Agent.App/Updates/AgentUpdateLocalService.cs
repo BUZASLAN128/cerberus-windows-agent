@@ -264,6 +264,8 @@ internal static partial class AgentUpdateLocalService
                 current,
                 effectiveRequired,
                 requiredPolicyGeneration),
+            RequiredInstallAttemptId = required && requiredPolicyGeneration == lifecycleGeneration
+                ? null : current.RequiredInstallAttemptId,
             ApplyNotBeforeUtc = applyNotBeforeUtc,
             RetryCount = snapshot.RetryCount,
             NextRetryUtc = snapshot.NextRetryUtc,
@@ -967,15 +969,11 @@ internal static partial class AgentUpdateLocalService
                 return snapshotGeneration == latestLifecycle.Generation ? ReadPlan(restored) : null;
             }
 
-            if (required && !current.Required && current.Phase == AgentUpdateStates.AwaitingConsent)
-                Journal.ChangeAttempt(existing.AttemptId!, before => before.LifecycleGeneration == latestLifecycle.Generation
-                    ? before with
-                    {
-                        Required = true,
-                        ApplyNotBeforeUtc = DateTimeOffset.UtcNow.Add(AgentUpdateJournalStore.Offset(
-                            before.ScheduleSeed + ":rollout:" + before.AttemptId, TimeSpan.FromHours(24))),
-                    }
-                    : before);
+            var verifiedAt = DateTimeOffset.UtcNow;
+            if (TransitionVerifiedRequiredPolicy(current, required, requiredPolicyGeneration,
+                latestLifecycle.Generation, verifiedAt) != current)
+                Journal.ChangeAttempt(existing.AttemptId!, before => TransitionVerifiedRequiredPolicy(
+                    before, required, requiredPolicyGeneration, latestLifecycle.Generation, verifiedAt));
             await ProjectAsync(CancellationToken.None).ConfigureAwait(false);
             return ReadPlan(Journal.Read());
         }
