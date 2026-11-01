@@ -12,15 +12,22 @@ public sealed partial class AgentSignedStateStore
     { get { lock (_gate) return ControlRecovery().Pending; } }
 
     /// <summary>A replay high-water mark alone is not proof that the signed snapshot reached disk.</summary>
-    internal bool HasPersistedState(string agentId, long sequence, bool exactSequence, string? commandId = null)
+    internal bool HasPersistedState(string agentId, long sequence, bool exactSequence, string? commandId = null,
+        AgentRevokeRegistration? revokeRegistration = null)
     {
         lock (_gate)
         {
             EnsureLoaded();
-            return sequence > 0 && !_unreadable && _state is { Reset: null } stored &&
-                stored.AgentId == agentId && stored.StateSeq >= sequence &&
-                stored.StateSeq >= HighWaterFor(agentId) && (!exactSequence || stored.StateSeq == sequence) &&
-                (commandId is null || stored.LastAppliedCommandId == commandId);
+            if (sequence <= 0 || _unreadable || _state is not { Reset: null } stored ||
+                stored.AgentId != agentId || stored.StateSeq < sequence || stored.StateSeq < HighWaterFor(agentId))
+                return false;
+            // A later state command may replace the last-applied id, but the same write retains
+            // the revoke's own durable id and registration until its confirmed result is final.
+            return ((!exactSequence || stored.StateSeq == sequence) &&
+                    (commandId is null || stored.LastAppliedCommandId == commandId)) ||
+                (commandId is not null && revokeRegistration is not null &&
+                    stored.PendingRevoke is { } pending && pending.CommandId == commandId &&
+                    pending.Registration == revokeRegistration);
         }
     }
 
@@ -45,10 +52,14 @@ public sealed partial class AgentSignedStateStore
         {
             try
             {
+                var highWater = _highWater.Read(out var highWaterUnreadable);
+                if (highWaterUnreadable) return true;
+                var acceptedState = highWater is { Seq: > 0 } priorState && priorState.AgentId == current.AgentId;
                 _file.ValidateDirectory();
-                if (!_file.Exists()) return false;
+                if (!_file.Exists()) return acceptedState;
                 _file.ValidateFile();
                 if (!TryRead(out var state) || state is null) return true;
+                if (acceptedState && state.Reset is not null) return true;
                 if (state.AgentId != current.AgentId && state.AgentId != AgentSignedState.UnknownAgentId) return false;
                 // Update authorization uses positive control evidence. Runtime snapshot recovery
                 // keeps its independent fail-closed policy in RequiresRecovery/HoldsNormalWork.

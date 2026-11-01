@@ -143,7 +143,9 @@ public sealed partial class EnvelopeExecutionQueue
     {
         if (SignedState is null) return true; // Isolated support queues have no machine state owner.
         return record.StateControl is { } control &&
-            SignedState.HasPersistedState(record.AgentId, control.StateSequence, exactSequence: true, commandId: record.Id);
+            SignedState.HasPersistedState(record.AgentId, control.StateSequence, exactSequence: true, commandId: record.Id,
+                revokeRegistration: control.Applied.Contains("revoke") && control.Context is { } context
+                    ? new(context.AgentId, context.TenantId, context.EnrollmentNonce) : null);
     }
 
     private bool RecoverAppliedState(CommandReplayRecord record)
@@ -235,8 +237,7 @@ public sealed partial class EnvelopeExecutionQueue
         if (record.State != EnvelopeRecordStates.Done || record.ResultB64 is null ||
             record.StateControl is not { } control || control.TransportRefused || !IsPreparedResult(record) ||
             !await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false)) return false;
-        if (SignedState is not null && !SignedState.HasPersistedState(record.AgentId, control.StateSequence,
-                exactSequence: true, commandId: record.Id))
+        if (SignedState is not null && !IsStateApplied(record))
         {
             if (!StateHandlerGate.Wait(0)) return false;
             try { RejectState(record, EnvelopeCodes.ReplayStoreUnavailable); }
@@ -318,12 +319,12 @@ public sealed partial class CommandReplayStore
                 _file.ValidateDirectory();
                 if (!_file.Exists()) return false;
                 _file.ValidateFile();
-                return TryRead(out var records, out _) && records.Any(record =>
+                return !TryRead(out var records, out _) || records.Any(record =>
                     (agentId is null || record.AgentId == agentId) && AgentPreparedStateControl.IsPending(record) &&
                     (record.StateControl?.Context is null || record.StateControl.Context.Generation == generation &&
                         record.StateControl.Context.EnrollmentNonce == enrollmentNonce));
             }
-            catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex)) { return false; }
+            catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex)) { return true; }
         }
     }
 }

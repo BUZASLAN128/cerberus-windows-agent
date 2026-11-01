@@ -17,6 +17,7 @@ public sealed class AgentUpdateStateBarrierTests
     [InlineData("missing_replay")]
     [InlineData("corrupt_replay")]
     [InlineData("signed_recovery")]
+    [InlineData("corrupt_signed_state")]
     public Task ReadOnlyStateProbeBlocksWithoutRepairingEvidence(string failure) => AssertBarrier(failure, false);
 
     private static async Task AssertBarrier(string failure, bool realFence)
@@ -30,13 +31,21 @@ public sealed class AgentUpdateStateBarrierTests
             var replayPath = Path.Combine(root, "replay.json");
             var statePath = Path.Combine(root, "state.json");
             var snapshot = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = Guid.NewGuid().ToString("N") };
-            var pending = failure is "revoke" or "missing_replay" or "corrupt_replay" ? new AgentPendingRevoke("owned-revoke", "agent_revoked",
+            var pending = failure is "revoke" or "corrupt_replay" ? new AgentPendingRevoke("owned-revoke", "agent_revoked",
                 new("agent-a", "t1", snapshot.LastEnrollmentNonce)) : null;
-            Assert.True(new AgentSignedStateStore(statePath).TrySave(new("agent-a", 1, false, null, pending)));
-            if (failure == "signed_recovery") File.WriteAllText(statePath, "{owned malformed state");
+            Assert.True(new AgentStateHighWater(statePath, NullAgentLogger.Instance, false).TryWrite("agent-a", 1));
+            if (failure != "missing_replay")
+                File.WriteAllText(statePath, System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schema = "cerberus.agent-state.v1",
+                    state = new AgentSignedState("agent-a", 1, false, null, pending,
+                        Reset: failure == "signed_recovery" ? AgentSignedState.ResetUnreadable : null),
+                }));
+            if (failure == "corrupt_signed_state") File.WriteAllText(statePath, "{owned malformed state");
             if (failure == "corrupt_replay") File.WriteAllText(replayPath, "{owned malformed replay");
             else if (failure != "missing_replay") StoreFileWriter.Write(replayPath, 0, Array.Empty<CommandReplayRecord>());
-            var stateBytes = File.ReadAllBytes(statePath);
+            var stateBytes = File.Exists(statePath) ? File.ReadAllBytes(statePath) : null;
+            var highWaterBytes = File.ReadAllBytes(statePath + AgentStateHighWater.Suffix);
             var replayBytes = File.Exists(replayPath) ? File.ReadAllBytes(replayPath) : null;
             var active = new AgentUpdateJournal { AttemptId = "owned-attempt", Phase = AgentUpdateStates.Staged,
                 LifecycleGeneration = snapshot.Generation };
@@ -50,7 +59,9 @@ public sealed class AgentUpdateStateBarrierTests
             else Assert.True(Pending(snapshot));
 
             Assert.Equal(0, launches);
-            Assert.Equal(stateBytes, File.ReadAllBytes(statePath));
+            if (stateBytes is null) Assert.False(File.Exists(statePath));
+            else Assert.Equal(stateBytes, File.ReadAllBytes(statePath));
+            Assert.Equal(highWaterBytes, File.ReadAllBytes(statePath + AgentStateHighWater.Suffix));
             if (replayBytes is null) Assert.False(File.Exists(replayPath));
             else Assert.Equal(replayBytes, File.ReadAllBytes(replayPath));
             Assert.Empty(Directory.GetFiles(root, "*.corrupt-*"));
@@ -84,6 +95,126 @@ public sealed class AgentUpdateStateBarrierTests
             Assert.True(File.Exists(statePath));
             Assert.False(Pending());
             Assert.True(state.RequiresRecovery); // Runtime holds remain independent and unchanged.
+        }
+        finally
+        {
+            var resolved = Path.GetFullPath(root);
+            Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("current", "missing", true)]
+    [InlineData("current", "reset", true)]
+    [InlineData("current", "settled", false)]
+    [InlineData("other", "missing", false)]
+    [InlineData("other", "reset", false)]
+    [InlineData("none", "missing", false)]
+    [InlineData("none", "reset", false)]
+    [InlineData("zero", "reset", false)]
+    [InlineData("corrupt", "missing", true)]
+    [InlineData("corrupt", "settled", true)]
+    public void SnapshotLossBlocksOnlyKnownBaselineAndUnreadableSidecar(string baseline, string snapshot, bool blocked)
+    {
+        var parent = Path.GetFullPath(Path.GetTempPath());
+        var root = Path.Combine(parent, "cerberus-baseline-update-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var replayPath = Path.Combine(root, "replay.json");
+            var statePath = Path.Combine(root, "state.json");
+            if (baseline == "corrupt") File.WriteAllText(statePath + AgentStateHighWater.Suffix, "{owned malformed sidecar");
+            else if (baseline != "none")
+                Assert.True(new AgentStateHighWater(statePath, NullAgentLogger.Instance, false)
+                    .TryWrite(baseline == "other" ? "other-agent" : "agent-a", baseline == "zero" ? 0 : 1));
+            if (snapshot != "missing")
+                File.WriteAllText(statePath, System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    schema = "cerberus.agent-state.v1",
+                    state = new AgentSignedState("agent-a", baseline == "none" || baseline == "zero" ? 0 : 1,
+                        false, null, Reset: snapshot == "reset" ? AgentSignedState.ResetUnreadable : null),
+                }));
+            var before = Directory.GetFiles(root).ToDictionary(path => path, File.ReadAllBytes);
+
+            Assert.Equal(blocked, AgentUpdateLocalService.PendingStateDelivery(new() { Generation = 1 }, new Secrets(),
+                _ => new CommandReplayStore(replayPath), _ => new AgentSignedStateStore(statePath)));
+
+            Assert.Equal(before.Keys.Order(), Directory.GetFiles(root).Order());
+            foreach (var file in before) Assert.Equal(file.Value, File.ReadAllBytes(file.Key));
+            Assert.False(File.Exists(replayPath));
+        }
+        finally
+        {
+            var resolved = Path.GetFullPath(root);
+            Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("{owned malformed replay")]
+    [InlineData("")]
+    [InlineData("{\"schema\":\"unsupported\",\"reset_at\":0,\"records\":[]}")]
+    public void CorruptReplayWithoutSnapshotBlocksUntilWorkerRepairsIt(string damagedReplay)
+    {
+        var parent = Path.GetFullPath(Path.GetTempPath());
+        var root = Path.Combine(parent, "cerberus-corrupt-update-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var replayPath = Path.Combine(root, "replay.json");
+            var statePath = Path.Combine(root, "state.json");
+            File.WriteAllText(replayPath, damagedReplay);
+            var original = File.ReadAllBytes(replayPath);
+            bool Pending() => AgentUpdateLocalService.PendingStateDelivery(new() { Generation = 1 }, new Secrets(),
+                _ => new CommandReplayStore(replayPath), _ => new AgentSignedStateStore(statePath));
+
+            Assert.True(Pending());
+            Assert.Equal(original, File.ReadAllBytes(replayPath));
+            Assert.False(File.Exists(statePath));
+            Assert.Empty(Directory.GetFiles(root, "*.corrupt-*"));
+
+            var workerReplay = new CommandReplayStore(replayPath, enrollmentEstablished: true);
+            Assert.True(workerReplay.IsAvailable);
+            Assert.True(workerReplay.ResetAt > 0);
+            var retained = Assert.Single(Directory.GetFiles(root, "*.corrupt-*"));
+            Assert.Equal(original, File.ReadAllBytes(retained));
+            var repaired = File.ReadAllBytes(replayPath);
+            Assert.False(Pending());
+            Assert.Equal(repaired, File.ReadAllBytes(replayPath));
+            Assert.False(File.Exists(statePath));
+        }
+        finally
+        {
+            var resolved = Path.GetFullPath(root);
+            Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExistingUnreadableOrNonFileReplayBlocksWithoutRepair(bool unreadable)
+    {
+        var parent = Path.GetFullPath(Path.GetTempPath());
+        var root = Path.Combine(parent, "cerberus-unreadable-update-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var replayPath = Path.Combine(root, "replay.json");
+            var statePath = Path.Combine(root, "state.json");
+            if (unreadable) StoreFileWriter.Write(replayPath, 0, Array.Empty<CommandReplayRecord>());
+            else Directory.CreateDirectory(replayPath);
+            using var locked = unreadable ? new FileStream(replayPath, FileMode.Open, FileAccess.Read, FileShare.None) : null;
+
+            Assert.True(AgentUpdateLocalService.PendingStateDelivery(new() { Generation = 1 }, new Secrets(),
+                _ => new CommandReplayStore(replayPath), _ => new AgentSignedStateStore(statePath)));
+            Assert.False(File.Exists(statePath));
+            Assert.Empty(Directory.GetFiles(root, "*.corrupt-*"));
+            if (unreadable) Assert.True(File.Exists(replayPath));
+            else Assert.True(Directory.Exists(replayPath));
         }
         finally
         {
