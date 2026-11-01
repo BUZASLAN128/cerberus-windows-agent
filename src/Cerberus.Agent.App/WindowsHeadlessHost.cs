@@ -123,15 +123,14 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
         if (marker is null || !await AgentEnrollmentPromotion.MatchesAsync(marker, pending, ct).ConfigureAwait(false))
             return "enrollment_identity_mismatch";
-        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
-            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
+        var adopted = await AgentEnrollmentPromotion.CommitVerifiedAsync(durable, marker, ct).ConfigureAwait(false);
         var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(marker.Product ?? AgentProducts.Cerberus));
         return CompleteDirectEnrollment(marker, current, adopted, signedState);
     }
 
     internal static string? CompleteDirectEnrollment(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
         AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState)
-        => AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, credentialProbeAccepted: false)
+        => AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, verifiedEnrollment: true)
             ? null : "legacy_revoke_cleanup_pending";
 
     public string? ReadFingerprintLine()

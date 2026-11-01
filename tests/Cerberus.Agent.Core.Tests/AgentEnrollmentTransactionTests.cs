@@ -73,7 +73,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         var before = await fixture.Lifecycle.LoadAsync(default);
         var pendingBytes = await File.ReadAllBytesAsync(fixture.PendingPath);
         var adopted = await fixture.Lifecycle.CommitEnrollmentAsync(before.Generation, fixture.Nonce,
-            ct => fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct), default);
+            ct => fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct, "new-agent", AgentProducts.Cerberus), default);
         Assert.Equal(pendingBytes, await File.ReadAllBytesAsync(fixture.ActivePath));
         Assert.Equal(before.Generation + 1, adopted.Generation);
         Assert.Equal(fixture.Nonce, adopted.LastEnrollmentNonce);
@@ -97,7 +97,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Lifecycle.CommitEnrollmentAsync(before.Generation, fixture.Nonce,
             async ct =>
             {
-                var lease = await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct);
+                var lease = await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct, "new-agent", AgentProducts.Cerberus);
                 Assert.NotEqual(prior, await File.ReadAllBytesAsync(fixture.ActivePath));
                 cancelled.Cancel();
                 return lease;
@@ -123,12 +123,12 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
             if (committed)
             {
                 await fixture.Lifecycle.CommitEnrollmentAsync(before.Generation, fixture.Nonce, async ct =>
-                    new CheckpointLease(await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct),
+                    new CheckpointLease(await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct, "new-agent", AgentProducts.Cerberus),
                         () => crash = fixture.CopyCrashCheckpoint()), default);
             }
             else
             {
-                await using var publication = await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default);
+                await using var publication = await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default, "new-agent", AgentProducts.Cerberus);
                 crash = fixture.CopyCrashCheckpoint();
             }
             Assert.NotNull(crash);
@@ -152,7 +152,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         var prior = await File.ReadAllBytesAsync(fixture.ActivePath);
         var before = await fixture.Lifecycle.LoadAsync(default);
         Fixture crash;
-        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default))
+        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default, "new-agent", AgentProducts.Cerberus))
             crash = fixture.CopyCrashCheckpoint();
         using (crash)
         {
@@ -170,7 +170,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         using var fixture = await Fixture.CreateAsync();
         File.Delete(fixture.ActivePath);
         var before = await fixture.Lifecycle.LoadAsync(default);
-        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default))
+        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default, "new-agent", AgentProducts.Cerberus))
             Assert.True(File.Exists(fixture.ActivePath));
         Assert.False(File.Exists(fixture.ActivePath));
         Assert.True(File.Exists(fixture.PendingPath));
@@ -186,7 +186,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         try
         {
             await fixture.Lifecycle.CommitEnrollmentAsync(before.Generation, fixture.Nonce, async ct =>
-                new CheckpointLease(await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct),
+                new CheckpointLease(await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, ct, "new-agent", AgentProducts.Cerberus),
                     () => crash = fixture.CopyCrashCheckpoint()), default);
             Assert.NotNull(crash);
             await crash.WriteMarkerAsync(); // a different nonce, not the consumed proof
@@ -210,7 +210,7 @@ public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper ou
         using var fixture = await Fixture.CreateAsync();
         var before = await fixture.Lifecycle.LoadAsync(default);
         Fixture crash;
-        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default))
+        await using (await fixture.Transaction.BeginLockedAsync(before.Generation, fixture.Nonce, fixture.Lifecycle.LoadAsync, default, "new-agent", AgentProducts.Cerberus))
             crash = fixture.CopyCrashCheckpoint();
         using (crash)
         {

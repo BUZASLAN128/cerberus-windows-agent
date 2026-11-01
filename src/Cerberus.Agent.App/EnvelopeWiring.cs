@@ -45,13 +45,14 @@ internal static class EnvelopeWiring
 #if !CERBERUS_SERVER_PROFILE
     internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
         AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,
-        IAgentLogger log, string? keyFingerprint = null)
+        AgentSignedStateStore signedState, IAgentLogger log, string? keyFingerprint = null)
     {
         // Managed operations retain their existing synchronous authority path; this is observation only.
         var delayLog = Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC") == "1" ? log : null;
         return new LegacyAsyncCommandProcessor(api, dispatcher,
             new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency, delayLog),
-            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log, keyFingerprint: keyFingerprint), currentAgentId, log);
+            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log, keyFingerprint: keyFingerprint), currentAgentId, log,
+            recoveryControlOnly: () => signedState.RecoveryControlOnly);
     }
 #endif
 

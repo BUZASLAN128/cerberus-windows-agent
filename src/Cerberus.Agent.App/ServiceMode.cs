@@ -351,7 +351,7 @@ internal static partial class ServiceMode
         var dispatcher = new CommandDispatcher(handlers, idempotency);
 #if !CERBERUS_SERVER_PROFILE
         legacyAsync = secondary ? null : EnvelopeWiring.CreateLegacyAsync(api, dispatcher,
-            loadedSecrets.Identity, persistedLifecycle, currentAgentId, log, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem));
+            loadedSecrets.Identity, persistedLifecycle, currentAgentId, signedState, log, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem));
         await using var legacyAsyncLifetime = legacyAsync;
 #endif
         await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log, loadedSecrets.Identity.Product);

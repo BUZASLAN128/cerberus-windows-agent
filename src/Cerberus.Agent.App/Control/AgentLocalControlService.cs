@@ -148,9 +148,7 @@ internal sealed class AgentLocalControlService
             return StateResponse(false, "enrollment_proof_stale", current);
         if (_lifecycle is not DurableAgentLifecycleStateStore durable)
             throw new InvalidOperationException("Machine enrollment requires the durable lifecycle authority.");
-        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
-            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel,
-                marker.AgentId, marker.Product ?? AgentProducts.Cerberus), ct).ConfigureAwait(false);
+        var adopted = await AgentEnrollmentPromotion.CommitVerifiedAsync(durable, marker, ct).ConfigureAwait(false);
         if (await AgentEnrollmentCleanupRecovery.UnderFenceAsync(_lifecycle, _retrySecrets, ct).ConfigureAwait(false) != true)
             return StateResponse(false, "legacy_revoke_cleanup_pending", adopted);
         return StateResponse(true, "enrollment_adopted", adopted);
