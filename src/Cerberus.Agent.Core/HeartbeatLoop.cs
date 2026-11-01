@@ -196,6 +196,8 @@ public sealed partial class HeartbeatLoop
                 var control = _responseHandler is null
                     ? HeartbeatControlAction.Continue
                     : await _responseHandler.HandleAsync(hb, ct).ConfigureAwait(false);
+                if (control == HeartbeatControlAction.SkipCommands)
+                    _commandProcessor.SetExecutionPaused(true);
                 if (control == HeartbeatControlAction.Stop)
                 {
                     if (_wakeupClient is not null)
@@ -222,6 +224,7 @@ public sealed partial class HeartbeatLoop
 #endif
 
                 var skipCommands = control == HeartbeatControlAction.SkipCommands;
+                if (!skipCommands) _commandProcessor.SetExecutionPaused(false);
 
                 await TryFlushTelemetryBufferAsync(ct).ConfigureAwait(false);
 

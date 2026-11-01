@@ -96,14 +96,36 @@ public sealed partial class EnvelopeExecutionQueue
         if (record.State == EnvelopeRecordStates.Done) return true;
         if (record.State == EnvelopeRecordStates.Started)
             return RecoverAppliedState(record);
+        if (SignedState is not null && envelope.Payload.GetProperty("state_seq").GetInt64() <= SignedState.Load(record.AgentId).StateSeq)
+        {
+            RejectStaleState(record);
+            return false;
+        }
         var started = record with { State = EnvelopeRecordStates.Started };
         if (Store.TryUpdate(started, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated) return false;
         var body = await ExecuteAsync(envelope, ct).ConfigureAwait(false);
         using var result = JsonDocument.Parse(body);
+        if (result.RootElement.GetProperty("status").GetString() == "FAILED" &&
+            result.RootElement.TryGetProperty("stderr", out var error) && error.GetString() == AgentStateCommandHandler.StaleStateSeq)
+        {
+            RejectStaleState(started);
+            return false;
+        }
         if (result.RootElement.GetProperty("status").GetString() != "DONE" || !IsStateApplied(started)) return false;
         var (done, durable) = StoreResult(started, body);
         if (durable) SupersedeOlderControls(done);
         return durable;
+    }
+
+    private void RejectStaleState(CommandReplayRecord record)
+    {
+        var body = Failed(AgentStateCommandHandler.StaleStateSeq, record.EnvelopeSha256);
+        var rejected = record with { State = EnvelopeRecordStates.RejectedAfterReserve, RejectReason = null,
+            ResultB64 = Convert.ToBase64String(body), ResultSha256 = CommandEnvelope.Sha256Hex(body) };
+        var outcome = Store.TryUpdate(rejected, record.State);
+        if (outcome == ReplayUpdateOutcome.Failed) outcome = Store.TryUpdate(rejected, record.State);
+        if (outcome != ReplayUpdateOutcome.Updated)
+            _log.Warn($"Stale state id={record.Id} remains unacknowledged: rejection could not be persisted.");
     }
 
     private bool IsStateApplied(CommandReplayRecord record)

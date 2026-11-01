@@ -6,6 +6,55 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class CommandEnvelopeStateControlTests
 {
     [Fact]
+    public async Task DefiniteStaleFailureAfterAdmissionStaysRejectedAcrossRestart()
+    {
+        await using var f = new Worker();
+        f.BeforeApply = () => Assert.True(f.State.TrySave(new AgentSignedState(f.H.AgentId, 1, false, null)));
+        var stale = f.H.Cmd(p =>
+        {
+            p.Type = EnvelopeTypes.AgentState;
+            p.PayloadJson = "{\"state_seq\":1,\"quarantine\":{\"active\":true}}";
+        });
+        await f.Process(stale);
+        Assert.Equal(1, f.Executions);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
+        f.BeforeApply = null;
+
+        await f.Restart();
+        await f.Queue.DrainOutboxOnceAsync(default);
+
+        Assert.False(f.State.Load(f.H.AgentId).QuarantineActive);
+        Assert.Empty(f.H.Backend.Acks);
+        Assert.Empty(f.H.Backend.Results);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
+        Assert.Equal(1, f.Executions);
+    }
+
+    [Fact]
+    public async Task NewCommandAtThePersistedSequenceCannotRecoverAsApplied()
+    {
+        await using var f = new Worker();
+        Assert.True(f.State.TrySave(new AgentSignedState(f.H.AgentId, 1, false, null)));
+        var stale = f.H.Cmd(p =>
+        {
+            p.Type = EnvelopeTypes.AgentState;
+            p.PayloadJson = "{\"state_seq\":1,\"quarantine\":{\"active\":true}}";
+        });
+
+        await f.Process(stale);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
+        await f.Restart();
+        await f.Queue.DrainOutboxOnceAsync(default);
+
+        Assert.False(f.State.Load(f.H.AgentId).QuarantineActive);
+        Assert.False(f.State.HoldsNormalWork());
+        Assert.Empty(f.H.Backend.Acks);
+        Assert.Empty(f.H.Backend.Results);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
+        Assert.Equal(0, f.Executions);
+    }
+
+    [Fact]
     public async Task PreviouslyAcceptedBusinessWaitsForControlDoneInsteadOfFailingQuarantined()
     {
         await using var f = new Worker();
@@ -207,6 +256,7 @@ public sealed partial class CommandEnvelopeStateControlTests
         public AgentLifecycleController Lifecycle { get; } = new(new InMemoryAgentLifecycleStateStore());
         public AgentStateDeliveryContext CurrentContext { get; set; }
         public bool FailAfterApply { get; set; }
+        public Action? BeforeApply { get; set; }
         public Func<CancellationToken, Task<string>>? CurrentAgent { get; set; }
         public int Executions { get; private set; }
 
@@ -239,7 +289,8 @@ public sealed partial class CommandEnvelopeStateControlTests
             var current = State.Track(ct => CurrentAgent?.Invoke(ct) ?? Task.FromResult(H.AgentId));
             Handler = new AgentStateCommandHandler(State, current, Lifecycle, () => Queue.CancelAll(), H.Log,
                 () => { }, new AgentRevokeFinalResults(), _ => Task.FromResult(new AgentRevokeRegistration(H.AgentId, "t1", null)));
-            var observed = new ObservedHandler(Handler, () => { Executions++; if (FailAfterApply) throw new IOException("Owned post-write interruption."); });
+            var observed = new ObservedHandler(Handler, () => BeforeApply?.Invoke(),
+                () => { Executions++; if (FailAfterApply) throw new IOException("Owned post-write interruption."); });
             Queue = new EnvelopeExecutionQueue(H.Api, Replay, new ICommandHandler[] { H.Ping, observed }, current,
                 State.IsQuarantined, H.Time, signedState: State, controlContext: H.ControlContext,
                 currentControlContext: _ => Task.FromResult(CurrentContext));
@@ -255,11 +306,12 @@ public sealed partial class CommandEnvelopeStateControlTests
         }
     }
 
-    private sealed class ObservedHandler(AgentStateCommandHandler inner, Action applied) : ICommandHandler, IEnvelopeResultFollowUp
+    private sealed class ObservedHandler(AgentStateCommandHandler inner, Action before, Action applied) : ICommandHandler, IEnvelopeResultFollowUp
     {
         public string Type => EnvelopeTypes.AgentState;
         public async Task<CommandResult> HandleAsync(AgentCommand command, CancellationToken ct)
         {
+            before();
             var result = await inner.HandleAsync(command, ct);
             applied();
             return result;

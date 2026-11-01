@@ -40,6 +40,8 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     private readonly Task _worker;
     private int _slots;
     private int _disposed;
+    private int _executionPaused;
+    private readonly object _executionAdmissionGate = new();
 
     public LegacyAsyncCommandProcessor(AgentApiClient api, CommandDispatcher dispatcher,
         IHeartbeatCommandProcessor legacy, CommandReplayStore store,
@@ -61,12 +63,12 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     public async Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
     {
         _stop.Token.ThrowIfCancellationRequested();
-        if (RecoveryHeld()) return;
+        if (ExecutionHeld()) return;
         var inline = new List<AgentCommand>();
         var agentId = await _currentAgentId(ct).ConfigureAwait(false);
         foreach (var command in commands)
         {
-            if (RecoveryHeld()) break;
+            if (ExecutionHeld()) break;
             if (command is null || !Types.Contains(command.Type))
             {
                 inline.Add(command!);
@@ -134,12 +136,17 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
                 throw;
             }
         }
-        if (inline.Count > 0 && !RecoveryHeld())
+        if (inline.Count > 0 && !ExecutionHeld())
             await _legacy.ProcessAsync(inline, ct).ConfigureAwait(false);
         SignalOutbox();
     }
 
     public void SignalOutbox() => _wake.Release();
+    public void SetExecutionPaused(bool paused)
+    {
+        lock (_executionAdmissionGate) Volatile.Write(ref _executionPaused, paused ? 1 : 0);
+        _wake.Release();
+    }
     public bool CanAdvertise => !RecoveryHeld() && _store.IsAvailable && _store.ResetAt == 0;
     public void CancelAll() => _stop.Cancel();
     internal long OutboxNotBefore => _resultRetry.NotBefore;
@@ -149,6 +156,17 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     {
         try { return _recoveryControlOnly(); }
         catch { return true; } // An unreadable authority cannot permit business traffic.
+    }
+
+    private bool ExecutionHeld() => Volatile.Read(ref _executionPaused) != 0 || RecoveryHeld();
+
+    private async Task WaitForExecutionAsync(CancellationToken ct)
+    {
+        while (ExecutionHeld())
+        {
+            await DrainAsync(ct).ConfigureAwait(false);
+            await _wake.WaitAsync(ct).ConfigureAwait(false);
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -168,7 +186,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             {
                 await _wake.WaitAsync(ct).ConfigureAwait(false);
                 if (RecoveryHeld()) continue;
-                while (!RecoveryHeld() && _pending.TryDequeue(out var item))
+                while (!ExecutionHeld() && _pending.TryDequeue(out var item))
                 {
                     await RunOneAsync(item.Command, item.Record, ct).ConfigureAwait(false);
                     await DrainAsync(ct).ConfigureAwait(false);
@@ -182,23 +200,31 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
 
     private async Task RunOneAsync(AgentCommand command, CommandReplayRecord record, CancellationToken ct)
     {
-        if (RecoveryHeld())
-        {
-            _pending.Enqueue((command, record)); // Keep the reservation and slot until a recovery wake.
-            return;
-        }
         try
         {
-            if (await _currentAgentId(ct).ConfigureAwait(false) != record.AgentId) return;
-            var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (command.SafeLeaseDeadlineTimestamp is not { } deadline || nowTicks >= deadline)
+            long deadline;
+            CommandReplayRecord started;
+            while (true)
             {
-                StoreResult(record, Unknown());
-                return;
+                await WaitForExecutionAsync(ct).ConfigureAwait(false);
+                var agentId = await _currentAgentId(ct).ConfigureAwait(false);
+                lock (_executionAdmissionGate)
+                {
+                    if (ExecutionHeld()) continue;
+                    if (agentId != record.AgentId) return;
+                    var admissionTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (command.SafeLeaseDeadlineTimestamp is not { } safeDeadline || admissionTicks >= safeDeadline)
+                    {
+                        StoreResult(record, Unknown());
+                        return;
+                    }
+                    deadline = safeDeadline;
+                    started = record with { State = EnvelopeRecordStates.Started };
+                    if (_store.TryUpdate(started, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated) return;
+                    break;
+                }
             }
-            var started = record with { State = EnvelopeRecordStates.Started };
-            if (_store.TryUpdate(started, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated) return;
-            nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             if (nowTicks >= deadline)
             {
                 StoreResult(started, Unknown());

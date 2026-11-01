@@ -78,6 +78,7 @@ public sealed class CommandEnvelopeVectorsTests
     {
         await using var h = EnvelopeHarness.Create(o =>
         {
+            o.StartQueue = false;
             o.AgentId = Fixture.GetProperty("agent_id").GetString()!;
             o.NowUnix = Fixture.GetProperty("now_unix").GetInt64();
             o.Anchors = anchors;
@@ -96,7 +97,9 @@ public sealed class CommandEnvelopeVectorsTests
             await h.Process(command);
 
             var ackSent = expected.GetProperty("ack_sent").GetBoolean();
-            Assert.True(h.Backend.Acks.Count == acksBefore + (ackSent ? 1 : 0), $"{name}: ack count");
+            Assert.True(h.Backend.Acks.Count == acksBefore + (ackSent ? 1 : 0),
+                $"{name}: ack count before={acksBefore} after={h.Backend.Acks.Count} expected_delta={(ackSent ? 1 : 0)} " +
+                $"record={h.Record(command)?.State} ack_accepted={h.Record(command)?.StateControl?.AckAccepted}; {string.Join("; ", h.Log.Lines.TakeLast(8))}");
             if (ackSent)
             {
                 var ack = h.Backend.Acks[^1];
@@ -109,12 +112,18 @@ public sealed class CommandEnvelopeVectorsTests
             if (code is null)
             {
                 accepted++;
+                if (command.Type == EnvelopeTypes.AgentState)
+                {
+                    await h.Queue.DrainOutboxOnceAsync(default);
+                    Assert.True(h.Record(command)!.ResultSubmitted);
+                }
                 continue;
             }
 
             Assert.True(h.Rejections(code) == rejectionsBefore + 1, $"{name}: rejection counter for {code}");
         }
 
+        h.Queue.Start();
         await Wait.UntilAsync(() => h.Backend.Results.Count == accepted, "results of the accepted cases");
         Assert.All(h.Backend.Results, r => Assert.Equal("DONE", r.Json.GetProperty("status").GetString()));
         Assert.Equal(accepted, h.Ping.Calls + h.Facts.Calls + h.State.Calls);

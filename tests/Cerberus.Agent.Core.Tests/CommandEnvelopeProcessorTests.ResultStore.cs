@@ -46,6 +46,31 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
+    public async Task OrdinaryResultWriteFailureDeliversTheCompletedOutcomeFromMemoryWithoutUnknown()
+    {
+        await using var h = EnvelopeHarness.Create();
+        FileStream? locked = null;
+        h.Ping.Body = (_, _) =>
+        {
+            locked = new FileStream(h.StorePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return Task.FromResult(FakeCommandHandler.Done());
+        };
+        var command = h.Cmd();
+        try
+        {
+            await h.Process(command);
+            await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "ordinary completed result delivered from memory");
+            Assert.Equal("DONE", h.Backend.Results[0].Json.GetProperty("status").GetString());
+        }
+        finally { locked?.Dispose(); }
+
+        await h.Queue.DrainOutboxOnceAsync(default);
+        Assert.Single(h.Backend.Results);
+        Assert.Equal(1, h.Ping.Calls);
+        Assert.DoesNotContain(h.Backend.Results, r => r.Json.GetProperty("status").GetString() == EnvelopeExecutionQueue.OutcomeUnknown);
+    }
+
+    [Fact]
     public async Task InlineAgentStateResult_WhoseWriteFails_StaysPendingWithoutAckOrUnknown()
     {
         await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);

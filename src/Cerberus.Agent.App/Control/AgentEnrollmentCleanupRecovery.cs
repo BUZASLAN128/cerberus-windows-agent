@@ -1,6 +1,7 @@
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
+using System.IO;
 
 namespace Cerberus.Agent.App.Control;
 
@@ -32,7 +33,13 @@ internal static class AgentEnrollmentCleanupRecovery
             var record = cleanup.Read();
             if (record is null || record.Generation != snapshot.Generation || record.Nonce != snapshot.LastEnrollmentNonce)
                 continue;
-            var identity = (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity;
+            AgentIdentity identity;
+            try { identity = (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity; }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or
+                System.Security.Cryptography.CryptographicException or InvalidOperationException or System.Text.Json.JsonException)
+            {
+                return false; // Keep the receipt; startup's credential handler owns the dormant transition.
+            }
             if (record.Product != product || identity.Product != product || identity.AgentId != record.AgentId)
                 return false;
             var state = signedStateStore?.Invoke(product) ?? new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(product));

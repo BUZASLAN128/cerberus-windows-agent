@@ -88,6 +88,13 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         }
     }
 
+    public void SetExecutionPaused(bool paused)
+    {
+#if !CERBERUS_SERVER_PROFILE
+        _legacy?.SetExecutionPaused(paused);
+#endif
+    }
+
     public void SignalOutbox()
     {
         _queue.SignalHeartbeat();

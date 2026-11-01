@@ -339,7 +339,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
     {
         if (record.Type == EnvelopeTypes.AgentState && !await AcceptPreparedStateAsync(record, ct).ConfigureAwait(false))
             return false;
-        record = Store.Find(record.AgentId, record.Id) ?? record;
+        if (record.Type == EnvelopeTypes.AgentState)
+            record = Store.Find(record.AgentId, record.Id) ?? record;
         if (record.ResultB64 is null || record.ResultSubmitted)
             return false;
         if (!_resultRetry.CanTry)
