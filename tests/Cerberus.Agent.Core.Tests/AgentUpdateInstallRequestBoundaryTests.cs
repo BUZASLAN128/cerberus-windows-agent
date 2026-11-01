@@ -8,6 +8,33 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class AgentUpdateInstallRequestBoundaryTests
 {
     [Fact]
+    public Task PendingDeliveryAtStageEntryKeepsRequestBudgetAndRemainsBoundedByExpiry() => WithCorrelationJournal(async root =>
+    {
+        var journal = new AgentUpdateJournalStore(root);
+        var lifecycle = new AgentLifecycleSnapshot { Generation = 7 };
+        var original = FixtureWriter(root)(_ => new() { LifecycleGeneration = 7, InstallRequest = CorrelatedRequest() });
+        var entered = 0;
+        Task<bool> HeldStage(bool _)
+        {
+            entered++;
+            AgentUpdateLocalService.HoldWhileQuarantined(true, default, () => true);
+            return Task.FromResult(false);
+        }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AgentUpdateLocalService.HoldOrRunInstallRequestAsync(
+            journal.Read(), lifecycle, () => false, _ => false, FixtureWriter(root), HeldStage, NullAgentLogger.Instance, default));
+        Assert.Equal(1, entered);
+        Assert.Equal(original, journal.Read());
+        Assert.Null(journal.Read().InstallRequest!.TerminalReason);
+        Assert.Equal(0, journal.Read().InstallRequest!.Attempts);
+        var expired = FixtureWriter(root)(before => before with { InstallRequest = before.InstallRequest! with
+            { ExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } });
+        Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(expired, lifecycle, () => false, _ => true,
+            FixtureWriter(root), HeldStage, NullAgentLogger.Instance, default));
+        Assert.Equal(1, entered);
+        Assert.Equal("expired", journal.Read().InstallRequest!.TerminalReason);
+    });
+
+    [Fact]
     public async Task SignedQuarantineHoldsEntireSchedulerAndAutomaticLaunchUntilReleased()
     {
         var quarantined = true;

@@ -119,13 +119,13 @@ internal static partial class AgentUpdateLocalService
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         Func<bool, Task<bool>> stage, IAgentLogger log, CancellationToken ct)
     {
-        var allowed = AllowsAutomatic(lifecycle, pendingState);
+        var allowed = AllowsAutomaticLifecycle(lifecycle);
         if (NextInstallRequestStep(active, lifecycle.Generation, allowed, DateTimeOffset.UtcNow) == InstallRequestStep.Drop)
         {
             await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);
-            return quarantined() || !allowed;
+            return quarantined() || !allowed || pendingState(lifecycle);
         }
-        if (quarantined())
+        if (quarantined() || pendingState(lifecycle))
             return true;
         var staged = await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);
         return staged || !allowed;
@@ -165,7 +165,7 @@ internal static partial class AgentUpdateLocalService
             // The request's install authority is granted only after staging succeeds.
             staged = await stage(false).ConfigureAwait(false);
         }
-        catch (Exception ex) when (!ct.IsCancellationRequested)
+        catch (Exception ex) when (!ct.IsCancellationRequested && ex is not IntentionalUpdateCancellationException)
         {
             var terminal = ex is AgentUpdatePlanMismatchException ? "plan_mismatch"
                 : ex is InstallReleaseUnavailableException ? "release_unavailable" : null;
