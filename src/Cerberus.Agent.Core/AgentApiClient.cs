@@ -613,12 +613,6 @@ public sealed partial class AgentApiClient
         var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
 
         var bodyBytes = Encoding.UTF8.GetBytes(json);
-        var bodyHash = _signer.ComputeBodyHash(bodyBytes);
-
-        var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-        var ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var canonical = _signer.CanonicalString(method.Method, path, nonce, ts, bodyHash);
-        var sig = _signer.Sign(canonical);
 
         var req = new HttpRequestMessage(method, path)
         {
@@ -638,11 +632,7 @@ public sealed partial class AgentApiClient
 
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
-        req.Headers.Add("X-Agent-Id", id.AgentId);
-        req.Headers.Add("X-Nonce", nonce);
-        req.Headers.Add("X-Timestamp", ts.ToString());
-        req.Headers.Add("X-Body-Hash", bodyHash);
-        req.Headers.Add("X-Signature", sig);
+        AgentRequestSigning.AddHeaders(req, bodyBytes, id.AgentId, _http.BaseAddress!, _signer);
 
         return req;
     }

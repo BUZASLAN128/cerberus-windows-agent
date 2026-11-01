@@ -608,7 +608,7 @@ public sealed class AgentLifecycleControlTests
         public string RefreshToken { get; private set; } = "original";
         public bool Cleared { get; private set; }
         public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct)
-            => Task.FromResult((new AgentIdentity("agent", "tenant"), RefreshToken, "key", "https://backend.invalid", (string?)null, (string?)null));
+            => Task.FromResult((new AgentIdentity("agent", "tenant"), RefreshToken, IdentityTestKey.PrivateKeyPem, "https://backend.invalid", (string?)null, (string?)null));
         public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl, string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct)
         { RefreshToken = refreshToken; return Task.CompletedTask; }
         public Task ClearAsync(CancellationToken ct) { Cleared = true; RefreshToken = ""; return Task.CompletedTask; }

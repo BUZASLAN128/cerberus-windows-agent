@@ -74,7 +74,7 @@ public sealed class AgentTokenManagerTests
     {
         public AgentIdentity Identity = new("agent", "tenant", AgentProducts.Secondary);
         public Task<(AgentIdentity, string, string, string, string?, string?)> LoadAsync(CancellationToken ct)
-            => Task.FromResult<(AgentIdentity, string, string, string, string?, string?)>((Identity, "fixture", "key", "https://collector.example", null, null));
+            => Task.FromResult<(AgentIdentity, string, string, string, string?, string?)>((Identity, "fixture", IdentityTestKey.PrivateKeyPem, "https://collector.example", null, null));
         public Task SaveAsync(AgentIdentity id, string refresh, string key, string url, string? login, string? auth, CancellationToken ct)
             => Task.CompletedTask;
         public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
@@ -141,7 +141,7 @@ public sealed class AgentTokenManagerTests
         Assert.Equal(1, store.LoadCount);
         Assert.Single(store.Saves);
         Assert.Equal("rotated-refresh", store.Saves[0].RefreshToken);
-        Assert.Equal("private-key", store.Saves[0].PrivateKeyPem);
+        Assert.Equal(IdentityTestKey.PrivateKeyPem, store.Saves[0].PrivateKeyPem);
         Assert.Equal("http://backend.local", store.Saves[0].BackendUrl);
     }
 
@@ -213,7 +213,7 @@ public sealed class AgentTokenManagerTests
             return Task.FromResult((
                 new AgentIdentity("agent-id", "tenant-id"),
                 "old-refresh",
-                "private-key",
+                IdentityTestKey.PrivateKeyPem,
                 "http://backend.local",
                 (string?)null,
                 (string?)null));

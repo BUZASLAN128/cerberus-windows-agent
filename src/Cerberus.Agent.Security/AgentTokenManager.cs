@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using Cerberus.Agent.Core;
 
@@ -87,10 +88,16 @@ public sealed class AgentTokenManager : ITokenManager
         CheckProductAuthority(id, backendUrl);
 
         var req = new { agent_id = id.AgentId, refresh_token = refreshToken };
+        var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(req);
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/agents/token")
         {
-            Content = JsonContent.Create(req),
+            Content = new ByteArrayContent(bodyBytes),
         };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        // Suppress any inherited default bearer on this refresh-only endpoint.
+        request.Headers.TryAddWithoutValidation("Authorization", string.Empty);
+        using var signer = new RequestSigner(privateKeyPem);
+        AgentRequestSigning.AddHeaders(request, bodyBytes, id.AgentId, _http.BaseAddress!, signer);
         using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
         using var resp = await _http.SendAsync(
             request,

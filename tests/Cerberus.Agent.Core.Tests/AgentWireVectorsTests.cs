@@ -112,7 +112,7 @@ public sealed class AgentWireVectorsTests
         {
             Assert.Equal(Str(vector, "method"), method);
             Assert.Equal(path, requestPath);
-            Assert.Equal(new[] { "X-Agent-Id", "X-Body-Hash", "X-Nonce", "X-Signature", "X-Timestamp" },
+            Assert.Equal(new[] { "X-Agent-Id", "X-Body-Hash", "X-Nonce", "X-Signature", "X-Signature-V2", "X-Timestamp" },
                 headers.Keys.Where(k => k.StartsWith("X-", StringComparison.Ordinal)).OrderBy(k => k, StringComparer.Ordinal));
             Assert.Equal(agentId, headers["X-Agent-Id"]);
             Assert.Matches("^[0-9a-f]{32}$", headers["X-Nonce"]);
@@ -125,6 +125,8 @@ public sealed class AgentWireVectorsTests
             var canonical = $"v1:{method}:{requestPath}:{headers["X-Nonce"]}:{ts}:{headers["X-Body-Hash"]}";
             Assert.True(verifier.VerifyData(Encoding.UTF8.GetBytes(canonical), Convert.FromBase64String(headers["X-Signature"]),
                 HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+            Assert.True(verifier.VerifyData(Encoding.UTF8.GetBytes($"cerberus-agent-sig-v2\n{canonical}\nbackend.test"),
+                Convert.FromBase64String(headers["X-Signature-V2"]), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
         }
     }
 
