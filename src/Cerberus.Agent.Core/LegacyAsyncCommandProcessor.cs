@@ -70,7 +70,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             // Never let the compatibility path bypass an unavailable/reset replay boundary.
             if (!_store.AllowsLegacyAgent(agentId) || !_store.IsAvailable || _store.ResetAt != 0)
             {
-                _log.Warn($"Async command id={LogId(command.Id)} not started: durable replay state is unavailable or reset; recovery requires verified re-enrollment with a new agent identity.");
+                _log.Warn($"Async command id={LogId(command.Id)} not started: durable replay state is unavailable or reset; recovery requires verified re-enrollment.");
                 continue;
             }
             if (string.IsNullOrWhiteSpace(command.LeaseId))

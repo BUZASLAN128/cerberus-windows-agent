@@ -10,7 +10,7 @@ namespace Cerberus.Agent.Core.Tests;
 // Real isolated DPAPI/filesystem persistence, controlled SCM/HTTP boundaries.
 // Crash fixtures copy actual durable checkpoints, not imagined journal states.
 // This is unit/support evidence, not installed SYSTEM/SCM acceptance.
-public sealed class AgentEnrollmentTransactionTests(ITestOutputHelper output)
+public sealed partial class AgentEnrollmentTransactionTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData("scm")]

@@ -70,7 +70,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             foreach (var _ in unsigned)
                 LogRejection(new EnvelopeCheck(1, EnvelopeCodes.Unsigned, false, null));
 #else
-            if (unsigned.Count > 0)
+            if (unsigned.Count > 0 && !_queue.RecoveryControlOnly)
             {
                 if (_legacy is null)
                     _log.Warn($"Commands without an envelope dropped: no legacy processor (count={unsigned.Count}).");
@@ -83,7 +83,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         {
             _queue.SignalHeartbeat();
 #if !CERBERUS_SERVER_PROFILE
-            _legacy?.SignalOutbox();
+            if (!_queue.RecoveryControlOnly) _legacy?.SignalOutbox();
 #endif
         }
     }
@@ -143,6 +143,9 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         }
 
         var envelope = check.Envelope!;
+        if (_queue.RequiresStateRecovery && (envelope.Type != EnvelopeTypes.AgentState ||
+            envelope.Payload.GetProperty("state_seq").GetInt64() <= _queue.SignedState!.RecoveryFloor))
+            return;
         var store = _queue.Store;
         var existing = store.Find(agentId, envelope.Id);
         if (existing is not null)

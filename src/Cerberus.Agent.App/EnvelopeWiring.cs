@@ -45,13 +45,13 @@ internal static class EnvelopeWiring
 #if !CERBERUS_SERVER_PROFILE
     internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
         AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,
-        IAgentLogger log)
+        IAgentLogger log, string? keyFingerprint = null)
     {
         // Managed operations retain their existing synchronous authority path; this is observation only.
         var delayLog = Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC") == "1" ? log : null;
         return new LegacyAsyncCommandProcessor(api, dispatcher,
             new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency, delayLog),
-            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log), currentAgentId, log);
+            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log, keyFingerprint: keyFingerprint), currentAgentId, log);
     }
 #endif
 
@@ -64,8 +64,10 @@ internal static class EnvelopeWiring
         IAgentLogger log,
         string product = AgentProducts.Cerberus)
     {
-        var queue = new EnvelopeExecutionQueue(api, new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log),
-            handlers, currentAgentId, signedState.IsQuarantined, log: log);
+        var store = new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log, enrollmentEstablished: true);
+        if (!store.IsAvailable) log.Warn("Command replay storage unavailable; signed commands remain disabled.");
+        var queue = new EnvelopeExecutionQueue(api, store,
+            handlers, currentAgentId, signedState.IsQuarantined, log: log, signedState: signedState);
         queue.Start();
         return queue;
     }
