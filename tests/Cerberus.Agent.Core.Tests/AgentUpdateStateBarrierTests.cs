@@ -266,7 +266,7 @@ public sealed class AgentUpdateStateBarrierTests
             var denied = await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.LaunchUnderFenceAsync(
                 new() { Phase = AgentUpdateStates.Staged }, true, _ => { probes++; return Task.FromResult(new AgentLifecycleSnapshot()); },
                 _ => false, _ => launches++, default, root));
-            Assert.Contains("untrusted ownership or permissions", denied.Message);
+            Assert.StartsWith("Protected update object", denied.Message);
             Assert.Equal(0, probes);
             Assert.Equal(0, launches);
         }
@@ -304,6 +304,58 @@ public sealed class AgentUpdateStateBarrierTests
             Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
             if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
         }
+    }
+
+    [Theory]
+    [InlineData(AgentLifecycleState.NeedsReenrollment, false)]
+    [InlineData(AgentLifecycleState.NeedsReenrollment, true)]
+    [InlineData(AgentLifecycleState.Retired, false)]
+    [InlineData(AgentLifecycleState.Retired, true)]
+    public void MissingCredentialsReleaseManualUpdateBarrierButNotAutomaticLifecycleGate(AgentLifecycleState state, bool missingDirectory)
+    {
+        var lifecycle = new AgentLifecycleSnapshot(state);
+        var secrets = new FailedSecrets(missingDirectory ? new DirectoryNotFoundException("Owned missing credential directory")
+            : new FileNotFoundException("Owned missing credential file"));
+        var storeReads = 0;
+
+        Assert.False(AgentUpdateLocalService.PendingStateDelivery(lifecycle, secrets,
+            _ => { storeReads++; throw new InvalidOperationException("No registration to bind replay"); },
+            _ => { storeReads++; throw new InvalidOperationException("No registration to bind signed state"); }));
+        Assert.False(AgentUpdateLocalService.AllowsAutomatic(lifecycle));
+        Assert.Equal(0, storeReads);
+    }
+
+    [Theory]
+    [InlineData("io")]
+    [InlineData("access")]
+    [InlineData("crypto")]
+    [InlineData("json")]
+    [InlineData("invalid")]
+    public void UnreadableCredentialsStillBlockManualUpdates(string failure)
+    {
+        Exception error = failure switch
+        {
+            "io" => new IOException("Owned unreadable fixture"),
+            "access" => new UnauthorizedAccessException("Owned unreadable fixture"),
+            "crypto" => new System.Security.Cryptography.CryptographicException("Owned unreadable fixture"),
+            "json" => new System.Text.Json.JsonException("Owned unreadable fixture"),
+            _ => new InvalidOperationException("Owned unreadable fixture"),
+        };
+        Assert.True(AgentUpdateLocalService.PendingStateDelivery(new(), new FailedSecrets(error)));
+    }
+
+    [Fact]
+    public void MissingControlStorageExceptionIsNotTreatedAsMissingCredentials()
+        => Assert.True(AgentUpdateLocalService.PendingStateDelivery(new(), new Secrets(),
+            _ => throw new FileNotFoundException("Owned control-storage failure")));
+
+    private sealed class FailedSecrets(Exception error) : ISecretStore
+    {
+        public Task<(AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl,
+            string? TailscaleLoginServer, string? TailscaleAuthkey)> LoadAsync(CancellationToken ct) => throw error;
+        public Task SaveAsync(AgentIdentity identity, string refreshToken, string privateKeyPem, string backendUrl,
+            string? tailscaleLoginServer, string? tailscaleAuthkey, CancellationToken ct) => throw new NotSupportedException();
+        public Task ClearAsync(CancellationToken ct) => throw new NotSupportedException();
     }
 
     private sealed class Secrets(string product = AgentProducts.Cerberus) : ISecretStore

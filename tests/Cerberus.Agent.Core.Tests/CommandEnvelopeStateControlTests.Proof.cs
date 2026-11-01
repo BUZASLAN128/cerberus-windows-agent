@@ -8,6 +8,69 @@ public sealed partial class CommandEnvelopeStateControlTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task WaitingHandlerRechecksQuarantineAndPendingControlAfterPermit(bool pendingControlOnly)
+    {
+        await using var f = new Worker();
+        Assert.True(f.State.TrySave(new(f.H.AgentId, 1, false, null)));
+        var returned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.H.Facts.Body = async (_, _) =>
+        {
+            f.H.Facts.Started.TrySetResult();
+            try { await f.H.Facts.Gate.Task; } // Deliberately ignores the first command's timeout.
+            finally { returned.TrySetResult(); }
+            return FakeCommandHandler.Done();
+        };
+        var first = f.H.Cmd(p => { p.Type = "collect_facts"; p.Expires = p.Issued + 300; });
+        var second = f.H.Cmd(p => { p.Type = "collect_facts"; p.Expires = p.Issued + 300; });
+        await f.Processor.ProcessAsync(new[] { first, second }, default);
+        Assert.Equal(EnvelopeRecordStates.Reserved, f.Replay.Find(f.H.AgentId, first.Id)!.State);
+        Assert.Equal(EnvelopeRecordStates.Reserved, f.Replay.Find(f.H.AgentId, second.Id)!.State);
+        f.Queue.Start();
+        try
+        {
+            await f.H.Facts.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            f.H.Time.Advance(EnvelopeExecutionQueue.TimeoutFor("collect_facts"));
+            await Wait.UntilAsync(() => f.Replay.Find(f.H.AgentId, first.Id)?.ResultSubmitted == true, "first handler timeout result");
+            await Wait.UntilAsync(() => f.Replay.Find(f.H.AgentId, second.Id)?.State == EnvelopeRecordStates.Started,
+                "second command admitted before quarantine and waiting for permit");
+            Assert.Equal(1, f.H.Facts.Calls);
+            var control = f.H.Cmd(p =>
+            {
+                p.Type = EnvelopeTypes.AgentState;
+                p.PayloadJson = "{\"state_seq\":2,\"quarantine\":{\"active\":" + (pendingControlOnly ? "false" : "true") + "}}";
+            });
+            await f.Process(control);
+            if (!pendingControlOnly)
+            {
+                await f.Queue.DrainOutboxOnceAsync(default);
+                Assert.True(f.Replay.Find(f.H.AgentId, control.Id)!.ResultSubmitted);
+                Assert.False(f.State.RequiresRecovery);
+                Assert.True(f.State.Load(f.H.AgentId).QuarantineActive);
+            }
+            else
+            {
+                Assert.False(f.State.Load(f.H.AgentId).QuarantineActive);
+                Assert.True(f.State.HasPendingControl);
+            }
+
+            f.H.Facts.Gate.TrySetResult();
+            await Wait.UntilAsync(() => f.Replay.Find(f.H.AgentId, second.Id)?.ResultB64 is not null, "waiting command denied after permit");
+
+            Assert.Equal(1, f.H.Facts.Calls);
+            using var body = System.Text.Json.JsonDocument.Parse(Convert.FromBase64String(f.Replay.Find(f.H.AgentId, second.Id)!.ResultB64!));
+            Assert.Equal("FAILED", body.RootElement.GetProperty("status").GetString());
+            Assert.Equal(EnvelopeCodes.Quarantined, body.RootElement.GetProperty("stderr").GetString());
+        }
+        finally
+        {
+            f.H.Facts.Gate.TrySetResult();
+            if (f.H.Facts.Started.Task.IsCompleted) await returned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task PendingRevokeProvesDoneAfterNewerStateOrLegacySnapshot(bool legacySnapshot)
     {
         await using var f = new Worker();

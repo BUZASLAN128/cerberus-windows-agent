@@ -135,8 +135,8 @@ internal static partial class AgentUpdateLocalService
         AgentUpdateInstallRequest? installRequest = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (PendingStateDelivery(lifecycle)) return null;
-        if (automatic && !AllowsAutomatic(lifecycle))
+        HoldWhileQuarantined(true, ct, () => PendingStateDelivery(lifecycle));
+        if (automatic && !AllowsAutomaticLifecycle(lifecycle))
             return null;
         // Bind the incoming policy to the generation observed at the start of
         // this owned operation. An unstamped internal signal is bound once to
@@ -186,7 +186,8 @@ internal static partial class AgentUpdateLocalService
             // Reload before staging so the new attempt is bound to the current
             // authorization boundary rather than the old check snapshot.
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && !AllowsAutomatic(lifecycle))
+            HoldWhileQuarantined(true, ct, () => PendingStateDelivery(lifecycle));
+            if (automatic && !AllowsAutomaticLifecycle(lifecycle))
                 return null;
             incomingRequired = IsRequiredSignalCurrent(
                 required,
@@ -232,7 +233,8 @@ internal static partial class AgentUpdateLocalService
             if (installRequest is not null && plan is null && !result.IsCurrent)
                 throw new InstallReleaseUnavailableException();
             var latestLifecycle = await LoadLifecycleAsync(cancellation.Token).ConfigureAwait(false);
-            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomatic(latestLifecycle)))
+            HoldWhileQuarantined(true, cancellation.Token, () => PendingStateDelivery(latestLifecycle));
+            if (latestLifecycle.Generation != lifecycle.Generation || (automatic && !AllowsAutomaticLifecycle(latestLifecycle)))
             {
                 authorizationChanged = true;
                 cancellation.Cancel();

@@ -32,11 +32,22 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             () => { work++; return Task.CompletedTask; }, default);
         Assert.Equal(0, work);
         Assert.Equal(initial, journal.Read());
-        var due = initial with { InstallRequest = CorrelatedRequest() };
+        var due = new AgentUpdateJournal { LifecycleGeneration = 7, InstallRequest = CorrelatedRequest() };
         FixtureWriter(root)(_ => due);
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(due, lifecycle, () => false, _ => true,
             FixtureWriter(root), _ => { work++; return Task.FromResult(true); }, NullAgentLogger.Instance, default));
         Assert.Equal(0, work);
+        Assert.Equal(due, journal.Read());
+        Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(journal.Read(), lifecycle, () => false, _ => false,
+            FixtureWriter(root), _ =>
+            {
+                work++;
+                FixtureWriter(root)(before => before with { Phase = AgentUpdateStates.Current,
+                    InstallRequest = before.InstallRequest! with { VerifiedRelease = Release } });
+                return Task.FromResult(false);
+            }, NullAgentLogger.Instance, default));
+        Assert.Equal(1, work);
+        Assert.Equal("current", journal.Read().InstallRequest!.TerminalReason);
     });
 
     [Fact]

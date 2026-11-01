@@ -125,10 +125,16 @@ internal static class AgentServiceLocalState
         await new DpapiSecretStore(SecretStoreScope.Machine).ClearAsync(ct).ConfigureAwait(false);
 
         var baseDir = DpapiSecretStore.GetDefaultBaseDir(SecretStoreScope.Machine);
+        ClearLocalData(baseDir, AgentUpdateSecurity.DefaultPrivilegedRoot);
+    }
+
+    internal static void ClearLocalData(string baseDir, string privilegedRoot)
+    {
         DeleteFileIfExists(Path.Combine(baseDir, "idempotency.json"));
         DeleteFileIfExists(Path.Combine(baseDir, "telemetry-offline.json"));
+        DeleteFileIfExists(Path.Combine(baseDir, "secondary-telemetry-offline.json"));
         DeleteDirectoryIfExists(Path.Combine(baseDir, "updates"));
-        DeleteDirectoryIfExists(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        DeleteDirectoryIfExists(privilegedRoot);
     }
 
     private static void DeleteFileIfExists(string path)

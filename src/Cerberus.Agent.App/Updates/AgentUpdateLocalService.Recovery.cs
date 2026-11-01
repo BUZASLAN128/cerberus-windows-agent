@@ -16,7 +16,9 @@ internal static partial class AgentUpdateLocalService
     {
         try
         {
-            var identity = secrets.LoadAsync(CancellationToken.None).GetAwaiter().GetResult().Identity;
+            AgentIdentity identity;
+            try { identity = secrets.LoadAsync(CancellationToken.None).GetAwaiter().GetResult().Identity; }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return false; }
             if (string.IsNullOrWhiteSpace(identity.AgentId) || string.IsNullOrWhiteSpace(identity.TenantId)) return true;
             var replay = replayStore?.Invoke(identity.Product) ?? new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(identity.Product));
             var state = stateStore?.Invoke(identity.Product) ?? new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(identity.Product));
