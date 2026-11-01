@@ -29,11 +29,12 @@ public sealed record CommandReplayRecord(
     [property: JsonPropertyName("result_b64")] string? ResultB64,
     [property: JsonPropertyName("result_sha256")] string? ResultSha256,
     [property: JsonPropertyName("result_submitted")] bool ResultSubmitted,
-    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null)
+    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null,
+    [property: JsonPropertyName("state_control"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AgentPreparedStateControl? StateControl = null)
 {
     /// <summary>A result is held and has not reached a final outcome at the server yet.</summary>
     [JsonIgnore]
-    public bool HasPendingResult => State == EnvelopeRecordStates.Started
+    public bool HasPendingResult => AgentPreparedStateControl.IsPending(this) || State == EnvelopeRecordStates.Started
                                     || (State == EnvelopeRecordStates.Done && !ResultSubmitted && ResultB64 is not null);
 }
 
@@ -478,7 +479,7 @@ public sealed partial class CommandReplayStore
            && !string.IsNullOrEmpty(r.AgentId) && !string.IsNullOrEmpty(r.Id) && !string.IsNullOrEmpty(r.Nonce)
            && !string.IsNullOrEmpty(r.Type) && r.EnvelopeSha256 is { Length: 64 }
            && EnvelopeRecordStates.IsKnown(r.State) && r.IssuedAt > 0 && r.ExpiresAt > r.IssuedAt
-           && (r.ResultSha256 is null || r.ResultSha256.Length == 64);
+           && (r.ResultSha256 is null || r.ResultSha256.Length == 64) && (r.StateControl is null || r.Type == EnvelopeTypes.AgentState && r.StateControl.IsValid(r.AgentId));
 
     private static bool Same(CommandReplayRecord record, string agentId, string id)
         => string.Equals(record.AgentId, agentId, StringComparison.Ordinal)

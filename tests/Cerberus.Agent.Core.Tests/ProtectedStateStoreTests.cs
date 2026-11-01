@@ -158,7 +158,8 @@ public sealed class ProtectedStateStoreTests : IDisposable
         // Restart 1: the POST fails, nothing may retire and the revoke stays quarantined and stored.
         await using (var second = new Rig(_dir, lifecycle, _time))
         {
-            second.Backend.Respond = (_, _) => Task.FromResult(System.Net.HttpStatusCode.ServiceUnavailable);
+            second.Backend.Respond = (r, _) => Task.FromResult(r.Leaf == "result"
+                ? System.Net.HttpStatusCode.ServiceUnavailable : System.Net.HttpStatusCode.OK);
             Assert.True(second.Store.IsQuarantined(Agent));
             Assert.Equal(new AgentPendingRevoke("c1", "agent_revoked", new AgentRevokeRegistration(Agent, null, null)), second.Store.Load(Agent).PendingRevoke);
             second.Queue.Start();
@@ -221,7 +222,7 @@ public sealed class ProtectedStateStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Recovery_WithoutAReplayRecordAndAReadableStore_AppliesTheRevoke()
+    public async Task Recovery_WithoutAReplayRecordAndAReadableStore_KeepsTheRevokePending()
     {
         var lifecycle = new InMemoryAgentLifecycleStateStore();
         await new Rig(_dir, lifecycle, _time).Handle("c1", """{"state_seq":1,"revoke":{"reason_code":"agent_revoked"}}""");
@@ -229,8 +230,9 @@ public sealed class ProtectedStateStoreTests : IDisposable
         await using var restarted = new Rig(_dir, lifecycle, _time);
         await restarted.Handler.RecoverPendingRevokeAsync(restarted.Replay, default);
 
-        Assert.Equal(AgentLifecycleState.Retired, (await restarted.Lifecycle.LoadAsync(default)).State);
-        Assert.Null(restarted.Store.Load(Agent).PendingRevoke);
+        Assert.Equal(AgentLifecycleState.Active, (await restarted.Lifecycle.LoadAsync(default)).State);
+        Assert.NotNull(restarted.Store.Load(Agent).PendingRevoke);
+        Assert.True(restarted.Store.IsQuarantined(Agent));
     }
 
     [Fact]
@@ -255,12 +257,20 @@ public sealed class ProtectedStateStoreTests : IDisposable
         Assert.True(new AgentSignedStateStore(StatePath).TrySave(new AgentSignedState(Agent, seq, false, null)));
     }
 
+    private static AgentStateDeliveryContext ControlContext => new(Agent, "t1", 0, null,
+        AgentProducts.Cerberus, AgentKeyFingerprint.Prefix + new string('a', 64));
+
     private void SeedDoneResult(string id, bool submitted)
-        => StoreFileWriter.Write(ReplayPath, 0, new[]
+    {
+        var body = CommandEnvelope.BuildResultBody("DONE", 0, null, null, new string('a', 64));
+        StoreFileWriter.Write(ReplayPath, 0, new[]
         {
-            StoreFileWriter.Record(Agent, id, "n-" + id, EnvelopeRecordStates.Done, T0, T0 + 120, "e30=", submitted)
-                with { Type = EnvelopeTypes.AgentState },
+            StoreFileWriter.Record(Agent, id, "n-" + id, EnvelopeRecordStates.Done, T0, T0 + 120,
+                Convert.ToBase64String(body), submitted) with { Type = EnvelopeTypes.AgentState,
+                    ResultSha256 = CommandEnvelope.Sha256Hex(body),
+                    StateControl = new(ControlContext, 1, ["revoke"]) },
         });
+    }
 
     private static bool OwnerIsTrusted(string path)
     {
@@ -303,7 +313,8 @@ public sealed class ProtectedStateStoreTests : IDisposable
             Replay = new CommandReplayStore(Path.Combine(dir, CommandReplayStore.FileName), time);
             _http = new HttpClient(Backend) { BaseAddress = new Uri("http://backend.test") };
             var api = new AgentApiClient(_http, new Secrets(), new Token(), new Signer());
-            Queue = new EnvelopeExecutionQueue(api, Replay, new ICommandHandler[] { Handler }, track, Store.IsQuarantined, time);
+            Queue = new EnvelopeExecutionQueue(api, Replay, new ICommandHandler[] { Handler }, track, Store.IsQuarantined, time,
+                signedState: Store, controlContext: ControlContext, currentControlContext: _ => Task.FromResult(ControlContext));
         }
 
         public AgentSignedStateStore Store { get; }

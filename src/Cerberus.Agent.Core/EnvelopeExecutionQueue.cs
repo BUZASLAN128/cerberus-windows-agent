@@ -5,8 +5,8 @@ namespace Cerberus.Agent.Core;
 
 /// <summary>
 /// Implemented by an envelope handler that must act only after its result reached a final
-/// outcome at the server (2xx, or a 4xx other than 408/429). <c>agent_state</c> revoke uses
-/// it so the DONE result is submitted before credentials are cleared.
+/// outcome at the server (2xx, or a 4xx other than 408/429). State control requires a
+/// confirmed 2xx DONE before revoke follow-up can clear credentials.
 /// </summary>
 public interface IEnvelopeResultFollowUp
 {
@@ -55,7 +55,9 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         Func<bool> isQuarantined,
         TimeProvider? time = null,
         IAgentLogger? log = null,
-        AgentSignedStateStore? signedState = null)
+        AgentSignedStateStore? signedState = null,
+        AgentStateDeliveryContext? controlContext = null,
+        Func<CancellationToken, Task<AgentStateDeliveryContext>>? currentControlContext = null)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         Store = store ?? throw new ArgumentNullException(nameof(store));
@@ -67,6 +69,9 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         _resultRetry = new AgentRetryGate(Time);
         _log = log ?? NullAgentLogger.Instance;
         SignedState = signedState;
+        _controlContext = controlContext;
+        _currentControlContext = currentControlContext;
+        SignedState?.ConnectControlRecovery(ControlRecovery);
     }
 
     public CommandReplayStore Store { get; }
@@ -76,8 +81,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
     /// <summary>Signed quarantine, read at every check (step 17 and before start).</summary>
     public Func<bool> IsQuarantined { get; }
     internal AgentSignedStateStore? SignedState { get; }
-    internal bool RequiresStateRecovery => SignedState?.RequiresRecovery == true;
-    internal bool RecoveryControlOnly => SignedState?.RecoveryControlOnly == true;
+    internal bool RequiresStateRecovery => ControlRecovery().Pending || SignedState?.RequiresRecovery == true;
+    internal bool RecoveryControlOnly => ControlRecovery().Pending || SignedState?.RecoveryControlOnly == true;
 
     public IReadOnlyCollection<string> HandlerTypes => _handlers.Keys.ToArray();
 
@@ -88,6 +93,7 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
     {
         lock (_lifecycleGate)
             _worker ??= Task.Run(() => RunAsync(_stop.Token));
+        if (ControlRecovery().Pending) SignalHeartbeat();
     }
 
     public async Task StopAsync()
@@ -178,34 +184,6 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         _signal.Release();
     }
 
-    /// <summary>Runs an acked <c>agent_state</c> inline; its result is submitted by the background outbox.</summary>
-    internal async Task ExecuteInlineAsync(CommandReplayRecord record, SignedEnvelope envelope, CancellationToken ct)
-    {
-        var keepInFlight = false;
-        try
-        {
-            var started = record with { State = EnvelopeRecordStates.Started };
-            if (Store.TryUpdate(started, record.State) != ReplayUpdateOutcome.Updated)
-            {
-                _log.Error($"Command envelope id={record.Id} not started: replay store write failed.");
-                Forget(record);
-                return;
-            }
-
-            var body = await ExecuteAsync(envelope, ct).ConfigureAwait(false);
-            var (done, durable) = StoreResult(started, body);
-            // The outbox cannot see a result that is not stored: deliver it from memory, and while the record
-            // still reads started keep it in flight so no OUTCOME_UNKNOWN follows a delivered result.
-            if (!durable && await SubmitAsync(done, ct, started.State).ConfigureAwait(false))
-                keepInFlight = true;
-        }
-        finally
-        {
-            if (!keepInFlight)
-                ClearInFlight(record.AgentId, record.Id);
-        }
-    }
-
     /// <summary>A <c>started</c> record from an earlier process: report OUTCOME_UNKNOWN once, never run again.</summary>
     internal CommandReplayRecord RecoverOrphan(CommandReplayRecord record)
     {
@@ -254,6 +232,14 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         var keepInFlight = false;
         try
         {
+            // Keep an already accepted entry reserved while control delivery is pending.
+            while (ControlRecovery().Pending)
+            {
+                await DrainOutboxAsync(linked.Token).ConfigureAwait(false);
+                if (ControlRecovery().Pending)
+                    await _signal.WaitAsync(linked.Token).ConfigureAwait(false);
+            }
+
             var current = await _currentAgentId(linked.Token).ConfigureAwait(false);
             var stored = Store.Find(record.AgentId, record.Id);
             if (!string.Equals(current, record.AgentId, StringComparison.Ordinal)
@@ -318,9 +304,10 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         try
         {
             var agentId = await _currentAgentId(stop).ConfigureAwait(false);
+            await RecoverStateControlsAsync(agentId, stop).ConfigureAwait(false);
             foreach (var orphan in Store.Records(agentId)
                          .Where(r => r.State == EnvelopeRecordStates.Started && !IsInFlight(r.AgentId, r.Id) &&
-                                     (!RequiresStateRecovery || r.Type == EnvelopeTypes.AgentState)))
+                                     (!RequiresStateRecovery || r.Type == EnvelopeTypes.AgentState) && r.StateControl is null))
             {
                 if (cancelAll.IsCancellationRequested)
                     return;
@@ -353,6 +340,9 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
     /// </summary>
     private async Task<bool> SubmitAsync(CommandReplayRecord record, CancellationToken ct, string storedState = EnvelopeRecordStates.Done)
     {
+        if (record.Type == EnvelopeTypes.AgentState && !await AcceptPreparedStateAsync(record, ct).ConfigureAwait(false))
+            return false;
+        record = Store.Find(record.AgentId, record.Id) ?? record;
         if (record.ResultB64 is null || record.ResultSubmitted)
             return false;
         if (!_resultRetry.CanTry)
@@ -370,6 +360,11 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
             _log.Warn($"Command envelope id={record.Id} result refused with HTTP {(int)status}; not retried.");
             refused = true;
             httpStatus = (int)status;
+            if (record.StateControl is { } control)
+            {
+                Store.TryUpdate(record with { StateControl = control with { TransportRefused = true } }, storedState);
+                return false; // A refusal is not a confirmed control DONE and cannot retire a registration.
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
@@ -474,7 +469,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
                 _log.Warn($"Command envelope id={record.Id} result not stored: the record is no longer {record.State}.");
                 return (Store.Find(record.AgentId, record.Id) ?? record, true);
             default:
-                _log.Error($"Command envelope id={record.Id} result not stored durably; submitting from memory.");
+                _log.Error($"Command envelope id={record.Id} result not stored durably; " +
+                    (record.Type == EnvelopeTypes.AgentState ? "state delivery remains pending." : "submitting from memory."));
                 return (done, false);
         }
     }

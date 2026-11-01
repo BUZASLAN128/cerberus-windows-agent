@@ -2,9 +2,9 @@ namespace Cerberus.Agent.Core;
 
 public sealed partial class CommandReplayStore
 {
-    /// <summary>A record ends its retention at <c>expires_at + 24 h</c>; the outbox stops then too.</summary>
+    /// <summary>Pending state delivery stays held until completion or authoritative supersession.</summary>
     private static List<CommandReplayRecord> Purge(IEnumerable<CommandReplayRecord> records, long now)
-        => records.Where(r => now <= r.ExpiresAt + RetentionSeconds).ToList();
+        => records.Where(r => AgentPreparedStateControl.IsPending(r) || now <= r.ExpiresAt + RetentionSeconds).ToList();
 
     /// <summary>Only records past their window and without a pending result may make room.</summary>
     private static bool IsEvictable(CommandReplayRecord record, long now)

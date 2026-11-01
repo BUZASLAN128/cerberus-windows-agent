@@ -109,8 +109,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// <summary>
     /// Startup recovery for a crash after the DONE result was delivered and marked submitted, but before the
     /// revoke ran: run the follow-up now. A result still waiting in the outbox is left to the outbox, which
-    /// needs the credential. A missing record (retention ended) with a readable store can never be delivered, so
-    /// the signed revoke is applied. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
+    /// needs the credential. Missing replay evidence cannot prove delivery; pending control records are retained
+    /// until confirmation. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
     /// is applied whatever the replay record says.
     /// </summary>
     public async Task RecoverPendingRevokeAsync(CommandReplayStore replay, CancellationToken ct)
@@ -132,8 +132,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
             return;
         var record = replay.Find(agentId, pending.CommandId);
         var settled = _finalResults.Contains(agentId, pending.CommandId)
-                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
-                      || (record is null && replay.IsAvailable);
+                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true };
         if (settled)
             await OnResultFinalAsync(agentId, pending.CommandId, ct).ConfigureAwait(false);
     }

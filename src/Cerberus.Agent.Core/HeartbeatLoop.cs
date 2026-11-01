@@ -181,7 +181,7 @@ public sealed partial class HeartbeatLoop
                 if (recoveringState)
                 {
                     _signedState!.SetRecoverySourceSupported(hb.SignedStateRecovery == true);
-                    if (hb.SignedStateRecovery == true)
+                    if (hb.SignedStateRecovery == true || _signedState.HasPendingControl)
                     {
                         if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false)) return;
                         if (_wakeupClient is not null) await _wakeupClient.StopAsync(ct).ConfigureAwait(false);

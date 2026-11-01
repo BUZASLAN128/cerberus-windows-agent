@@ -10,9 +10,7 @@ using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.Net.Http;
 using System.IO;
-
 namespace Cerberus.Agent.App;
-
 internal static partial class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
@@ -139,7 +137,6 @@ internal static partial class ServiceMode
             automatic?.Dispose();
         }
     }
-
     private static async Task RunAutomaticAsync(CancellationToken ct, IAgentLifecycleStateStore lifecycleState,
         Func<CancellationToken, Task> quiesce, AgentRevokeFinalResults finalRevokes, AgentRevokeFinalResults secondaryFinalRevokes)
     {
@@ -349,13 +346,16 @@ internal static partial class ServiceMode
                 diagnosticUploader, () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion);
 #endif
         var dispatcher = new CommandDispatcher(handlers, idempotency);
+        await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log,
+            new(loadedSecrets.Identity.AgentId, loadedSecrets.Identity.TenantId, persistedLifecycle.Generation,
+                persistedLifecycle.LastEnrollmentNonce, loadedSecrets.Identity.Product, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem)),
+            EnvelopeWiring.StateDeliveryContext(secrets, lifecycleState), loadedSecrets.Identity.Product);
+        queue = envelopeQueue;
 #if !CERBERUS_SERVER_PROFILE
         legacyAsync = secondary ? null : EnvelopeWiring.CreateLegacyAsync(api, dispatcher,
             loadedSecrets.Identity, persistedLifecycle, currentAgentId, signedState, log, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem));
         await using var legacyAsyncLifetime = legacyAsync;
 #endif
-        await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log, loadedSecrets.Identity.Product);
-        queue = envelopeQueue;
         if (AgentBuildProfile.IsServer || secondary)
         {
             var revokeAgentId = loadedSecrets.Identity.AgentId;

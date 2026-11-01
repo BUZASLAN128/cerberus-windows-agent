@@ -126,7 +126,7 @@ public sealed partial class AgentStateRevokeGuardTests
         Assert.NotNull(f.Store.Load("agent-a").PendingRevoke);
         var reloaded = new AgentSignedStateStore(Path.Combine(_dir, AgentSignedStateStore.FileName));
         var restarted = f.FreshWorker(reloaded, 1);
-        var replay = new CommandReplayStore(Path.Combine(_dir, CommandReplayStore.FileName));
+        var replay = ConfirmedReplay(_dir);
 
         await restarted.RecoverPendingRevokeAsync(replay, default);
         await restarted.RecoverPendingRevokeAsync(replay, default);
@@ -153,6 +153,7 @@ public sealed partial class AgentStateRevokeGuardTests
         Assert.True(reloaded.IsQuarantined("agent-a"));
         Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
         Assert.False(f.Secrets.Cleared);
-        Assert.Equal(1, f.Stops);
+        Assert.True(reloaded.HoldsNormalWork());
+        Assert.Equal(0, f.Stops);
     }
 }

@@ -384,12 +384,13 @@ public sealed partial class AgentRegistrarTests
     public async Task RegisterAsync_WhenHeadersConsumeTheWholeTimeout_BodyGetsNoFreshBudget()
     {
         var content = new StallingContent("register-delay-marker");
-        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = content }, headersArriveAfterDeadline: true);
-        // HttpClient's own timer and the registrar's deadline both fire after 50 ms, in either order. The handler
-        // returns only after a settle period far above that skew, so the shared deadline is certain to have fired.
-        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = TimeSpan.FromMilliseconds(50) };
+        using var deadline = new CancellationTokenSource();
+        var handler = new CaptureHandler(new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = content }, beforeHeaders: deadline.Cancel);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://example.test"), Timeout = Timeout.InfiniteTimeSpan };
+        var registrar = new AgentRegistrar(http, new CaptureSecretStore(), new StubKeyPairs("priv-pem", "pub-pem"))
+        { DeadlineFactory = _ => deadline };
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(NewRegistrar(http)).WaitAsync(HangGuard));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => Register(registrar).WaitAsync(HangGuard));
 
         Assert.Equal("Register failed (400).", exception.Message);
         Assert.DoesNotContain("register-delay-marker", exception.Message, StringComparison.Ordinal);

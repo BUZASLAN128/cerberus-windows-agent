@@ -46,9 +46,9 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task InlineAgentStateResult_WhoseWriteFails_IsDeliveredOnceFromMemoryAndNeverReportedUnknown()
+    public async Task InlineAgentStateResult_WhoseWriteFails_StaysPendingWithoutAckOrUnknown()
     {
-        await using var h = EnvelopeHarness.Create();
+        await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);
         FileStream? lockFile = null;
         h.State.Body = (_, _) =>
         {
@@ -61,7 +61,9 @@ public sealed partial class CommandEnvelopeProcessorTests
         try
         {
             await h.Process(state);
-            await Wait.UntilAsync(() => h.Backend.Results.Count >= 1, "in-memory result delivered");
+            await h.Queue.DrainOutboxOnceAsync(default);
+            Assert.Empty(h.Backend.Acks);
+            Assert.Empty(h.Backend.Results);
         }
         finally
         {
@@ -70,9 +72,9 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         await h.Queue.DrainOutboxOnceAsync(CancellationToken.None);
 
-        var result = Assert.Single(h.Backend.Results);
-        Assert.Equal("DONE", result.Json.GetProperty("status").GetString());
-        Assert.DoesNotContain(h.Backend.Results, r => r.Json.GetProperty("status").GetString() == EnvelopeExecutionQueue.OutcomeUnknown);
+        Assert.Empty(h.Backend.Results);
+        Assert.Equal(EnvelopeRecordStates.Started, h.Record(state)!.State);
+        Assert.True(h.Queue.RecoveryControlOnly);
     }
 
     [Fact]

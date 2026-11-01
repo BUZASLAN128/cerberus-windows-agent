@@ -7,6 +7,14 @@ namespace Cerberus.Agent.App.Updates;
 /// <summary>Bounded recovery so one transient failure never stops automatic updates for good.</summary>
 internal static partial class AgentUpdateLocalService
 {
+    private static bool PendingStateDelivery(AgentLifecycleSnapshot lifecycle)
+    {
+        foreach (var product in new[] { AgentProducts.Cerberus, AgentProducts.Secondary })
+            if (new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product))
+                .HasPendingStateDelivery(lifecycle.Generation, lifecycle.LastEnrollmentNonce)) return true;
+        return false;
+    }
+
     /// <summary>How long a failed local readiness probe is retried after the installer result was recorded.</summary>
     private static readonly TimeSpan HealthRetryWindow = TimeSpan.FromMinutes(15);
     /// <summary>Quiet time after the last recorded install activity before recovery_required is closed.</summary>

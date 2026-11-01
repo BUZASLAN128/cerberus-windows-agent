@@ -52,17 +52,19 @@ public sealed partial class LegacyAsyncCommandProcessorTests
             var stateHandler = new AgentStateCommandHandler(state, current,
                 new AgentLifecycleController(new InMemoryAgentLifecycleStateStore()), () => { }, h.Log, () => { }, new AgentRevokeFinalResults());
             await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, new ICommandHandler[] { stateHandler },
-                current, state.IsQuarantined, h.Time, signedState: state);
+                current, state.IsQuarantined, h.Time, signedState: state,
+                controlContext: h.ControlContext, currentControlContext: _ => Task.FromResult(h.ControlContext));
             queue.Start();
             var processor = new EnvelopeCommandProcessor(h.Api, new[] { h.Signer.Anchor }, queue, new HashSet<string> { "agent_state" });
             await processor.ProcessAsync(new[] { h.Cmd(p => { p.Type = "agent_state";
                 p.PayloadJson = """{"state_seq":1,"quarantine":{"active":false}}"""; }) }, default);
+            await queue.DrainOutboxOnceAsync(default);
             Assert.False(state.RequiresRecovery);
         }
         Volatile.Write(ref readFailure, false);
         await legacy.ProcessAsync(Array.Empty<AgentCommand>(), default); // The normal heartbeat wake, no new business.
         await Wait.UntilAsync(() => store.Find(h.AgentId, done.Id)?.ResultSubmitted == true, "retained result resumed after recovery");
-        Assert.Single(h.Backend.Results, result => result.Json.GetProperty("lease_id").GetString() == done.Nonce);
+        Assert.Single(h.Backend.Results, result => result.Json.TryGetProperty("lease_id", out var lease) && lease.GetString() == done.Nonce);
         Assert.Equal(0, handler.Calls);
         Assert.True(legacy.CanAdvertise);
     }
