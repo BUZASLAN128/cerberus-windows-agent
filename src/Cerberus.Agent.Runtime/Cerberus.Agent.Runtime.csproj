@@ -18,6 +18,10 @@
       <_Parameter2>$(AgentDefaultBackendUrlBase64)</_Parameter2>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentSecondaryBackendUrlBase64</_Parameter1>
+      <_Parameter2>$(AgentSecondaryBackendUrlBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentUpdateManifestPublicKeysB64</_Parameter1>
       <_Parameter2>$(AgentUpdateManifestPublicKeysB64)</_Parameter2>
     </AssemblyAttribute>
@@ -59,6 +63,7 @@
     <Compile Include="..\Cerberus.Agent.App\Elevation.cs" Link="Elevation.cs" />
     <Compile Include="..\Cerberus.Agent.App\EnvelopeWiring.cs" Link="EnvelopeWiring.cs" />
     <Compile Include="..\Cerberus.Agent.App\Legal\AgentLegalConsent.cs" Link="Legal\AgentLegalConsent.cs" />
+    <Compile Include="..\Cerberus.Agent.App\Legal\MsiMachineConsent.cs" Link="Legal\MsiMachineConsent.cs" />
     <Compile Include="..\Cerberus.Agent.App\Localization\AgentLocalizer.cs" Link="Localization\AgentLocalizer.cs" />
     <Compile Include="..\Cerberus.Agent.App\ProcessInstanceGuard.cs" Link="ProcessInstanceGuard.cs" />
     <Compile Include="..\Cerberus.Agent.App\ServiceInstaller.cs" Link="ServiceInstaller.cs" />

@@ -1,4 +1,3 @@
-#if CERBERUS_SERVER_PROFILE
 using System.Globalization;
 using System.Text.Json;
 using Cerberus.Agent.App.Telemetry;
@@ -27,7 +26,7 @@ internal sealed class CollectFactsCommandHandler : ICommandHandler
     private readonly TimeProvider _time;
 
     public CollectFactsCommandHandler(AgentBuildMetadata metadata)
-        : this(metadata, WindowsTelemetrySectionCatalog.CreateDefault(configured: null, publishServiceObservation: false),
+        : this(metadata, WindowsTelemetrySectionCatalog.CreateSignedFacts(),
             TimeProvider.System)
     {
     }
@@ -101,4 +100,3 @@ internal sealed class CollectFactsCommandHandler : ICommandHandler
     private static int ResultBytes(object post)
         => CommandEnvelope.BuildResultBody("DONE", 0, null, post, Sha256Placeholder).Length;
 }
-#endif

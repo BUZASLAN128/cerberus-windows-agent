@@ -5,7 +5,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 // Unit/support evidence for the signed agent_state store and handler (contract v1 (b)). The queue wiring
 // that calls OnResultFinalAsync is covered by the envelope queue tests; ServiceMode wiring is not covered here.
-public sealed class AgentSignedStateTests : IDisposable
+public sealed partial class AgentSignedStateTests : IDisposable
 {
     private const string Revoked = "agent_revoked";
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
@@ -152,7 +152,7 @@ public sealed class AgentSignedStateTests : IDisposable
     }
 
     [Fact]
-    public async Task OnResultFinal_WhenTheCredentialIdIsUnavailable_StillRecordsTheRevoke()
+    public async Task OnResultFinal_WhenTheCredentialIdIsUnavailable_HoldsUntilRegistrationCanBeVerified()
     {
         var f = new Fixture(StatePath);
         await f.Handle("c1", P(1, Revoke(Revoked)));
@@ -160,8 +160,22 @@ public sealed class AgentSignedStateTests : IDisposable
 
         await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
 
-        Assert.Equal(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(AgentLifecycleState.Active, (await f.Lifecycle.LoadAsync(default)).State);
         Assert.Equal(1, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.Equal(0, f.Quiesces);
+        Assert.False(f.Secrets.Cleared);
+        Assert.NotNull(f.Store.Load("agent-a").PendingRevoke);
+        Assert.True(f.Store.IsQuarantined("agent-a"));
+
+        f.AgentIdUnavailable = false;
+        await f.Handler.OnResultFinalAsync("agent-a", "c1", default);
+
+        Assert.Equal(AgentLifecycleState.Retired, (await f.Lifecycle.LoadAsync(default)).State);
+        Assert.Equal(2, f.Cancels);
+        Assert.Equal(1, f.Stops);
+        Assert.Equal(1, f.Quiesces);
+        Assert.True(f.Secrets.Cleared);
         Assert.Null(f.Store.Load("agent-a").PendingRevoke);
     }
 
@@ -242,6 +256,17 @@ public sealed class AgentSignedStateTests : IDisposable
         Assert.False(reader.IsQuarantined("agent-b"));
         Assert.True(reader.IsQuarantined("agent-a"));
         Assert.Equal(5, reader.Load("agent-a").StateSeq);
+    }
+
+    [Fact]
+    public void StoreRejectsAStaleWriteAfterANewerStateWasCommitted()
+    {
+        var store = new AgentSignedStateStore(StatePath);
+        Assert.Equal(0, store.Load("agent-a").StateSeq);
+        Assert.True(store.TrySave(new AgentSignedState("agent-a", 2, true, "claimed")));
+        Assert.False(store.TrySave(new AgentSignedState("agent-a", 1, false, "claimed")));
+        Assert.True(store.Load("agent-a").QuarantineActive);
+        Assert.Equal(2, store.Load("agent-a").StateSeq);
     }
 
     [Fact]
@@ -412,7 +437,7 @@ public sealed class AgentSignedStateTests : IDisposable
                 Quiesces++;
                 return failQuiesce ? throw new IOException("quiesce failed") : Task.CompletedTask;
             });
-            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++, null, () => { }, new AgentRevokeFinalResults());
+            Handler = new AgentStateCommandHandler(Store, _track, Lifecycle, () => Cancels++, null, () => Stops++, new AgentRevokeFinalResults());
         }
 
         public string AgentId { get; set; } = "agent-a";
@@ -423,6 +448,7 @@ public sealed class AgentSignedStateTests : IDisposable
         public Secrets Secrets { get; } = new();
         public int Cancels { get; private set; }
         public int Quiesces { get; private set; }
+        public int Stops { get; private set; }
 
         public Task<string> Track(CancellationToken ct) => _track(ct);
 

@@ -1,4 +1,3 @@
-#if CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
@@ -66,12 +65,13 @@ internal sealed class ServerServiceStartup
         }
         if (!_networkStopped())
             await _recoverRevoke(ct).ConfigureAwait(false);
-        if (revokePending && !_networkStopped() && _revokePending() && !_replayAvailable())
+        if (!_networkStopped() && _revokePending())
         {
-            _log.Error("Pending signed revoke and the command replay store is unreadable; automatic network stays off.");
             _stopNetwork();
+            _log.Error(_replayAvailable()
+                ? "Pending signed revoke recovery is incomplete; automatic network stays off."
+                : "Pending signed revoke and the command replay store is unreadable; automatic network stays off.");
         }
         return !_networkStopped();
     }
 }
-#endif

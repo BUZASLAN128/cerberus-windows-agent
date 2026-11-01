@@ -24,6 +24,7 @@ public static class EnvelopeCodes
     public const string Expired = "expired";
     public const string IssuedBeforeReset = "issued_before_reset";
     public const string NonceReused = "nonce_reused";
+    public const string StaleStateSeq = "stale_state_seq";
     public const string Quarantined = "quarantined";
     public const string ReplayStoreFull = "replay_store_full";
     public const string ReplayStoreUnavailable = "replay_store_unavailable";
@@ -70,6 +71,8 @@ public sealed record SignedEnvelope(
 public static class CommandEnvelope
 {
     public const string Header = "cerberus-agent-envelope.v1";
+    public const string Capability = "agent.command-envelope.v1";
+    public const string SignedOnlyCapability = "agent.commands.signed-only.v1";
     public const string Algorithm = "rsa-pkcs1v15-sha256";
     public const int MaxSignedBytes = 8192;
     public const int MaxPayloadBytes = 4096;

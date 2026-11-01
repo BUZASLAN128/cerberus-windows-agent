@@ -7,6 +7,19 @@ internal static class AgentBuildConfig
     public static string BackendUrl => string.IsNullOrWhiteSpace(BackendUrlBase64)
         ? "" : System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(BackendUrlBase64)).Trim();
 
+    public static string SecondaryBackendUrl
+    {
+        get
+        {
+            try
+            {
+                var value = Metadata("AgentSecondaryBackendUrlBase64");
+                return string.IsNullOrWhiteSpace(value) ? "" : System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(value)).Trim();
+            }
+            catch (FormatException) { return ""; }
+        }
+    }
+
     internal static bool SameEndpoint(string first, string second)
         => Uri.TryCreate(first?.Trim().TrimEnd('/'), UriKind.Absolute, out var left)
            && Uri.TryCreate(second?.Trim().TrimEnd('/'), UriKind.Absolute, out var right)

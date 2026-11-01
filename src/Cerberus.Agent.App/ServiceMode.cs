@@ -2,6 +2,7 @@ using Cerberus.Agent.Core;
 using Cerberus.Agent.App.Diagnostics;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.App.Telemetry;
+using Cerberus.Agent.App.Telemetry.Sections;
 using Cerberus.Agent.App.Control;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Integrations.Tailscale;
@@ -9,9 +10,7 @@ using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.Net.Http;
 using System.IO;
-
 namespace Cerberus.Agent.App;
-
 internal static partial class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
@@ -29,6 +28,7 @@ internal static partial class ServiceMode
         // canonical protected record before recovery, pipe startup or readiness.
         await lifecycle.EnsureInitializedAsync(ct).ConfigureAwait(false);
         await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
+        await AgentEnrollmentCleanupRecovery.OnServiceStartAsync(lifecycle, log, ct).ConfigureAwait(false);
         // Load deny intent before even attempting credential decryption.
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -36,6 +36,7 @@ internal static partial class ServiceMode
         Task? worker = null;
         long? workerGeneration = null;
         var finalRevokes = new AgentRevokeFinalResults();
+        var secondaryFinalRevokes = new AgentRevokeFinalResults();
         var restartBackoff = new WorkerRestartBackoff();
         var workerStartedUtc = DateTimeOffset.MinValue;
         var nextCleanupUtc = DateTimeOffset.MinValue;
@@ -90,10 +91,12 @@ internal static partial class ServiceMode
                 {
                     if (worker is null || worker.IsCompleted)
                     {
-                        if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
+                        if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is IOException or UnauthorizedAccessException)
+                            log.Warn($"Service worker read failed ({worker.Exception.GetBaseException().GetType().Name}); retrying with restart backoff.");
+                        else if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
                             await worker.ConfigureAwait(false);
-                        // Server: a worker that ends by itself after a short run (revoke not recorded) restarts with a growing delay.
-                        if (worker is not null && AgentBuildProfile.IsServer)
+                        // Every profile can end before its first heartbeat while revoke delivery is pending.
+                        if (worker is not null)
                         {
                             restartBackoff.OnWorkerEnded(workerStartedUtc, DateTimeOffset.UtcNow,
                                 planned: automatic?.IsCancellationRequested == true || workerGeneration != snapshot.Generation);
@@ -105,7 +108,7 @@ internal static partial class ServiceMode
                             automatic = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                             workerGeneration = snapshot.Generation;
                             workerStartedUtc = DateTimeOffset.UtcNow;
-                            worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync, finalRevokes);
+                            worker = RunAutomaticAsync(automatic.Token, lifecycle, QuiesceAsync, finalRevokes, secondaryFinalRevokes);
                         }
                     }
                 }
@@ -136,9 +139,8 @@ internal static partial class ServiceMode
             automatic?.Dispose();
         }
     }
-
     private static async Task RunAutomaticAsync(CancellationToken ct, IAgentLifecycleStateStore lifecycleState,
-        Func<CancellationToken, Task> quiesce, AgentRevokeFinalResults finalRevokes)
+        Func<CancellationToken, Task> quiesce, AgentRevokeFinalResults finalRevokes, AgentRevokeFinalResults secondaryFinalRevokes)
     {
         using var log = AgentFileLogger.CreateService(alsoConsole: true);
         log.Info("Service mode starting.");
@@ -151,77 +153,14 @@ internal static partial class ServiceMode
             return;
         }
 
-        var secrets = new DpapiSecretStore(SecretStoreScope.Machine);
-        (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey) loadedSecrets;
-        try
+        ISecretStore secrets = new DpapiSecretStore(SecretStoreScope.Machine);
+        var loaded = await LoadServiceCredentialsAsync(secrets, lifecycleState, log, ct).ConfigureAwait(false);
+        if (loaded is null)
         {
-            loadedSecrets = await secrets.LoadAsync(ct).ConfigureAwait(false);
-        }
-        catch (FileNotFoundException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_missing",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are not enrolled.");
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-        catch (DirectoryNotFoundException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_missing",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are not enrolled.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (System.Security.Cryptography.CryptographicException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_unavailable",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are unavailable.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (InvalidOperationException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_invalid",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials could not be decoded.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_invalid",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are malformed.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
+        var loadedSecrets = loaded.Value;
 
         if (string.IsNullOrWhiteSpace(loadedSecrets.Identity.AgentId) ||
             string.IsNullOrWhiteSpace(loadedSecrets.Identity.TenantId) ||
@@ -244,7 +183,7 @@ internal static partial class ServiceMode
         var privateKeyPem = loadedSecrets.PrivateKeyPem;
         var storedBackendUrl = loadedSecrets.BackendUrl;
         var environmentBackendUrl = Environment.GetEnvironmentVariable("CERBERUS_BACKEND_URL");
-        if (AgentBuildProfile.IsServer && ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
+        if (loadedSecrets.Identity.Product == AgentProducts.Cerberus && AgentBuildProfile.IsServer && ServerBackendMigration.ShouldMigrate(storedBackendUrl, AgentBuildConfig.BackendUrl, environmentBackendUrl))
         {
             try
             {
@@ -262,7 +201,17 @@ internal static partial class ServiceMode
         }
         var backendUrl = environmentBackendUrl ?? storedBackendUrl;
 
-        var blockReason = BackendConfigCheck.BlockReason(environmentBackendUrl, storedBackendUrl, AgentBuildConfig.BackendUrl);
+        var secondary = loadedSecrets.Identity.Product == AgentProducts.Secondary;
+        var blockReason = BackendConfigCheck.BlockReason(secondary ? null : environmentBackendUrl, storedBackendUrl,
+            secondary ? AgentBuildConfig.SecondaryBackendUrl : AgentBuildConfig.BackendUrl);
+        if (secondary && (!Uri.TryCreate(storedBackendUrl, UriKind.Absolute, out var secondaryUri) ||
+                          secondaryUri.Scheme != Uri.UriSchemeHttps || secondaryUri.AbsolutePath != "/"))
+            blockReason = BackendConfigCheck.UrlInvalid;
+        if (secondary && string.IsNullOrWhiteSpace(AgentBuildConfig.SecondaryBackendUrl))
+            blockReason = BackendConfigCheck.EnvironmentMismatch;
+        if (secondary && AgentProfileMetadata.LoadProductCommandAnchors(
+                AgentProducts.Secondary, EnvelopeWiring.ManifestPublicKeyPems(log), log).Count == 0)
+            blockReason = "secondary_product_trust_missing";
         if (blockReason is not null)
         {
             await lifecycleState.TransitionAsync(
@@ -278,18 +227,24 @@ internal static partial class ServiceMode
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-        var baseAddress = new Uri(backendUrl.Trim().TrimEnd('/'));
+        var baseAddress = new Uri((secondary ? storedBackendUrl : backendUrl).Trim().TrimEnd('/'));
 
-        using var http = new HttpClient(BackendTrust.CreateHandler()) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
-        using var updateHttp = new HttpClient(BackendTrust.CreateHandler())
+        var registrationContext = EnvelopeWiring.RegistrationContext(secrets, lifecycleState);
+        secrets = new ProductBoundSecretStore(secrets, loadedSecrets.Identity, storedBackendUrl, privateKeyPem);
+
+        using var http = new HttpClient(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = false })) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
+        // Update downloads carry no agent credentials and retain their existing redirect behavior.
+        using var updateHttp = new HttpClient(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = true }))
         {
             BaseAddress = baseAddress,
             Timeout = ReadTimeSpanFromSeconds("CERBERUS_AGENT_UPDATE_TIMEOUT_SECONDS", TimeSpan.FromMinutes(10)),
         };
 
         var signer = new RequestSigner(privateKeyPem);
-        var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce);
-        var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce);
+        var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce,
+            expectedGeneration: persistedLifecycle.Generation);
+        var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce,
+            expectedGeneration: persistedLifecycle.Generation);
         var agentVersion = WindowsDeviceInfo.GetAgentVersion();
         var buildId = WindowsDeviceInfo.GetBuildId();
         var buildChannel = WindowsDeviceInfo.GetBuildChannel();
@@ -304,54 +259,68 @@ internal static partial class ServiceMode
         var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             AgentInstallIdentity.DataDirName);
         var idempotency = new IdempotencyCache(Path.Combine(dataDir, "idempotency.json"), maxEntries: 5000, ttl: TimeSpan.FromHours(24));
-        var telemetryBuffer = new OfflineTelemetryBuffer(Path.Combine(dataDir, "telemetry-offline.json"),
+        var telemetryBuffer = new OfflineTelemetryBuffer(Path.Combine(dataDir, secondary ? "secondary-telemetry-offline.json" : "telemetry-offline.json"),
             maxEntries: 200, maxBytes: 8 * AgentTelemetryLimits.MaxSnapshotBytes, ttl: TimeSpan.FromHours(24));
 
-        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPath(), log);
-        var currentAgentId = signedState.Track(EnvelopeWiring.CurrentAgentId(secrets));
+        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(loadedSecrets.Identity.Product),
+            log, enrolledAgentId: loadedSecrets.Identity.AgentId);
+        var currentAgentId = EnvelopeWiring.CurrentAgentId(secrets, lifecycleState, persistedLifecycle.Generation, signedState);
         // Declared before the queue so it is disposed after the queue worker has drained.
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         EnvelopeExecutionQueue? queue = null;
+        LegacyAsyncCommandProcessor? legacyAsync = null;
+        var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
+            new AgentLifecycleController(lifecycleState, secrets, log, quiesce),
+            () => { queue?.CancelAll(); legacyAsync?.CancelAll(); }, log,
+            stopAutomaticNetwork: serviceCts.Cancel, finalResults: secondary ? secondaryFinalRevokes : finalRevokes, currentRegistration: registrationContext);
 #if CERBERUS_SERVER_PROFILE
         ManagedAccountManifestPolicy? managedAccounts = null;
-        var agentState = new AgentStateCommandHandler(signedState, currentAgentId,
-            new AgentLifecycleController(lifecycleState, secrets, log, quiesce), () => queue?.CancelAll(), log,
-            stopAutomaticNetwork: serviceCts.Cancel, finalResults: finalRevokes);
         var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
 #else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
-        var managedAccounts = new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
+        var managedAccounts = secondary ? null : new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,
             api.GetManagedAccountManifestAsync, LocalUserCommandHandlers.CreateManifestReconciler(log), log);
-        var handlers = AgentCommandRegistry.CreateDesktop(api, loadedSecrets.Identity, lifecycleState, managedAccounts,
-            diagnosticUploader, () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion);
+        var handlers = secondary ? AgentCommandRegistry.CreateServer(metadata, agentState)
+            : AgentCommandRegistry.CreateDesktop(api, loadedSecrets.Identity, lifecycleState, managedAccounts!,
+                diagnosticUploader, () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion);
 #endif
         var dispatcher = new CommandDispatcher(handlers, idempotency);
-        await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log);
+        await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log,
+            new(loadedSecrets.Identity.AgentId, loadedSecrets.Identity.TenantId, persistedLifecycle.Generation,
+                persistedLifecycle.LastEnrollmentNonce, loadedSecrets.Identity.Product, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem)),
+            EnvelopeWiring.StateDeliveryContext(secrets, lifecycleState), loadedSecrets.Identity.Product);
         queue = envelopeQueue;
-#if CERBERUS_SERVER_PROFILE
-        var revokeAgentId = loadedSecrets.Identity.AgentId;
-        var startup = new ServerServiceStartup(
-            () => signedState.Load(revokeAgentId).PendingRevoke is not null,
-            envelopeQueue.DrainOutboxOnceAsync,
-            c => agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, c),
-            () => envelopeQueue.Store.IsAvailable, () => serviceCts.IsCancellationRequested, serviceCts.Cancel, log);
-        // Revoke not recorded: the supervisor restarts the worker (with a growing delay), which retries it before any request.
-        if (!await startup.RecoverPendingRevokeAsync(serviceCts.Token, ct).ConfigureAwait(false))
-        {
-            log.Info("Service mode stopped.");
-            return;
-        }
+#if !CERBERUS_SERVER_PROFILE
+        legacyAsync = secondary ? null : EnvelopeWiring.CreateLegacyAsync(api, dispatcher,
+            loadedSecrets.Identity, persistedLifecycle, currentAgentId, signedState, log, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem));
+        await using var legacyAsyncLifetime = legacyAsync;
 #endif
+        if (AgentBuildProfile.IsServer || secondary)
+        {
+            var revokeAgentId = loadedSecrets.Identity.AgentId;
+            var startup = new ServerServiceStartup(
+                () => signedState.Load(revokeAgentId).PendingRevoke is not null,
+                envelopeQueue.DrainOutboxOnceAsync,
+                c => agentState.RecoverPendingRevokeAsync(envelopeQueue.Store, c),
+                () => envelopeQueue.Store.IsAvailable, () => serviceCts.IsCancellationRequested, serviceCts.Cancel, log);
+            if (!await startup.RecoverPendingRevokeAsync(serviceCts.Token, ct).ConfigureAwait(false))
+            {
+                log.Info("Service mode stopped.");
+                return;
+            }
+        }
         TelemetrySectionCapture.Log = log;
         var statusProvider = new TailscaleStatusProvider();
         var updateCoordinator = BuildUpdateCoordinator(updateHttp, log, updateStateStore);
+        var wakeupSignal = new AgentWakeupSignal();
+        await using var wakeupClient = new AgentWakeupClient(api, wakeupSignal, log);
         var loop = new HeartbeatLoop(
             api,
             dispatcher,
             minDelayOnError: TimeSpan.FromSeconds(10),
-            statusProvider: statusProvider,
-            adStatusProvider: _ => Task.FromResult<object?>(BuildAdStatus()),
-            updateStatusProvider: async cancel =>
+            statusProvider: secondary ? null : statusProvider,
+            adStatusProvider: secondary ? null : _ => Task.FromResult<object?>(BuildAdStatus()),
+            updateStatusProvider: secondary ? null : async cancel =>
                 (await updateStateStore.ReconcileInstallerResultAsync(
                     WindowsDeviceInfo.GetAgentVersion(),
                     cancel).ConfigureAwait(false))?.ToHeartbeatStatus(),
@@ -366,19 +335,30 @@ internal static partial class ServiceMode
                     ReportUpdateFailureAsync(api, metadata, response, exception, cancel),
                 lifecycleState: lifecycleState,
                 quiesce: quiesce,
-                managedAccounts: managedAccounts),
-            telemetryProvider: new WindowsTelemetryCollector(publishServiceObservation: true),
+                managedAccounts: managedAccounts,
+                signedStateOnly: secondary),
+            telemetryProvider: secondary
+                ? new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateSignedFacts(), signedFacts: true)
+                : new WindowsTelemetryCollector(publishServiceObservation: true),
             telemetryBuffer: telemetryBuffer,
             log: log,
             backoffResetRequested: HeartbeatBackoffResetSignal.ConsumeDefaultAsync,
             metadata: metadata,
             lifecycleState: lifecycleState,
-            commandProcessor: EnvelopeWiring.CreateProcessor(api, envelopeQueue, dispatcher, log));
+            commandProcessor: EnvelopeWiring.CreateProcessor(api, envelopeQueue, dispatcher, log, loadedSecrets.Identity.Product, legacyAsync),
+            wakeupSignal: wakeupSignal,
+            wakeupClient: wakeupClient,
+            signedStateOnly: secondary,
+            supportsEvents: !secondary,
+            signedCommandMode: (AgentBuildProfile.IsServer || secondary) && EnvelopeWiring.HasCommandTrust(loadedSecrets.Identity.Product, log),
+            signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
+            legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true,
+            signedState: signedState);
 
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;
 #else
-        var diagnosticSchedulerTask = new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
+        var diagnosticSchedulerTask = secondary ? Task.CompletedTask : new DiagnosticBundleScheduler(diagnosticUploader, log).RunAsync(serviceCts.Token);
 #endif
 
         var resourceSamplerTask = ResourceSampler.Shared.RunAsync(serviceCts.Token);

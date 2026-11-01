@@ -28,8 +28,11 @@ internal sealed class AgentStateHighWater
         _log = log;
     }
 
-    public (string AgentId, long Seq)? Read()
+    public (string AgentId, long Seq)? Read() => Read(out _);
+
+    internal (string AgentId, long Seq)? Read(out bool unreadable)
     {
+        unreadable = false;
         try
         {
             _file.ValidateDirectory();
@@ -37,12 +40,19 @@ internal sealed class AgentStateHighWater
                 return null;
             _file.ValidateFile();
             if (new FileInfo(_path).Length > MaxFileBytes)
+            {
+                unreadable = true;
                 return null;
+            }
             var file = JsonSerializer.Deserialize<HighWaterFile>(File.ReadAllBytes(_path), JsonOpts);
-            return file is { Schema: Schema, AgentId.Length: > 0, StateSeq: >= 0 } ? (file.AgentId, file.StateSeq) : null;
+            if (file is { Schema: Schema, AgentId.Length: > 0, StateSeq: >= 0 })
+                return (file.AgentId, file.StateSeq);
+            unreadable = true;
+            return null;
         }
         catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex) || ex is JsonException)
         {
+            unreadable = true;
             _log.Warn($"Signed agent state high-water mark unreadable ({ex.GetType().Name}).");
             return null;
         }

@@ -199,7 +199,9 @@ public sealed partial class CommandEnvelopeProcessorTests
     public async Task CorruptStore_RejectsEnvelopesIssuedBeforeTheResetOnly()
     {
         await using var h = EnvelopeHarness.Create(o => o.CorruptStoreContent = "{not json");
+        Assert.Equal(T0, h.Store.ResetAt);
         var before = h.Cmd(p => { p.Issued = T0 - 30; p.Expires = T0 + 90; });
+        h.Time.Advance(TimeSpan.FromSeconds(1));
         var after = h.Cmd();
 
         await h.Process(before, after);
@@ -263,7 +265,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     [Fact]
     public async Task AgentState_RunsInlineFirstAndQuarantineRejectsALaterQueuedType()
     {
-        await using var h = EnvelopeHarness.Create();
+        await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);
         h.State.Body = (_, _) =>
         {
             h.Quarantined = true;
@@ -274,6 +276,11 @@ public sealed partial class CommandEnvelopeProcessorTests
         var ping = h.Cmd();
 
         await h.Process(facts, ping, state);
+
+        Assert.DoesNotContain(h.Backend.Acks, a => a.CommandId == facts.Id || a.CommandId == ping.Id);
+        await h.Queue.DrainOutboxOnceAsync(default);
+        Assert.True(h.Record(state)!.ResultSubmitted);
+        await h.Process(facts, ping);
 
         Assert.Equal(1, h.State.Calls);
         Assert.Equal(state.Id, h.Backend.Acks[0].CommandId);

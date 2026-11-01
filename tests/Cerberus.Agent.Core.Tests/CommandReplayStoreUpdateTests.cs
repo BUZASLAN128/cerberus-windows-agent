@@ -34,6 +34,29 @@ public sealed class CommandReplayStoreUpdateTests : IDisposable
     }
 
     [Fact]
+    public void RejectedAckMetadataPersistsWithoutAllowingTheCachedFailureToBeReplaced()
+    {
+        var store = new CommandReplayStore(StorePath, _time);
+        var context = new AgentStateDeliveryContext(Agent, "t1", 0, null, AgentProducts.Cerberus,
+            AgentKeyFingerprint.Prefix + new string('a', 64));
+        var reserved = Rec("reject", EnvelopeRecordStates.Reserved) with { Type = EnvelopeTypes.AgentState,
+            StateControl = new(context, 1, new[] { "quarantine" }) };
+        Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(reserved));
+        var rejected = reserved with { State = EnvelopeRecordStates.RejectedAfterReserve, RejectReason = EnvelopeCodes.StaleStateSeq,
+            ResultB64 = Body, ResultSha256 = new string('b', 64) };
+        Assert.Equal(ReplayUpdateOutcome.Updated, store.TryUpdate(rejected, EnvelopeRecordStates.Reserved));
+        Assert.Equal(ReplayUpdateOutcome.Conflict, store.TryUpdate(rejected with { ResultB64 = "BBBB", ResultSha256 = new string('c', 64),
+            StateControl = rejected.StateControl! with { AckRejected = true } }, EnvelopeRecordStates.RejectedAfterReserve));
+        Assert.Equal(ReplayUpdateOutcome.Updated, store.TryUpdate(rejected with
+            { StateControl = rejected.StateControl! with { AckRejected = true } }, EnvelopeRecordStates.RejectedAfterReserve));
+        var reloaded = new CommandReplayStore(StorePath, _time).Find(Agent, rejected.Id)!;
+        Assert.True(reloaded.StateControl!.AckRejected);
+        Assert.Equal(Body, reloaded.ResultB64);
+        Assert.Equal(rejected.ResultSha256, reloaded.ResultSha256);
+        Assert.False(reloaded.ResultSubmitted);
+    }
+
+    [Fact]
     public void TryUpdate_MovesReservedToStartedOnceAndPersistsIt()
     {
         var store = ReservedStore("c1");

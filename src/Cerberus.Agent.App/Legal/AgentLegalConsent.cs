@@ -58,7 +58,14 @@ internal static class AgentLegalConsent
     }
 
     public static bool HasCurrentConsent(LegalConsentScope scope)
-        => TryLoadCurrent(scope, baseDir: null, out _) || TryImportCurrentMsiConsent(scope, baseDir: null, out _);
+    {
+        if (scope == LegalConsentScope.Machine && !IsTrustedOrMissingMachineFile(GetPath(scope, baseDir: null)))
+            return false;
+        return TryLoadCurrent(scope, baseDir: null, out _) ||
+               (scope == LegalConsentScope.Machine
+                   ? MsiMachineConsent.TryReadCurrent(MsiConsentRegistryPath, IsCurrentMachineMsiConsent)
+                   : TryImportCurrentMsiConsent(scope, baseDir: null, out _));
+    }
 
     public static bool HasCurrentInstallConsent()
         => HasCurrentConsent(LegalConsentScope.Machine) || HasCurrentConsent(LegalConsentScope.User);
@@ -93,12 +100,32 @@ internal static class AgentLegalConsent
     }
 
     public static void EnsureMachineConsentForInstall()
-    {
-        if (HasCurrentConsent(LegalConsentScope.Machine))
-            return;
+        => EnsureMachineConsentForInstall(null, () => HasCurrentConsent(LegalConsentScope.User));
 
-        RequireCurrentInstallConsent();
-        Accept(LegalConsentScope.Machine, "install_service");
+    internal static void EnsureMachineConsentForInstall(string? machineBaseDir, Func<bool> hasUserConsent)
+    {
+        if (!IsTrustedOrMissingMachineFile(GetPath(LegalConsentScope.Machine, machineBaseDir)))
+            throw new UnauthorizedAccessException("Machine consent storage is untrusted.");
+        if (TryLoadCurrent(LegalConsentScope.Machine, machineBaseDir, out _))
+            return;
+        if (machineBaseDir is null && MsiMachineConsent.TryReadCurrent(MsiConsentRegistryPath, IsCurrentMachineMsiConsent))
+            return;
+        if (!hasUserConsent())
+            throw new InvalidOperationException(ConsentRequiredMessage);
+        Accept(LegalConsentScope.Machine, "install_service", machineBaseDir);
+    }
+
+    internal static bool IsTrustedOrMissingMachineFile(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) return false;
+            AgentUpdateSecurity.ValidateProtectedPath(path, Path.GetDirectoryName(path)!, allowMissing: false);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { return false; }
     }
 
     internal static bool TryLoadCurrent(LegalConsentScope scope, string? baseDir, out AgentLegalConsentRecord? record)
@@ -110,6 +137,8 @@ internal static class AgentLegalConsent
 
         try
         {
+            if (scope == LegalConsentScope.Machine)
+                AgentUpdateSecurity.ValidateProtectedPath(path, Path.GetDirectoryName(path)!, allowMissing: false);
             var loaded = JsonSerializer.Deserialize<AgentLegalConsentRecord>(
                 File.ReadAllText(path),
                 JsonOptions);
@@ -172,15 +201,8 @@ internal static class AgentLegalConsent
         out AgentLegalConsentRecord? record)
     {
         record = null;
-        if (!string.Equals(GetValue(values, "accepted"), "1", StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "product"), ProductName, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "eulaVersion"), EulaVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "privacyNoticeVersion"), PrivacyNoticeVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "securityDisclosureVersion"), SecurityDisclosureVersion, StringComparison.Ordinal) ||
-            !string.Equals(GetValue(values, "acceptedVia"), MsiConsentSource, StringComparison.Ordinal))
-        {
+        if (!AreCurrentMsiValues(values) || !string.Equals(GetValue(values, "acceptedVia"), MsiConsentSource, StringComparison.Ordinal))
             return false;
-        }
 
         record = WriteRecord(
             LegalConsentScope.User,
@@ -191,6 +213,18 @@ internal static class AgentLegalConsent
             baseDir);
         return true;
     }
+
+    internal static bool IsCurrentMachineMsiConsent(IReadOnlyDictionary<string, string?> values)
+        => AreCurrentMsiValues(values) &&
+           string.Equals(GetValue(values, "acceptedVia"), "msi_explicit", StringComparison.Ordinal) &&
+           (GetValue(values, "acceptanceEvidence") is "explicit-v1" or "1");
+
+    private static bool AreCurrentMsiValues(IReadOnlyDictionary<string, string?> values)
+        => string.Equals(GetValue(values, "accepted"), "1", StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "product"), ProductName, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "eulaVersion"), EulaVersion, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "privacyNoticeVersion"), PrivacyNoticeVersion, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "securityDisclosureVersion"), SecurityDisclosureVersion, StringComparison.Ordinal);
 
     private static string? GetValue(IReadOnlyDictionary<string, string?> values, string key)
         => values.TryGetValue(key, out var value) ? value : null;
@@ -204,14 +238,6 @@ internal static class AgentLegalConsent
         string? baseDir)
     {
         var path = GetPath(scope, baseDir);
-        if (scope == LegalConsentScope.Machine &&
-            string.Equals(Path.GetFullPath(path), GetPath(scope, baseDir: null), StringComparison.OrdinalIgnoreCase))
-        {
-            // CLI consent can precede service setup; it must not create an untrusted machine namespace.
-            AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
-        }
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-
         var record = new AgentLegalConsentRecord(
             SchemaVersion,
             ProductName,
@@ -223,9 +249,48 @@ internal static class AgentLegalConsent
             acceptedMachineName,
             acceptedVia);
 
-        File.WriteAllText(path, JsonSerializer.Serialize(record, JsonOptions));
-        TryHardenAcl(path, scope);
+        var contents = JsonSerializer.Serialize(record, JsonOptions);
+        if (scope == LegalConsentScope.Machine)
+            WriteMachineRecord(path, baseDir, contents);
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, contents);
+            TryHardenAcl(path, scope);
+        }
         return record;
+    }
+
+    private static void WriteMachineRecord(string path, string? baseDir, string contents)
+    {
+        var root = Path.GetDirectoryName(path)!;
+        // Stage inside protected storage, never beside the target in the user-creatable product root.
+        var staging = baseDir is null ? AgentUpdateSecurity.DefaultPrivilegedRoot : root;
+        AgentUpdateSecurity.EnsureProtectedRoot(staging);
+        AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: true);
+        var exists = File.Exists(path);
+        if (exists)
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: false);
+        var temp = Path.Combine(staging, "legal-consent-" + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(output, System.Text.Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(contents);
+                writer.Flush();
+                output.Flush(flushToDisk: true);
+            }
+            AgentUpdateSecurity.ValidateProtectedPath(temp, staging, allowMissing: false);
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: true);
+            // No overwrite for a missing target: a concurrently planted object must cause failure.
+            File.Move(temp, path, overwrite: exists);
+            AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: false);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     private static SecretStoreScope ToSecretStoreScope(LegalConsentScope scope)

@@ -76,7 +76,7 @@ public sealed class EnrollRollbackTests : IDisposable
         var source = ReadAppSource("EnrollHeadlessMode.cs");
 
         var execute = Index(source, "internal static async Task<int> ExecuteAsync(");
-        var preflight = Index(source, "Preflight(rawProof, fromInstaller, host, out var runLock)", execute);
+        var preflight = Index(source, "Preflight(rawProof, fromInstaller, installService, host, out var runLock)", execute);
         var log = Index(source, "host.OpenLog()", execute);
         var gate = Index(source, "host.EnsureDataRootProtected()");
         var take = Index(source, "host.TryAcquireEnrollLock(TimeSpan.Zero)");

@@ -29,11 +29,12 @@ public sealed record CommandReplayRecord(
     [property: JsonPropertyName("result_b64")] string? ResultB64,
     [property: JsonPropertyName("result_sha256")] string? ResultSha256,
     [property: JsonPropertyName("result_submitted")] bool ResultSubmitted,
-    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null)
+    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null,
+    [property: JsonPropertyName("state_control"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AgentPreparedStateControl? StateControl = null)
 {
     /// <summary>A result is held and has not reached a final outcome at the server yet.</summary>
     [JsonIgnore]
-    public bool HasPendingResult => State == EnvelopeRecordStates.Started
+    public bool HasPendingResult => AgentPreparedStateControl.IsPending(this) || State == EnvelopeRecordStates.Started
                                     || (State == EnvelopeRecordStates.Done && !ResultSubmitted && ResultB64 is not null);
 }
 
@@ -64,7 +65,7 @@ public enum ReplayUpdateOutcome
 /// A write never produces a file the reader rejects: unsubmitted result bytes are bounded by
 /// <see cref="MaxUnsubmittedResultBytes"/> at reservation, and a serialization above the read cap fails like a failed write.
 /// </summary>
-public sealed class CommandReplayStore
+public sealed partial class CommandReplayStore
 {
     public const string FileName = "command-envelopes.v1.json";
     public const int MaxRecords = 1024;
@@ -99,20 +100,31 @@ public sealed class CommandReplayStore
     private bool _loaded;
     private bool _persistPending;
     private bool _untrustedDirectoryLogged;
+    private readonly bool _enrollmentEstablished;
 
     /// <param name="enforceFileProvenance">Also demands a SYSTEM/Administrators owner and a DACL without untrusted
     /// writers on a path outside <c>Privileged</c> (always on inside it).</param>
-    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false)
+    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false,
+        bool enrollmentEstablished = false)
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
         _enforceProvenance = enforceFileProvenance;
         _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _time = time ?? TimeProvider.System;
         _log = log ?? NullAgentLogger.Instance;
+        _enrollmentEstablished = enrollmentEstablished;
     }
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
     public static string DefaultPath() => ProtectedMachineFile.DefaultPath(FileName);
+    public static string DefaultLegacyAsyncPath() => ProtectedMachineFile.DefaultPath("legacy-async.v1.json");
+
+    public static string DefaultPathForProduct(string product) => product switch
+    {
+        AgentProducts.Cerberus => DefaultPath(),
+        AgentProducts.Secondary => ProtectedMachineFile.DefaultPath("secondary-command-envelopes.v1.json"),
+        _ => throw new InvalidOperationException("Unknown agent product profile."),
+    };
 
     /// <summary>Envelopes issued before this Unix time are rejected (step 15). 0 for a store that never existed.</summary>
     public long ResetAt { get { lock (_gate) { EnsureLoaded(); return _resetAt; } } }
@@ -210,7 +222,7 @@ public sealed class CommandReplayStore
 
     /// <summary>
     /// Compare-and-set: replaces the record only while it is still in <paramref name="expectedState"/> and has not
-    /// been submitted. In <c>done</c> the stored result must be the one in <paramref name="updated"/>; in any other
+    /// been submitted. In <c>done</c> or <c>rejected_after_reserve</c> the stored result must be the one in <paramref name="updated"/>; in any other
     /// state the stored record must hold no result. A write failure keeps the previous content.
     /// </summary>
     public ReplayUpdateOutcome TryUpdate(CommandReplayRecord updated, string expectedState)
@@ -225,7 +237,8 @@ public sealed class CommandReplayStore
                 return ReplayUpdateOutcome.Conflict;
 
             var current = _records[index];
-            var resultMatches = expectedState == EnvelopeRecordStates.Done
+            var resultMatches = expectedState == EnvelopeRecordStates.Done ||
+                expectedState == EnvelopeRecordStates.RejectedAfterReserve && current.ResultB64 is not null
                 ? current.ResultB64 is not null && string.Equals(current.ResultSha256, updated.ResultSha256, StringComparison.Ordinal)
                 : current.ResultB64 is null;
             if (current.State != expectedState || current.ResultSubmitted || !resultMatches
@@ -251,6 +264,7 @@ public sealed class CommandReplayStore
 
     private bool EnsureLoaded()
     {
+        if (_legacyBindingUnavailable) return false;
         if (_loaded)
         {
             if (_persistPending && TryPersist(_records, _resetAt))
@@ -274,7 +288,7 @@ public sealed class CommandReplayStore
         if (!_file.Exists())
         {
             // Only a set-aside file is left (reset and put-back both failed earlier): the store did exist, so reset again.
-            if (HasTrustedCorruptSibling())
+            if (_enrollmentEstablished || HasTrustedCorruptSibling())
                 return StartReset(NowUnix());
 
             (_records, _resetAt, _loaded) = (new List<CommandReplayRecord>(), 0, true);
@@ -425,22 +439,6 @@ public sealed class CommandReplayStore
         }
     }
 
-    /// <summary>A record ends its retention at <c>expires_at + 24 h</c>; the outbox stops then too.</summary>
-    private static List<CommandReplayRecord> Purge(IEnumerable<CommandReplayRecord> records, long now)
-        => records.Where(r => now <= r.ExpiresAt + RetentionSeconds).ToList();
-
-    /// <summary>Only records past their window and without a pending result may make room.</summary>
-    private static bool IsEvictable(CommandReplayRecord record, long now)
-        => now > record.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds && !record.HasPendingResult;
-
-    /// <summary>Result bytes never submitted for an agent id other than the current one can no longer be delivered.</summary>
-    private static List<CommandReplayRecord> DropForeignPending(List<CommandReplayRecord> records, string agentId)
-        => records.Any(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal))
-            ? records.Select(r => r.ResultB64 is not null && !r.ResultSubmitted && !string.Equals(r.AgentId, agentId, StringComparison.Ordinal)
-                ? r with { ResultB64 = null }
-                : r).ToList()
-            : records;
-
     /// <summary>Above 4 MiB of held result bytes, the oldest submitted results drop their bytes.</summary>
     private static List<CommandReplayRecord> CapHeldResults(List<CommandReplayRecord> records)
     {
@@ -482,7 +480,7 @@ public sealed class CommandReplayStore
            && !string.IsNullOrEmpty(r.AgentId) && !string.IsNullOrEmpty(r.Id) && !string.IsNullOrEmpty(r.Nonce)
            && !string.IsNullOrEmpty(r.Type) && r.EnvelopeSha256 is { Length: 64 }
            && EnvelopeRecordStates.IsKnown(r.State) && r.IssuedAt > 0 && r.ExpiresAt > r.IssuedAt
-           && (r.ResultSha256 is null || r.ResultSha256.Length == 64);
+           && (r.ResultSha256 is null || r.ResultSha256.Length == 64) && (r.StateControl is null || r.Type == EnvelopeTypes.AgentState && r.StateControl.IsValid(r.AgentId));
 
     private static bool Same(CommandReplayRecord record, string agentId, string id)
         => string.Equals(record.AgentId, agentId, StringComparison.Ordinal)

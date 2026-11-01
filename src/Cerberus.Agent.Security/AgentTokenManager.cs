@@ -15,8 +15,10 @@ public sealed class AgentTokenManager : ITokenManager
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
+    private readonly long? _expectedGeneration;
     private string? _accessToken;
     private DateTimeOffset _accessTokenExpiresAt;
+    private AgentIdentity? _boundIdentity;
 
     public AgentTokenManager(HttpClient http, ISecretStore secrets)
         : this(http, secrets, null, null, null, false)
@@ -30,7 +32,8 @@ public sealed class AgentTokenManager : ITokenManager
         Func<DateTimeOffset>? utcNow = null,
         IAgentLifecycleStateStore? lifecycleState = null,
         bool manualOperation = false,
-        Func<CancellationToken, Task>? quiesce = null)
+        Func<CancellationToken, Task>? quiesce = null,
+        long? expectedGeneration = null)
     {
         _http = http;
         _secrets = secrets;
@@ -39,6 +42,7 @@ public sealed class AgentTokenManager : ITokenManager
         _lifecycleState = lifecycleState;
         _manualOperation = manualOperation;
         _quiesce = quiesce;
+        _expectedGeneration = expectedGeneration;
     }
 
     public async Task<string> GetAccessTokenAsync(CancellationToken ct)
@@ -49,6 +53,8 @@ public sealed class AgentTokenManager : ITokenManager
         {
             if (!string.IsNullOrWhiteSpace(_accessToken) && _accessTokenExpiresAt - _utcNow() > _refreshSafetyMargin)
             {
+                if (_boundIdentity is not null)
+                    await EnsureProductAuthorityAsync(ct).ConfigureAwait(false);
                 return _accessToken;
             }
             return await RefreshAndReturnAccessTokenAsync(ct).ConfigureAwait(false);
@@ -78,6 +84,7 @@ public sealed class AgentTokenManager : ITokenManager
         await EnsureNetworkAllowedAsync(ct).ConfigureAwait(false);
         var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var (id, refreshToken, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
+        CheckProductAuthority(id, backendUrl);
 
         var req = new { agent_id = id.AgentId, refresh_token = refreshToken };
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/agents/token")
@@ -163,6 +170,29 @@ public sealed class AgentTokenManager : ITokenManager
         return payload.AccessToken;
     }
 
+    private async Task EnsureProductAuthorityAsync(CancellationToken ct)
+    {
+        var (identity, _, _, backend, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        CheckProductAuthority(identity, backend);
+    }
+
+    private void CheckProductAuthority(AgentIdentity identity, string backend)
+    {
+        if (!AgentProducts.IsKnown(identity.Product))
+            throw new InvalidOperationException("Unknown agent product profile.");
+        if (_boundIdentity is not null && _boundIdentity != identity)
+            throw new InvalidOperationException("The active product enrollment changed; restart is required.");
+        if (!Uri.TryCreate(backend, UriKind.Absolute, out var registered) ||
+            (registered.Scheme != Uri.UriSchemeHttps && registered.Scheme != Uri.UriSchemeHttp) ||
+            !string.IsNullOrEmpty(registered.UserInfo) || !string.IsNullOrEmpty(registered.Query) ||
+            !string.IsNullOrEmpty(registered.Fragment) ||
+            (identity.Product == AgentProducts.Secondary &&
+             (registered.Scheme != Uri.UriSchemeHttps || registered.AbsolutePath != "/")) ||
+            _http.BaseAddress is not { } target || registered != target)
+            throw new InvalidOperationException("The active product endpoint does not match the enrollment.");
+        _boundIdentity ??= identity;
+    }
+
     private async Task<Exception> HandleInvalidPayloadAsync(CancellationToken ct, long? generation)
     {
         await TransitionInvalidPayloadAsync(ct, generation).ConfigureAwait(false);
@@ -184,6 +214,12 @@ public sealed class AgentTokenManager : ITokenManager
     {
         if (_lifecycleState is null)
             return;
+
+        if (_expectedGeneration is { } expected)
+        {
+            var snapshot = await _lifecycleState.LoadAsync(ct).ConfigureAwait(false);
+            if (snapshot.Generation != expected) throw new AgentLifecycleDormantException(snapshot);
+        }
 
         if (_manualOperation)
         {

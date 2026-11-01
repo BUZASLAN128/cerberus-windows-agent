@@ -15,16 +15,76 @@ internal static class EnvelopeWiring
     public static Func<CancellationToken, Task<string>> CurrentAgentId(ISecretStore secrets)
         => async ct => (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity.AgentId;
 
+    internal static Func<CancellationToken, Task<string>> CurrentAgentId(ISecretStore secrets,
+        IAgentLifecycleStateStore lifecycle, long expectedGeneration, AgentSignedStateStore signedState)
+        => signedState.Track(async ct =>
+        {
+            if ((await lifecycle.LoadAsync(ct).ConfigureAwait(false)).Generation != expectedGeneration)
+                throw new AgentRegistrationChangedException();
+            var id = await CurrentAgentId(secrets)(ct).ConfigureAwait(false);
+            if ((await lifecycle.LoadAsync(ct).ConfigureAwait(false)).Generation != expectedGeneration)
+                throw new AgentRegistrationChangedException();
+            return id;
+        });
+
+    internal static Func<CancellationToken, Task<AgentRevokeRegistration>> RegistrationContext(
+        ISecretStore secrets, IAgentLifecycleStateStore lifecycle)
+        => async ct =>
+        {
+            var before = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var identity = (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity;
+            var after = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            if (before.Generation != after.Generation || before.LastEnrollmentNonce != after.LastEnrollmentNonce)
+                throw new AgentRegistrationChangedException();
+            return new AgentRevokeRegistration(identity.AgentId, identity.TenantId, after.LastEnrollmentNonce);
+        };
+
+    internal static Func<CancellationToken, Task<AgentStateDeliveryContext>> StateDeliveryContext(
+        ISecretStore secrets, IAgentLifecycleStateStore lifecycle)
+        => async ct =>
+        {
+            var before = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var loaded = await secrets.LoadAsync(ct).ConfigureAwait(false);
+            var after = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            if (before.Generation != after.Generation || before.LastEnrollmentNonce != after.LastEnrollmentNonce)
+                throw new AgentRegistrationChangedException();
+            return new(loaded.Identity.AgentId, loaded.Identity.TenantId, after.Generation, after.LastEnrollmentNonce,
+                loaded.Identity.Product, AgentKeyFingerprint.FromPrivateKeyPem(loaded.PrivateKeyPem));
+        };
+
+    internal static bool HasCommandTrust(string product, IAgentLogger log)
+        => AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log).Count > 0;
+
+#if !CERBERUS_SERVER_PROFILE
+    internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
+        AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,
+        AgentSignedStateStore signedState, IAgentLogger log, string? keyFingerprint = null)
+    {
+        // Managed operations retain their existing synchronous authority path; this is observation only.
+        var delayLog = Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC") == "1" ? log : null;
+        return new LegacyAsyncCommandProcessor(api, dispatcher,
+            new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency, delayLog),
+            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log, keyFingerprint: keyFingerprint), currentAgentId, log,
+            recoveryControlOnly: () => signedState.RecoveryControlOnly);
+    }
+#endif
+
     /// <summary>The background queue for <paramref name="handlers"/>, started; dispose it when the service worker stops.</summary>
     public static EnvelopeExecutionQueue StartQueue(
         AgentApiClient api,
         IEnumerable<ICommandHandler> handlers,
         Func<CancellationToken, Task<string>> currentAgentId,
         AgentSignedStateStore signedState,
-        IAgentLogger log)
+        IAgentLogger log,
+        AgentStateDeliveryContext controlContext,
+        Func<CancellationToken, Task<AgentStateDeliveryContext>> currentControlContext,
+        string product = AgentProducts.Cerberus)
     {
-        var queue = new EnvelopeExecutionQueue(api, new CommandReplayStore(CommandReplayStore.DefaultPath(), log: log),
-            handlers, currentAgentId, signedState.IsQuarantined, log: log);
+        var store = new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log, enrollmentEstablished: true);
+        if (!store.IsAvailable) log.Warn("Command replay storage unavailable; signed commands remain disabled.");
+        var queue = new EnvelopeExecutionQueue(api, store,
+            handlers, currentAgentId, signedState.IsQuarantined, log: log, signedState: signedState,
+            controlContext: controlContext, currentControlContext: currentControlContext);
         queue.Start();
         return queue;
     }
@@ -37,20 +97,24 @@ internal static class EnvelopeWiring
         AgentApiClient api,
         EnvelopeExecutionQueue queue,
         CommandDispatcher dispatcher,
-        IAgentLogger log)
+        IAgentLogger log,
+        string product = AgentProducts.Cerberus,
+        IHeartbeatCommandProcessor? legacy = null)
     {
-        var anchors = AgentProfileMetadata.LoadCommandAnchors(ManifestPublicKeyPems(log), log);
+        var anchors = AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log);
 #if CERBERUS_SERVER_PROFILE
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log);
 #else
+        if (product == AgentProducts.Secondary)
+            return new EnvelopeCommandProcessor(api, anchors, queue, allowedTypes: EnvelopeTypes.ServerSet, log: log);
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log,
-            legacy: new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
+            legacy: legacy ?? new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
 #endif
     }
 
     /// <summary>Update manifest keys, so an anchor equal to one of them is dropped and never authorizes commands.
     /// When no update trust is configured, the embedded manifest keys still count.</summary>
-    private static IReadOnlyList<string> ManifestPublicKeyPems(IAgentLogger log)
+    internal static IReadOnlyList<string> ManifestPublicKeyPems(IAgentLogger log)
     {
         try
         {

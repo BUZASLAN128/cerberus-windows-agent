@@ -357,6 +357,9 @@ public sealed partial class EnrollHeadlessModeTests
         public HeadlessServiceState State { get; init; } = HeadlessServiceState.Running;
         public HeadlessServiceState StateAfterEnsure { get; init; } = HeadlessServiceState.Running;
         public bool Admin { get; init; } = true;
+        public bool Consent { get; init; } = true;
+        public bool BootstrapThrows { get; init; }
+        public Action<bool>? BootstrapAction { get; init; }
         public bool LocalSystem { get; init; } = true;
         public string? Backend { get; init; } = "https://backend.example";
         public bool BackendThrows { get; init; }
@@ -367,6 +370,9 @@ public sealed partial class EnrollHeadlessModeTests
         public string? ActivateResult { get; init; }
         public CancellationTokenSource? CancelOnActivate { get; init; }
         public bool ActivateThrows { get; init; }
+        public string? ActivationNonce { get; init; }
+        public ISecretStore? ActiveStore { get; init; }
+        private Cerberus.Agent.App.Control.AgentEnrollmentMarker? _activationMarker;
         public bool DiscardThrows { get; init; }
         public bool FingerprintWriteThrows { get; init; }
         public int DiscardCalls { get; private set; }
@@ -381,10 +387,20 @@ public sealed partial class EnrollHeadlessModeTests
         public List<bool> ActivateCalls { get; } = [];
         public bool UserScope { get; private set; }
         public int InstallCalls { get; private set; }
+        public int BootstrapCalls { get; private set; }
         public string? FingerprintFile { get; private set; }
 
         public bool IsAdministrator => Admin;
         public bool IsLocalSystem => LocalSystem;
+#if !CERBERUS_SERVER_PROFILE
+        public bool HasCurrentEnrollmentConsent() => Consent;
+        public void PrepareDesktopEnrollment(bool installService)
+        {
+            BootstrapCalls++;
+            if (BootstrapThrows) throw new UnauthorizedAccessException();
+            BootstrapAction?.Invoke(installService);
+        }
+#endif
         public HeadlessServiceState GetServiceState() => State;
 
         public Task<HeadlessServiceState> EnsureRunningAsync(bool startIfStopped, CancellationToken ct)
@@ -429,9 +445,18 @@ public sealed partial class EnrollHeadlessModeTests
 
         public HttpClient CreateHttpClient(Uri backend) => new(Http) { BaseAddress = backend };
 
-        public Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
+        public async Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
         {
             ActivateCalls.Add(commitDirectly);
+            if (ActivationNonce is { } nonce)
+            {
+                var staged = await Store.LoadAsync(CancellationToken.None);
+                _activationMarker = new("agent.enrollment-promotion.v1", LifecycleSequence?[0].Generation ?? Lifecycle.Generation,
+                    staged.Identity.AgentId, staged.Identity.TenantId,
+                    AgentKeyFingerprint.FromPrivateKeyPem(staged.PrivateKeyPem)[AgentKeyFingerprint.Prefix.Length..].ToUpperInvariant(),
+                    nonce, DateTimeOffset.UtcNow.AddMinutes(5), staged.Identity.Product == AgentProducts.Secondary ? staged.Identity.Product : null,
+                    staged.Identity.Product == AgentProducts.Secondary ? staged.BackendUrl : null);
+            }
             if (ActivateThrows)
                 throw new InvalidOperationException("pipe broke");
             if (CancelOnActivate is { } cts)
@@ -439,8 +464,12 @@ public sealed partial class EnrollHeadlessModeTests
                 cts.Cancel();
                 ct.ThrowIfCancellationRequested();
             }
-            return Task.FromResult(ActivateResult);
+            return ActivateResult;
         }
+
+        public async Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct)
+            => await EnrollHeadlessState.MatchesCommittedEnrollmentAsync(_activationMarker, before,
+                await LoadLifecycleAsync(ct), ActiveStore ?? Store, ct);
 
         public string? ReadFingerprintLine() => OldFingerprintLine;
         public void WriteFingerprintFile(string content)

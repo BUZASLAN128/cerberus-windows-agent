@@ -73,11 +73,13 @@ public sealed partial class HeartbeatLoopTests
         {
             Assert.True(processor.ProcessCalls >= 1);
             Assert.Equal(0, processor.SignalCalls);
+            Assert.False(processor.ExecutionPaused);
         }
         else
         {
             Assert.True(processor.SignalCalls >= 1);
             Assert.Equal(0, processor.ProcessCalls);
+            Assert.True(processor.ExecutionPaused);
         }
     }
 
@@ -149,10 +151,12 @@ public sealed partial class HeartbeatLoopTests
     {
         private int _process;
         private int _signal;
+        private int _paused;
         private readonly TaskCompletionSource _first = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int ProcessCalls => Volatile.Read(ref _process);
         public int SignalCalls => Volatile.Read(ref _signal);
+        public bool ExecutionPaused => Volatile.Read(ref _paused) != 0;
         public Task FirstCall => _first.Task;
 
         public Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
@@ -161,6 +165,8 @@ public sealed partial class HeartbeatLoopTests
             _first.TrySetResult();
             return Task.CompletedTask;
         }
+
+        public void SetExecutionPaused(bool paused) => Volatile.Write(ref _paused, paused ? 1 : 0);
 
         public void SignalOutbox()
         {

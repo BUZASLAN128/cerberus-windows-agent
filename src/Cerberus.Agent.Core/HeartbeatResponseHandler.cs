@@ -18,6 +18,7 @@ public sealed class HeartbeatResponseHandler
     private readonly IAgentLifecycleStateStore _lifecycleState;
     private readonly Func<CancellationToken, Task>? _quiesce;
     private readonly ManagedAccountManifestPolicy? _managedAccounts;
+    private readonly bool _signedStateOnly;
 
     public HeartbeatResponseHandler(
         ISecretStore secrets,
@@ -26,7 +27,8 @@ public sealed class HeartbeatResponseHandler
         Func<HeartbeatResponse, Exception, CancellationToken, Task>? updateFailureReporter = null,
         IAgentLifecycleStateStore? lifecycleState = null,
         Func<CancellationToken, Task>? quiesce = null,
-        ManagedAccountManifestPolicy? managedAccounts = null)
+        ManagedAccountManifestPolicy? managedAccounts = null,
+        bool signedStateOnly = false)
     {
         _secrets = secrets;
         _log = log ?? NullAgentLogger.Instance;
@@ -38,6 +40,7 @@ public sealed class HeartbeatResponseHandler
         _lifecycleState = lifecycleState ?? new InMemoryAgentLifecycleStateStore();
         _quiesce = quiesce;
         _managedAccounts = managedAccounts;
+        _signedStateOnly = signedStateOnly;
     }
 
     public async Task<HeartbeatControlAction> HandleAsync(HeartbeatResponse response, CancellationToken ct)
@@ -52,6 +55,9 @@ public sealed class HeartbeatResponseHandler
             ? HeartbeatControlAction.Stop
             : HeartbeatControlAction.Continue;
 #else
+        if (_signedStateOnly)
+            return AgentLifecycleStates.IsDormant(current.State) || !current.QuiescenceComplete
+                ? HeartbeatControlAction.Stop : HeartbeatControlAction.Continue;
         await PersistUiContextAsync(response, ct).ConfigureAwait(false);
 
         if (response.Revoke is not null &&

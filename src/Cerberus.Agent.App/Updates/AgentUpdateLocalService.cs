@@ -713,6 +713,7 @@ internal static partial class AgentUpdateLocalService
         long? requiredPolicyGeneration = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+        if (PendingStateDelivery(lifecycle)) return null;
         if (automatic && !AllowsAutomatic(lifecycle))
             return null;
         // Bind the incoming policy to the generation observed at the start of
@@ -1125,7 +1126,7 @@ internal static partial class AgentUpdateLocalService
         if (active.Phase is not (AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy))
             throw new InvalidOperationException("Update attempt cannot be applied.");
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+        if (PendingStateDelivery(lifecycle) || automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
             throw new InvalidOperationException("Automatic update authorization changed.");
         if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Update installer retry is not admitted.");
@@ -1133,15 +1134,12 @@ internal static partial class AgentUpdateLocalService
         var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(Root, attemptId);
         var runtimeDirectory = Path.GetDirectoryName(AgentUpdateCoordinator.ResolveUpdaterPath())!;
         var runner = AgentUpdateRunnerFiles.Prepare(runtimeDirectory, attemptDirectory);
-        using (await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false))
+        await LaunchUnderFenceAsync(active, automatic, LoadLifecycleAsync, PendingStateDelivery, launchLifecycle =>
         {
-            lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
-                throw new InvalidOperationException("Automatic update authorization changed.");
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
             {
-                Phase = "launch_requested", LifecycleGeneration = lifecycle.Generation, Automatic = automatic,
+                Phase = "launch_requested", LifecycleGeneration = launchLifecycle.Generation, Automatic = automatic,
                 InstallerResult = null, NextRetryUtc = null,
             });
             var start = new ProcessStartInfo(runner) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(runner)! };
@@ -1152,7 +1150,7 @@ internal static partial class AgentUpdateLocalService
             {
                 RunnerProcessId = process.Id, RunnerStartedUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()),
             });
-        }
+        }, ct).ConfigureAwait(false);
         await ProjectAsync(ct).ConfigureAwait(false);
     }
 
@@ -1440,8 +1438,8 @@ internal static partial class AgentUpdateLocalService
 
     private static Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct)
         => new DurableAgentLifecycleStateStore().LoadAsync(ct);
-    private static bool AllowsAutomatic(AgentLifecycleSnapshot lifecycle)
-        => AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.QuiescenceComplete;
+    internal static bool AllowsAutomatic(AgentLifecycleSnapshot lifecycle)
+        => AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.QuiescenceComplete && !PendingStateDelivery(lifecycle);
     private static void RequireService()
     {
         if (!AgentUpdateSecurity.IsLocalSystem())

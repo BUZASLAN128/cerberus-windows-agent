@@ -125,10 +125,16 @@ internal static class AgentServiceLocalState
         await new DpapiSecretStore(SecretStoreScope.Machine).ClearAsync(ct).ConfigureAwait(false);
 
         var baseDir = DpapiSecretStore.GetDefaultBaseDir(SecretStoreScope.Machine);
+        ClearLocalData(baseDir, AgentUpdateSecurity.DefaultPrivilegedRoot);
+    }
+
+    internal static void ClearLocalData(string baseDir, string privilegedRoot)
+    {
         DeleteFileIfExists(Path.Combine(baseDir, "idempotency.json"));
         DeleteFileIfExists(Path.Combine(baseDir, "telemetry-offline.json"));
+        DeleteFileIfExists(Path.Combine(baseDir, "secondary-telemetry-offline.json"));
         DeleteDirectoryIfExists(Path.Combine(baseDir, "updates"));
-        DeleteDirectoryIfExists(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        DeleteDirectoryIfExists(privilegedRoot);
     }
 
     private static void DeleteFileIfExists(string path)
@@ -157,7 +163,9 @@ internal static class AgentBackendLifecycle
     {
         try
         {
-            var (_, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+            var (identity, _, privateKeyPem, backendUrl, _, _) = await store.LoadAsync(ct).ConfigureAwait(false);
+            if (identity.Product != AgentProducts.Cerberus)
+                return false;
             using var http = new HttpClient(BackendTrust.CreateHandler())
             {
                 BaseAddress = new Uri(backendUrl.TrimEnd('/')),

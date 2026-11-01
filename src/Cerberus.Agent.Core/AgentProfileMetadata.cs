@@ -22,6 +22,7 @@ public sealed record CommandTrustAnchor(string KeyId, byte[] Spki);
 public static class AgentProfileMetadata
 {
     public const string AnchorsMetadataName = "AgentCommandTrustAnchorsB64";
+    public const string SecondaryAnchorsMetadataName = "SecondaryCommandTrustAnchorsB64";
     private const int MinAnchorModulusBits = 2048;
 
     private static readonly Lazy<AgentTimingBounds> TimingBounds =
@@ -37,6 +38,29 @@ public static class AgentProfileMetadata
         IEnumerable<string> manifestPublicKeyPems,
         IAgentLogger? log = null)
         => ParseAnchors(ReadMetadata(AnchorsMetadataName), manifestPublicKeyPems, log);
+
+    public static IReadOnlyList<CommandTrustAnchor> LoadProductCommandAnchors(
+        string product, IEnumerable<string> manifestPublicKeyPems, IAgentLogger? log = null)
+        => ParseProductAnchors(product, ReadMetadata(AnchorsMetadataName),
+            ReadMetadata(SecondaryAnchorsMetadataName), manifestPublicKeyPems, log);
+
+    public static IReadOnlyList<CommandTrustAnchor> ParseProductAnchors(
+        string product, string? cerberusMetadata, string? secondaryMetadata,
+        IEnumerable<string> manifestPublicKeyPems, IAgentLogger? log = null)
+    {
+        if (!AgentProducts.IsKnown(product))
+            return Array.Empty<CommandTrustAnchor>();
+        var manifest = manifestPublicKeyPems.ToArray();
+        var cerberus = ParseAnchors(cerberusMetadata, manifest, log);
+        var secondary = ParseAnchors(secondaryMetadata, manifest, log);
+        var selected = product == AgentProducts.Secondary ? secondary : cerberus;
+        var other = product == AgentProducts.Secondary ? cerberus : secondary;
+        // The same RSA command authority may not authorize both products.
+        return selected.Where(anchor => TryReadAnchor(Convert.ToBase64String(anchor.Spki), out _, out var key)
+            && !other.Any(candidate => !TryReadAnchor(Convert.ToBase64String(candidate.Spki), out _, out var otherKey)
+                || SameKey(key, otherKey)))
+            .ToArray();
+    }
 
     public static AgentTimingBounds ParseTiming(Func<string, string?> read)
     {

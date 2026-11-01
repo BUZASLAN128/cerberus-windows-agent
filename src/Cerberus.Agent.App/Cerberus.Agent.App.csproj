@@ -19,6 +19,7 @@
     <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
     <StartupObject>Cerberus.Agent.App.Program</StartupObject>
     <AgentDefaultBackendUrlBase64 Condition="'$(AgentDefaultBackendUrlBase64)' == ''"></AgentDefaultBackendUrlBase64>
+    <AgentSecondaryBackendUrlBase64 Condition="'$(AgentSecondaryBackendUrlBase64)' == ''"></AgentSecondaryBackendUrlBase64>
     <AgentDefaultSsoBaseUrlBase64 Condition="'$(AgentDefaultSsoBaseUrlBase64)' == ''"></AgentDefaultSsoBaseUrlBase64>
     <AgentDefaultSsoClientIdBase64 Condition="'$(AgentDefaultSsoClientIdBase64)' == ''"></AgentDefaultSsoClientIdBase64>
     <AgentDefaultSsoScopeBase64 Condition="'$(AgentDefaultSsoScopeBase64)' == ''"></AgentDefaultSsoScopeBase64>
@@ -35,6 +36,10 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentDefaultBackendUrlBase64</_Parameter1>
       <_Parameter2>$(AgentDefaultBackendUrlBase64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentSecondaryBackendUrlBase64</_Parameter1>
+      <_Parameter2>$(AgentSecondaryBackendUrlBase64)</_Parameter2>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentDefaultSsoBaseUrlBase64</_Parameter1>

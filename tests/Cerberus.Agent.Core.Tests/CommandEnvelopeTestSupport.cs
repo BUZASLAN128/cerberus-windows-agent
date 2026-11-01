@@ -53,6 +53,7 @@ internal sealed class FakeTime : TimeProvider
     }
 
     internal DateTimeOffset Now => GetUtcNow();
+    internal int ActiveTimerCount { get { lock (_gate) return _timers.Count(t => t.IsDue(DateTimeOffset.MaxValue)); } }
 
     private sealed class FakeTimer : ITimer
     {
@@ -108,6 +109,7 @@ internal sealed class FakeBackend : HttpMessageHandler
 
     public Func<BackendRequest, CancellationToken, Task<HttpStatusCode>> Respond { get; set; }
         = (_, _) => Task.FromResult(HttpStatusCode.OK);
+    public string? RetryAfter { get; set; }
 
     public IReadOnlyList<BackendRequest> Requests
     {
@@ -129,7 +131,9 @@ internal sealed class FakeBackend : HttpMessageHandler
         lock (_gate)
             _requests.Add(recorded);
         var status = await Respond(recorded, cancellationToken);
-        return new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        var response = new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        if (RetryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", RetryAfter);
+        return response;
     }
 }
 
@@ -358,12 +362,16 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
     {
         Store = new CommandReplayStore(StorePath, Time);
         Queue = new EnvelopeExecutionQueue(
-            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time, Log);
+            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time, Log,
+            controlContext: ControlContext, currentControlContext: _ => Task.FromResult(ControlContext));
         var anchors = _options.Anchors ?? new[] { TestSigner.Default.Anchor };
         Processor = new EnvelopeCommandProcessor(Api, anchors, Queue, Allowed, Log, legacy: _options.Legacy ?? _options.LegacyFactory?.Invoke(Api));
         if (_options.StartQueue)
             Queue.Start();
     }
+
+    public AgentStateDeliveryContext ControlContext => new(AgentId, "t1", 0, null, AgentProducts.Cerberus,
+        AgentKeyFingerprint.Prefix + new string('a', 64));
 
     public AgentCommand Cmd(Action<EnvelopeParts>? edit = null)
     {
