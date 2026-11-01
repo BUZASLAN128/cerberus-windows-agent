@@ -117,6 +117,9 @@ internal sealed class AgentLocalControlService
         var snapshot = await _lifecycle.LoadAsync(ct).ConfigureAwait(false);
         if (!snapshot.QuiescenceComplete || snapshot.ReasonCode == AgentLifecycleStatePolicy.AgentRevokedCode)
             return StateResponse(false, snapshot.QuiescenceComplete ? "contact_admin" : "cleanup_pending", snapshot);
+        var cleanup = await AgentEnrollmentCleanupRecovery.TryCompleteAsync(_lifecycle, _retrySecrets, ct).ConfigureAwait(false);
+        if (cleanup is not null)
+            return StateResponse(cleanup.Value, cleanup.Value ? "enrollment_adopted" : "legacy_revoke_cleanup_pending", snapshot);
         var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
         if (marker is null || marker.ExpectedGeneration != snapshot.Generation || marker.Nonce == snapshot.LastEnrollmentNonce)
             return StateResponse(false, "enrollment_proof_required", snapshot);
@@ -145,11 +148,10 @@ internal sealed class AgentLocalControlService
             return StateResponse(false, "enrollment_proof_stale", current);
         if (_lifecycle is not DurableAgentLifecycleStateStore durable)
             throw new InvalidOperationException("Machine enrollment requires the durable lifecycle authority.");
-        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
-            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
-        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(marker.Product ?? AgentProducts.Cerberus));
-        if (!AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, current, adopted, signedState, credentialProbeAccepted: true))
-            return StateResponse(false, "legacy_revoke_cleanup_pending", adopted);
+        var adopted = await AgentEnrollmentPromotion.CommitVerifiedAsync(durable, marker, ct).ConfigureAwait(false);
+        // Publication and adoption are already committed. Cleanup debt stays in its receipt.
+        if (await AgentEnrollmentCleanupRecovery.UnderFenceAsync(_lifecycle, _retrySecrets, ct).ConfigureAwait(false) != true)
+            return StateResponse(true, "legacy_revoke_cleanup_pending", adopted);
         return StateResponse(true, "enrollment_adopted", adopted);
     }
 

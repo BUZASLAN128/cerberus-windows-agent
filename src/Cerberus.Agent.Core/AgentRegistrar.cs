@@ -18,6 +18,7 @@ public sealed class AgentRegistrar
     private readonly IKeyPairGenerator _keyPairs;
     private readonly IAgentLogger _log;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
+    internal Func<CancellationToken, CancellationTokenSource>? DeadlineFactory { get; init; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="AgentRegistrar"/> class.
@@ -97,7 +98,7 @@ public sealed class AgentRegistrar
         {
             Content = JsonContent.Create(req, options: JsonOpts),
         };
-        using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
+        using var deadline = DeadlineFactory?.Invoke(ct) ?? AgentHttpFailure.CreateDeadline(_http, ct);
         using var resp = await _http.SendAsync(
             registerRequest,
             HttpCompletionOption.ResponseHeadersRead,

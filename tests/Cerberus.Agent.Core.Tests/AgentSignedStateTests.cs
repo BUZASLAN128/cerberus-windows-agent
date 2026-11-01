@@ -5,7 +5,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 // Unit/support evidence for the signed agent_state store and handler (contract v1 (b)). The queue wiring
 // that calls OnResultFinalAsync is covered by the envelope queue tests; ServiceMode wiring is not covered here.
-public sealed class AgentSignedStateTests : IDisposable
+public sealed partial class AgentSignedStateTests : IDisposable
 {
     private const string Revoked = "agent_revoked";
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));

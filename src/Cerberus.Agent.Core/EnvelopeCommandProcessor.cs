@@ -70,7 +70,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             foreach (var _ in unsigned)
                 LogRejection(new EnvelopeCheck(1, EnvelopeCodes.Unsigned, false, null));
 #else
-            if (unsigned.Count > 0)
+            if (unsigned.Count > 0 && !_queue.RecoveryControlOnly)
             {
                 if (_legacy is null)
                     _log.Warn($"Commands without an envelope dropped: no legacy processor (count={unsigned.Count}).");
@@ -83,9 +83,16 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         {
             _queue.SignalHeartbeat();
 #if !CERBERUS_SERVER_PROFILE
-            _legacy?.SignalOutbox();
+            if (!_queue.RecoveryControlOnly) _legacy?.SignalOutbox();
 #endif
         }
+    }
+
+    public void SetExecutionPaused(bool paused)
+    {
+#if !CERBERUS_SERVER_PROFILE
+        _legacy?.SetExecutionPaused(paused);
+#endif
     }
 
     public void SignalOutbox()
@@ -145,6 +152,15 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         var envelope = check.Envelope!;
         var store = _queue.Store;
         var existing = store.Find(agentId, envelope.Id);
+        if (envelope.Type == EnvelopeTypes.AgentState && existing is { Type: EnvelopeTypes.AgentState, ResultSubmitted: false, StateControl: null } &&
+            existing.EnvelopeSha256 == envelope.EnvelopeSha256)
+        {
+            _queue.HoldUnboundState(existing, envelope);
+            return; // Legacy metadata cannot be inferred into a current registration binding.
+        }
+        if (_queue.RequiresStateRecovery && (envelope.Type != EnvelopeTypes.AgentState ||
+            existing?.StateControl is null && envelope.Payload.GetProperty("state_seq").GetInt64() <= (_queue.SignedState?.RecoveryFloor ?? 0)))
+            return;
         if (existing is not null)
         {
             if (!string.Equals(existing.EnvelopeSha256, envelope.EnvelopeSha256, StringComparison.Ordinal))
@@ -160,13 +176,22 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             {
                 case EnvelopeRecordStates.RejectedAfterReserve:
                     // The rejected ack may not have arrived; send it again with the stored reason. Nothing runs.
-                    if (existing.RejectReason is not null)
+                    if (existing.Type == EnvelopeTypes.AgentState &&
+                        existing.RejectReason is EnvelopeCodes.StaleStateSeq or EnvelopeCodes.ReplayStoreUnavailable)
+                        await _queue.RejectPreparedStateAsync(existing, ct, resend: true).ConfigureAwait(false);
+                    else if (existing.RejectReason is not null)
                         await TrySendAckAsync(agentId, envelope, accepted: false, existing.RejectReason, ct).ConfigureAwait(false);
                     return;
                 case EnvelopeRecordStates.Started:
+                    if (envelope.Type == EnvelopeTypes.AgentState) break;
                     _queue.RecoverOrphan(existing);
                     return;
                 case EnvelopeRecordStates.Done:
+                    if (envelope.Type == EnvelopeTypes.AgentState)
+                    {
+                        if (!existing.ResultSubmitted) await _queue.AcceptPreparedStateAsync(existing, ct).ConfigureAwait(false);
+                        return;
+                    }
                     await TrySendAckAsync(agentId, envelope, accepted: true, reason: null, ct).ConfigureAwait(false);
                     return;
             }
@@ -200,9 +225,11 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         var record = existing;
         if (record is null)
         {
+            var control = queued ? null : await _queue.CreateStateControlAsync(envelope, ct).ConfigureAwait(false);
+            if (!queued && control is null) return;
             record = new CommandReplayRecord(agentId, envelope.Id, envelope.EnvelopeSha256, envelope.Nonce, envelope.Type,
-                envelope.IssuedAt, envelope.ExpiresAt, EnvelopeRecordStates.Reserved, null, null, false);
-            var outcome = store.TryReserve(record);
+                envelope.IssuedAt, envelope.ExpiresAt, EnvelopeRecordStates.Reserved, null, null, false, StateControl: control);
+            var outcome = _queue.Reserve(record);
             if (outcome != ReplayReserveOutcome.Reserved)
             {
                 if (queued)
@@ -216,6 +243,22 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         }
 
         _queue.MarkInFlight(agentId, envelope.Id);
+        if (!queued)
+        {
+            try
+            {
+                if (await _queue.PrepareStateBeforeAckAsync(record, envelope, ct).ConfigureAwait(false))
+                {
+                    var prepared = store.Find(agentId, envelope.Id)!;
+                    if (await _queue.AcceptPreparedStateAsync(prepared, ct).ConfigureAwait(false))
+                        _queue.MarkAccepted(agentId, envelope.Id, envelope.Type);
+                }
+                else if (store.Find(agentId, envelope.Id) is { State: EnvelopeRecordStates.RejectedAfterReserve } rejected)
+                    await _queue.RejectPreparedStateAsync(rejected, ct).ConfigureAwait(false);
+            }
+            finally { _queue.ClearInFlight(agentId, envelope.Id); }
+            return;
+        }
         if (!await TrySendAckAsync(agentId, envelope, accepted: true, reason: null, ct).ConfigureAwait(false))
         {
             // The record stays reserved and nothing runs; a re-delivery continues at step 14.
@@ -227,10 +270,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
 
         _queue.MarkAccepted(agentId, envelope.Id, envelope.Type);
         _log.Info($"Command accepted id={envelope.Id} type={envelope.Type}");
-        if (queued)
-            _queue.Enqueue(record, envelope);
-        else
-            await _queue.ExecuteInlineAsync(record, envelope, ct).ConfigureAwait(false);
+        _queue.Enqueue(record, envelope);
     }
 
     private async Task RejectReservedOrNewAsync(CommandReplayRecord? existing, EnvelopeCheck check, string agentId, CancellationToken ct)

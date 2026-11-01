@@ -39,19 +39,33 @@ internal static class EnvelopeWiring
             return new AgentRevokeRegistration(identity.AgentId, identity.TenantId, after.LastEnrollmentNonce);
         };
 
+    internal static Func<CancellationToken, Task<AgentStateDeliveryContext>> StateDeliveryContext(
+        ISecretStore secrets, IAgentLifecycleStateStore lifecycle)
+        => async ct =>
+        {
+            var before = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            var loaded = await secrets.LoadAsync(ct).ConfigureAwait(false);
+            var after = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
+            if (before.Generation != after.Generation || before.LastEnrollmentNonce != after.LastEnrollmentNonce)
+                throw new AgentRegistrationChangedException();
+            return new(loaded.Identity.AgentId, loaded.Identity.TenantId, after.Generation, after.LastEnrollmentNonce,
+                loaded.Identity.Product, AgentKeyFingerprint.FromPrivateKeyPem(loaded.PrivateKeyPem));
+        };
+
     internal static bool HasCommandTrust(string product, IAgentLogger log)
         => AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log).Count > 0;
 
 #if !CERBERUS_SERVER_PROFILE
     internal static LegacyAsyncCommandProcessor CreateLegacyAsync(AgentApiClient api, CommandDispatcher dispatcher,
         AgentIdentity identity, AgentLifecycleSnapshot lifecycle, Func<CancellationToken, Task<string>> currentAgentId,
-        IAgentLogger log)
+        AgentSignedStateStore signedState, IAgentLogger log, string? keyFingerprint = null)
     {
         // Managed operations retain their existing synchronous authority path; this is observation only.
         var delayLog = Environment.GetEnvironmentVariable("CERBERUS_MANAGED_DELAY_DIAGNOSTIC") == "1" ? log : null;
         return new LegacyAsyncCommandProcessor(api, dispatcher,
             new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency, delayLog),
-            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log), currentAgentId, log);
+            CommandReplayStore.OpenLegacyAsyncForEnrollment(identity, lifecycle, log, keyFingerprint: keyFingerprint), currentAgentId, log,
+            recoveryControlOnly: () => signedState.RecoveryControlOnly);
     }
 #endif
 
@@ -62,10 +76,15 @@ internal static class EnvelopeWiring
         Func<CancellationToken, Task<string>> currentAgentId,
         AgentSignedStateStore signedState,
         IAgentLogger log,
+        AgentStateDeliveryContext controlContext,
+        Func<CancellationToken, Task<AgentStateDeliveryContext>> currentControlContext,
         string product = AgentProducts.Cerberus)
     {
-        var queue = new EnvelopeExecutionQueue(api, new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log),
-            handlers, currentAgentId, signedState.IsQuarantined, log: log);
+        var store = new CommandReplayStore(CommandReplayStore.DefaultPathForProduct(product), log: log, enrollmentEstablished: true);
+        if (!store.IsAvailable) log.Warn("Command replay storage unavailable; signed commands remain disabled.");
+        var queue = new EnvelopeExecutionQueue(api, store,
+            handlers, currentAgentId, signedState.IsQuarantined, log: log, signedState: signedState,
+            controlContext: controlContext, currentControlContext: currentControlContext);
         queue.Start();
         return queue;
     }
@@ -84,12 +103,12 @@ internal static class EnvelopeWiring
         IReadOnlyList<CommandTrustAnchor>? commandAnchors = null)
     {
         var anchors = commandAnchors ?? AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log);
-#if CERBERUS_SERVER_PROFILE
-        return new EnvelopeCommandProcessor(api, anchors, queue, log: log);
-#else
         if (product == AgentProducts.Secondary)
             return new EnvelopeCommandProcessor(api, anchors, queue,
                 allowedTypes: queue.HandlerTypes.ToHashSet(StringComparer.Ordinal), log: log);
+#if CERBERUS_SERVER_PROFILE
+        return new EnvelopeCommandProcessor(api, anchors, queue, log: log);
+#else
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log,
             legacy: legacy ?? new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
 #endif

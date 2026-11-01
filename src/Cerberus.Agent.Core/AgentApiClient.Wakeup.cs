@@ -36,7 +36,8 @@ public sealed partial class AgentApiClient
     }
 
     /// <summary>Maintain one hint-only connection; cancellation or an invalid frame closes it.</summary>
-    internal async Task ListenForWakeupsOnceAsync(JsonElement discovery, AgentWakeupSignal signal, CancellationToken ct)
+    internal async Task ListenForWakeupsOnceAsync(JsonElement discovery, AgentWakeupSignal signal, CancellationToken ct,
+        Action? connected = null)
     {
         var (endpoint, request) = await BuildWakeupHandshakeAsync(discovery, ct).ConfigureAwait(false);
         using (request)
@@ -61,6 +62,7 @@ public sealed partial class AgentApiClient
                 try
                 {
                     await socket.ConnectAsync(endpoint, invoker, handshake.Token).ConfigureAwait(false);
+                    connected?.Invoke();
                 }
                 catch (WebSocketException) when (socket.HttpStatusCode == HttpStatusCode.TooManyRequests ||
                                                  (int)socket.HttpStatusCode >= 500)

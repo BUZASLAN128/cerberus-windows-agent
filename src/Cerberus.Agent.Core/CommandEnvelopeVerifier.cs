@@ -103,7 +103,7 @@ public sealed class CommandEnvelopeVerifier
             return EnvelopeCheck.Fail(14, EnvelopeCodes.NotYetValid, ack: true, envelope: signed);
         if (nowUnix > signed.ExpiresAt + SkewSeconds)
             return EnvelopeCheck.Fail(14, EnvelopeCodes.Expired, ack: true, envelope: signed);
-        if (signed.IssuedAt < resetAt)
+        if (resetAt > 0 && signed.IssuedAt <= resetAt)
             return EnvelopeCheck.Fail(15, EnvelopeCodes.IssuedBeforeReset, ack: true, envelope: signed);
         if (nonceUsedElsewhere)
             return EnvelopeCheck.Fail(16, EnvelopeCodes.NonceReused, ack: true, envelope: signed);

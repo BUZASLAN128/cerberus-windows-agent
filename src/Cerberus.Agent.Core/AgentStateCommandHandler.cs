@@ -75,7 +75,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
 
         var applied = new List<string>(3);
-        var next = current with { StateSeq = seq };
+        var next = current with { StateSeq = seq, LastAppliedCommandId = command.Id };
         if (payload.TryGetProperty("registration_state", out var registration))
         {
             next = next with { RegistrationState = registration.GetString() };
@@ -109,8 +109,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
     /// <summary>
     /// Startup recovery for a crash after the DONE result was delivered and marked submitted, but before the
     /// revoke ran: run the follow-up now. A result still waiting in the outbox is left to the outbox, which
-    /// needs the credential. A missing record (retention ended) with a readable store can never be delivered, so
-    /// the signed revoke is applied. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
+    /// needs the credential. Missing replay evidence cannot prove delivery; pending control records are retained
+    /// until confirmation. A result already final in this process (<see cref="AgentRevokeFinalResults"/>)
     /// is applied whatever the replay record says.
     /// </summary>
     public async Task RecoverPendingRevokeAsync(CommandReplayStore replay, CancellationToken ct)
@@ -123,16 +123,23 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.Warn($"agent_state revoke recovery skipped: agent id unavailable ({ex.GetType().Name}).");
+            _stopAutomaticNetwork();
+            _log.Warn($"agent_state revoke recovery blocked: agent id unavailable ({ex.GetType().Name}); automatic network stays off.");
             return;
         }
 
         if (_store.Load(agentId).PendingRevoke is not { } pending)
             return;
+        // An old registration cannot deliver its outbox through the new credential.
+        // Reconcile only the bound marker; this does not prove a final result.
+        if (pending.Registration is not null && await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false) == true)
+        {
+            SkipStale(agentId, pending.CommandId);
+            return;
+        }
         var record = replay.Find(agentId, pending.CommandId);
         var settled = _finalResults.Contains(agentId, pending.CommandId)
-                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true }
-                      || (record is null && replay.IsAvailable);
+                      || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true };
         if (settled)
             await OnResultFinalAsync(agentId, pending.CommandId, ct).ConfigureAwait(false);
     }
@@ -282,9 +289,12 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         {
             var current = await ReadRegistrationAsync(ct).ConfigureAwait(false);
             // An old file has no context. Only a definitely different agent id can discard it.
-            return current.AgentId != agentId || (pending.Registration is { } prior &&
-                ((prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId)
-                 || prior.EnrollmentNonce != current.EnrollmentNonce));
+            if (current.AgentId != agentId) return true;
+            if (pending.Registration is not { } prior) return false;
+            if (prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId) return true;
+            if (prior.EnrollmentNonce == current.EnrollmentNonce) return false;
+            // Missing current metadata cannot prove replacement of a known registration.
+            return current.EnrollmentNonce is null ? null : true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

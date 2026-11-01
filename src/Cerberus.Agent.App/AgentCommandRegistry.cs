@@ -19,19 +19,23 @@ internal static class AgentCommandRegistry
 {
 #if CERBERUS_SERVER_PROFILE
     public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState,
-        AgentUpdateRequestCommandHandler updateRequest)
+        AgentUpdateRequestCommandHandler? updateRequest, string product = AgentProducts.Cerberus)
 #else
     public static IReadOnlyList<ICommandHandler> CreateServer(AgentBuildMetadata metadata, AgentStateCommandHandler agentState)
 #endif
-        => new ICommandHandler[]
+    {
+        var handlers = new List<ICommandHandler>
         {
             new PingCommandHandler(metadata),
             new CollectFactsCommandHandler(metadata),
             agentState ?? throw new ArgumentNullException(nameof(agentState)),
-#if CERBERUS_SERVER_PROFILE
-            updateRequest ?? throw new ArgumentNullException(nameof(updateRequest)),
-#endif
         };
+#if CERBERUS_SERVER_PROFILE
+        if (product != AgentProducts.Secondary)
+            handlers.Add(updateRequest ?? throw new ArgumentNullException(nameof(updateRequest)));
+#endif
+        return handlers;
+    }
 #if !CERBERUS_SERVER_PROFILE
     public static IReadOnlyList<ICommandHandler> CreateDesktop(
         AgentApiClient api,

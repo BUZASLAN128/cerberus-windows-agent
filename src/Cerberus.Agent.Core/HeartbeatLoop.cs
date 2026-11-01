@@ -31,6 +31,7 @@ public sealed partial class HeartbeatLoop
     private readonly bool _signedCommandsOnly;
     private readonly bool _legacyAsyncSupported;
     private readonly Func<bool> _legacyAsyncReady;
+    private readonly AgentSignedStateStore? _signedState;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -63,7 +64,8 @@ public sealed partial class HeartbeatLoop
         bool signedCommandMode = false,
         bool signedCommandsOnly = false,
         bool legacyAsyncSupported = false,
-        Func<bool>? legacyAsyncReady = null)
+        Func<bool>? legacyAsyncReady = null,
+        AgentSignedStateStore? signedState = null)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _api = api;
@@ -111,6 +113,7 @@ public sealed partial class HeartbeatLoop
         _signedCommandsOnly = signedCommandsOnly;
         _legacyAsyncSupported = legacyAsyncSupported;
         _legacyAsyncReady = legacyAsyncReady ?? (() => true);
+        _signedState = signedState;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -128,7 +131,7 @@ public sealed partial class HeartbeatLoop
                     return;
 
                 object? tailscale = null;
-                if (_status is not null)
+                if (_status is not null && _signedState?.RecoveryControlOnly != true)
                 {
                     try
                     {
@@ -140,25 +143,32 @@ public sealed partial class HeartbeatLoop
                     }
                 }
 
+                var recoveringState = _signedState?.RequiresRecovery == true;
+                var controlRecovery = _signedState?.RecoveryControlOnly == true;
                 var supported = AgentSchemaVersions.All.AsEnumerable();
                 if (_wakeupClient is not null) supported = supported.Append(AgentWakeupProtocol.Capability);
                 if (_signedCommandMode) supported = supported.Append(CommandEnvelope.Capability);
                 if (_signedCommandsOnly) supported = supported.Append(CommandEnvelope.SignedOnlyCapability);
-                var legacyAsyncAvailable = _legacyAsyncSupported && _legacyAsyncReady();
+                var legacyAsyncAvailable = !controlRecovery && _legacyAsyncSupported && _legacyAsyncReady();
                 if (legacyAsyncAvailable) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
-                var hbReq = new
+                var hbReq = new Dictionary<string, object?>
                 {
-                    status = degraded ? "degraded" : "connected",
-                    agent_version = _agentVersion,
-                    build_id = _buildId,
-                    build_channel = _buildChannel,
-                    runtime_mode = "service",
-                    supported_schema_versions = supported.ToArray(),
-                    tailscale,
-                    ad = _adStatusProvider is null ? null : await _adStatusProvider(ct),
-                    update_status = _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
-                    capabilities = _dispatcher.HandlerTypes,
+                    ["status"] = degraded ? "degraded" : "connected",
+                    ["agent_version"] = _agentVersion,
+                    ["build_id"] = _buildId,
+                    ["build_channel"] = _buildChannel,
+                    ["runtime_mode"] = "service",
+                    ["supported_schema_versions"] = supported.ToArray(),
+                    ["tailscale"] = tailscale,
+                    ["ad"] = controlRecovery || _adStatusProvider is null ? null : await _adStatusProvider(ct),
+                    ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
+                    ["capabilities"] = _dispatcher.HandlerTypes,
                 };
+                if (recoveringState)
+                {
+                    hbReq["signed_state_reset"] = true;
+                    hbReq["signed_state_floor"] = _signedState!.RecoveryFloor;
+                }
 
                 var heartbeatStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 var hb = await _api.HeartbeatAsync(hbReq, ct);
@@ -168,9 +178,26 @@ public sealed partial class HeartbeatLoop
                 consecutiveHeartbeatErrors = 0;
                 await ClearPersistedRetryAsync(ct).ConfigureAwait(false);
 
+                if (recoveringState)
+                {
+                    _signedState!.SetRecoverySourceSupported(hb.SignedStateRecovery == true);
+                    if (hb.SignedStateRecovery == true || _signedState.HasPendingControl)
+                    {
+                        if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false)) return;
+                        if (_wakeupClient is not null) await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
+                        // No unsigned update, manifest, lease, telemetry or business command during recovery.
+                        await _commandProcessor.ProcessAsync(hb.PendingCommands
+                            .Where(command => command.Type == EnvelopeTypes.AgentState).ToArray(), ct).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Max(30, _timing.Bounds.PollFloor)), ct).ConfigureAwait(false);
+                        continue;
+                    }
+                }
+
                 var control = _responseHandler is null
                     ? HeartbeatControlAction.Continue
                     : await _responseHandler.HandleAsync(hb, ct).ConfigureAwait(false);
+                if (control == HeartbeatControlAction.SkipCommands)
+                    _commandProcessor.SetExecutionPaused(true);
                 if (control == HeartbeatControlAction.Stop)
                 {
                     if (_wakeupClient is not null)
@@ -184,6 +211,7 @@ public sealed partial class HeartbeatLoop
 #if !CERBERUS_SERVER_PROFILE
                 if (!_signedStateOnly && string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
                 {
+                    _commandProcessor.SetExecutionPaused(true);
                     if (_wakeupClient is not null)
                         await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _log.Warn(
@@ -197,6 +225,7 @@ public sealed partial class HeartbeatLoop
 #endif
 
                 var skipCommands = control == HeartbeatControlAction.SkipCommands;
+                if (!skipCommands) _commandProcessor.SetExecutionPaused(false);
 
                 await TryFlushTelemetryBufferAsync(ct).ConfigureAwait(false);
 

@@ -330,7 +330,7 @@ public sealed class AgentUpdateDurabilityTests
         };
 
         var transitioned = AgentUpdateLocalService.TransitionReconciliationFailure(
-            current, retryAt, required: true);
+            current, retryAt, required: true, requiredPolicyGeneration: current.LifecycleGeneration);
 
         Assert.Equal(AgentUpdateStates.Blocked, transitioned.Phase);
         Assert.Equal(current.AttemptId, transitioned.AttemptId);
@@ -352,8 +352,11 @@ public sealed class AgentUpdateDurabilityTests
         Assert.False(AgentUpdateStates.CanApply(transitioned.Phase));
 
         var preservedRequired = AgentUpdateLocalService.TransitionReconciliationFailure(
-            current with { Required = true }, retryAt, required: false);
+            current with { Required = true, RequiredPolicyGeneration = current.LifecycleGeneration }, retryAt, required: false);
         Assert.True(preservedRequired.Required);
+        var unproven = AgentUpdateLocalService.TransitionReconciliationFailure(
+            current with { Required = true }, retryAt, required: false);
+        Assert.False(unproven.Required);
     }
 
     [Theory]
@@ -375,6 +378,7 @@ public sealed class AgentUpdateDurabilityTests
             Phase = phase,
             Automatic = true,
             Required = true,
+            RequiredPolicyGeneration = 42,
             LifecycleGeneration = 42,
             ApplyNotBeforeUtc = DateTimeOffset.Parse("2026-09-09T00:00:00Z"),
             RetryCount = 1,
@@ -400,6 +404,7 @@ public sealed class AgentUpdateDurabilityTests
             Phase = AgentUpdateStates.AwaitingConsent,
             Automatic = true,
             Required = true,
+            RequiredPolicyGeneration = 41,
             LifecycleGeneration = 41,
             ApplyNotBeforeUtc = rolloutDue,
             RetryCount = 1,
@@ -1209,6 +1214,7 @@ public sealed class AgentUpdateDurabilityTests
                 AttemptId = "required-old-release",
                 Phase = AgentUpdateStates.AwaitingConsent,
                 Required = true,
+                RequiredPolicyGeneration = 41,
                 LifecycleGeneration = 41,
                 ApplyNotBeforeUtc = retryAt,
                 NextCheckUtc = dailyNextCheck,
@@ -1384,7 +1390,7 @@ public sealed class AgentUpdateDurabilityTests
     }
 
     [Fact]
-    public void LegacyRequiredBlockedIntent_UsesSameGenerationOnly()
+    public void LegacyUnstampedBlockedIntent_NeedsFreshExplicitPolicyToAuthorizeAnotherStage()
     {
         var legacy = new AgentUpdateJournal
         {
@@ -1395,7 +1401,7 @@ public sealed class AgentUpdateDurabilityTests
             RequiredPolicyGeneration = null,
         };
 
-        Assert.True(AgentUpdateLocalService.CarryRequiredBlockedIntent(
+        Assert.False(AgentUpdateLocalService.CarryRequiredBlockedIntent(
             legacy,
             required: false,
             lifecycleGeneration: 41));
@@ -1415,10 +1421,15 @@ public sealed class AgentUpdateDurabilityTests
         var upgraded = AgentUpdateLocalService.TransitionStageStart(
             legacy,
             automatic: true,
-            required: true,
+            required: AgentUpdateLocalService.CarryRequiredBlockedIntent(legacy, false, 41),
             lifecycleGeneration: 41,
             nextCheckUtc: DateTimeOffset.UtcNow);
-        Assert.Equal(41, upgraded.RequiredPolicyGeneration);
+        Assert.False(upgraded.Required);
+        Assert.Null(upgraded.RequiredPolicyGeneration);
+        var verifiedPolicy = AgentUpdateLocalService.TransitionStageStart(legacy, automatic: true,
+            required: true, lifecycleGeneration: 41, nextCheckUtc: DateTimeOffset.UtcNow, requiredPolicyGeneration: 41);
+        Assert.True(verifiedPolicy.Required);
+        Assert.Equal(41, verifiedPolicy.RequiredPolicyGeneration);
     }
 
     [Fact]

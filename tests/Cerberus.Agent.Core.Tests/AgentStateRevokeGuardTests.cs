@@ -43,7 +43,7 @@ public sealed partial class AgentStateRevokeGuardTests : IDisposable
     public async Task Recovery_WhenTheAgentIdChangesBetweenTheRecoveryReadAndTheFollowUp_DoesNotRetire()
     {
         var f = await Fixture.WithPendingRevokeAsync(_dir);
-        var replay = new CommandReplayStore(Path.Combine(_dir, CommandReplayStore.FileName), TimeProvider.System);
+        var replay = ConfirmedReplay(_dir);
         Assert.True(replay.IsAvailable);
         f.IdReadsBeforeSwitch = 1;
 
@@ -92,6 +92,16 @@ public sealed partial class AgentStateRevokeGuardTests : IDisposable
         Assert.Equal(0, f.Stops);
         Assert.Null(f.Store.Load("agent-a").PendingRevoke);
         Assert.Empty(f.Log.Errors);
+    }
+
+    private static CommandReplayStore ConfirmedReplay(string dir)
+    {
+        var path = Path.Combine(dir, CommandReplayStore.FileName);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        StoreFileWriter.Write(path, 0, [StoreFileWriter.Record("agent-a", "c1", "n-c1", issuedAt: now,
+            expiresAt: now + 120, resultB64: "e30=")
+            with { Type = EnvelopeTypes.AgentState }]);
+        return new CommandReplayStore(path);
     }
 
     private sealed class Fixture

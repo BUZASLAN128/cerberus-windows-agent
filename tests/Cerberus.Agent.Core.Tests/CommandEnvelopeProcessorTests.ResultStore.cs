@@ -46,9 +46,34 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task InlineAgentStateResult_WhoseWriteFails_IsDeliveredOnceFromMemoryAndNeverReportedUnknown()
+    public async Task OrdinaryResultWriteFailureDeliversTheCompletedOutcomeFromMemoryWithoutUnknown()
     {
         await using var h = EnvelopeHarness.Create();
+        FileStream? locked = null;
+        h.Ping.Body = (_, _) =>
+        {
+            locked = new FileStream(h.StorePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return Task.FromResult(FakeCommandHandler.Done());
+        };
+        var command = h.Cmd();
+        try
+        {
+            await h.Process(command);
+            await Wait.UntilAsync(() => h.Backend.Results.Count == 1, "ordinary completed result delivered from memory");
+            Assert.Equal("DONE", h.Backend.Results[0].Json.GetProperty("status").GetString());
+        }
+        finally { locked?.Dispose(); }
+
+        await h.Queue.DrainOutboxOnceAsync(default);
+        Assert.Single(h.Backend.Results);
+        Assert.Equal(1, h.Ping.Calls);
+        Assert.DoesNotContain(h.Backend.Results, r => r.Json.GetProperty("status").GetString() == EnvelopeExecutionQueue.OutcomeUnknown);
+    }
+
+    [Fact]
+    public async Task InlineAgentStateUnprovenWriteFailureClosesRejectedWithoutDoneOrUnknown()
+    {
+        await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);
         FileStream? lockFile = null;
         h.State.Body = (_, _) =>
         {
@@ -61,18 +86,32 @@ public sealed partial class CommandEnvelopeProcessorTests
         try
         {
             await h.Process(state);
-            await Wait.UntilAsync(() => h.Backend.Results.Count >= 1, "in-memory result delivered");
+            await h.Queue.DrainOutboxOnceAsync(default);
+            Assert.Empty(h.Backend.Acks);
+            Assert.Empty(h.Backend.Results);
+            Assert.Equal(EnvelopeRecordStates.Started, h.Record(state)!.State);
         }
         finally
         {
             lockFile?.Dispose();
         }
 
-        await h.Queue.DrainOutboxOnceAsync(CancellationToken.None);
+        using var recoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        do
+        {
+            await h.Queue.DrainOutboxOnceAsync(recoveryDeadline.Token);
+            if (h.Record(state)!.State == EnvelopeRecordStates.RejectedAfterReserve) break;
+            // Another state handler can still own the process-wide permit; recovery retries after it ends.
+            await Task.Delay(10, recoveryDeadline.Token);
+        } while (true);
 
-        var result = Assert.Single(h.Backend.Results);
-        Assert.Equal("DONE", result.Json.GetProperty("status").GetString());
-        Assert.DoesNotContain(h.Backend.Results, r => r.Json.GetProperty("status").GetString() == EnvelopeExecutionQueue.OutcomeUnknown);
+        Assert.Empty(h.Backend.Results);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(state)!.State);
+        Assert.Equal(EnvelopeCodes.ReplayStoreUnavailable, h.Record(state)!.RejectReason);
+        Assert.Equal("rejected", Assert.Single(h.Backend.Acks).Json.GetProperty("decision").GetString());
+        Assert.False(h.Record(state)!.ResultSubmitted);
+        Assert.False(h.Queue.RecoveryControlOnly);
+        Assert.Equal(1, h.State.Calls);
     }
 
     [Fact]

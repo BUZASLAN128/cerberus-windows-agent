@@ -18,12 +18,6 @@ public sealed record AgentUpdateReconciliationSnapshot(
     DateTimeOffset? NextRetryUtc,
     DateTimeOffset? NextCheckUtc);
 
-/// <summary>
-/// A signed install request waiting for the update scheduler. It lapses when the lifecycle generation changes, when
-/// automatic updates are not allowed, or at <see cref="ExpiresUtc"/>; quarantine holds it. <see cref="Attempts"/> counts failed stagings.
-/// </summary>
-public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long LifecycleGeneration, DateTimeOffset ExpiresUtc, int Attempts = 0);
-
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
 {
@@ -41,6 +35,10 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? NextRetryUtc { get; init; }
     /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
     public long? RequiredPolicyGeneration { get; init; }
+    /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
+    public string? RequiredInstallAttemptId { get; init; }
+    /// <summary>Request authority deadline, retained after expiry so receipt replacement cannot turn it into manual retry authority.</summary>
+    public DateTimeOffset? InstallRequestAuthorityExpiresUtc { get; init; }
     public int? RunnerProcessId { get; init; }
     public DateTimeOffset? RunnerStartedUtc { get; init; }
     public int? InstallerProcessId { get; init; }
@@ -82,7 +80,8 @@ public sealed class AgentUpdateJournalStore
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
-            value.InstallRequest is { LifecycleGeneration: < 0 } or { Attempts: < 0 } ||
+            (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
+            value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");
@@ -96,7 +95,7 @@ public sealed class AgentUpdateJournalStore
            snapshot.LifecycleGeneration >= 0 &&
            snapshot.RetryCount is >= 0 and <= 3;
 
-    private static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
+    internal static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or

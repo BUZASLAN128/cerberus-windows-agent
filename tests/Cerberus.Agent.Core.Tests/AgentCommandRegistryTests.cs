@@ -66,6 +66,32 @@ public sealed class AgentCommandRegistryTests
         Assert.Equal(EnvelopeTypes.ServerSet.OrderBy(t => t, StringComparer.Ordinal), types);
     }
 
+    [Fact]
+    public async Task ServerSecondaryRegistryAndWiringRejectUpdateWithoutCallingItsHandler()
+    {
+        await using var h = EnvelopeHarness.Create(options => options.StartQueue = false);
+        var calls = 0;
+        var agentState = new AgentStateCommandHandler(new AgentSignedStateStore(h.StorePath + ".state"),
+            _ => Task.FromResult(h.AgentId), new AgentLifecycleController(null!), () => { }, null, () => { }, new AgentRevokeFinalResults());
+        var update = new AgentUpdateRequestCommandHandler(() => { calls++; return null; },
+            new AgentUpdateStateStore(h.StorePath + ".update", h.StorePath + ".result"), NullAgentLogger.Instance, "1.2.3");
+        var handlers = AgentCommandRegistry.CreateServer(Metadata(), agentState, update, AgentProducts.Secondary);
+        Assert.Equal(new[] { "agent_state", "collect_facts", "ping" }, handlers.Select(handler => handler.Type).Order());
+        await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, handlers,
+            _ => Task.FromResult(h.AgentId), () => false, h.Time);
+        var processor = Assert.IsType<EnvelopeCommandProcessor>(EnvelopeWiring.CreateProcessor(h.Api, queue,
+            new CommandDispatcher(handlers, new IdempotencyCache(h.StorePath + ".idem", 100, TimeSpan.FromHours(1))), NullAgentLogger.Instance,
+            AgentProducts.Secondary, commandAnchors: new[] { h.Signer.Anchor }));
+        await processor.ProcessAsync(new[] { h.Cmd(part =>
+        {
+            part.Type = "agent.update.request";
+            part.PayloadJson = """{"schema_version":"agent.update.request.v1","mode":"install"}""";
+        }) }, default);
+        Assert.Equal(0, calls);
+        Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.TypeNotAllowed]);
+        Assert.Empty(h.Backend.Results);
+    }
+
     // ---- collect_facts --------------------------------------------------------------------
 
     private sealed class ContextCapturingSection(string name) : IWindowsTelemetrySectionCollector

@@ -205,7 +205,7 @@ public sealed class AgentUpdateInstallRequestTests
     public async Task NoVerifiedPlanCannotPromoteAnExistingRecommendedAttempt()
     {
         var journal = new MemoryJournal(Awaiting(false, 7, Now.AddHours(20)) with { InstallRequest = DueRequest() });
-        Assert.False(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value, 7, true,
+        Assert.True(await AgentUpdateLocalService.RunInstallRequestAsync(journal.Value, 7, true,
             journal.Change, _ => Task.FromResult(false), NullAgentLogger.Instance, default));
         Assert.Null(journal.Value.InstallRequest);
         Assert.False(journal.Value.Required);

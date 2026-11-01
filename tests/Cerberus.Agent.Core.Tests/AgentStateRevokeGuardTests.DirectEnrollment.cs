@@ -7,12 +7,12 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class AgentStateRevokeGuardTests
 {
     [Theory]
-    [InlineData("legacy", "legacy_revoke_cleanup_pending")]
+    [InlineData("legacy", null)]
     [InlineData("bound", null)]
     [InlineData("other", null)]
-    [InlineData("unreadable", "legacy_revoke_cleanup_pending")]
+    [InlineData("unreadable", null)]
     [InlineData("empty", null)]
-    public async Task DirectEnrollmentCannotSilentlyClearUnprobedLegacyRevoke(string kind, string? expectedCode)
+    public async Task DirectVerifiedEnrollmentClearsOnlyMatchingLegacyRevoke(string kind, string? expectedCode)
     {
         var f = await Fixture.WithPendingRevokeAsync(_dir, productionBinding: true);
         var path = Path.Combine(_dir, "direct-signed-state.json");
@@ -35,9 +35,11 @@ public sealed partial class AgentStateRevokeGuardTests
         var code = WindowsHeadlessHost.CompleteDirectEnrollment(marker, before, adopted, state);
 
         Assert.Equal(expectedCode, code);
-        if (kind is "legacy" or "bound" or "other")
+        if (kind is "bound" or "other")
             Assert.NotNull(new AgentSignedStateStore(path).Load("agent-a").PendingRevoke);
-        if (kind is "legacy" or "unreadable")
+        if (kind == "legacy")
+            Assert.Null(new AgentSignedStateStore(path).Load("agent-a").PendingRevoke);
+        if (kind == "unreadable")
             Assert.True(state.IsQuarantined("agent-a"));
         Assert.False(f.Secrets.Cleared);
     }

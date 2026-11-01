@@ -27,7 +27,10 @@ public sealed record AgentSignedState(
     AgentPendingRevoke? PendingRevoke = null,
     [property: JsonPropertyName("reset")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Reset = null)
+    string? Reset = null,
+    [property: JsonPropertyName("last_applied_command_id")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? LastAppliedCommandId = null)
 {
     /// <summary>The <see cref="Reset"/> value of a quarantined replacement written after a corrupt file was set aside.</summary>
     public const string ResetUnreadable = "unreadable";
@@ -52,7 +55,7 @@ public sealed record AgentSignedState(
 /// directory, owner, DACL, directory or reparse point at the path reads as quarantined as well and is
 /// never parsed; the next signed write replaces the object.
 /// </summary>
-public sealed class AgentSignedStateStore
+public sealed partial class AgentSignedStateStore
 {
     public const string FileName = "agent-state.v1.json";
     private const long MaxFileBytes = 64 * 1024;
@@ -73,12 +76,14 @@ public sealed class AgentSignedStateStore
 
     /// <param name="enforceFileProvenance">Also demands a SYSTEM/Administrators owner and a DACL without untrusted
     /// writers on a path outside <c>Privileged</c> (always on inside it).</param>
-    public AgentSignedStateStore(string path, IAgentLogger? log = null, bool enforceFileProvenance = false)
+    public AgentSignedStateStore(string path, IAgentLogger? log = null, bool enforceFileProvenance = false,
+        string? enrolledAgentId = null)
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
         _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _log = log ?? NullAgentLogger.Instance;
         _highWater = new AgentStateHighWater(_path, _log, enforceFileProvenance);
+        _currentAgentId = enrolledAgentId;
     }
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
@@ -150,7 +155,8 @@ public sealed class AgentSignedStateStore
             var stored = _state is { Reset: null } && string.Equals(_state.AgentId, agentId, StringComparison.Ordinal)
                 ? _state
                 : AgentSignedState.Empty(agentId);
-            var floor = HighWaterFor(agentId);
+            var floor = Math.Max(HighWaterFor(agentId),
+                _state is { Reset: not null } reset && reset.AgentId == agentId ? reset.StateSeq : 0);
             return stored.StateSeq >= floor ? stored : stored with { StateSeq = floor };
         }
     }
@@ -167,20 +173,23 @@ public sealed class AgentSignedStateStore
         lock (_gate)
         {
             EnsureLoaded();
-            var currentSeq = _state is { Reset: null } && string.Equals(_state.AgentId, state.AgentId, StringComparison.Ordinal)
+            var currentSeq = _state is not null && string.Equals(_state.AgentId, state.AgentId, StringComparison.Ordinal)
                 ? _state.StateSeq : 0;
             if (state.StateSeq <= Math.Max(currentSeq, HighWaterFor(state.AgentId)))
                 return false;
-            if (!TryPersist(state))
+            // No accepted state may outlive its durable sequence floor.
+            if (!_highWater.TryWrite(state.AgentId, state.StateSeq))
                 return false;
+            _hwm = (state.AgentId, state.StateSeq);
+            if (!TryPersist(state))
+            {
+                EnterReset(state.AgentId);
+                return false;
+            }
             if (_state is not null && !string.Equals(_state.AgentId, state.AgentId, StringComparison.Ordinal))
                 _log.Info("Signed agent state rebound to a new agent id.");
             _state = state;
             _unreadable = false;
-            // After the state write: a failed state write must not leave a mark that rejects its retry. A lagging
-            // mark only weakens the protection against a later corrupt file to what it was without the mark.
-            if (state.StateSeq > HighWaterFor(state.AgentId) && _highWater.TryWrite(state.AgentId, state.StateSeq))
-                _hwm = (state.AgentId, state.StateSeq);
             return true;
         }
     }
@@ -213,15 +222,15 @@ public sealed class AgentSignedStateStore
     }
 
     /// <summary>Only the verified enrollment owner may complete a context-free legacy revoke after publication.</summary>
-    public bool TryClearLegacyRevokeAfterEnrollment(string agentId, bool credentialProbeAccepted)
+    public bool TryClearLegacyRevokeAfterEnrollment(string agentId, bool verifiedEnrollment)
     {
         lock (_gate)
         {
             EnsureLoaded();
-            if (_unreadable) return false;
+            if (_unreadable || _state?.Reset is not null) return false;
             if (_state is not { PendingRevoke: { Registration: null } pending } state || state.AgentId != agentId)
                 return true;
-            if (!credentialProbeAccepted) return false;
+            if (!verifiedEnrollment) return false;
             return TryClearPendingRevoke(agentId, pending.CommandId);
         }
     }
@@ -242,7 +251,11 @@ public sealed class AgentSignedStateStore
         {
             _file.ValidateDirectory();
             if (!_file.Exists())
+            {
+                if (_currentAgentId is not null || _hwm is not null)
+                    EnterReset(_currentAgentId ?? _hwm!.Value.AgentId);
                 return;
+            }
             _file.ValidateFile();
         }
         catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex))
@@ -257,6 +270,8 @@ public sealed class AgentSignedStateStore
         {
             // A reset marker quarantines through its own agent id (IsQuarantinedLocked), not process-wide.
             _state = state;
+            if (state is not null && state.StateSeq < HighWaterFor(state.AgentId))
+                EnterReset(state.AgentId);
             return;
         }
 
@@ -267,7 +282,7 @@ public sealed class AgentSignedStateStore
             File.Move(_path, corruptPath, overwrite: true);
             _log.Warn($"Signed agent state was unreadable; moved to {Path.GetFileName(corruptPath)}; quarantined until the next signed state.");
             // Without a file a restart would lose the quarantine; on failure the in-memory quarantine stays.
-            TryPersist(new AgentSignedState(_currentAgentId ?? AgentSignedState.UnknownAgentId, 0, true, null, null, AgentSignedState.ResetUnreadable));
+            EnterReset(_currentAgentId ?? _hwm?.AgentId ?? AgentSignedState.UnknownAgentId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -291,7 +306,8 @@ public sealed class AgentSignedStateStore
                         || (revoke.Registration is { } registration &&
                             (registration.AgentId != loaded.AgentId || registration.TenantId is { Length: 0 }
                              || (registration.EnrollmentNonce is not null && !Guid.TryParseExact(registration.EnrollmentNonce, "N", out _))))))
-                || loaded.Reset is not (null or AgentSignedState.ResetUnreadable))
+                || loaded.Reset is not (null or AgentSignedState.ResetUnreadable)
+                || loaded.LastAppliedCommandId is { } appliedId && (string.IsNullOrWhiteSpace(appliedId) || appliedId.Length > 256))
                 return false;
             state = loaded;
             return true;

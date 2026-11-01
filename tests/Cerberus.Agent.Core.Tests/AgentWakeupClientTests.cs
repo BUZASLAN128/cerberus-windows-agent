@@ -3,7 +3,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class AgentWakeupClientTests
+public sealed partial class AgentWakeupClientTests
 {
     [Fact]
     public async Task ReconfigurationKeepsRateLimitDeadlineAndStopsOnMissingDiscovery()
