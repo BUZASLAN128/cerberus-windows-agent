@@ -69,7 +69,14 @@ internal static partial class Program
         trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;
         VerifyHash(executable, runtime, executableHash);
         trace.Phase = AgentInstallerHealthPhase.ServiceAssemblyHash;
-        VerifyHash(assembly, runtime, assemblyHash);
+        if (AgentBuildProfile.IsServer)
+        {
+            var embedded = AgentSingleFileBundle.ReadAssembly(executable, "Cerberus.Agent.Service.dll");
+            var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(embedded));
+            if (!string.Equals(actual, assemblyHash, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Embedded service assembly hash does not match the package.");
+        }
+        else VerifyHash(assembly, runtime, assemblyHash);
         using var overall = new CancellationTokenSource(options.Overall);
         using var first = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
         first.CancelAfter(TimeSpan.FromSeconds(60));

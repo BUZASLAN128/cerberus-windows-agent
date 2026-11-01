@@ -267,10 +267,19 @@ function ConvertFrom-ManifestPayloadV2 {
 
 function Import-AgentManifestVerifier {
   param([Parameter(Mandatory = $true)][string]$AssemblyPath)
-  if (-not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
-    throw "Agent verifier assembly was not found: $AssemblyPath"
+  $hostPath = Join-Path ([IO.Path]::GetDirectoryName($AssemblyPath)) 'Cerberus.Agent.exe'
+  $bundled = $false
+  if (Test-Path -LiteralPath $hostPath -PathType Leaf) {
+    Import-AgentBundleReader
+    $bundled = [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)
   }
-  [void][System.Reflection.Assembly]::LoadFrom((Resolve-Path -LiteralPath $AssemblyPath).Path)
+  if ($bundled) {
+    [void][System.Reflection.Assembly]::Load([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly($hostPath, [IO.Path]::GetFileName($AssemblyPath)))
+  } elseif (-not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
+    throw "Agent verifier assembly was not found: $AssemblyPath"
+  } else {
+    [void][System.Reflection.Assembly]::LoadFrom((Resolve-Path -LiteralPath $AssemblyPath).Path)
+  }
   if (-not ("Cerberus.Agent.Core.AgentUpdateManifestValidator" -as [type])) {
     throw "Agent manifest verifier type was not found in $AssemblyPath"
   }

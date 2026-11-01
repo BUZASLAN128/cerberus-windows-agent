@@ -39,11 +39,24 @@ public static class AgentUpdateRunnerFiles
                 throw new InvalidOperationException("Update runner dependency checksum mismatch.");
             inventory.Add(relative, digest);
         }
-        if (!inventory.ContainsKey("Cerberus.Agent.Updater.exe") || !inventory.ContainsKey("Cerberus.Agent.Core.dll"))
+        if (!HasRunnerDependencies(inventory, destination))
             throw new InvalidOperationException("Installed update runner dependencies are incomplete.");
         AgentUpdateDurableFile.Write(Path.Combine(destination, "inventory.json"), destination, new Inventory(inventory, AgentUpdateSecurity.NormalizeRoot(runtimeDirectory)));
         ValidateForLaunch(runtimeDirectory, attemptDirectory);
         return Path.Combine(destination, "Cerberus.Agent.Updater.exe");
+    }
+
+    private static bool HasRunnerDependencies(IReadOnlyDictionary<string, string> inventory, string directory)
+    {
+        if (!inventory.ContainsKey("Cerberus.Agent.Updater.exe")) return false;
+        // Preserve legacy split runtimes for rollback; new server packages are gated as bundles before signing.
+        if (inventory.ContainsKey("Cerberus.Agent.Core.dll")) return true;
+        if (!AgentBuildProfile.IsServer) return false;
+        var host = Path.Combine(directory, "Cerberus.Agent.Updater.exe");
+        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Updater.dll");
+        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Core.dll");
+        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Runtime.dll");
+        return true;
     }
 
     public static void Validate(string runnerDirectory, string attemptDirectory)
@@ -53,7 +66,7 @@ public static class AgentUpdateRunnerFiles
         var inventory = AgentUpdateDurableFile.Read<Inventory>(Path.Combine(runnerDirectory, "inventory.json"), runnerDirectory)
             ?? throw new InvalidOperationException("Update runner inventory is missing.");
         if (inventory.Files.Count is < 2 or > 4096 ||
-            !inventory.Files.ContainsKey("Cerberus.Agent.Updater.exe") || !inventory.Files.ContainsKey("Cerberus.Agent.Core.dll"))
+            !HasRunnerDependencies(inventory.Files, runnerDirectory))
             throw new InvalidOperationException("Update runner inventory is invalid.");
         foreach (var (relative, expected) in inventory.Files)
         {

@@ -232,7 +232,9 @@ function Publish-AgentProject([string]$Project) {
     "-c", $Configuration,
     "-r", $Runtime,
     "--self-contained", "true",
-    "-p:PublishSingleFile=false",
+    "-p:PublishSingleFile=$($BuildProfile -eq 'server')",
+    "-p:IncludeNativeLibrariesForSelfExtract=$($BuildProfile -eq 'server')",
+    "-p:EnableCompressionInSingleFile=false",
     "-p:DebugType=None",
     "-p:DebugSymbols=false",
     "-p:Version=$Version",
@@ -253,6 +255,7 @@ function Publish-AgentProject([string]$Project) {
       "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
       "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
   ) + $releaseProfile.MsBuildArgs
+  if ($BuildProfile -eq 'server') { $args += '-p:StartupHookSupport=false' }
   dotnet @args
   if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
 }
@@ -295,6 +298,14 @@ $unexpectedRuntimeExecutables = Get-ChildItem -LiteralPath $runtimePublishDir -F
   Select-Object -ExpandProperty Name
 if ($unexpectedRuntimeExecutables.Count -gt 0) {
   throw "Unexpected runtime executable(s) produced: $($unexpectedRuntimeExecutables -join ', ')"
+}
+
+if ($BuildProfile -eq 'server') {
+  Import-AgentBundleReader
+  foreach ($hostName in @('Cerberus.Agent', 'Cerberus.Agent.Service', 'Cerberus.Agent.Updater')) {
+    $entry = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $runtimePublishDir "$hostName.exe"), "$hostName.dll")
+    if (Test-Path -LiteralPath (Join-Path $runtimePublishDir "$hostName.dll")) { throw "Server entry assembly is external: $hostName" }
+  }
 }
 
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
@@ -346,7 +357,12 @@ $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installe
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
-$serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
+if ($BuildProfile -eq 'server') {
+  $assemblyBytes = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $runtimePublishDir 'Cerberus.Agent.Service.exe'), 'Cerberus.Agent.Service.dll')
+  $serviceAssemblySha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($assemblyBytes)).ToLowerInvariant()
+} else {
+  $serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
+}
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
 $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue
