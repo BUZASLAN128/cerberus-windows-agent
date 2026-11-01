@@ -261,7 +261,11 @@ internal static partial class AgentUpdateLocalService
             await ReportFailureAsync(ex).ConfigureAwait(false);
             throw;
         }
-        catch (AgentUpdatePlanMismatchException) { throw; }
+        catch (AgentUpdatePlanMismatchException)
+        {
+            await PublishNewStagePlanMismatchAsync(Journal, installRequest, () => ProjectAsync(CancellationToken.None)).ConfigureAwait(false);
+            throw;
+        }
         catch (Exception ex)
         {
             await ReportFailureAsync(ex).ConfigureAwait(false);
@@ -278,6 +282,19 @@ internal static partial class AgentUpdateLocalService
     {
         if (request?.ExpectedPlan is { } expected && !expected.Matches(actual))
             throw new AgentUpdatePlanMismatchException();
+    }
+
+    internal static async Task PublishNewStagePlanMismatchAsync(AgentUpdateJournalStore journal,
+        AgentUpdateInstallRequest? request, Func<Task> project)
+    {
+        journal.Change(before =>
+        {
+            if (request is null || before.AttemptId is not null || before.Phase != AgentUpdateStates.Checking ||
+                !MatchesPending(before.InstallRequest, request)) return before;
+            var failed = before with { Phase = AgentUpdateStates.Failed };
+            return failed with { InstallRequest = AnchorTerminal(failed, Finish(before.InstallRequest!, "plan_mismatch")) };
+        });
+        await project().ConfigureAwait(false);
     }
 
     private static AgentUpdateJournal RecordRequestRelease(AgentUpdateJournal journal, AgentUpdateInstallRequest? request,

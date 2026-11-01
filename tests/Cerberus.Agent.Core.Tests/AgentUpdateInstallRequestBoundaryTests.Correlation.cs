@@ -353,6 +353,41 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             AgentUpdateLocalService.HoldExpiredInstallRequest(after, false, default);
         });
 
+    // Real protected journal + projection owner helpers; this does not call CheckAndStageOwnedAsync.
+    [Fact]
+    public Task RealJournalNewStagePlanMismatchRemainsPublishedAfterRecovery() => WithCorrelationJournal(async root =>
+    {
+        var journal = new AgentUpdateJournalStore(root);
+        var projection = new AgentUpdateStateStore(Path.Combine(root, "state.json"), Path.Combine(root, "result.json"));
+        var request = CorrelatedRequest();
+        journal.Change(_ => new() { InstallRequest = request, LifecycleGeneration = 7 });
+        journal.Change(before => AgentUpdateLocalService.TransitionStageStart(before, true, false, 7, DateTimeOffset.UtcNow.AddDays(1)));
+        var publications = 0;
+        async Task Project()
+        {
+            var active = journal.Read();
+            Assert.Equal(AgentUpdateStates.Failed, active.Phase);
+            Assert.Equal("plan_mismatch", active.InstallRequest!.TerminalReason);
+            var state = AgentUpdateLocalService.ProjectInstallRequest(active, null,
+                AgentUpdateState.NotChecked("1.0.0") with { State = active.Phase });
+            await projection.WriteAsync(state, default);
+            publications++;
+        }
+        await AgentUpdateLocalService.PublishNewStagePlanMismatchAsync(journal, request, Project);
+        Assert.Equal(1, publications); // The catch owner publishes before control returns for the rethrow.
+        var first = await projection.ReadAsync("1.0.0", default);
+        Assert.Equal((AgentUpdateStates.Failed, "install_request_plan_mismatch", request.CommandId),
+            (first.State, first.LastErrorCode, first.CommandId));
+        var terminal = journal.Read();
+        var reconciled = AgentUpdateLocalService.RecoverActiveAttempt(root, terminal, 7, DateTimeOffset.UtcNow, false, null,
+            journal.Change, journal.ChangeAttempt, journal.Read);
+        Assert.Equal(terminal, reconciled); // Same no-attempt recovery branch used by the next ReconcileOwnedAsync.
+        await Project();
+        var next = await projection.ReadAsync("1.0.0", default);
+        Assert.Equal((first.State, first.LastErrorCode, first.CommandId, first.ReportSequence),
+            (next.State, next.LastErrorCode, next.CommandId, next.ReportSequence));
+    }, protectedJournal: true);
+
 #if CERBERUS_SERVER_PROFILE
     [Fact]
     public Task ServerOptionalPlanPersistsAndMalformedShapesNeverReachAdmission() => WithCorrelationJournal(async root =>
