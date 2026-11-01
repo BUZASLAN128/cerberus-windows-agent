@@ -229,6 +229,34 @@ public sealed class ServerPackageStaticTests
     }
 
     [Fact]
+    public void ReleaseScript_MeasuresFinalAssemblyBytesAfterSigning()
+    {
+        var repo = FindRepoRoot();
+        var script = File.ReadAllText(Path.Combine(repo, "scripts", "build-agent-public-release.ps1"));
+        Assert.True(script.IndexOf("Assert-ServerBundleLayout", StringComparison.Ordinal) <
+            script.IndexOf("Invoke-FirstPartySigning ", StringComparison.Ordinal));
+        Assert.True(script.IndexOf("$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash", StringComparison.Ordinal) >
+            script.LastIndexOf("Invoke-FirstPartySigning ", StringComparison.Ordinal));
+        var root = Path.Combine(Path.GetTempPath(), "service-signing-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Cerberus.Agent.Service.dll"), "unsigned fixture");
+            var lib = Path.Combine(repo, "scripts", "release-trust-lib.ps1").Replace("'", "''");
+            var escaped = root.Replace("'", "''");
+            // A bounded signer seam mutates the bytes; this does not claim an Authenticode test.
+            var run = RunPwsh($". '{lib}'; $r='{escaped}'; " +
+                "$before=Get-ReleaseServiceAssemblyHash $r desktop; " +
+                "[IO.File]::AppendAllText((Join-Path $r 'Cerberus.Agent.Service.dll'),'signer-stage-fixture'); " +
+                "$after=Get-ReleaseServiceAssemblyHash $r desktop; " +
+                "$final=(Get-FileHash (Join-Path $r 'Cerberus.Agent.Service.dll') -Algorithm SHA256).Hash.ToLowerInvariant(); " +
+                "if($before -eq $after -or $after -ne $final){throw 'Final service identity mismatch'}");
+            Assert.True(run.ExitCode == 0, run.Output);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void ReleaseProfileLib_ServerBuildRequiresAnchorsAndDesktopAddsNothing()
     {
         var anchors = Path.Combine(Path.GetTempPath(), $"anchors-{Guid.NewGuid():N}.b64");

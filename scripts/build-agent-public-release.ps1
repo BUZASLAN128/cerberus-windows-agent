@@ -296,8 +296,7 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
   throw "Unexpected runtime executable(s) produced: $($unexpectedRuntimeExecutables -join ', ')"
 }
 
-$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash $runtimePublishDir $BuildProfile
-
+if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
@@ -347,6 +346,7 @@ $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installe
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
+$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash $runtimePublishDir $BuildProfile
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
 $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue

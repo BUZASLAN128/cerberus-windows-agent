@@ -8,16 +8,20 @@ function Import-AgentBundleReader {
   }
 }
 
+function Assert-ServerBundleLayout([string]$RuntimeDir) {
+  Import-AgentBundleReader
+  foreach ($hostName in @('Cerberus.Agent', 'Cerberus.Agent.Service', 'Cerberus.Agent.Updater')) {
+    $null = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $RuntimeDir "$hostName.exe"), "$hostName.dll")
+    if (Test-Path -LiteralPath (Join-Path $RuntimeDir "$hostName.dll")) { throw "Server entry assembly is external: $hostName" }
+  }
+}
+
 function Get-ReleaseServiceAssemblyHash {
   param([string]$RuntimeDir, [string]$BuildProfile)
   if ($BuildProfile -ne 'server') {
     return (Get-FileHash -Algorithm SHA256 (Join-Path $RuntimeDir 'Cerberus.Agent.Service.dll')).Hash.ToLowerInvariant()
   }
   Import-AgentBundleReader
-  foreach ($hostName in @('Cerberus.Agent', 'Cerberus.Agent.Service', 'Cerberus.Agent.Updater')) {
-    $null = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $RuntimeDir "$hostName.exe"), "$hostName.dll")
-    if (Test-Path -LiteralPath (Join-Path $RuntimeDir "$hostName.dll")) { throw "Server entry assembly is external: $hostName" }
-  }
   $bytes = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $RuntimeDir 'Cerberus.Agent.Service.exe'), 'Cerberus.Agent.Service.dll')
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
 }
