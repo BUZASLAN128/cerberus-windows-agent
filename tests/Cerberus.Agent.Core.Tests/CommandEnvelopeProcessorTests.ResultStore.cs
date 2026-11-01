@@ -96,7 +96,14 @@ public sealed partial class CommandEnvelopeProcessorTests
             lockFile?.Dispose();
         }
 
-        await h.Queue.DrainOutboxOnceAsync(CancellationToken.None);
+        using var recoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        do
+        {
+            await h.Queue.DrainOutboxOnceAsync(recoveryDeadline.Token);
+            if (h.Record(state)!.State == EnvelopeRecordStates.RejectedAfterReserve) break;
+            // Another state handler can still own the process-wide permit; recovery retries after it ends.
+            await Task.Delay(10, recoveryDeadline.Token);
+        } while (true);
 
         Assert.Empty(h.Backend.Results);
         Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(state)!.State);

@@ -12,14 +12,15 @@ public sealed partial class AgentSignedStateStore
     { get { lock (_gate) return ControlRecovery().Pending; } }
 
     /// <summary>A replay high-water mark alone is not proof that the signed snapshot reached disk.</summary>
-    internal bool HasPersistedState(string agentId, long sequence, bool exactSequence)
+    internal bool HasPersistedState(string agentId, long sequence, bool exactSequence, string? commandId = null)
     {
         lock (_gate)
         {
             EnsureLoaded();
             return sequence > 0 && !_unreadable && _state is { Reset: null } stored &&
                 stored.AgentId == agentId && stored.StateSeq >= sequence &&
-                stored.StateSeq >= HighWaterFor(agentId) && (!exactSequence || stored.StateSeq == sequence);
+                stored.StateSeq >= HighWaterFor(agentId) && (!exactSequence || stored.StateSeq == sequence) &&
+                (commandId is null || stored.LastAppliedCommandId == commandId);
         }
     }
 
@@ -45,14 +46,12 @@ public sealed partial class AgentSignedStateStore
             try
             {
                 _file.ValidateDirectory();
-                if (!_file.Exists()) return true;
+                if (!_file.Exists()) return false;
                 _file.ValidateFile();
                 if (!TryRead(out var state) || state is null) return true;
                 if (state.AgentId != current.AgentId && state.AgentId != AgentSignedState.UnknownAgentId) return false;
-                if (state.Reset is not null) return true;
-                var highWater = _highWater.Read();
-                if (state.StateSeq > 0 && (highWater is null || highWater.Value.AgentId != state.AgentId ||
-                    highWater.Value.Seq > state.StateSeq)) return true;
+                // Update authorization uses positive control evidence. Runtime snapshot recovery
+                // keeps its independent fail-closed policy in RequiresRecovery/HoldsNormalWork.
                 if (state.PendingRevoke is not { } pending) return false;
                 if (pending.Registration is not { } prior) return true;
                 if (prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId) return false;

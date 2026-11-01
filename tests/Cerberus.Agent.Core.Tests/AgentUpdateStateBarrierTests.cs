@@ -30,7 +30,7 @@ public sealed class AgentUpdateStateBarrierTests
             var replayPath = Path.Combine(root, "replay.json");
             var statePath = Path.Combine(root, "state.json");
             var snapshot = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = Guid.NewGuid().ToString("N") };
-            var pending = failure == "revoke" ? new AgentPendingRevoke("owned-revoke", "agent_revoked",
+            var pending = failure is "revoke" or "missing_replay" or "corrupt_replay" ? new AgentPendingRevoke("owned-revoke", "agent_revoked",
                 new("agent-a", "t1", snapshot.LastEnrollmentNonce)) : null;
             Assert.True(new AgentSignedStateStore(statePath).TrySave(new("agent-a", 1, false, null, pending)));
             if (failure == "signed_recovery") File.WriteAllText(statePath, "{owned malformed state");
@@ -54,6 +54,57 @@ public sealed class AgentUpdateStateBarrierTests
             if (replayBytes is null) Assert.False(File.Exists(replayPath));
             else Assert.Equal(replayBytes, File.ReadAllBytes(replayPath));
             Assert.Empty(Directory.GetFiles(root, "*.corrupt-*"));
+        }
+        finally
+        {
+            var resolved = Path.GetFullPath(root);
+            Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+        }
+    }
+
+    [Fact]
+    public void NormalEnrollmentReplayResetAndNewSnapshotResetAreNotUpdateBarriers()
+    {
+        var parent = Path.GetFullPath(Path.GetTempPath());
+        var root = Path.Combine(parent, "cerberus-normal-update-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var replayPath = Path.Combine(root, "replay.json");
+            var statePath = Path.Combine(root, "state.json");
+            var replay = new CommandReplayStore(replayPath, enrollmentEstablished: true);
+            Assert.True(replay.IsAvailable); // Real first-enrollment initialization writes reset_at.
+            Assert.True(replay.ResetAt > 0);
+            bool Pending() => AgentUpdateLocalService.PendingStateDelivery(new() { Generation = 1 }, new Secrets(),
+                _ => new CommandReplayStore(replayPath), _ => new AgentSignedStateStore(statePath));
+            Assert.False(Pending());
+            var state = new AgentSignedStateStore(statePath, enrolledAgentId: "agent-a");
+            Assert.True(state.RequiresRecovery); // Real missing-snapshot initialization writes Reset.
+            Assert.True(File.Exists(statePath));
+            Assert.False(Pending());
+            Assert.True(state.RequiresRecovery); // Runtime holds remain independent and unchanged.
+        }
+        finally
+        {
+            var resolved = Path.GetFullPath(root);
+            Assert.Equal(parent.TrimEnd(Path.DirectorySeparatorChar), Path.GetDirectoryName(resolved), ignoreCase: true);
+            if (Directory.Exists(resolved)) Directory.Delete(resolved, true);
+        }
+    }
+
+    [Fact]
+    public void MissingReplayAloneIsNotAnUpdateBarrier()
+    {
+        var parent = Path.GetFullPath(Path.GetTempPath());
+        var root = Path.Combine(parent, "cerberus-missing-update-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            Assert.False(AgentUpdateLocalService.PendingStateDelivery(new() { Generation = 1 }, new Secrets(),
+                _ => new CommandReplayStore(Path.Combine(root, "replay.json")),
+                _ => new AgentSignedStateStore(Path.Combine(root, "state.json"))));
+            Assert.Empty(Directory.GetFiles(root));
         }
         finally
         {

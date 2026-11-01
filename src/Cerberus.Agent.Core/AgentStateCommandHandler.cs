@@ -75,7 +75,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
 
         var applied = new List<string>(3);
-        var next = current with { StateSeq = seq };
+        var next = current with { StateSeq = seq, LastAppliedCommandId = command.Id };
         if (payload.TryGetProperty("registration_state", out var registration))
         {
             next = next with { RegistrationState = registration.GetString() };

@@ -175,7 +175,9 @@ public sealed partial class CommandEnvelopeStateControlTests
 
         await f.Queue.DrainOutboxOnceAsync(default);
 
-        Assert.Single(f.H.Backend.Acks);
+        Assert.Equal(2, f.H.Backend.Acks.Count);
+        Assert.Equal("rejected", f.H.Backend.Acks[1].Json.GetProperty("decision").GetString());
+        Assert.Equal(EnvelopeCodes.ReplayStoreUnavailable, f.H.Backend.Acks[1].Json.GetProperty("reason").GetString());
         Assert.Empty(f.H.Backend.Results);
         Assert.True(f.State.HoldsNormalWork());
         var newer = f.StateCommand(2);

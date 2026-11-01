@@ -32,7 +32,7 @@ internal static class AgentEnrollmentCleanupRecovery
             var cleanup = cleanupStore?.Invoke(product) ?? AgentEnrollmentRevokeCleanupStore.ForProduct(product);
             AgentEnrollmentRevokeCleanup? record;
             try { record = cleanup.Read(); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
             {
                 return false; // A damaged obligation cannot prevent the dormant credential path from starting.
             }
@@ -59,7 +59,7 @@ internal static class AgentEnrollmentCleanupRecovery
                     return Task.CompletedTask;
                 }, ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
             {
                 return false;
             }

@@ -91,7 +91,9 @@ internal static partial class ServiceMode
                 {
                     if (worker is null || worker.IsCompleted)
                     {
-                        if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
+                        if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is IOException or UnauthorizedAccessException)
+                            log.Warn($"Service worker read failed ({worker.Exception.GetBaseException().GetType().Name}); retrying with restart backoff.");
+                        else if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
                             await worker.ConfigureAwait(false);
                         // Every profile can end before its first heartbeat while revoke delivery is pending.
                         if (worker is not null)
@@ -152,76 +154,13 @@ internal static partial class ServiceMode
         }
 
         ISecretStore secrets = new DpapiSecretStore(SecretStoreScope.Machine);
-        (AgentIdentity Identity, string RefreshToken, string PrivateKeyPem, string BackendUrl, string? TailscaleLoginServer, string? TailscaleAuthkey) loadedSecrets;
-        try
+        var loaded = await LoadServiceCredentialsAsync(secrets, lifecycleState, log, ct).ConfigureAwait(false);
+        if (loaded is null)
         {
-            loadedSecrets = await secrets.LoadAsync(ct).ConfigureAwait(false);
-        }
-        catch (FileNotFoundException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_missing",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are not enrolled.");
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-        catch (DirectoryNotFoundException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_missing",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are not enrolled.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or IOException or UnauthorizedAccessException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_unavailable",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are unavailable.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (InvalidOperationException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_invalid",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials could not be decoded.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            await lifecycleState.TransitionAsync(
-                AgentLifecycleState.NeedsReenrollment,
-                reasonCode: "credentials_invalid",
-                requestId: null,
-                nextAttemptUtc: null,
-                genericAuthFailureCount: null,
-                ct).ConfigureAwait(false);
-            log.Warn("Service starting dormant; machine credentials are malformed.");
-            await RunDormantAsync(ct).ConfigureAwait(false);
-            return;
-        }
+        var loadedSecrets = loaded.Value;
 
         if (string.IsNullOrWhiteSpace(loadedSecrets.Identity.AgentId) ||
             string.IsNullOrWhiteSpace(loadedSecrets.Identity.TenantId) ||

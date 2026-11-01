@@ -48,15 +48,20 @@ public sealed class AgentEnrollmentCleanupRecoveryTests
         finally { Directory.Delete(root, true); }
     }
 
-    [Fact]
-    public async Task DamagedReceiptDoesNotPreventDormantStartupOrConsumeEvidence()
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("empty")]
+    [InlineData("large")]
+    [InlineData("duplicate")]
+    public async Task DamagedReceiptDoesNotPreventDormantStartupOrConsumeEvidence(string kind)
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {
             var path = Path.Combine(root, "cleanup.json");
-            File.WriteAllText(path, "{owned malformed receipt");
+            File.WriteAllText(path, kind switch { "empty" => "", "large" => new string('a', 4097),
+                "duplicate" => "{\"generation\":1,\"generation\":1}", _ => "{owned malformed receipt" });
             var bytes = File.ReadAllBytes(path);
             var snapshot = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = Guid.NewGuid().ToString("N") };
             var lifecycle = new InMemoryAgentLifecycleStateStore(snapshot);

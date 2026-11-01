@@ -32,6 +32,8 @@ internal interface IHeadlessHost
     HttpClient CreateHttpClient(Uri backend);
     /// <summary>Hands the saved pending credentials to the service (<c>false</c>) or commits them directly (<c>true</c>). Null on success, otherwise a code.</summary>
     Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct);
+    /// <summary>Proves this activation's marker against the committed lifecycle and active credential.</summary>
+    Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct) => Task.FromResult(false);
     string? ReadFingerprintLine();
     void WriteFingerprintFile(string content);
     Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct);

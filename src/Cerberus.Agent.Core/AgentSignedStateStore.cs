@@ -27,7 +27,10 @@ public sealed record AgentSignedState(
     AgentPendingRevoke? PendingRevoke = null,
     [property: JsonPropertyName("reset")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Reset = null)
+    string? Reset = null,
+    [property: JsonPropertyName("last_applied_command_id")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? LastAppliedCommandId = null)
 {
     /// <summary>The <see cref="Reset"/> value of a quarantined replacement written after a corrupt file was set aside.</summary>
     public const string ResetUnreadable = "unreadable";
@@ -303,7 +306,8 @@ public sealed partial class AgentSignedStateStore
                         || (revoke.Registration is { } registration &&
                             (registration.AgentId != loaded.AgentId || registration.TenantId is { Length: 0 }
                              || (registration.EnrollmentNonce is not null && !Guid.TryParseExact(registration.EnrollmentNonce, "N", out _))))))
-                || loaded.Reset is not (null or AgentSignedState.ResetUnreadable))
+                || loaded.Reset is not (null or AgentSignedState.ResetUnreadable)
+                || loaded.LastAppliedCommandId is { } appliedId && (string.IsNullOrWhiteSpace(appliedId) || appliedId.Length > 256))
                 return false;
             state = loaded;
             return true;

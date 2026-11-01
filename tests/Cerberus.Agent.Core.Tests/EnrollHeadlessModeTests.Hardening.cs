@@ -59,6 +59,30 @@ public sealed partial class EnrollHeadlessModeTests
 #endif
     private static readonly AgentLifecycleSnapshot Gen0 = new();
 
+    [Theory]
+    [InlineData("unrelated_generation")]
+    [InlineData("old_credential")]
+    [InlineData("missing_active_credential")]
+    public async Task ActivationFailureCannotUseAnotherRegistrationsGenerationOrCredential(string scenario)
+    {
+        var nonce = Guid.NewGuid().ToString("N");
+        var active = new HeadlessEnrollmentTests.MemoryStore();
+        if (scenario != "missing_active_credential")
+            active.Saved = (new AgentIdentity("agent-0001", "tenant-A"), "owned", "owned", "https://backend.example", null, null);
+        var before = new AgentLifecycleSnapshot(AgentLifecycleState.NeedsReenrollment);
+        var after = new AgentLifecycleSnapshot { Generation = 1,
+            LastEnrollmentNonce = scenario == "unrelated_generation" ? Guid.NewGuid().ToString("N") : nonce };
+        var inner = new FakeHost { ActivateResult = "legacy_revoke_cleanup_pending", ActivationNonce = nonce,
+            ActiveStore = active, LifecycleSequence = [before, after] };
+        var (exit, stdout, stderr) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [true] });
+        Assert.Equal(4, exit);
+        Assert.Contains("legacy_revoke_cleanup_pending", stderr);
+        Assert.Equal("", stdout);
+        Assert.Null(inner.FingerprintFile);
+        Assert.Equal(AgentBuildProfile.IsServer ? 1 : 0, inner.DiscardCalls);
+        if (scenario != "missing_active_credential") Assert.Equal("tenant-A", active.Saved!.Value.Identity.TenantId);
+    }
+
     [Fact]
     public async Task CommittedDirectEnrollmentWithUnreadableSignedStateExitsZeroAndWritesFingerprint()
     {
@@ -92,8 +116,9 @@ public sealed partial class EnrollHeadlessModeTests
     [InlineData(true)]
     public async Task ReportedActivationFailureAfterVisibleCommitPreservesSuccessfulEnrollment(bool throws)
     {
+        var nonce = Guid.NewGuid().ToString("N");
         var inner = new FakeHost { ActivateResult = "legacy_revoke_cleanup_pending", ActivateThrows = throws,
-            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1 }] };
+            ActivationNonce = nonce, LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce }] };
         var (exit, stdout, _) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [false, true] });
         Assert.Equal(0, exit);
         Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
@@ -105,11 +130,13 @@ public sealed partial class EnrollHeadlessModeTests
     public async Task Cancelled_activation_after_the_service_committed_the_adoption_reports_success()
     {
         using var cts = new CancellationTokenSource();
+        var nonce = Guid.NewGuid().ToString("N");
         var inner = new FakeHost
         {
             CancelOnActivate = cts,
             DiscardThrows = true,
-            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1 }],
+            ActivationNonce = nonce,
+            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce }],
         };
         var host = new SeamHost(inner) { CredentialStates = [false, true] };
 
@@ -305,6 +332,8 @@ public sealed partial class EnrollHeadlessModeTests
         }
 
         public Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct) => inner.ActivateAsync(commitDirectly, ct);
+        public Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct)
+            => inner.IsEnrollmentCommittedAsync(before, ct);
         public string? ReadFingerprintLine() => inner.ReadFingerprintLine();
         public void WriteFingerprintFile(string content) => inner.WriteFingerprintFile(content);
         public Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct)
