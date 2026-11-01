@@ -10,7 +10,10 @@ public sealed class TailscaleStatusProbeTests
     {
         var psi = TailscaleStatusProbe.CreateStatusStartInfo();
 
-        Assert.Equal("tailscale", psi.FileName);
+        Assert.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Tailscale", "tailscale.exe"), psi.FileName);
+        Assert.True(Path.IsPathFullyQualified(psi.FileName));
+        Assert.False(psi.UseShellExecute);
         Assert.Equal("status --json", psi.Arguments);
         Assert.DoesNotContain(" up", psi.Arguments);
         Assert.DoesNotContain("login", psi.Arguments);

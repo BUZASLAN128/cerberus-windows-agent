@@ -220,7 +220,7 @@ public sealed class TailscaleEnsureConnectedHandler : ICommandHandler
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = "tailscale",
+            FileName = TailscaleStatusProbe.ExecutablePath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
