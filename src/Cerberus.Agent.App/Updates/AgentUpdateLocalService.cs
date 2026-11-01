@@ -1438,7 +1438,7 @@ internal static partial class AgentUpdateLocalService
 
     private static Task<AgentLifecycleSnapshot> LoadLifecycleAsync(CancellationToken ct)
         => new DurableAgentLifecycleStateStore().LoadAsync(ct);
-    private static bool AllowsAutomatic(AgentLifecycleSnapshot lifecycle)
+    internal static bool AllowsAutomatic(AgentLifecycleSnapshot lifecycle)
         => AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.QuiescenceComplete && !PendingStateDelivery(lifecycle);
     private static void RequireService()
     {

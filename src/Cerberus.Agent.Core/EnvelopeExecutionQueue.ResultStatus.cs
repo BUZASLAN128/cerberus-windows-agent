@@ -22,6 +22,9 @@ public sealed partial class EnvelopeExecutionQueue
         try
         {
             ct.ThrowIfCancellationRequested();
+            if ((command.Type != EnvelopeTypes.AgentState && RequiresStateRecovery) ||
+                (IsQuarantined() && command.Type is not (EnvelopeTypes.Ping or EnvelopeTypes.AgentState)))
+                return new CommandResult("FAILED", null, null, EnvelopeCodes.Quarantined, null);
             return await InvokeAsync(handler, command, ct).ConfigureAwait(false);
         }
         finally
