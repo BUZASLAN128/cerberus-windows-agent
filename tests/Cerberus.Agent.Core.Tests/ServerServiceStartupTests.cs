@@ -39,11 +39,22 @@ public sealed class ServerServiceStartupTests
     public async Task Recover_DrainsOutboxBeforeRecordingRevoke_AndAllowsNetwork()
     {
         var h = new Harness();
+        h.Recover = () => { h.RevokePending = false; return Task.CompletedTask; };
 
         var allowed = await h.Build().RecoverPendingRevokeAsync(CancellationToken.None, CancellationToken.None);
 
         Assert.True(allowed);
         Assert.Equal(new[] { "drain", "recover" }, h.Calls);
+    }
+
+    [Fact]
+    public async Task Recover_ReadableReplayButPendingRevoke_StopsBeforeHeartbeat()
+    {
+        var h = new Harness { ReplayAvailable = true };
+        Assert.False(await h.Build().RecoverPendingRevokeAsync(default, default));
+        Assert.True(h.RevokePending);
+        Assert.True(h.Stopped);
+        Assert.Equal(new[] { "drain", "recover", "stop" }, h.Calls);
     }
 
     [Fact]

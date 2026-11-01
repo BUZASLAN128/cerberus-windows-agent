@@ -41,6 +41,8 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? NextRetryUtc { get; init; }
     /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
     public long? RequiredPolicyGeneration { get; init; }
+    /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
+    public string? RequiredInstallAttemptId { get; init; }
     public int? RunnerProcessId { get; init; }
     public DateTimeOffset? RunnerStartedUtc { get; init; }
     public int? InstallerProcessId { get; init; }
@@ -82,6 +84,7 @@ public sealed class AgentUpdateJournalStore
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
+            (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
             value.InstallRequest is { LifecycleGeneration: < 0 } or { Attempts: < 0 } ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))

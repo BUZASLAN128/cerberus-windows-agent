@@ -123,7 +123,8 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _log.Warn($"agent_state revoke recovery skipped: agent id unavailable ({ex.GetType().Name}).");
+            _stopAutomaticNetwork();
+            _log.Warn($"agent_state revoke recovery blocked: agent id unavailable ({ex.GetType().Name}); automatic network stays off.");
             return;
         }
 

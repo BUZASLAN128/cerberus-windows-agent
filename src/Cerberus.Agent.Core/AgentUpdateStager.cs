@@ -206,6 +206,7 @@ public sealed class AgentUpdateStager
             : before with
             {
                 AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
+                RequiredInstallAttemptId = null,
                 RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
                 InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
                 InstallationBootId = null,

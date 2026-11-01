@@ -83,7 +83,8 @@ internal static partial class AgentUpdateLocalService
     internal static AgentUpdateJournal TransitionInstallRequested(AgentUpdateJournal before, long lifecycleGeneration, DateTimeOffset now)
         => before.AttemptId is not null && before.Phase == AgentUpdateStates.AwaitingConsent &&
            before.LifecycleGeneration == lifecycleGeneration && (!before.Required || before.ApplyNotBeforeUtc is null || before.ApplyNotBeforeUtc > now)
-            ? before with { Required = true, ApplyNotBeforeUtc = now }
+            ? before with { Required = true, ApplyNotBeforeUtc = now,
+                RequiredInstallAttemptId = before.RequiredPolicyGeneration is null ? before.AttemptId : null }
             : before;
 
     /// <summary>
@@ -112,7 +113,7 @@ internal static partial class AgentUpdateLocalService
     /// <summary>
     /// Drops a lapsed request or stages a due one without inventing required-policy provenance on a failed check.
     /// The request is cleared once staging returns; a failed staging keeps it for a later try and rethrows, so the failure
-    /// is reported like any other. True when it staged.
+    /// is reported like any other. True when this tick handled a staging check, even when no update was available.
     /// </summary>
     internal static async Task<bool> RunInstallRequestAsync(
         AgentUpdateJournal active,
@@ -158,7 +159,7 @@ internal static partial class AgentUpdateLocalService
                 : before with { InstallRequest = null }
             : before);
         log.Info($"Install request handled: update state {after.Phase}.");
-        return staged;
+        return true;
     }
 
     /// <summary>An automatic install about to launch waits while the agent is quarantined.</summary>
