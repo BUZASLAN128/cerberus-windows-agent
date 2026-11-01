@@ -98,7 +98,10 @@ public sealed partial class CommandReplayStore
         {
             log.Warn($"Async commands disabled: enrollment replay binding unavailable ({ex.GetType().Name}); verified re-enrollment with a new agent identity is required.");
             try { File.Delete(temp); }
-            catch (Exception cleanup) when (ProtectedMachineFile.IsFailure(cleanup)) { }
+            catch (Exception cleanup) when (ProtectedMachineFile.IsFailure(cleanup))
+            {
+                log.Warn($"Replay binding temporary file cleanup failed: {cleanup.GetType().Name}.");
+            }
             return blocked;
         }
     }

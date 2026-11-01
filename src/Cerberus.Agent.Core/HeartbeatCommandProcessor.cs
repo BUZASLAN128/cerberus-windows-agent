@@ -89,7 +89,10 @@ public sealed class LegacyHeartbeatCommandProcessor : IHeartbeatCommandProcessor
                 WarnBestEffort("Managed account command has been pending for at least 60 seconds; heartbeat processing may be delayed.");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception) { /* Diagnostics are best-effort and never gate command completion. */ }
+        catch (Exception ex)
+        {
+            WarnBestEffort($"Managed command delay monitoring stopped: {ex.GetType().Name}.");
+        }
     }
 
     private static bool IsManagedCommand(string? type) => type is
