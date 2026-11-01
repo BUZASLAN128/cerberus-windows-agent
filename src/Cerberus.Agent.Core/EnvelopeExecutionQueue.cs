@@ -232,53 +232,50 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         var keepInFlight = false;
         try
         {
-            // Keep an already accepted entry reserved while control delivery is pending.
-            while (ControlRecovery().Pending)
+            while (true)
             {
-                await DrainOutboxAsync(linked.Token).ConfigureAwait(false);
-                if (ControlRecovery().Pending)
-                    await _signal.WaitAsync(linked.Token).ConfigureAwait(false);
-            }
-
-            var current = await _currentAgentId(linked.Token).ConfigureAwait(false);
-            var stored = Store.Find(record.AgentId, record.Id);
-            if (!string.Equals(current, record.AgentId, StringComparison.Ordinal)
-                || stored?.State != EnvelopeRecordStates.Reserved)
-            {
-                _log.Warn($"Command envelope id={record.Id} dropped before start: agent id or record changed.");
-                Forget(record);
-                return;
-            }
-
-            var now = Time.GetUtcNow().ToUnixTimeSeconds();
-            byte[] body;
-            if (now > envelope.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds)
-            {
-                body = Failed("expired_before_start", record.EnvelopeSha256);
-            }
-            else if ((RequiresStateRecovery && envelope.Type != EnvelopeTypes.AgentState) ||
-                     (IsQuarantined() && envelope.Type is not (EnvelopeTypes.Ping or EnvelopeTypes.AgentState)))
-            {
-                body = Failed(EnvelopeCodes.Quarantined, record.EnvelopeSha256);
-            }
-            else
-            {
-                var reserved = stored;
-                stored = stored with { State = EnvelopeRecordStates.Started };
-                if (Store.TryUpdate(stored, reserved.State) != ReplayUpdateOutcome.Updated)
+                await WaitForPendingControlsAsync(linked.Token).ConfigureAwait(false);
+                var current = await _currentAgentId(linked.Token).ConfigureAwait(false);
+                var stored = Store.Find(record.AgentId, record.Id);
+                if (!string.Equals(current, record.AgentId, StringComparison.Ordinal)
+                    || stored?.State != EnvelopeRecordStates.Reserved)
                 {
-                    _log.Error($"Command envelope id={record.Id} not started: replay store write failed.");
+                    _log.Warn($"Command envelope id={record.Id} dropped before start: agent id or record changed.");
                     Forget(record);
                     return;
                 }
 
-                body = await ExecuteAsync(envelope, linked.Token).ConfigureAwait(false);
-            }
+                Task<byte[]> execution;
+                lock (_controlAdmissionGate)
+                {
+                    if (ControlRecovery().Pending) continue;
+                    var now = Time.GetUtcNow().ToUnixTimeSeconds();
+                    if (now > envelope.ExpiresAt + CommandEnvelopeVerifier.SkewSeconds)
+                        execution = Task.FromResult(Failed("expired_before_start", record.EnvelopeSha256));
+                    else if ((SignedState?.RequiresSnapshotRecovery == true && envelope.Type != EnvelopeTypes.AgentState) ||
+                             (IsQuarantined() && envelope.Type is not (EnvelopeTypes.Ping or EnvelopeTypes.AgentState)))
+                        execution = Task.FromResult(Failed(EnvelopeCodes.Quarantined, record.EnvelopeSha256));
+                    else
+                    {
+                        var reserved = stored;
+                        stored = stored with { State = EnvelopeRecordStates.Started };
+                        if (Store.TryUpdate(stored, reserved.State) != ReplayUpdateOutcome.Updated)
+                        {
+                            _log.Error($"Command envelope id={record.Id} not started: replay store write failed.");
+                            Forget(record);
+                            return;
+                        }
+                        execution = ExecuteAsync(envelope, linked.Token);
+                    }
+                }
 
-            var (done, durable) = StoreResult(stored, body);
-            var delivered = await SubmitAsync(done, linked.Token, durable ? EnvelopeRecordStates.Done : stored.State)
-                .ConfigureAwait(false);
-            keepInFlight = delivered && !durable;
+                var body = await execution.ConfigureAwait(false);
+                var (done, durable) = StoreResult(stored, body);
+                var delivered = await SubmitAsync(done, linked.Token, durable ? EnvelopeRecordStates.Done : stored.State)
+                    .ConfigureAwait(false);
+                keepInFlight = delivered && !durable;
+                return;
+            }
         }
         catch (OperationCanceledException) when (linked.IsCancellationRequested)
         {
@@ -352,8 +349,9 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         var httpStatus = 0;
         try
         {
-            await _api.SubmitEnvelopeResultAsync(record.AgentId, record.Id, Convert.FromBase64String(record.ResultB64), ct)
-                .ConfigureAwait(false);
+            var submission = BeginResultSubmission(record, ct);
+            if (submission is null) return false;
+            await submission.ConfigureAwait(false);
         }
         catch (HttpRequestException ex) when (ex.StatusCode is { } status && IsFinalRefusal(status))
         {

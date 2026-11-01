@@ -29,8 +29,30 @@ public sealed record AgentPreparedStateControl(AgentStateDeliveryContext? Contex
 
 public sealed partial class EnvelopeExecutionQueue
 {
+    private readonly object _controlAdmissionGate = new();
     private readonly AgentStateDeliveryContext? _controlContext;
     private readonly Func<CancellationToken, Task<AgentStateDeliveryContext>>? _currentControlContext;
+
+    internal ReplayReserveOutcome Reserve(CommandReplayRecord record)
+    { lock (_controlAdmissionGate) return Store.TryReserve(record); }
+
+    private async Task WaitForPendingControlsAsync(CancellationToken ct)
+    {
+        while (ControlRecovery().Pending)
+        {
+            await DrainOutboxAsync(ct).ConfigureAwait(false);
+            if (ControlRecovery().Pending) await _signal.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private Task? BeginResultSubmission(CommandReplayRecord record, CancellationToken ct)
+    {
+        lock (_controlAdmissionGate)
+        {
+            if (record.Type != EnvelopeTypes.AgentState && RequiresStateRecovery) return null;
+            return _api.SubmitEnvelopeResultAsync(record.AgentId, record.Id, Convert.FromBase64String(record.ResultB64!), ct);
+        }
+    }
 
     private (bool Pending, long Floor) ControlRecovery()
     {
@@ -149,10 +171,13 @@ public sealed partial class EnvelopeExecutionQueue
             !await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false)) return false;
         if (control.AckAccepted) return true;
         if (!_resultRetry.CanTry) return false;
+        using var timeout = new CancellationTokenSource(EnvelopeCommandProcessor.AckTimeout, Time);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
         try
         {
             await _api.SubmitEnvelopeAckAsync(record.AgentId, record.Id,
-                CommandEnvelope.BuildAckBody(record.EnvelopeSha256, true, null), ct).ConfigureAwait(false);
+                CommandEnvelope.BuildAckBody(record.EnvelopeSha256, true, null), linked.Token)
+                .WaitAsync(linked.Token).ConfigureAwait(false);
         }
         catch (HttpRequestException ex) when (ex.StatusCode is { } status && IsFinalRefusal(status))
         {

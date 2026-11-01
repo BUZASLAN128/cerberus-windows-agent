@@ -219,7 +219,7 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             if (!queued && control is null) return;
             record = new CommandReplayRecord(agentId, envelope.Id, envelope.EnvelopeSha256, envelope.Nonce, envelope.Type,
                 envelope.IssuedAt, envelope.ExpiresAt, EnvelopeRecordStates.Reserved, null, null, false, StateControl: control);
-            var outcome = store.TryReserve(record);
+            var outcome = _queue.Reserve(record);
             if (outcome != ReplayReserveOutcome.Reserved)
             {
                 if (queued)

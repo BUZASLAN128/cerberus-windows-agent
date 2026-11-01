@@ -29,10 +29,13 @@ public sealed partial class AgentSignedStateStore
         catch { return (true, 0); }
     }
 
-    public bool RequiresRecovery
+    internal bool RequiresSnapshotRecovery
     {
-        get { lock (_gate) { EnsureLoaded(); return _unreadable || _state?.Reset is not null || ControlRecovery().Pending; } }
+        get { lock (_gate) { EnsureLoaded(); return _unreadable || _state?.Reset is not null; } }
     }
+
+    public bool RequiresRecovery
+    { get { lock (_gate) return RequiresSnapshotRecovery || ControlRecovery().Pending; } }
 
     public long RecoveryFloor
     {

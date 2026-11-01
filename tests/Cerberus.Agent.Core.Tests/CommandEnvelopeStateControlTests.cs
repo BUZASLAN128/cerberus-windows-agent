@@ -3,7 +3,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class CommandEnvelopeStateControlTests
+public sealed partial class CommandEnvelopeStateControlTests
 {
     [Fact]
     public async Task PreviouslyAcceptedBusinessWaitsForControlDoneInsteadOfFailingQuarantined()
@@ -207,6 +207,7 @@ public sealed class CommandEnvelopeStateControlTests
         public AgentLifecycleController Lifecycle { get; } = new(new InMemoryAgentLifecycleStateStore());
         public AgentStateDeliveryContext CurrentContext { get; set; }
         public bool FailAfterApply { get; set; }
+        public Func<CancellationToken, Task<string>>? CurrentAgent { get; set; }
         public int Executions { get; private set; }
 
         public Worker()
@@ -235,7 +236,7 @@ public sealed class CommandEnvelopeStateControlTests
         {
             State = ReloadState();
             Replay = new CommandReplayStore(H.StorePath, H.Time);
-            var current = State.Track(_ => Task.FromResult(H.AgentId));
+            var current = State.Track(ct => CurrentAgent?.Invoke(ct) ?? Task.FromResult(H.AgentId));
             Handler = new AgentStateCommandHandler(State, current, Lifecycle, () => Queue.CancelAll(), H.Log,
                 () => { }, new AgentRevokeFinalResults(), _ => Task.FromResult(new AgentRevokeRegistration(H.AgentId, "t1", null)));
             var observed = new ObservedHandler(Handler, () => { Executions++; if (FailAfterApply) throw new IOException("Owned post-write interruption."); });
