@@ -300,11 +300,11 @@ public sealed partial class CommandEnvelopeStateControlTests
                     Task.FromResult(new AgentRevokeRegistration(H.AgentId, CurrentContext.TenantId, CurrentContext.EnrollmentNonce)));
             var observed = new ObservedHandler(Handler, () => BeforeApply?.Invoke(),
                 () => { Executions++; if (FailAfterApply) throw new IOException("Owned post-write interruption."); });
-            Queue = new EnvelopeExecutionQueue(H.Api, Replay, new ICommandHandler[] { H.Ping, observed }, current,
+            Queue = new EnvelopeExecutionQueue(H.Api, Replay, new ICommandHandler[] { H.Ping, H.Facts, observed }, current,
                 State.IsQuarantined, H.Time, signedState: State, controlContext: CurrentContext,
                 currentControlContext: _ => Task.FromResult(CurrentContext));
             Processor = new EnvelopeCommandProcessor(H.Api, new[] { H.Signer.Anchor }, Queue,
-                new HashSet<string> { "ping", EnvelopeTypes.AgentState });
+                new HashSet<string> { "ping", "collect_facts", EnvelopeTypes.AgentState });
         }
 
         public async ValueTask DisposeAsync()
