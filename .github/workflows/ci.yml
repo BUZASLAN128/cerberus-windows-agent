@@ -53,6 +53,7 @@ jobs:
           foreach ($project in $testProjects) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($project.Name)
             dotnet test $project.FullName -c Release --no-build --logger "trx;LogFileName=$name.trx"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       - name: Publish Win-x64 Single File
