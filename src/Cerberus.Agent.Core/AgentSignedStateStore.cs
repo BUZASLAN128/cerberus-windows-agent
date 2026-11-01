@@ -213,7 +213,7 @@ public sealed class AgentSignedStateStore
     }
 
     /// <summary>Only the verified enrollment owner may complete a context-free legacy revoke after publication.</summary>
-    public bool TryClearLegacyRevokeAfterEnrollment(string agentId)
+    public bool TryClearLegacyRevokeAfterEnrollment(string agentId, bool credentialProbeAccepted)
     {
         lock (_gate)
         {
@@ -221,6 +221,7 @@ public sealed class AgentSignedStateStore
             if (_unreadable) return false;
             if (_state is not { PendingRevoke: { Registration: null } pending } state || state.AgentId != agentId)
                 return true;
+            if (!credentialProbeAccepted) return false;
             return TryClearPendingRevoke(agentId, pending.CommandId);
         }
     }

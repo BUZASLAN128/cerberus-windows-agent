@@ -109,7 +109,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         return code ?? "adopt_failed";
     }
 
-    // LocalSystem with the service stopped: the same checks and commit the service runs for enrollment-adopt.
+    // LocalSystem with the service stopped: publication is committed here, without the service's heartbeat probe.
     private static async Task<string?> CommitDirectlyAsync(CancellationToken ct)
     {
         using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
@@ -123,10 +123,16 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
         if (marker is null || !await AgentEnrollmentPromotion.MatchesAsync(marker, pending, ct).ConfigureAwait(false))
             return "enrollment_identity_mismatch";
-        await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
+        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
             cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
-        return null;
+        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(marker.Product ?? AgentProducts.Cerberus));
+        return CompleteDirectEnrollment(marker, current, adopted, signedState);
     }
+
+    internal static string? CompleteDirectEnrollment(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
+        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState)
+        => AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, credentialProbeAccepted: false)
+            ? null : "legacy_revoke_cleanup_pending";
 
     public string? ReadFingerprintLine()
     {

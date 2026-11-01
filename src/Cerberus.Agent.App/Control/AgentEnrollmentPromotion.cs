@@ -37,11 +37,12 @@ internal static class AgentEnrollmentPromotion
 
     /// <summary>After credential publication and lifecycle commit; failed/incomplete enrollment cannot drop a revoke.</summary>
     internal static bool CompleteLegacyRevoke(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
-        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState)
+        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState, bool credentialProbeAccepted)
         => marker.ExpectedGeneration == before.Generation && adopted.Generation == before.Generation + 1 &&
            adopted.State == AgentLifecycleState.Active && adopted.QuiescenceComplete &&
            Guid.TryParseExact(marker.Nonce, "N", out _) && marker.Nonce != before.LastEnrollmentNonce &&
-           adopted.LastEnrollmentNonce == marker.Nonce && signedState.TryClearLegacyRevokeAfterEnrollment(marker.AgentId);
+           adopted.LastEnrollmentNonce == marker.Nonce &&
+           signedState.TryClearLegacyRevokeAfterEnrollment(marker.AgentId, credentialProbeAccepted);
 
     internal static async Task WriteAsync(long generation, ISecretStore promoted, CancellationToken ct)
     {
