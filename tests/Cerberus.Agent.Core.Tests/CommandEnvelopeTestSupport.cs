@@ -53,6 +53,7 @@ internal sealed class FakeTime : TimeProvider
     }
 
     internal DateTimeOffset Now => GetUtcNow();
+    internal int ActiveTimerCount { get { lock (_gate) return _timers.Count(t => t.IsDue(DateTimeOffset.MaxValue)); } }
 
     private sealed class FakeTimer : ITimer
     {

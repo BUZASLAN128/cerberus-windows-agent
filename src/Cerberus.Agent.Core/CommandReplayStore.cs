@@ -99,16 +99,19 @@ public sealed partial class CommandReplayStore
     private bool _loaded;
     private bool _persistPending;
     private bool _untrustedDirectoryLogged;
+    private readonly bool _enrollmentEstablished;
 
     /// <param name="enforceFileProvenance">Also demands a SYSTEM/Administrators owner and a DACL without untrusted
     /// writers on a path outside <c>Privileged</c> (always on inside it).</param>
-    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false)
+    public CommandReplayStore(string path, TimeProvider? time = null, IAgentLogger? log = null, bool enforceFileProvenance = false,
+        bool enrollmentEstablished = false)
     {
         _path = string.IsNullOrWhiteSpace(path) ? throw new ArgumentException("Path is required.", nameof(path)) : path;
         _enforceProvenance = enforceFileProvenance;
         _file = new ProtectedMachineFile(_path, enforceFileProvenance);
         _time = time ?? TimeProvider.System;
         _log = log ?? NullAgentLogger.Instance;
+        _enrollmentEstablished = enrollmentEstablished;
     }
 
     /// <summary>The store path under <c>&lt;DataDir&gt;\Privileged</c>.</summary>
@@ -283,7 +286,7 @@ public sealed partial class CommandReplayStore
         if (!_file.Exists())
         {
             // Only a set-aside file is left (reset and put-back both failed earlier): the store did exist, so reset again.
-            if (HasTrustedCorruptSibling())
+            if (_enrollmentEstablished || HasTrustedCorruptSibling())
                 return StartReset(NowUnix());
 
             (_records, _resetAt, _loaded) = (new List<CommandReplayRecord>(), 0, true);

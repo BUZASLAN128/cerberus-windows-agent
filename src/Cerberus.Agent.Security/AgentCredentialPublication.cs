@@ -127,18 +127,22 @@ public sealed class AgentCredentialPublication
 
     /// <summary>Caller already holds the launch fence and lifecycle CAS lock.</summary>
     public static Task<IAsyncDisposable> BeginAsync(DurableAgentLifecycleStateStore lifecycle,
-        long expectedGeneration, string nonce, CancellationToken ct)
+        long expectedGeneration, string nonce, CancellationToken ct, string? agentId = null, string? product = null)
     {
         if (!AgentUpdateSecurity.IsLocalSystem())
             throw new UnauthorizedAccessException("Only the service can publish machine credentials.");
-        return Production.BeginLockedAsync(expectedGeneration, nonce, lifecycle.LoadAsync, ct);
+        return Production.BeginLockedAsync(expectedGeneration, nonce, lifecycle.LoadAsync, ct, agentId, product);
     }
 
     internal async Task<IAsyncDisposable> BeginLockedAsync(long expectedGeneration, string nonce,
-        Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle, CancellationToken ct)
+        Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle, CancellationToken ct,
+        string? agentId = null, string? product = null)
     {
         if (expectedGeneration < 0 || !Guid.TryParseExact(nonce, "N", out _))
             throw new InvalidDataException("Invalid credential publication binding.");
+        if ((agentId is null) != (product is null) || (agentId is not null &&
+            (string.IsNullOrWhiteSpace(agentId) || agentId.Length > 256 || product is not (AgentProducts.Cerberus or AgentProducts.Secondary))))
+            throw new InvalidDataException("Invalid enrollment cleanup binding.");
         var gate = await AcquirePublicationLockAsync(ct).ConfigureAwait(false);
         try
         {
@@ -153,7 +157,7 @@ public sealed class AgentCredentialPublication
             else
                 DeleteValidated(BackupPath);
             var journal = new PublicationJournal(JournalSchema, expectedGeneration, nonce,
-                prior is null ? null : Digest(prior), Digest(next));
+                prior is null ? null : Digest(prior), Digest(next), agentId, product);
             await WriteAtomicAsync(JournalPath, JsonSerializer.SerializeToUtf8Bytes(journal, JsonOptions), ct).ConfigureAwait(false);
             await WriteAtomicAsync(_activePath, next, ct).ConfigureAwait(false);
             // Keep the publication lock held through the lifecycle nonce write.
@@ -197,6 +201,14 @@ public sealed class AgentCredentialPublication
         {
             if (activeDigest != journal.NextCiphertextSha256)
                 throw new InvalidDataException("Committed machine credential binding is inconsistent.");
+            if (journal.LegacyRevokeAgentId is not null)
+            {
+                if (snapshot.Generation != journal.ExpectedGeneration + 1 ||
+                    journal.LegacyRevokeProduct is not (AgentProducts.Cerberus or AgentProducts.Secondary) ||
+                    !CleanupStore(journal.LegacyRevokeProduct).RecordCommitted(new(snapshot.Generation,
+                        journal.Nonce, journal.LegacyRevokeAgentId, journal.LegacyRevokeProduct)))
+                    throw new InvalidDataException("Committed enrollment cleanup obligation could not be recorded.");
+            }
             if (ExistsValidated(PromotionMarkerPath))
             {
                 var markerBytes = await ReadBoundedAsync(PromotionMarkerPath, 4096, ct).ConfigureAwait(false);
@@ -365,7 +377,12 @@ public sealed class AgentCredentialPublication
     private static string Digest(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
     private static bool IsDigest(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
     private sealed record PublicationJournal(string SchemaVersion, long ExpectedGeneration, string Nonce,
-        string? PriorCiphertextSha256, string NextCiphertextSha256);
+        string? PriorCiphertextSha256, string NextCiphertextSha256,
+        string? LegacyRevokeAgentId = null, string? LegacyRevokeProduct = null);
+
+    internal AgentEnrollmentRevokeCleanupStore CleanupStore(string product)
+        => _production ? AgentEnrollmentRevokeCleanupStore.ForProduct(product)
+            : new AgentEnrollmentRevokeCleanupStore(Path.Combine(_directory, product + ".enrollment-cleanup"));
 
     private sealed class PublicationLease(AgentCredentialPublication owner, FileStream gate,
         Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle) : IAsyncDisposable

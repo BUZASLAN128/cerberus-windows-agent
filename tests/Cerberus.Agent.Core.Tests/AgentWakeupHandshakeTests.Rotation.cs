@@ -9,7 +9,7 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class AgentWakeupHandshakeTests
 {
     [Fact]
-    public async Task PlannedRotationCompletesNormallyWithoutBackoffFailuresOrAuthMutation()
+    public async Task ShortPlannedRotationKeepsBackoffWithoutAuthMutation()
     {
         using var http = new HttpClient { BaseAddress = new Uri("https://collector.example") };
         var secrets = new FakeSecrets();
@@ -30,7 +30,8 @@ public sealed partial class AgentWakeupHandshakeTests
         using var json = JsonDocument.Parse($"{{\"version\":1,\"path\":\"/api/v1/agents/{AgentId}/wakeup\"}}");
         await client.ConfigureAsync(json.RootElement, default);
         await completed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(0, client.ConsecutiveFailures);
+        await Wait.UntilAsync(() => client.ConsecutiveFailures == 1, "short-connection backoff");
+        Assert.Equal(1, client.ConsecutiveFailures); // A sub-minute connection is not a stable-open proof.
         Assert.DoesNotContain(log.Lines, line => line.Contains("connection unavailable"));
         Assert.Equal(0, secrets.Clears);
         Assert.Equal(0, tokens.Refreshes);

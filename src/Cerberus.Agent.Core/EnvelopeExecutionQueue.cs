@@ -54,7 +54,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         Func<CancellationToken, Task<string>> currentAgentId,
         Func<bool> isQuarantined,
         TimeProvider? time = null,
-        IAgentLogger? log = null)
+        IAgentLogger? log = null,
+        AgentSignedStateStore? signedState = null)
     {
         _api = api ?? throw new ArgumentNullException(nameof(api));
         Store = store ?? throw new ArgumentNullException(nameof(store));
@@ -65,6 +66,7 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         Time = time ?? TimeProvider.System;
         _resultRetry = new AgentRetryGate(Time);
         _log = log ?? NullAgentLogger.Instance;
+        SignedState = signedState;
     }
 
     public CommandReplayStore Store { get; }
@@ -73,6 +75,9 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
 
     /// <summary>Signed quarantine, read at every check (step 17 and before start).</summary>
     public Func<bool> IsQuarantined { get; }
+    internal AgentSignedStateStore? SignedState { get; }
+    internal bool RequiresStateRecovery => SignedState?.RequiresRecovery == true;
+    internal bool RecoveryControlOnly => SignedState?.RecoveryControlOnly == true;
 
     public IReadOnlyCollection<string> HandlerTypes => _handlers.Keys.ToArray();
 
@@ -265,7 +270,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
             {
                 body = Failed("expired_before_start", record.EnvelopeSha256);
             }
-            else if (IsQuarantined() && envelope.Type is not (EnvelopeTypes.Ping or EnvelopeTypes.AgentState))
+            else if ((RequiresStateRecovery && envelope.Type != EnvelopeTypes.AgentState) ||
+                     (IsQuarantined() && envelope.Type is not (EnvelopeTypes.Ping or EnvelopeTypes.AgentState)))
             {
                 body = Failed(EnvelopeCodes.Quarantined, record.EnvelopeSha256);
             }
@@ -313,7 +319,8 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
         {
             var agentId = await _currentAgentId(stop).ConfigureAwait(false);
             foreach (var orphan in Store.Records(agentId)
-                         .Where(r => r.State == EnvelopeRecordStates.Started && !IsInFlight(r.AgentId, r.Id)))
+                         .Where(r => r.State == EnvelopeRecordStates.Started && !IsInFlight(r.AgentId, r.Id) &&
+                                     (!RequiresStateRecovery || r.Type == EnvelopeTypes.AgentState)))
             {
                 if (cancelAll.IsCancellationRequested)
                     return;
@@ -322,7 +329,7 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
 
             var pending = Store.Records(agentId)
                 .Where(r => r.State == EnvelopeRecordStates.Done && !r.ResultSubmitted && r.ResultB64 is not null
-                            && !IsInFlight(r.AgentId, r.Id))
+                            && !IsInFlight(r.AgentId, r.Id) && (!RequiresStateRecovery || r.Type == EnvelopeTypes.AgentState))
                 .Take(OutboxPerCycle)
                 .ToList();
             foreach (var record in pending)

@@ -30,6 +30,7 @@ internal static partial class ServiceMode
         // canonical protected record before recovery, pipe startup or readiness.
         await lifecycle.EnsureInitializedAsync(ct).ConfigureAwait(false);
         await AgentCredentialPublication.RecoverAsync(lifecycle, ct).ConfigureAwait(false);
+        await AgentEnrollmentCleanupRecovery.OnServiceStartAsync(lifecycle, log, ct).ConfigureAwait(false);
         // Load deny intent before even attempting credential decryption.
         _ = await lifecycle.LoadAsync(ct).ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -325,7 +326,8 @@ internal static partial class ServiceMode
         var telemetryBuffer = new OfflineTelemetryBuffer(Path.Combine(dataDir, secondary ? "secondary-telemetry-offline.json" : "telemetry-offline.json"),
             maxEntries: 200, maxBytes: 8 * AgentTelemetryLimits.MaxSnapshotBytes, ttl: TimeSpan.FromHours(24));
 
-        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(loadedSecrets.Identity.Product), log);
+        var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(loadedSecrets.Identity.Product),
+            log, enrolledAgentId: loadedSecrets.Identity.AgentId);
         var currentAgentId = EnvelopeWiring.CurrentAgentId(secrets, lifecycleState, persistedLifecycle.Generation, signedState);
         // Declared before the queue so it is disposed after the queue worker has drained.
         using var serviceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -349,7 +351,7 @@ internal static partial class ServiceMode
         var dispatcher = new CommandDispatcher(handlers, idempotency);
 #if !CERBERUS_SERVER_PROFILE
         legacyAsync = secondary ? null : EnvelopeWiring.CreateLegacyAsync(api, dispatcher,
-            loadedSecrets.Identity, persistedLifecycle, currentAgentId, log);
+            loadedSecrets.Identity, persistedLifecycle, currentAgentId, log, AgentKeyFingerprint.FromPrivateKeyPem(privateKeyPem));
         await using var legacyAsyncLifetime = legacyAsync;
 #endif
         await using var envelopeQueue = EnvelopeWiring.StartQueue(api, handlers, currentAgentId, signedState, log, loadedSecrets.Identity.Product);
@@ -411,7 +413,8 @@ internal static partial class ServiceMode
             supportsEvents: !secondary,
             signedCommandMode: (AgentBuildProfile.IsServer || secondary) && EnvelopeWiring.HasCommandTrust(loadedSecrets.Identity.Product, log),
             signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
-            legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true);
+            legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true,
+            signedState: signedState);
 
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;
