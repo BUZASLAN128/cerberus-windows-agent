@@ -9,6 +9,25 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class HeartbeatLoopTests
 {
     [Fact]
+    public async Task HeartbeatAdvertisesRegisteredUpdateCommandWhileWakeupIsUnavailable()
+    {
+        var wire = new ProductLoopHandler();
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var dispatcher = new CommandDispatcher(new[] { new FakeCommandHandler(EnvelopeTypes.AgentUpdateRequest) },
+            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests",
+                Guid.NewGuid().ToString("N"), "idem.json"), 10, TimeSpan.FromMinutes(5)));
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromSeconds(1),
+            commandProcessor: new ProductLoopProcessor(stop), supportsEvents: false);
+        await loop.RunAsync(stop.Token);
+        Assert.Equal("/api/v1/agents/agent-1/heartbeat", Assert.Single(wire.Paths));
+        using var body = JsonDocument.Parse(wire.Body);
+        Assert.Equal(EnvelopeTypes.AgentUpdateRequest,
+            Assert.Single(body.RootElement.GetProperty("capabilities").EnumerateArray()).GetString());
+    }
+
+    [Fact]
     public async Task StaleEnrollmentGenerationCannotSendHeartbeat()
     {
         var state = new InMemoryAgentLifecycleStateStore();

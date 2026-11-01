@@ -99,14 +99,16 @@ internal static class EnvelopeWiring
         CommandDispatcher dispatcher,
         IAgentLogger log,
         string product = AgentProducts.Cerberus,
-        IHeartbeatCommandProcessor? legacy = null)
+        IHeartbeatCommandProcessor? legacy = null,
+        IReadOnlyList<CommandTrustAnchor>? commandAnchors = null)
     {
-        var anchors = AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log);
+        var anchors = commandAnchors ?? AgentProfileMetadata.LoadProductCommandAnchors(product, ManifestPublicKeyPems(log), log);
+        if (product == AgentProducts.Secondary)
+            return new EnvelopeCommandProcessor(api, anchors, queue,
+                allowedTypes: queue.HandlerTypes.ToHashSet(StringComparer.Ordinal), log: log);
 #if CERBERUS_SERVER_PROFILE
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log);
 #else
-        if (product == AgentProducts.Secondary)
-            return new EnvelopeCommandProcessor(api, anchors, queue, allowedTypes: EnvelopeTypes.ServerSet, log: log);
         return new EnvelopeCommandProcessor(api, anchors, queue, log: log,
             legacy: legacy ?? new LegacyHeartbeatCommandProcessor(api, dispatcher, LegacyCommandTimeout, LegacyCommandConcurrency));
 #endif

@@ -274,8 +274,10 @@ internal static partial class ServiceMode
             () => { queue?.CancelAll(); legacyAsync?.CancelAll(); }, log,
             stopAutomaticNetwork: serviceCts.Cancel, finalResults: secondary ? secondaryFinalRevokes : finalRevokes, currentRegistration: registrationContext);
 #if CERBERUS_SERVER_PROFILE
+        if (!secondary) AgentUpdateLocalService.ConnectSignedState(signedState.HoldsNormalWork, log);
         ManagedAccountManifestPolicy? managedAccounts = null;
-        var handlers = AgentCommandRegistry.CreateServer(metadata, agentState);
+        var handlers = AgentCommandRegistry.CreateServer(metadata, agentState, secondary ? null : new AgentUpdateRequestCommandHandler(
+            () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion), loadedSecrets.Identity.Product);
 #else
         var diagnosticUploader = new AgentDiagnosticBundleUploader(api, metadata);
         var managedAccounts = secondary ? null : new ManagedAccountManifestPolicy(loadedSecrets.Identity, lifecycleState,

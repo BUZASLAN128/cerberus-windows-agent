@@ -35,6 +35,10 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? NextRetryUtc { get; init; }
     /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
     public long? RequiredPolicyGeneration { get; init; }
+    /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
+    public string? RequiredInstallAttemptId { get; init; }
+    /// <summary>Request authority deadline, retained after expiry so receipt replacement cannot turn it into manual retry authority.</summary>
+    public DateTimeOffset? InstallRequestAuthorityExpiresUtc { get; init; }
     public int? RunnerProcessId { get; init; }
     public DateTimeOffset? RunnerStartedUtc { get; init; }
     public int? InstallerProcessId { get; init; }
@@ -46,6 +50,7 @@ public sealed record AgentUpdateJournal
     public string? HealthyInstalledVersion { get; init; }
     /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback in a phase AgentUpdateRollbackPolicy.NextFailedInstallSequence pins). Automatic staging skips it and older ones.</summary>
     public long FailedInstallSequence { get; init; }
+    public AgentUpdateInstallRequest? InstallRequest { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
@@ -75,6 +80,8 @@ public sealed class AgentUpdateJournalStore
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
+            (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
+            value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
             throw new InvalidOperationException("Update journal is invalid.");
@@ -88,7 +95,7 @@ public sealed class AgentUpdateJournalStore
            snapshot.LifecycleGeneration >= 0 &&
            snapshot.RetryCount is >= 0 and <= 3;
 
-    private static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
+    internal static bool KnownPhase(string phase) => phase is AgentUpdateStates.NotChecked or AgentUpdateStates.Current or
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or

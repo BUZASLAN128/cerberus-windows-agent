@@ -4,10 +4,10 @@ using System.Text.Json.Nodes;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Commands;
 using Cerberus.Agent.App.Telemetry;
+using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 #if !CERBERUS_SERVER_PROFILE
 using Cerberus.Agent.App.Diagnostics;
-using Cerberus.Agent.App.Updates;
 #endif
 
 namespace Cerberus.Agent.Core.Tests;
@@ -44,7 +44,7 @@ public sealed class AgentCommandRegistryTests
     // ---- server registry ------------------------------------------------------------------
 
     [Fact]
-    public void ServerRegistry_HoldsExactlyPingCollectFactsAndAgentState()
+    public void ServerRegistry_HoldsExactlyTheServerEnvelopeTypes()
     {
         var statePath = Path.Combine(Path.GetTempPath(), "u6b-registry-" + Guid.NewGuid().ToString("N") + ".json");
         var agentState = new AgentStateCommandHandler(
@@ -56,11 +56,40 @@ public sealed class AgentCommandRegistryTests
             () => { },
             new AgentRevokeFinalResults());
 
-        var handlers = AgentCommandRegistry.CreateServer(Metadata(), agentState);
+        var updateRequest = new AgentUpdateRequestCommandHandler(() => null,
+            new AgentUpdateStateStore(statePath + ".update", statePath + ".result"), NullAgentLogger.Instance, "1.2.3");
 
-        Assert.Equal(
-            new[] { "agent_state", "collect_facts", "ping" },
-            handlers.Select(h => h.Type).OrderBy(t => t, StringComparer.Ordinal).ToArray());
+        var handlers = AgentCommandRegistry.CreateServer(Metadata(), agentState, updateRequest);
+
+        var types = handlers.Select(h => h.Type).OrderBy(t => t, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "agent.update.request", "agent_state", "collect_facts", "ping" }, types);
+        Assert.Equal(EnvelopeTypes.ServerSet.OrderBy(t => t, StringComparer.Ordinal), types);
+    }
+
+    [Fact]
+    public async Task ServerSecondaryRegistryAndWiringRejectUpdateWithoutCallingItsHandler()
+    {
+        await using var h = EnvelopeHarness.Create(options => options.StartQueue = false);
+        var calls = 0;
+        var agentState = new AgentStateCommandHandler(new AgentSignedStateStore(h.StorePath + ".state"),
+            _ => Task.FromResult(h.AgentId), new AgentLifecycleController(null!), () => { }, null, () => { }, new AgentRevokeFinalResults());
+        var update = new AgentUpdateRequestCommandHandler(() => { calls++; return null; },
+            new AgentUpdateStateStore(h.StorePath + ".update", h.StorePath + ".result"), NullAgentLogger.Instance, "1.2.3");
+        var handlers = AgentCommandRegistry.CreateServer(Metadata(), agentState, update, AgentProducts.Secondary);
+        Assert.Equal(new[] { "agent_state", "collect_facts", "ping" }, handlers.Select(handler => handler.Type).Order());
+        await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, handlers,
+            _ => Task.FromResult(h.AgentId), () => false, h.Time);
+        var processor = Assert.IsType<EnvelopeCommandProcessor>(EnvelopeWiring.CreateProcessor(h.Api, queue,
+            new CommandDispatcher(handlers, new IdempotencyCache(h.StorePath + ".idem", 100, TimeSpan.FromHours(1))), NullAgentLogger.Instance,
+            AgentProducts.Secondary, commandAnchors: new[] { h.Signer.Anchor }));
+        await processor.ProcessAsync(new[] { h.Cmd(part =>
+        {
+            part.Type = "agent.update.request";
+            part.PayloadJson = """{"schema_version":"agent.update.request.v1","mode":"install"}""";
+        }) }, default);
+        Assert.Equal(0, calls);
+        Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.TypeNotAllowed]);
+        Assert.Empty(h.Backend.Results);
     }
 
     // ---- collect_facts --------------------------------------------------------------------

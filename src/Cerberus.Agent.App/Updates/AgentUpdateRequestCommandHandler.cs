@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -12,28 +13,44 @@ namespace Cerberus.Agent.App.Updates;
 internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // The server build only installs; staging for local consent belongs to the desktop build.
     private static readonly HashSet<string> SupportedModes = new(StringComparer.Ordinal)
     {
+#if CERBERUS_SERVER_PROFILE
+        InstallMode,
+#else
         "check",
         "stage",
         "stage_and_prompt",
+#endif
     };
+    private const string InstallMode = "install";
+    internal const string InvalidNotBefore = "not_before_utc must be an ISO-8601 time with an offset, at most 24 hours ahead.";
 
     private readonly Func<AgentUpdateCoordinator?> _coordinatorFactory;
     private readonly AgentUpdateStateStore _stateStore;
     private readonly IAgentLogger _log;
     private readonly string _currentVersion;
+    private readonly Func<DateTimeOffset, string, string, string, AgentUpdateExpectedPlan?, CancellationToken, Task<bool>> _requestInstall;
+    private readonly Func<CancellationToken, Task<AgentUpdateState>> _projectCurrent;
+    private readonly Func<AgentUpdateSignal?> _configuredSignal;
 
     public AgentUpdateRequestCommandHandler(
         Func<AgentUpdateCoordinator?> coordinatorFactory,
         AgentUpdateStateStore stateStore,
         IAgentLogger log,
-        string currentVersion)
+        string currentVersion,
+        Func<DateTimeOffset, string, string, string, AgentUpdateExpectedPlan?, CancellationToken, Task<bool>>? requestInstall = null,
+        Func<CancellationToken, Task<AgentUpdateState>>? projectCurrent = null,
+        Func<AgentUpdateSignal?>? configuredSignal = null)
     {
         _coordinatorFactory = coordinatorFactory;
         _stateStore = stateStore;
         _log = log;
         _currentVersion = currentVersion;
+        _requestInstall = requestInstall ?? AgentUpdateLocalService.RequestInstallAsync;
+        _projectCurrent = projectCurrent ?? AgentUpdateLocalService.ProjectCurrentStateAsync;
+        _configuredSignal = configuredSignal ?? AgentUpdateTrustFactory.BuildConfiguredManualSignal;
     }
 
     public string Type => "agent.update.request";
@@ -48,6 +65,9 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         }
         catch (Exception ex)
         {
+            if (AgentBuildProfile.IsServer)
+                return await RejectAsync(ex is InvalidOperationException ? ex.Message : "Update request payload is invalid.")
+                    .ConfigureAwait(false);
             var preserved = await AgentUpdateLocalService.ProjectPreservedAttemptAsync(CancellationToken.None)
                 .ConfigureAwait(false);
             if (preserved is not null)
@@ -64,6 +84,8 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
         var campaignId = Clean(request.CampaignId) ?? command.Id;
         var commandId = command.Id;
+        if (string.Equals(request.Mode, InstallMode, StringComparison.Ordinal))
+            return await RequestInstallAsync(request, command, campaignId, ct).ConfigureAwait(false);
         try
         {
             await ApplyJitterAsync(request, command, campaignId, ct).ConfigureAwait(false);
@@ -202,9 +224,79 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         }
     }
 
-    private static AgentUpdateSignal BuildSignal(AgentUpdateRequestPayload request)
+    /// <summary>
+    /// Records the install for the update scheduler and returns at once. The outcome is reported by the update status
+    /// and agent version of later heartbeats. A rejection writes nothing.
+    /// </summary>
+    private async Task<CommandResult> RequestInstallAsync(
+        AgentUpdateRequestPayload request,
+        AgentCommand command,
+        string campaignId,
+        CancellationToken ct)
     {
-        var configured = AgentUpdateTrustFactory.BuildConfiguredManualSignal()
+        try
+        {
+            var notBefore = InstallNotBefore(request.NotBeforeUtc, request.JitterSeconds,
+                $"{campaignId}:{command.IdempotencyKey}:{command.Id}", DateTimeOffset.UtcNow);
+            if (notBefore is null)
+                return await RejectAsync(InvalidNotBefore).ConfigureAwait(false);
+            if (_coordinatorFactory() is null)
+                return await RejectAsync("Update trust is not configured.").ConfigureAwait(false);
+            _ = BuildSignal(request); // manifest URL and channel stay pinned to the installed configuration
+            if (!await _requestInstall(notBefore.Value, command.Id, campaignId, command.IdempotencyKey, request.Plan, ct).ConfigureAwait(false))
+                return await RejectAsync("Automatic updates are not allowed in the current agent state.").ConfigureAwait(false);
+            _log.Info($"Install request recorded: command {command.Id}, not before {notBefore.Value:O}.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Warn($"Install request rejected: {ex.GetType().Name}: {Sanitizer.Redact(ex.Message)}");
+            return await RejectAsync(ex is InvalidOperationException ? ex.Message : "Install request could not be recorded.")
+                .ConfigureAwait(false);
+        }
+
+        try
+        {
+            return Done(await _projectCurrent(CancellationToken.None).ConfigureAwait(false));
+        }
+        catch (Exception)
+        {
+            return Done(await _stateStore.ReadAsync(_currentVersion, CancellationToken.None).ConfigureAwait(false));
+        }
+    }
+
+    /// <summary>FAILED with the stored state; nothing is written, so the reported update status stays as it was.</summary>
+    private async Task<CommandResult> RejectAsync(string message)
+        => Failed(message, await _stateStore.ReadAsync(_currentVersion, CancellationToken.None).ConfigureAwait(false));
+
+    /// <summary>
+    /// Requested start plus the deterministic jitter, never before now and at most the rollout window ahead. Null when
+    /// the requested time has no offset, does not parse, or is more than the rollout window ahead.
+    /// </summary>
+    internal static DateTimeOffset? InstallNotBefore(string? notBeforeUtc, int? jitterSeconds, string seed, DateTimeOffset now)
+    {
+        var latest = now.Add(AgentUpdateLocalService.MaxInstallRequestDelay);
+        var start = now;
+        if (Clean(notBeforeUtc) is { } value)
+        {
+            if (!HasOffset(value) ||
+                !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) ||
+                parsed > latest)
+                return null;
+            if (parsed > now)
+                start = parsed.ToUniversalTime();
+        }
+        var at = start.Add(DeterministicOffset(TimeSpan.FromSeconds(Math.Clamp(jitterSeconds ?? 0, 0, 3600)), seed));
+        return at > latest ? latest : at;
+    }
+
+    private static bool HasOffset(string value)
+        => value.EndsWith('Z') || value.EndsWith('z') || (value.Length > 6 && value[^6] is '+' or '-' && value[^3] == ':');
+
+    internal static bool SupportsMode(string? mode) => mode is not null && SupportedModes.Contains(mode);
+
+    private AgentUpdateSignal BuildSignal(AgentUpdateRequestPayload request)
+    {
+        var configured = _configuredSignal()
             ?? throw new InvalidOperationException("Update manifest URL is not configured.");
         var requestedUrl = Clean(request.ManifestUrl);
         if (!string.IsNullOrWhiteSpace(requestedUrl) &&
@@ -230,8 +322,10 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
             throw new InvalidOperationException("Unsupported update request schema.");
         if (request.ForceInstall == true)
             throw new InvalidOperationException("force_install is not supported in V1.");
-        if (string.IsNullOrWhiteSpace(request.Mode) || !SupportedModes.Contains(request.Mode))
+        if (!SupportsMode(request.Mode))
             throw new InvalidOperationException("Unsupported update request mode.");
+        if (request.Plan is not null && (request.Mode != InstallMode || !request.Plan.IsValid()))
+            throw new InvalidOperationException("Update request plan is invalid.");
     }
 
     private static async Task ApplyJitterAsync(
@@ -240,7 +334,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         string campaignId,
         CancellationToken ct)
     {
-        var notBefore = ParseUtc(request.NotBeforeUtc);
+        var notBefore = ParseUtc(request.NotBeforeUtc, DateTimeOffset.UtcNow);
         var jitter = TimeSpan.FromSeconds(Math.Clamp(request.JitterSeconds ?? 0, 0, 3600));
         if (jitter > TimeSpan.Zero)
             notBefore = notBefore.Add(DeterministicOffset(jitter, $"{campaignId}:{command.IdempotencyKey}:{command.Id}"));
@@ -260,25 +354,25 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         return TimeSpan.FromSeconds(value % (uint)(seconds + 1));
     }
 
-    private static DateTimeOffset ParseUtc(string? value)
+    private static DateTimeOffset ParseUtc(string? value, DateTimeOffset now)
     {
         if (string.IsNullOrWhiteSpace(value))
-            return DateTimeOffset.UtcNow;
+            return now;
         return DateTimeOffset.TryParse(value, out var parsed)
             ? parsed.ToUniversalTime()
-            : DateTimeOffset.UtcNow;
+            : now;
     }
 
     private static AgentUpdateRequestPayload ParsePayload(object payload)
     {
-        if (payload is JsonElement element)
-        {
-            var parsed = element.Deserialize<AgentUpdateRequestPayload>(JsonOptions);
-            return parsed ?? throw new InvalidOperationException("Update request payload is empty.");
-        }
-
-        var raw = JsonSerializer.Serialize(payload, JsonOptions);
-        return JsonSerializer.Deserialize<AgentUpdateRequestPayload>(raw, JsonOptions)
+        var element = payload is JsonElement json ? json : JsonSerializer.SerializeToElement(payload, JsonOptions);
+        if (element.ValueKind != JsonValueKind.Object || element.EnumerateObject().Count(p => p.Name == "plan") > 1)
+            throw new InvalidOperationException("Update request payload is invalid.");
+        if (element.TryGetProperty("plan", out var plan) && plan.ValueKind != JsonValueKind.Null &&
+            (plan.ValueKind != JsonValueKind.Object || plan.EnumerateObject().Count() != 3 ||
+             plan.EnumerateObject().Select(p => p.Name).Distinct(StringComparer.Ordinal).Count() != 3))
+            throw new InvalidOperationException("Update request plan is invalid.");
+        return element.Deserialize<AgentUpdateRequestPayload>(JsonOptions)
                ?? throw new InvalidOperationException("Update request payload is empty.");
     }
 
@@ -301,5 +395,6 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         [property: JsonPropertyName("reason")] string? Reason,
         [property: JsonPropertyName("not_before_utc")] string? NotBeforeUtc,
         [property: JsonPropertyName("jitter_seconds")] int? JitterSeconds,
-        [property: JsonPropertyName("force_install")] bool? ForceInstall);
+        [property: JsonPropertyName("force_install")] bool? ForceInstall,
+        [property: JsonPropertyName("plan")] AgentUpdateExpectedPlan? Plan = null);
 }
