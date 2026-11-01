@@ -45,7 +45,7 @@ internal static partial class Program
             if (operation == "validate-runtime")
             {
                 if (!AgentBuildProfile.IsServer) return 2;
-                ValidateRuntimeFiles(args[2]);
+                _ = ValidateServerRuntimeImage(args[2], args[4], new HealthTrace());
                 return 0;
             }
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
@@ -268,12 +268,17 @@ internal static partial class Program
 
     private static void VerifyHash(string path, string root, string expected)
     {
+        if (!MatchesHash(path, root, expected))
+            throw new InvalidOperationException("Package service identity mismatch.");
+    }
+
+    private static bool MatchesHash(string path, string root, string expected)
+    {
         if (expected.Length != 64 || !expected.All(Uri.IsHexDigit))
             throw new InvalidOperationException("Package service identity is missing.");
         AgentUpdateSecurity.ValidateTrustedPath(path, root, allowMissing: false);
         using var stream = File.OpenRead(path);
-        if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(expected, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Package service identity mismatch.");
+        return Convert.ToHexString(SHA256.HashData(stream)).Equals(expected, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void Check(bool success)

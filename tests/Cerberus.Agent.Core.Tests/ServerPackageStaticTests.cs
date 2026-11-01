@@ -257,6 +257,16 @@ public sealed class ServerPackageStaticTests
     }
 
     [Fact]
+    public void ExplicitManualCheck_BypassesScheduleAndKeepsServerPolicyMode()
+    {
+        var source = File.ReadAllText(Path.Combine(FindRepoRoot(), "src", "Cerberus.Agent.App", "Updates", "AgentUpdateLocalService.cs"));
+        var method = Regex.Match(source, @"private static async Task RunManualCheckAsync\(\)\s*\{(?<body>[\s\S]*?)\n    \}");
+        Assert.True(method.Success);
+        Assert.Contains("automatic: AgentBuildProfile.IsServer", method.Groups["body"].Value);
+        Assert.Contains("bypassSchedule: true", method.Groups["body"].Value);
+    }
+
+    [Fact]
     public void ReleaseProfileLib_ServerBuildRequiresAnchorsAndDesktopAddsNothing()
     {
         var anchors = Path.Combine(Path.GetTempPath(), $"anchors-{Guid.NewGuid():N}.b64");

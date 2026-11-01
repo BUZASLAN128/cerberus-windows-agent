@@ -138,7 +138,7 @@ internal static partial class AgentUpdateLocalService
 
     private static async Task RunManualCheckAsync()
     {
-        try { await CheckAndStageOwnedAsync(automatic: AgentBuildProfile.IsServer, required: false, CancellationToken.None).ConfigureAwait(false); }
+        try { await CheckAndStageOwnedAsync(automatic: AgentBuildProfile.IsServer, required: false, CancellationToken.None, bypassSchedule: true).ConfigureAwait(false); }
         catch (IntentionalUpdateCancellationException) { }
         catch (AgentUpdateReconciliationDeferredException) { }
         catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }

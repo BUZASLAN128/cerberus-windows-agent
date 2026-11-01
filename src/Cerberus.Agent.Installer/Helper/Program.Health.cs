@@ -34,16 +34,7 @@ internal static partial class Program
         try
         {
             runtime = Path.GetFullPath(runtime);
-            try
-            {
-                await VerifyRuntimeAsync(service, runtime, expectedVersion, executableHash, assemblyHash, options, trace).ConfigureAwait(false);
-            }
-            catch (Exception error) when (options.AllowPendingReboot && AgentUpdateRollbackPolicy.PendingRebootExcuses(
-                trace.Phase, error is OperationCanceledException or TimeoutException, ReadPendingRenames(), runtime))
-            {
-                // The new files replace the running ones at the next restart, so this process cannot be judged now.
-                Console.Error.WriteLine("Cerberus installer health skipped: a restart is pending for the application folder.");
-            }
+            await VerifyRuntimeAsync(service, runtime, expectedVersion, executableHash, assemblyHash, options, trace).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -63,11 +54,17 @@ internal static partial class Program
     private static async Task VerifyRuntimeAsync(ServiceHandle service, string runtime, string expectedVersion, string executableHash, string assemblyHash,
         HealthOptions options, HealthTrace trace)
     {
-        if (AgentBuildProfile.IsServer) ValidateRuntimeFiles(runtime);
         var executable = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
         var assembly = Path.Combine(runtime, "Cerberus.Agent.Service.dll");
-        trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;
-        VerifyHash(executable, runtime, executableHash);
+        if (AgentBuildProfile.IsServer)
+        {
+            if (!ValidateServerRuntimeImage(runtime, executableHash, trace)) return;
+        }
+        else
+        {
+            trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;
+            VerifyHash(executable, runtime, executableHash);
+        }
         trace.Phase = AgentInstallerHealthPhase.ServiceAssemblyHash;
         if (AgentBuildProfile.IsServer)
         {
