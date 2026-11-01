@@ -38,14 +38,14 @@ public sealed partial class AgentStateRevokeGuardTests
         var nonce = Guid.NewGuid().ToString("N");
         var marker = new AgentEnrollmentMarker("agent.enrollment-promotion.v1", before.Generation,
             "agent-a", "t1", new string('a', 64), nonce, DateTimeOffset.UtcNow.AddMinutes(5));
-        Assert.False(AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, before, legacy));
+        Assert.False(AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, before, legacy, credentialProbeAccepted: true));
         Assert.NotNull(legacy.Load("agent-a").PendingRevoke);
         var adopted = await f.Lifecycle.CompleteEnrollmentAsync(before.Generation, nonce, default);
         Assert.False(AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before,
-            adopted with { LastEnrollmentNonce = Guid.NewGuid().ToString("N") }, legacy));
+            adopted with { LastEnrollmentNonce = Guid.NewGuid().ToString("N") }, legacy, credentialProbeAccepted: true));
         Assert.NotNull(legacy.Load("agent-a").PendingRevoke);
 
-        Assert.True(AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, legacy));
+        Assert.True(AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, legacy, credentialProbeAccepted: true));
 
         var reloaded = new AgentSignedStateStore(legacyPath);
         Assert.Null(reloaded.Load("agent-a").PendingRevoke);

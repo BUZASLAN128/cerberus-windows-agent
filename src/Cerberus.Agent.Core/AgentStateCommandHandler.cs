@@ -287,6 +287,7 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _log.Warn($"Signed revoke registration could not be read ({ex.GetType().Name}).");
             return null;
         }
     }
