@@ -38,25 +38,38 @@ internal static partial class AgentUpdateLocalService
     }
 
     /// <summary>Records the request for the scheduler; false when the agent state does not allow automatic updates.</summary>
-    public static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc, CancellationToken ct)
+    public static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc, string commandId, string campaignId,
+        string idempotencyKey, AgentUpdateExpectedPlan? expectedPlan, CancellationToken ct)
     {
         RequireService();
-        return await RequestInstallAsync(notBeforeUtc, LoadLifecycleAsync, Journal.Change, Quarantined, ct).ConfigureAwait(false);
+        return await RequestInstallAsync(notBeforeUtc, LoadLifecycleAsync, Journal.Change, Quarantined, ct,
+            commandId, campaignId, idempotencyKey, expectedPlan).ConfigureAwait(false);
     }
 
     internal static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc,
         Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
-        Func<bool> quarantined, CancellationToken ct)
+        Func<bool> quarantined, CancellationToken ct, string? commandId = null, string? campaignId = null,
+        string? idempotencyKey = null, AgentUpdateExpectedPlan? expectedPlan = null)
     {
         var lifecycle = await loadLifecycle(ct).ConfigureAwait(false);
         if (!AllowsAutomatic(lifecycle) || quarantined())
             return false;
-        change(before => before with
+        var request = new AgentUpdateInstallRequest(notBeforeUtc, lifecycle.Generation, notBeforeUtc + MaxInstallRequestDelay,
+            CommandId: commandId, CampaignId: campaignId, IdempotencyKey: idempotencyKey, ExpectedPlan: expectedPlan);
+        if (!request.IsValid()) return false;
+        var accepted = false;
+        change(before =>
         {
-            InstallRequest = new(notBeforeUtc, lifecycle.Generation, notBeforeUtc + MaxInstallRequestDelay),
+            if (request.IsCorrelated && before.InstallRequest is { } existing)
+            {
+                if (existing.SameIdentity(request)) { accepted = true; return before; }
+                if (existing.CommandId == commandId || existing.TerminalReason is null) return before;
+            }
+            accepted = true;
+            return before with { InstallRequest = request };
         });
-        return true;
+        return accepted;
     }
 
     /// <summary>
@@ -65,7 +78,7 @@ internal static partial class AgentUpdateLocalService
     /// </summary>
     internal static InstallRequestStep NextInstallRequestStep(
         AgentUpdateJournal active, long lifecycleGeneration, bool allowed, DateTimeOffset now)
-        => active.InstallRequest is not { } request ? InstallRequestStep.None
+        => active.InstallRequest is not { IsPending: true } request ? InstallRequestStep.None
             : request.LifecycleGeneration != lifecycleGeneration || !allowed || request.ExpiresUtc <= now
                 ? InstallRequestStep.Drop
             : active.MayHaveStartedInstallation || active.Phase == "launch_requested" || request.NotBeforeUtc > now
@@ -95,7 +108,7 @@ internal static partial class AgentUpdateLocalService
         AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
         => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, Journal.Change,
             async required => (await CheckAndStageOwnedAsync(automatic: true, required, ct,
-                bypassSchedule: true).ConfigureAwait(false)) is not null,
+                bypassSchedule: true, installRequest: active.InstallRequest).ConfigureAwait(false)) is not null,
             _requestLog, ct).ConfigureAwait(false);
 
     internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
@@ -103,9 +116,14 @@ internal static partial class AgentUpdateLocalService
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         Func<bool, Task<bool>> stage, IAgentLogger log, CancellationToken ct)
     {
+        var allowed = AllowsAutomatic(lifecycle);
+        if (NextInstallRequestStep(active, lifecycle.Generation, allowed, DateTimeOffset.UtcNow) == InstallRequestStep.Drop)
+        {
+            await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);
+            return quarantined() || !allowed;
+        }
         if (quarantined())
             return true;
-        var allowed = AllowsAutomatic(lifecycle);
         var staged = await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);
         return staged || !allowed;
     }
@@ -130,8 +148,9 @@ internal static partial class AgentUpdateLocalService
         var request = active.InstallRequest!;
         if (step == InstallRequestStep.Drop)
         {
-            change(before => Replace(before, request, null));
-            log.Info("Install request dropped: " + (request.LifecycleGeneration != lifecycleGeneration ? "lifecycle changed."
+            change(before => Replace(before, request, Finish(request, request.LifecycleGeneration != lifecycleGeneration
+                ? "lifecycle_changed" : !allowed ? "automatic_updates_disabled" : "expired")));
+            log.Info($"Install request {request.CommandId ?? "legacy"} dropped: " + (request.LifecycleGeneration != lifecycleGeneration ? "lifecycle changed."
                 : !allowed ? "automatic updates are not allowed." : "expired."));
             return false;
         }
@@ -143,22 +162,29 @@ internal static partial class AgentUpdateLocalService
             // The request's install authority is granted only after staging succeeds.
             staged = await stage(false).ConfigureAwait(false);
         }
-        catch (Exception) when (!ct.IsCancellationRequested)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            var retry = RetryInstallRequest(request, DateTimeOffset.UtcNow);
+            var terminal = ex is AgentUpdatePlanMismatchException ? "plan_mismatch"
+                : ex is InstallReleaseUnavailableException ? "release_unavailable" : null;
+            var retry = terminal is null ? RetryInstallRequest(request, DateTimeOffset.UtcNow) : null;
+            retry ??= Finish(request with { Attempts = Math.Min(MaxInstallRequestAttempts, request.Attempts + 1) }, terminal ?? "staging_failed");
             change(before => Replace(before, request, retry));
-            log.Warn(retry is null
-                ? "Install request staging failed; no tries left."
-                : $"Install request staging failed; next try at {retry.NotBeforeUtc:O}.");
+            log.Warn(retry is null || retry.TerminalReason is not null
+                ? $"Install request {request.CommandId ?? "legacy"} staging failed; no tries left."
+                : $"Install request {request.CommandId ?? "legacy"} staging failed; next try at {retry.NotBeforeUtc:O}.");
             throw;
         }
 
-        var after = change(before => before.InstallRequest == request
-            ? staged
-                ? TransitionInstallRequested(before with { InstallRequest = null }, lifecycleGeneration, DateTimeOffset.UtcNow)
-                : before with { InstallRequest = null }
-            : before);
-        log.Info($"Install request handled: update state {after.Phase}.");
+        var after = change(before => !MatchesPending(before.InstallRequest, request) ? before
+            : request.IsCorrelated && (before.InstallRequest!.VerifiedRelease is not { } verified ||
+                request.ExpectedPlan is { } expected && !expected.Matches(verified) ||
+                staged && (before.AttemptId is null || before.LifecycleGeneration != lifecycleGeneration))
+                ? before with { InstallRequest = Finish(before.InstallRequest!, "release_unavailable") }
+            : staged ? TransitionInstallRequested(before with { InstallRequest = request.IsCorrelated
+                    ? before.InstallRequest! with { BoundAttemptId = before.AttemptId }
+                    : null }, lifecycleGeneration, DateTimeOffset.UtcNow)
+                : before with { InstallRequest = Finish(before.InstallRequest!, "current") });
+        log.Info($"Install request {request.CommandId ?? "legacy"} handled: update state {after.Phase}.");
         return true;
     }
 
@@ -171,5 +197,14 @@ internal static partial class AgentUpdateLocalService
 
     private static AgentUpdateJournal Replace(
         AgentUpdateJournal journal, AgentUpdateInstallRequest expected, AgentUpdateInstallRequest? next)
-        => journal.InstallRequest == expected ? journal with { InstallRequest = next } : journal;
+        => MatchesPending(journal.InstallRequest, expected) ? journal with { InstallRequest = next } : journal;
+
+    private static bool MatchesPending(AgentUpdateInstallRequest? current, AgentUpdateInstallRequest expected)
+        => current is { IsPending: true } && current.SameIdentity(expected) && current.Attempts == expected.Attempts &&
+           current.NotBeforeUtc == expected.NotBeforeUtc && current.ExpiresUtc == expected.ExpiresUtc;
+
+    private static AgentUpdateInstallRequest? Finish(AgentUpdateInstallRequest request, string reason)
+        => request.IsCorrelated ? request with { TerminalReason = reason, TerminalUtc = DateTimeOffset.UtcNow } : null;
+
+    private sealed class InstallReleaseUnavailableException() : InvalidOperationException("Requested update release is not available for installation.");
 }

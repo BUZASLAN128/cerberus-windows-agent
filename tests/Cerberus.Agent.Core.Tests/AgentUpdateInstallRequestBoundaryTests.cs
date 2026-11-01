@@ -5,7 +5,7 @@ using Cerberus.Agent.Core;
 namespace Cerberus.Agent.Core.Tests;
 
 /// <summary>Support checks only: isolated journal/delegates, no installed service or download.</summary>
-public sealed class AgentUpdateInstallRequestBoundaryTests
+public sealed partial class AgentUpdateInstallRequestBoundaryTests
 {
     [Fact]
     public async Task SignedQuarantineHoldsEntireSchedulerAndAutomaticLaunchUntilReleased()
@@ -85,8 +85,8 @@ public sealed class AgentUpdateInstallRequestBoundaryTests
             var handler = new AgentUpdateRequestCommandHandler(() => new AgentUpdateCoordinator(null!, NullAgentLogger.Instance),
                 new AgentUpdateStateStore(Path.Combine(root, "state.json"), Path.Combine(root, "result.json")),
                 NullAgentLogger.Instance, "1.2.3",
-                (due, ct) => AgentUpdateLocalService.RequestInstallAsync(due, _ => Task.FromResult(lifecycle),
-                    FixtureWriter(root), () => quarantined, ct),
+                (due, commandId, campaignId, idempotencyKey, expectedPlan, ct) => AgentUpdateLocalService.RequestInstallAsync(due, _ => Task.FromResult(lifecycle),
+                    FixtureWriter(root), () => quarantined, ct, commandId, campaignId, idempotencyKey, expectedPlan),
                 _ => Task.FromResult(projected),
                 () => new AgentUpdateSignal(false, true, "https://updates.example.test/manifest.json", "test", "stable"));
             var due = DateTimeOffset.UtcNow.AddHours(12);
@@ -97,7 +97,7 @@ public sealed class AgentUpdateInstallRequestBoundaryTests
             var accepted = await handler.HandleAsync(command, default).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(("DONE", 0), (accepted.Status, accepted.ExitCode));
             var persisted = new AgentUpdateJournalStore(root).Read();
-            Assert.Equal(new AgentUpdateInstallRequest(due, 23, due.AddHours(24)), persisted.InstallRequest);
+            Assert.Equal(new AgentUpdateInstallRequest(due, 23, due.AddHours(24), CommandId: command.Id, CampaignId: command.Id, IdempotencyKey: command.IdempotencyKey), persisted.InstallRequest);
             Assert.Null(persisted.AttemptId);
 
             lifecycle = lifecycle with { State = AgentLifecycleState.NeedsReenrollment, Generation = 24 };

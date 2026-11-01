@@ -10,9 +10,7 @@ using Cerberus.Agent.Observability;
 using Cerberus.Agent.Security;
 using System.Net.Http;
 using System.IO;
-
 namespace Cerberus.Agent.App;
-
 internal static partial class ServiceMode
 {
     public static async Task RunAsync(CancellationToken ct)
@@ -338,7 +336,7 @@ internal static partial class ServiceMode
             () => { queue?.CancelAll(); legacyAsync?.CancelAll(); }, log,
             stopAutomaticNetwork: serviceCts.Cancel, finalResults: secondary ? secondaryFinalRevokes : finalRevokes, currentRegistration: registrationContext);
 #if CERBERUS_SERVER_PROFILE
-        AgentUpdateLocalService.ConnectSignedState(signedState.IsQuarantined, log);
+        AgentUpdateLocalService.ConnectSignedState(signedState.HoldsNormalWork, log);
         ManagedAccountManifestPolicy? managedAccounts = null;
         var handlers = AgentCommandRegistry.CreateServer(metadata, agentState, new AgentUpdateRequestCommandHandler(
             () => BuildUpdateCoordinator(updateHttp, log, updateStateStore), updateStateStore, log, agentVersion));

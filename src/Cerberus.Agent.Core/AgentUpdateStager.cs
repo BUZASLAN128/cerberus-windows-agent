@@ -3,80 +3,6 @@ using System.Text.Json;
 
 namespace Cerberus.Agent.Core;
 
-public sealed record AgentUpdateTrust(
-    IReadOnlyList<string> ManifestPublicKeyPems,
-    string ExpectedChannel,
-    IReadOnlyList<string> AllowedArtifactPrefixes,
-    string CurrentVersion,
-    bool AllowRollbackManifest = false,
-    bool AllowChannelDowngrade = false,
-    long MaxArtifactBytes = 200 * 1024 * 1024,
-    string? ConfiguredManifestUrl = null,
-    string? AllowedSignerKeyIdentity = null,
-    bool AllowUnsignedDevBuild = false,
-    bool RequireManifestV2 = false,
-    bool RequireBitsDownloader = false,
-    bool RequireSystemAuthority = false);
-
-public sealed record AgentUpdateSignal(
-    bool Required,
-    bool Recommended,
-    string? ManifestUrl,
-    string? Reason,
-    string? Channel,
-    long? LifecycleGeneration = null,
-    long? SkipSequenceAtOrBelow = null);
-
-public sealed record AgentUpdatePlan(
-    string ArtifactKind,
-    string Version,
-    string Channel,
-    string ArtifactPath,
-    string Sha256,
-    string StagedAtUtc,
-    string Reason,
-    string SchemaVersion = "agent.update.plan.v2",
-    string? AttemptId = null,
-    long Sequence = 0,
-    string? ExpiresAtUtc = null,
-    long? ArtifactLength = null,
-    string? ManifestPath = null,
-    string? SignerKeyIdentity = null,
-    bool Required = false,
-    bool RollbackAllowed = false,
-    int RetryCount = 0,
-    string? ManifestDigest = null);
-
-/// <summary>Identity of the currently trusted signed manifest, independent of its artifact.</summary>
-public sealed record AgentUpdateManifestIdentity(long Sequence, string ManifestDigest)
-{
-    public bool Matches(AgentUpdatePlan plan)
-        => plan.Sequence == Sequence &&
-           !string.IsNullOrWhiteSpace(plan.ManifestDigest) &&
-           string.Equals(plan.ManifestDigest, ManifestDigest, StringComparison.OrdinalIgnoreCase);
-}
-
-public sealed record AgentUpdateCheckResult(
-    bool Available,
-    bool Required,
-    bool Recommended,
-    string? Version,
-    string? Channel,
-    string? Reason,
-    string? ManifestUrl,
-    string? ArtifactKind)
-{
-    public static AgentUpdateCheckResult None { get; } = new(
-        Available: false,
-        Required: false,
-        Recommended: false,
-        Version: null,
-        Channel: null,
-        Reason: null,
-        ManifestUrl: null,
-        ArtifactKind: null);
-}
-
 public sealed class AgentUpdateStager
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -172,29 +98,33 @@ public sealed class AgentUpdateStager
         => await StageAsync(FromHeartbeat(response), ct).ConfigureAwait(false);
 
     public async Task<AgentUpdatePlan?> StageAsync(AgentUpdateSignal signal, CancellationToken ct)
+        => (await StageWithReleaseAsync(signal, ct).ConfigureAwait(false)).Plan;
+
+    public async Task<AgentUpdateStagingResult> StageWithReleaseAsync(AgentUpdateSignal signal, CancellationToken ct)
     {
         if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
             throw new InvalidOperationException("Only the installed agent service may stage updates.");
         if (!signal.Required && !signal.Recommended)
-            return null;
+            return new(null, null, false);
 
         AgentUpdateSecurity.EnsureProtectedRoot(_stagingRoot);
         var (manifest, manifestJson) = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        var release = AgentUpdateExpectedPlan.FromManifest(manifest);
         if (!IsActionableManifest(manifest))
         {
             _log.Info($"Agent update staging skipped: target version {manifest.Version} is not newer than current version {_trust.CurrentVersion}.");
-            return null;
+            return new(null, release, true);
         }
 
         if (AgentUpdateRollbackPolicy.SkipsSequence(signal.SkipSequenceAtOrBelow, manifest.IsV2, manifest.Sequence))
         {
             _log.Info($"Agent update staging skipped: sequence {manifest.Sequence} already failed to install; waiting for a newer release.");
-            return null;
+            return new(null, release, false);
         }
 
         var existing = FindExistingAttempt(manifest);
         if (existing is not null)
-            return existing;
+            return new(existing, release, false);
 
         var attemptId = Guid.NewGuid().ToString("N");
         var attemptDir = AgentUpdateSecurity.CreateExclusiveAttemptDirectory(_stagingRoot, attemptId);
@@ -252,7 +182,7 @@ public sealed class AgentUpdateStager
                 ManifestDigest: AgentUpdateManifestValidator.Digest(manifest));
             await WriteAtomicAsync(planPath, JsonSerializer.Serialize(plan, JsonOptions), ct).ConfigureAwait(false);
             journal.ChangeAttempt(attemptId, before => before with { Phase = AgentUpdateStates.Staged });
-            return plan;
+            return new(plan, release, false);
         }
         catch
         {
@@ -319,6 +249,8 @@ public sealed class AgentUpdateStager
         if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(_stagingRoot) > 0)
             throw new InvalidOperationException("Legacy update manifest fallback is disabled after v2 trust was accepted.");
         ValidateSignerIdentity(manifest);
+        if (signal.ExpectedPlan is { } expected && !expected.Matches(AgentUpdateExpectedPlan.FromManifest(manifest)))
+            throw new AgentUpdatePlanMismatchException();
         if (manifest.IsV2)
             AgentUpdateSequenceStore.Accept(_stagingRoot, manifest.Sequence, AgentUpdateManifestValidator.Digest(manifest));
         return (manifest, manifestJson);

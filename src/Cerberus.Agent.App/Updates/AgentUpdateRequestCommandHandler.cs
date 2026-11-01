@@ -31,7 +31,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
     private readonly AgentUpdateStateStore _stateStore;
     private readonly IAgentLogger _log;
     private readonly string _currentVersion;
-    private readonly Func<DateTimeOffset, CancellationToken, Task<bool>> _requestInstall;
+    private readonly Func<DateTimeOffset, string, string, string, AgentUpdateExpectedPlan?, CancellationToken, Task<bool>> _requestInstall;
     private readonly Func<CancellationToken, Task<AgentUpdateState>> _projectCurrent;
     private readonly Func<AgentUpdateSignal?> _configuredSignal;
 
@@ -40,7 +40,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         AgentUpdateStateStore stateStore,
         IAgentLogger log,
         string currentVersion,
-        Func<DateTimeOffset, CancellationToken, Task<bool>>? requestInstall = null,
+        Func<DateTimeOffset, string, string, string, AgentUpdateExpectedPlan?, CancellationToken, Task<bool>>? requestInstall = null,
         Func<CancellationToken, Task<AgentUpdateState>>? projectCurrent = null,
         Func<AgentUpdateSignal?>? configuredSignal = null)
     {
@@ -243,7 +243,7 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
             if (_coordinatorFactory() is null)
                 return await RejectAsync("Update trust is not configured.").ConfigureAwait(false);
             _ = BuildSignal(request); // manifest URL and channel stay pinned to the installed configuration
-            if (!await _requestInstall(notBefore.Value, ct).ConfigureAwait(false))
+            if (!await _requestInstall(notBefore.Value, command.Id, campaignId, command.IdempotencyKey, request.Plan, ct).ConfigureAwait(false))
                 return await RejectAsync("Automatic updates are not allowed in the current agent state.").ConfigureAwait(false);
             _log.Info($"Install request recorded: command {command.Id}, not before {notBefore.Value:O}.");
         }
@@ -324,6 +324,8 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
             throw new InvalidOperationException("force_install is not supported in V1.");
         if (!SupportsMode(request.Mode))
             throw new InvalidOperationException("Unsupported update request mode.");
+        if (request.Plan is not null && (request.Mode != InstallMode || !request.Plan.IsValid()))
+            throw new InvalidOperationException("Update request plan is invalid.");
     }
 
     private static async Task ApplyJitterAsync(
@@ -363,14 +365,14 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
 
     private static AgentUpdateRequestPayload ParsePayload(object payload)
     {
-        if (payload is JsonElement element)
-        {
-            var parsed = element.Deserialize<AgentUpdateRequestPayload>(JsonOptions);
-            return parsed ?? throw new InvalidOperationException("Update request payload is empty.");
-        }
-
-        var raw = JsonSerializer.Serialize(payload, JsonOptions);
-        return JsonSerializer.Deserialize<AgentUpdateRequestPayload>(raw, JsonOptions)
+        var element = payload is JsonElement json ? json : JsonSerializer.SerializeToElement(payload, JsonOptions);
+        if (element.ValueKind != JsonValueKind.Object || element.EnumerateObject().Count(p => p.Name == "plan") > 1)
+            throw new InvalidOperationException("Update request payload is invalid.");
+        if (element.TryGetProperty("plan", out var plan) && plan.ValueKind != JsonValueKind.Null &&
+            (plan.ValueKind != JsonValueKind.Object || plan.EnumerateObject().Count() != 3 ||
+             plan.EnumerateObject().Select(p => p.Name).Distinct(StringComparer.Ordinal).Count() != 3))
+            throw new InvalidOperationException("Update request plan is invalid.");
+        return element.Deserialize<AgentUpdateRequestPayload>(JsonOptions)
                ?? throw new InvalidOperationException("Update request payload is empty.");
     }
 
@@ -393,5 +395,6 @@ internal sealed class AgentUpdateRequestCommandHandler : ICommandHandler
         [property: JsonPropertyName("reason")] string? Reason,
         [property: JsonPropertyName("not_before_utc")] string? NotBeforeUtc,
         [property: JsonPropertyName("jitter_seconds")] int? JitterSeconds,
-        [property: JsonPropertyName("force_install")] bool? ForceInstall);
+        [property: JsonPropertyName("force_install")] bool? ForceInstall,
+        [property: JsonPropertyName("plan")] AgentUpdateExpectedPlan? Plan = null);
 }
