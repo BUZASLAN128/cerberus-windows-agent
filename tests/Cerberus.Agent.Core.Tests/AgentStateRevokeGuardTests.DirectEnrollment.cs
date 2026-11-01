@@ -10,7 +10,7 @@ public sealed partial class AgentStateRevokeGuardTests
     [InlineData("legacy", null)]
     [InlineData("bound", null)]
     [InlineData("other", null)]
-    [InlineData("unreadable", "legacy_revoke_cleanup_pending")]
+    [InlineData("unreadable", null)]
     [InlineData("empty", null)]
     public async Task DirectVerifiedEnrollmentClearsOnlyMatchingLegacyRevoke(string kind, string? expectedCode)
     {

@@ -240,7 +240,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             {
                 // A handler can block before returning its Task. Keep even that work off
                 // the queue loop so cancellation and shutdown remain observable.
-                var invocation = Task.Run(() => InvokeBoundedAsync(command, linked.Token), CancellationToken.None);
+                var invocation = Task.Run(() => InvokeBoundedAsync(command, record.AgentId, linked.Token), CancellationToken.None);
                 _ = invocation.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 result = await invocation.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -258,16 +258,26 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
         }
     }
 
-    private async Task<CommandResult> InvokeBoundedAsync(AgentCommand command, CancellationToken ct)
+    private async Task<CommandResult> InvokeBoundedAsync(AgentCommand command, string expectedAgentId, CancellationToken ct)
     {
         await HandlerGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            ct.ThrowIfCancellationRequested();
-            if (RecoveryHeld()) return Unknown();
-            if (command.SafeLeaseDeadlineTimestamp is not { } deadline || System.Diagnostics.Stopwatch.GetTimestamp() >= deadline)
-                return Unknown();
-            return await _dispatcher.DispatchAsync(command, ct).ConfigureAwait(false);
+            while (true)
+            {
+                await WaitForExecutionAsync(ct).ConfigureAwait(false);
+                var agentId = await _currentAgentId(ct).ConfigureAwait(false);
+                lock (_executionAdmissionGate)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (ExecutionHeld()) continue;
+                    if (agentId != expectedAgentId || command.SafeLeaseDeadlineTimestamp is not { } deadline ||
+                        System.Diagnostics.Stopwatch.GetTimestamp() >= deadline) return Unknown();
+                }
+                // No await or queued task between the final gate and this invocation.
+                // A synchronously blocking handler must not hold the pause setter's lock.
+                return await _dispatcher.DispatchAsync(command, ct).ConfigureAwait(false);
+            }
         }
         finally { HandlerGate.Release(); }
     }

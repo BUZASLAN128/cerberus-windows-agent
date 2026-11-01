@@ -1134,15 +1134,12 @@ internal static partial class AgentUpdateLocalService
         var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(Root, attemptId);
         var runtimeDirectory = Path.GetDirectoryName(AgentUpdateCoordinator.ResolveUpdaterPath())!;
         var runner = AgentUpdateRunnerFiles.Prepare(runtimeDirectory, attemptDirectory);
-        using (await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false))
+        await LaunchUnderFenceAsync(active, automatic, LoadLifecycleAsync, PendingStateDelivery, launchLifecycle =>
         {
-            lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-            if (PendingStateDelivery(lifecycle) || automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
-                throw new InvalidOperationException("Automatic update authorization changed.");
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => before with
             {
-                Phase = "launch_requested", LifecycleGeneration = lifecycle.Generation, Automatic = automatic,
+                Phase = "launch_requested", LifecycleGeneration = launchLifecycle.Generation, Automatic = automatic,
                 InstallerResult = null, NextRetryUtc = null,
             });
             var start = new ProcessStartInfo(runner) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(runner)! };
@@ -1153,7 +1150,7 @@ internal static partial class AgentUpdateLocalService
             {
                 RunnerProcessId = process.Id, RunnerStartedUtc = new DateTimeOffset(process.StartTime.ToUniversalTime()),
             });
-        }
+        }, ct).ConfigureAwait(false);
         await ProjectAsync(ct).ConfigureAwait(false);
     }
 

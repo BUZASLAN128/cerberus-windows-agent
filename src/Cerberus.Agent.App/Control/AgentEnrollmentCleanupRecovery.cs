@@ -30,12 +30,17 @@ internal static class AgentEnrollmentCleanupRecovery
         foreach (var product in new[] { AgentProducts.Cerberus, AgentProducts.Secondary })
         {
             var cleanup = cleanupStore?.Invoke(product) ?? AgentEnrollmentRevokeCleanupStore.ForProduct(product);
-            var record = cleanup.Read();
+            AgentEnrollmentRevokeCleanup? record;
+            try { record = cleanup.Read(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+            {
+                return false; // A damaged obligation cannot prevent the dormant credential path from starting.
+            }
             if (record is null || record.Generation != snapshot.Generation || record.Nonce != snapshot.LastEnrollmentNonce)
                 continue;
             AgentIdentity identity;
             try { identity = (await secrets.LoadAsync(ct).ConfigureAwait(false)).Identity; }
-            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
                 System.Security.Cryptography.CryptographicException or InvalidOperationException or System.Text.Json.JsonException)
             {
                 return false; // Keep the receipt; startup's credential handler owns the dormant transition.
@@ -44,12 +49,20 @@ internal static class AgentEnrollmentCleanupRecovery
                 return false;
             var state = signedStateStore?.Invoke(product) ?? new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(product));
             var complete = false;
-            var current = await lifecycle.ExecuteIfCurrentAsync(snapshot.Generation, _ =>
+            bool current;
+            try
             {
-                complete = cleanup.TryComplete(snapshot, identity.AgentId,
-                    id => state.TryClearLegacyRevokeAfterEnrollment(id, verifiedEnrollment: true));
-                return Task.CompletedTask;
-            }, ct).ConfigureAwait(false);
+                current = await lifecycle.ExecuteIfCurrentAsync(snapshot.Generation, _ =>
+                {
+                    complete = cleanup.TryComplete(snapshot, identity.AgentId,
+                        id => state.TryClearLegacyRevokeAfterEnrollment(id, verifiedEnrollment: true));
+                    return Task.CompletedTask;
+                }, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+            {
+                return false;
+            }
             return current && complete;
         }
         return null;

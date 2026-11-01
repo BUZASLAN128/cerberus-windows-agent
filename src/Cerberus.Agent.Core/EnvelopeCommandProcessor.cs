@@ -176,7 +176,10 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             {
                 case EnvelopeRecordStates.RejectedAfterReserve:
                     // The rejected ack may not have arrived; send it again with the stored reason. Nothing runs.
-                    if (existing.RejectReason is not null)
+                    if (existing.Type == EnvelopeTypes.AgentState &&
+                        existing.RejectReason is EnvelopeCodes.StaleStateSeq or EnvelopeCodes.ReplayStoreUnavailable)
+                        await _queue.RejectPreparedStateAsync(existing, ct, resend: true).ConfigureAwait(false);
+                    else if (existing.RejectReason is not null)
                         await TrySendAckAsync(agentId, envelope, accepted: false, existing.RejectReason, ct).ConfigureAwait(false);
                     return;
                 case EnvelopeRecordStates.Started:
@@ -250,6 +253,8 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
                     if (await _queue.AcceptPreparedStateAsync(prepared, ct).ConfigureAwait(false))
                         _queue.MarkAccepted(agentId, envelope.Id, envelope.Type);
                 }
+                else if (store.Find(agentId, envelope.Id) is { State: EnvelopeRecordStates.RejectedAfterReserve } rejected)
+                    await _queue.RejectPreparedStateAsync(rejected, ct).ConfigureAwait(false);
             }
             finally { _queue.ClearInFlight(agentId, envelope.Id); }
             return;

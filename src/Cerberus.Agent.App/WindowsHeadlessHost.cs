@@ -130,8 +130,10 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     internal static string? CompleteDirectEnrollment(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
         AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState)
-        => AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, verifiedEnrollment: true)
-            ? null : "legacy_revoke_cleanup_pending";
+    {
+        _ = AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, verifiedEnrollment: true);
+        return null; // The committed registration remains successful; its receipt owns cleanup retries.
+    }
 
     public string? ReadFingerprintLine()
     {

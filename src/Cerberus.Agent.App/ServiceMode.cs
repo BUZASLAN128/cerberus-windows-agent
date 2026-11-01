@@ -93,8 +93,8 @@ internal static partial class ServiceMode
                     {
                         if (worker?.IsFaulted == true && worker.Exception?.GetBaseException() is not OperationCanceledException)
                             await worker.ConfigureAwait(false);
-                        // Server: a worker that ends by itself after a short run (revoke not recorded) restarts with a growing delay.
-                        if (worker is not null && AgentBuildProfile.IsServer)
+                        // Every profile can end before its first heartbeat while revoke delivery is pending.
+                        if (worker is not null)
                         {
                             restartBackoff.OnWorkerEnded(workerStartedUtc, DateTimeOffset.UtcNow,
                                 planned: automatic?.IsCancellationRequested == true || workerGeneration != snapshot.Generation);
@@ -183,7 +183,7 @@ internal static partial class ServiceMode
             await RunDormantAsync(ct).ConfigureAwait(false);
             return;
         }
-        catch (System.Security.Cryptography.CryptographicException)
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or IOException or UnauthorizedAccessException)
         {
             await lifecycleState.TransitionAsync(
                 AgentLifecycleState.NeedsReenrollment,

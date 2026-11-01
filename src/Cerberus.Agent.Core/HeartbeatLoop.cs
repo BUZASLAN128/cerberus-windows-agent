@@ -211,6 +211,7 @@ public sealed partial class HeartbeatLoop
 #if !CERBERUS_SERVER_PROFILE
                 if (!_signedStateOnly && string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
                 {
+                    _commandProcessor.SetExecutionPaused(true);
                     if (_wakeupClient is not null)
                         await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _log.Warn(

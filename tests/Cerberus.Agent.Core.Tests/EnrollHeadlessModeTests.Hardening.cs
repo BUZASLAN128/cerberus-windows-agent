@@ -60,6 +60,48 @@ public sealed partial class EnrollHeadlessModeTests
     private static readonly AgentLifecycleSnapshot Gen0 = new();
 
     [Fact]
+    public async Task CommittedDirectEnrollmentWithUnreadableSignedStateExitsZeroAndWritesFingerprint()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-enrollment-result-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "state.json");
+            File.WriteAllText(path, "{owned malformed signed state");
+            var nonce = Guid.NewGuid().ToString("N");
+            var adopted = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = nonce };
+            var marker = new Cerberus.Agent.App.Control.AgentEnrollmentMarker("agent.enrollment-promotion.v1", 0,
+                "agent-a", "t1", new string('a', 64), nonce, DateTimeOffset.UtcNow.AddMinutes(5));
+            var state = new AgentSignedStateStore(path);
+            var activation = WindowsHeadlessHost.CompleteDirectEnrollment(marker, Gen0, adopted, state);
+            Assert.Null(activation);
+            Assert.True(state.IsQuarantined("agent-a"));
+            var inner = new FakeHost { ActivateResult = activation, LifecycleSequence = [Gen0, adopted] };
+            var (exit, stdout, _) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [false, true] });
+            Assert.Equal(0, exit);
+            Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
+            Assert.NotNull(inner.FingerprintFile);
+            Assert.True(inner.Store.SaveCount > 0);
+            Assert.Equal(0, inner.DiscardCalls);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReportedActivationFailureAfterVisibleCommitPreservesSuccessfulEnrollment(bool throws)
+    {
+        var inner = new FakeHost { ActivateResult = "legacy_revoke_cleanup_pending", ActivateThrows = throws,
+            LifecycleSequence = [Gen0, new AgentLifecycleSnapshot { Generation = 1 }] };
+        var (exit, stdout, _) = await ExecuteSeam(new SeamHost(inner) { CredentialStates = [false, true] });
+        Assert.Equal(0, exit);
+        Assert.Matches("^Agent key fingerprint=sha256:[0-9a-f]{64}$", stdout.Trim());
+        Assert.NotNull(inner.FingerprintFile);
+        Assert.Equal(0, inner.DiscardCalls);
+    }
+
+    [Fact]
     public async Task Cancelled_activation_after_the_service_committed_the_adoption_reports_success()
     {
         using var cts = new CancellationTokenSource();

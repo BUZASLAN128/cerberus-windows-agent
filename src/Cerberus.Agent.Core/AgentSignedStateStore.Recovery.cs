@@ -37,6 +37,31 @@ public sealed partial class AgentSignedStateStore
     public bool RequiresRecovery
     { get { lock (_gate) return RequiresSnapshotRecovery || ControlRecovery().Pending; } }
 
+    /// <summary>Read-only launch barrier for the current protected registration; never repairs storage.</summary>
+    public bool HasPendingRevokeOrRecovery(AgentRevokeRegistration current)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                _file.ValidateDirectory();
+                if (!_file.Exists()) return true;
+                _file.ValidateFile();
+                if (!TryRead(out var state) || state is null) return true;
+                if (state.AgentId != current.AgentId && state.AgentId != AgentSignedState.UnknownAgentId) return false;
+                if (state.Reset is not null) return true;
+                var highWater = _highWater.Read();
+                if (state.StateSeq > 0 && (highWater is null || highWater.Value.AgentId != state.AgentId ||
+                    highWater.Value.Seq > state.StateSeq)) return true;
+                if (state.PendingRevoke is not { } pending) return false;
+                if (pending.Registration is not { } prior) return true;
+                if (prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId) return false;
+                return prior.EnrollmentNonce == current.EnrollmentNonce || current.EnrollmentNonce is null;
+            }
+            catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex)) { return true; }
+        }
+    }
+
     public long RecoveryFloor
     {
         get

@@ -130,6 +130,13 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
 
         if (_store.Load(agentId).PendingRevoke is not { } pending)
             return;
+        // An old registration cannot deliver its outbox through the new credential.
+        // Reconcile only the bound marker; this does not prove a final result.
+        if (pending.Registration is not null && await DifferentRegistrationAsync(agentId, pending, ct).ConfigureAwait(false) == true)
+        {
+            SkipStale(agentId, pending.CommandId);
+            return;
+        }
         var record = replay.Find(agentId, pending.CommandId);
         var settled = _finalResults.Contains(agentId, pending.CommandId)
                       || record is { State: EnvelopeRecordStates.Done, ResultSubmitted: true };
@@ -282,9 +289,12 @@ public sealed class AgentStateCommandHandler : ICommandHandler, IEnvelopeResultF
         {
             var current = await ReadRegistrationAsync(ct).ConfigureAwait(false);
             // An old file has no context. Only a definitely different agent id can discard it.
-            return current.AgentId != agentId || (pending.Registration is { } prior &&
-                ((prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId)
-                 || prior.EnrollmentNonce != current.EnrollmentNonce));
+            if (current.AgentId != agentId) return true;
+            if (pending.Registration is not { } prior) return false;
+            if (prior.TenantId is not null && current.TenantId is not null && prior.TenantId != current.TenantId) return true;
+            if (prior.EnrollmentNonce == current.EnrollmentNonce) return false;
+            // Missing current metadata cannot prove replacement of a known registration.
+            return current.EnrollmentNonce is null ? null : true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

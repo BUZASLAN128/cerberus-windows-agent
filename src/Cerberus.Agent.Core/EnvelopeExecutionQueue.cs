@@ -312,7 +312,7 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
             }
 
             var pending = Store.Records(agentId)
-                .Where(r => r.State == EnvelopeRecordStates.Done && !r.ResultSubmitted && r.ResultB64 is not null
+                .Where(r => (r.State == EnvelopeRecordStates.Done && !r.ResultSubmitted && r.ResultB64 is not null || RejectedStateAckPending(r))
                             && !IsInFlight(r.AgentId, r.Id) && (!RequiresStateRecovery || r.Type == EnvelopeTypes.AgentState))
                 .Take(OutboxPerCycle)
                 .ToList();
@@ -321,7 +321,10 @@ public sealed partial class EnvelopeExecutionQueue : IAsyncDisposable
                 stop.ThrowIfCancellationRequested();
                 if (cancelAll.IsCancellationRequested)
                     return;
-                await SubmitAsync(record, stop).ConfigureAwait(false);
+                if (RejectedStateAckPending(record))
+                    await RejectPreparedStateAsync(record, stop).ConfigureAwait(false);
+                else
+                    await SubmitAsync(record, stop).ConfigureAwait(false);
             }
         }
         finally

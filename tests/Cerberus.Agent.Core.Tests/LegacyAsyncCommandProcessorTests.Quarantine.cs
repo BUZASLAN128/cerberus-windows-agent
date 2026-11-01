@@ -7,6 +7,52 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class LegacyAsyncCommandProcessorTests
 {
     [Fact]
+    public async Task PauseAfterAdmissionWhileWaitingForHandlerGateHoldsActualDispatch()
+    {
+        await using var first = EnvelopeHarness.Create(o => o.StartQueue = false);
+        await using var second = EnvelopeHarness.Create(o => o.StartQueue = false);
+        var running = new FakeCommandHandler(Command().Type).Block();
+        var held = new FakeCommandHandler(Command().Type);
+        var firstDispatcher = Dispatcher(first, running);
+        var secondDispatcher = Dispatcher(second, held);
+        var firstStore = NewStore(first);
+        var secondStore = NewStore(second);
+        await using var p1 = new LegacyAsyncCommandProcessor(first.Api, firstDispatcher,
+            new LegacyHeartbeatCommandProcessor(first.Api, firstDispatcher, TimeSpan.FromSeconds(5), 1),
+            firstStore, _ => Task.FromResult(first.AgentId));
+        await using var p2 = new LegacyAsyncCommandProcessor(second.Api, secondDispatcher,
+            new LegacyHeartbeatCommandProcessor(second.Api, secondDispatcher, TimeSpan.FromSeconds(5), 1),
+            secondStore, _ => Task.FromResult(second.AgentId));
+        var command = Command();
+        try
+        {
+            await p1.ProcessAsync(new[] { command }, default);
+            await running.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await p2.ProcessAsync(new[] { command }, default);
+            await Wait.UntilAsync(() => secondStore.Find(second.AgentId, command.Id)?.State == EnvelopeRecordStates.Started,
+                "second command admitted behind the shared handler gate");
+            p2.SetExecutionPaused(true);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var sentinel = StoreFileWriter.Record(second.AgentId, Guid.NewGuid().ToString("D"), Guid.NewGuid().ToString("D"),
+                EnvelopeRecordStates.Reserved, now, now + 300, submitted: false) with { Type = command.Type };
+            Assert.Equal(ReplayReserveOutcome.Reserved, secondStore.TryReserve(sentinel));
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(FakeCommandHandler.Done(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            Assert.Equal(ReplayUpdateOutcome.Updated, secondStore.TryUpdate(sentinel with { State = EnvelopeRecordStates.Done,
+                ResultB64 = Convert.ToBase64String(bytes), ResultSha256 = CommandEnvelope.Sha256Hex(bytes) }, sentinel.State));
+            running.Gate.TrySetResult();
+            await Wait.UntilAsync(() => secondStore.Find(second.AgentId, sentinel.Id)!.ResultSubmitted,
+                "paused invocation reached the final handler gate and drained existing results");
+            Assert.Equal(0, held.Calls);
+            Assert.DoesNotContain(second.Backend.Results, result => result.CommandId == command.Id);
+            p2.SetExecutionPaused(false);
+            await Wait.UntilAsync(() => secondStore.Find(second.AgentId, command.Id)!.ResultSubmitted, "dispatch resumes after pause clears");
+            Assert.Equal(1, held.Calls);
+            Assert.Equal("DONE", second.Backend.Results.Single(result => result.CommandId == command.Id).Json.GetProperty("status").GetString());
+        }
+        finally { running.Gate.TrySetResult(); p2.SetExecutionPaused(false); }
+    }
+
+    [Fact]
     public async Task HeartbeatPauseHoldsNextCommandWithoutCancellingRunningWorkOrResultDelivery()
     {
         await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);

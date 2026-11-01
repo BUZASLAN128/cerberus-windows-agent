@@ -233,17 +233,21 @@ internal static class EnrollHeadlessMode
             var failure = await ActivateAsync(host, userScope, fromInstaller, installService, ct).ConfigureAwait(false);
             if (failure is not null)
             {
-                log.Error($"Enrolled credentials were not activated ({failure}).");
-                await DiscardPendingAsync(host, log).ConfigureAwait(false);
-                return new(HeadlessEnrollmentExit.NewProofRequired, failure);
+                if (!await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
+                {
+                    log.Error($"Enrolled credentials were not activated ({failure}).");
+                    await DiscardPendingAsync(host, log).ConfigureAwait(false);
+                    return new(HeadlessEnrollmentExit.NewProofRequired, failure);
+                }
+                log.Warn("Enrollment adoption was committed; local cleanup remains pending.");
             }
         }
         catch (Exception ex)
         {
             // Cancellation counts as a failure too (the proof is spent), unless the service already committed the adoption.
-            if (ex is OperationCanceledException && await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
+            if (await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
             {
-                log.Warn("Enrollment adoption was committed before the run was cancelled.");
+                log.Warn("Enrollment adoption was committed before activation completed.");
                 ct = CancellationToken.None;
             }
             else

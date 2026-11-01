@@ -222,7 +222,7 @@ public sealed partial class CommandReplayStore
 
     /// <summary>
     /// Compare-and-set: replaces the record only while it is still in <paramref name="expectedState"/> and has not
-    /// been submitted. In <c>done</c> the stored result must be the one in <paramref name="updated"/>; in any other
+    /// been submitted. In <c>done</c> or <c>rejected_after_reserve</c> the stored result must be the one in <paramref name="updated"/>; in any other
     /// state the stored record must hold no result. A write failure keeps the previous content.
     /// </summary>
     public ReplayUpdateOutcome TryUpdate(CommandReplayRecord updated, string expectedState)
@@ -237,7 +237,8 @@ public sealed partial class CommandReplayStore
                 return ReplayUpdateOutcome.Conflict;
 
             var current = _records[index];
-            var resultMatches = expectedState == EnvelopeRecordStates.Done
+            var resultMatches = expectedState == EnvelopeRecordStates.Done ||
+                expectedState == EnvelopeRecordStates.RejectedAfterReserve && current.ResultB64 is not null
                 ? current.ResultB64 is not null && string.Equals(current.ResultSha256, updated.ResultSha256, StringComparison.Ordinal)
                 : current.ResultB64 is null;
             if (current.State != expectedState || current.ResultSubmitted || !resultMatches

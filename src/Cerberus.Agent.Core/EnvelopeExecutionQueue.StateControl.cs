@@ -16,12 +16,12 @@ public sealed record AgentStateDeliveryContext(string AgentId, string TenantId, 
 
 /// <summary>One state delivery's local ACK barrier. The cached result remains in the existing replay record.</summary>
 public sealed record AgentPreparedStateControl(AgentStateDeliveryContext? Context, long StateSequence,
-    string[] Applied, bool AckAccepted = false, bool TransportRefused = false)
+    string[] Applied, bool AckAccepted = false, bool TransportRefused = false, bool AckRejected = false)
 {
     internal static bool IsPending(CommandReplayRecord record) => record.Type == EnvelopeTypes.AgentState &&
         !record.ResultSubmitted && record.State != EnvelopeRecordStates.RejectedAfterReserve;
 
-    internal bool IsValid(string agentId) => StateSequence > 0 && Applied is { Length: <= 3 } &&
+    internal bool IsValid(string agentId) => !(AckAccepted && AckRejected) && StateSequence > 0 && Applied is { Length: <= 3 } &&
         Applied.Distinct(StringComparer.Ordinal).Count() == Applied.Length &&
         Applied.All(value => value is "quarantine" or "registration_state" or "revoke") &&
         (Context?.IsValid(agentId) == true || Context is null && !AckAccepted && Applied.Length == 0);
@@ -34,7 +34,16 @@ public sealed partial class EnvelopeExecutionQueue
     private readonly Func<CancellationToken, Task<AgentStateDeliveryContext>>? _currentControlContext;
 
     internal ReplayReserveOutcome Reserve(CommandReplayRecord record)
-    { lock (_controlAdmissionGate) return Store.TryReserve(record); }
+    {
+        lock (_controlAdmissionGate)
+        {
+            // Publish the winning reservation and its live owner together to recovery.
+            var outcome = Store.TryReserve(record);
+            if (record.Type == EnvelopeTypes.AgentState && outcome == ReplayReserveOutcome.Reserved)
+                MarkInFlight(record.AgentId, record.Id);
+            return outcome;
+        }
+    }
 
     private async Task WaitForPendingControlsAsync(CancellationToken ct)
     {
@@ -95,10 +104,14 @@ public sealed partial class EnvelopeExecutionQueue
         if (!await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false)) return false;
         if (record.State == EnvelopeRecordStates.Done) return true;
         if (record.State == EnvelopeRecordStates.Started)
-            return RecoverAppliedState(record);
+        {
+            if (RecoverAppliedState(record)) return true;
+            RejectState(record, EnvelopeCodes.ReplayStoreUnavailable);
+            return false;
+        }
         if (SignedState is not null && envelope.Payload.GetProperty("state_seq").GetInt64() <= SignedState.Load(record.AgentId).StateSeq)
         {
-            RejectStaleState(record);
+            RejectState(record, EnvelopeCodes.StaleStateSeq);
             return false;
         }
         var started = record with { State = EnvelopeRecordStates.Started };
@@ -108,7 +121,7 @@ public sealed partial class EnvelopeExecutionQueue
         if (result.RootElement.GetProperty("status").GetString() == "FAILED" &&
             result.RootElement.TryGetProperty("stderr", out var error) && error.GetString() == AgentStateCommandHandler.StaleStateSeq)
         {
-            RejectStaleState(started);
+            RejectState(started, EnvelopeCodes.StaleStateSeq);
             return false;
         }
         if (result.RootElement.GetProperty("status").GetString() != "DONE" || !IsStateApplied(started)) return false;
@@ -117,15 +130,15 @@ public sealed partial class EnvelopeExecutionQueue
         return durable;
     }
 
-    private void RejectStaleState(CommandReplayRecord record)
+    private void RejectState(CommandReplayRecord record, string reason)
     {
-        var body = Failed(AgentStateCommandHandler.StaleStateSeq, record.EnvelopeSha256);
-        var rejected = record with { State = EnvelopeRecordStates.RejectedAfterReserve, RejectReason = null,
+        var body = Failed(reason, record.EnvelopeSha256);
+        var rejected = record with { State = EnvelopeRecordStates.RejectedAfterReserve, RejectReason = reason,
             ResultB64 = Convert.ToBase64String(body), ResultSha256 = CommandEnvelope.Sha256Hex(body) };
         var outcome = Store.TryUpdate(rejected, record.State);
         if (outcome == ReplayUpdateOutcome.Failed) outcome = Store.TryUpdate(rejected, record.State);
         if (outcome != ReplayUpdateOutcome.Updated)
-            _log.Warn($"Stale state id={record.Id} remains unacknowledged: rejection could not be persisted.");
+            _log.Warn($"State failure id={record.Id} remains unacknowledged: rejection could not be persisted.");
     }
 
     private bool IsStateApplied(CommandReplayRecord record)
@@ -162,12 +175,31 @@ public sealed partial class EnvelopeExecutionQueue
 
     private async Task RecoverStateControlsAsync(string agentId, CancellationToken ct)
     {
+        foreach (var record in Store.Records(agentId).Where(record => record.State == EnvelopeRecordStates.Done &&
+                     record.StateControl is { TransportRefused: true } && !IsInFlight(record.AgentId, record.Id)))
+        {
+            if (!IsPreparedResult(record) || !await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false) ||
+                SignedState is not null && !SignedState.HasPersistedState(record.AgentId, record.StateControl!.StateSequence, false)) continue;
+            FinishRefusedState(record, record.StateControl!);
+        }
         foreach (var record in Store.Records(agentId).Where(record => IsPendingControl(record) &&
-                     record.State == EnvelopeRecordStates.Started && !IsInFlight(record.AgentId, record.Id)))
+                     record.State is EnvelopeRecordStates.Reserved or EnvelopeRecordStates.Started && !IsInFlight(record.AgentId, record.Id)))
         {
             if (!await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false)) continue;
-            RecoverAppliedState(record);
+            lock (_controlAdmissionGate)
+            {
+                if (IsInFlight(record.AgentId, record.Id)) continue;
+                if (!RecoverAppliedState(record)) RejectState(record, EnvelopeCodes.ReplayStoreUnavailable);
+            }
         }
+    }
+
+    private void FinishRefusedState(CommandReplayRecord record, AgentPreparedStateControl control)
+    {
+        // Terminal transport refusal is not delivery evidence and cannot finalize a revoke.
+        // Keep the prepared body and signed snapshot; only release this delivery's barrier.
+        Store.TryUpdate(record with { State = EnvelopeRecordStates.RejectedAfterReserve, RejectReason = null,
+            StateControl = control with { TransportRefused = true } }, record.State);
     }
 
     private static bool IsPreparedResult(CommandReplayRecord record)
@@ -203,7 +235,7 @@ public sealed partial class EnvelopeExecutionQueue
         }
         catch (HttpRequestException ex) when (ex.StatusCode is { } status && IsFinalRefusal(status))
         {
-            Store.TryUpdate(record with { StateControl = control with { TransportRefused = true } }, record.State);
+            FinishRefusedState(record, control);
             return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
@@ -214,18 +246,62 @@ public sealed partial class EnvelopeExecutionQueue
         _resultRetry.Succeeded();
         return Store.TryUpdate(record with { StateControl = control with { AckAccepted = true } }, record.State) == ReplayUpdateOutcome.Updated;
     }
+
+    private static bool RejectedStateAckPending(CommandReplayRecord record) => record.Type == EnvelopeTypes.AgentState &&
+        record.State == EnvelopeRecordStates.RejectedAfterReserve &&
+        record.RejectReason is EnvelopeCodes.StaleStateSeq or EnvelopeCodes.ReplayStoreUnavailable &&
+        record.StateControl is { AckRejected: false, TransportRefused: false };
+
+    internal async Task<bool> RejectPreparedStateAsync(CommandReplayRecord record, CancellationToken ct, bool resend = false)
+    {
+        if (record.StateControl is not { } control || control.TransportRefused ||
+            record.State != EnvelopeRecordStates.RejectedAfterReserve ||
+            record.RejectReason is not (EnvelopeCodes.StaleStateSeq or EnvelopeCodes.ReplayStoreUnavailable) ||
+            !await HasCurrentControlContextAsync(record, ct).ConfigureAwait(false)) return false;
+        if (control.AckRejected && !resend) return true;
+        if (!_resultRetry.CanTry) return false;
+        using var timeout = new CancellationTokenSource(EnvelopeCommandProcessor.AckTimeout, Time);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        try
+        {
+            await _api.SubmitEnvelopeAckAsync(record.AgentId, record.Id,
+                CommandEnvelope.BuildAckBody(record.EnvelopeSha256, false, record.RejectReason), linked.Token)
+                .WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is { } status && IsFinalRefusal(status))
+        {
+            Store.TryUpdate(record with { StateControl = control with { TransportRefused = true } }, record.State);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _resultRetry.Failed(ex);
+            return false;
+        }
+        _resultRetry.Succeeded();
+        return Store.TryUpdate(record with { StateControl = control with { AckRejected = true } }, record.State) == ReplayUpdateOutcome.Updated;
+    }
 }
 
 public sealed partial class CommandReplayStore
 {
     /// <summary>Read the durable update barrier before automatic service workers start.</summary>
-    public bool HasPendingStateDelivery(long generation, string? enrollmentNonce)
+    public bool HasPendingStateDelivery(long generation, string? enrollmentNonce, string? agentId = null)
     {
         lock (_gate)
         {
-            return !EnsureLoaded() || _records.Any(record => AgentPreparedStateControl.IsPending(record) &&
-                (record.StateControl?.Context is null || record.StateControl.Context.Generation == generation &&
-                    record.StateControl.Context.EnrollmentNonce == enrollmentNonce));
+            // Readiness must never invoke replay repair, rename a corrupt file or create a reset.
+            try
+            {
+                _file.ValidateDirectory();
+                if (_persistPending || !_file.Exists()) return true;
+                _file.ValidateFile();
+                return !TryRead(out var records, out var resetAt) || resetAt != 0 || records.Any(record =>
+                    (agentId is null || record.AgentId == agentId) && AgentPreparedStateControl.IsPending(record) &&
+                    (record.StateControl?.Context is null || record.StateControl.Context.Generation == generation &&
+                        record.StateControl.Context.EnrollmentNonce == enrollmentNonce));
+            }
+            catch (Exception ex) when (ProtectedMachineFile.IsFailure(ex)) { return true; }
         }
     }
 }

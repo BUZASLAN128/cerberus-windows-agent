@@ -6,9 +6,11 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentEnrollmentCleanupRecoveryTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task CompletedReceiptWithUnavailableCredentialsRetainsEvidenceAndLetsStartupContinue(bool undecryptable)
+    [InlineData("missing")]
+    [InlineData("crypto")]
+    [InlineData("io")]
+    [InlineData("access")]
+    public async Task CompletedReceiptWithUnavailableCredentialsRetainsEvidenceAndLetsStartupContinue(string kind)
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -25,8 +27,13 @@ public sealed class AgentEnrollmentCleanupRecoveryTests
             var state = new AgentSignedStateStore(Path.Combine(root, "state.json"));
             var pending = new AgentPendingRevoke("later-revoke", "agent_revoked", new("agent-a", "tenant", nonce));
             Assert.True(state.TrySave(new("agent-a", 1, true, "claimed", pending)));
-            Exception failure = undecryptable ? new System.Security.Cryptography.CryptographicException("Owned unreadable fixture")
-                : new FileNotFoundException("Owned missing fixture");
+            Exception failure = kind switch
+            {
+                "crypto" => new System.Security.Cryptography.CryptographicException("Owned unreadable fixture"),
+                "io" => new IOException("Owned IO fixture"),
+                "access" => new UnauthorizedAccessException("Owned access fixture"),
+                _ => new FileNotFoundException("Owned missing fixture"),
+            };
             var stateReads = 0;
 
             var result = await AgentEnrollmentCleanupRecovery.UnderFenceAsync(lifecycle, new UnavailableSecrets(failure), default,
@@ -36,6 +43,30 @@ public sealed class AgentEnrollmentCleanupRecoveryTests
             Assert.Equal(receipt, cleanup.Read());
             Assert.Equal(snapshot, await lifecycle.LoadAsync(default));
             Assert.Equal(pending, state.Load("agent-a").PendingRevoke);
+            Assert.Equal(0, stateReads);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task DamagedReceiptDoesNotPreventDormantStartupOrConsumeEvidence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "cleanup.json");
+            File.WriteAllText(path, "{owned malformed receipt");
+            var bytes = File.ReadAllBytes(path);
+            var snapshot = new AgentLifecycleSnapshot { Generation = 1, LastEnrollmentNonce = Guid.NewGuid().ToString("N") };
+            var lifecycle = new InMemoryAgentLifecycleStateStore(snapshot);
+            var stateReads = 0;
+            var result = await AgentEnrollmentCleanupRecovery.UnderFenceAsync(lifecycle,
+                new UnavailableSecrets(new FileNotFoundException("Owned missing fixture")), default,
+                _ => new AgentEnrollmentRevokeCleanupStore(path), _ => { stateReads++; throw new InvalidOperationException(); });
+            Assert.False(result);
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+            Assert.Equal(snapshot, await lifecycle.LoadAsync(default));
             Assert.Equal(0, stateReads);
         }
         finally { Directory.Delete(root, true); }

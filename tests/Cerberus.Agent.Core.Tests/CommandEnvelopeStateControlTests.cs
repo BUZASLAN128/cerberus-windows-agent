@@ -24,7 +24,8 @@ public sealed partial class CommandEnvelopeStateControlTests
         await f.Queue.DrainOutboxOnceAsync(default);
 
         Assert.False(f.State.Load(f.H.AgentId).QuarantineActive);
-        Assert.Empty(f.H.Backend.Acks);
+        Assert.Equal("rejected", Assert.Single(f.H.Backend.Acks).Json.GetProperty("decision").GetString());
+        Assert.Equal(EnvelopeCodes.StaleStateSeq, f.Replay.Find(f.H.AgentId, stale.Id)!.RejectReason);
         Assert.Empty(f.H.Backend.Results);
         Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
         Assert.Equal(1, f.Executions);
@@ -48,7 +49,8 @@ public sealed partial class CommandEnvelopeStateControlTests
 
         Assert.False(f.State.Load(f.H.AgentId).QuarantineActive);
         Assert.False(f.State.HoldsNormalWork());
-        Assert.Empty(f.H.Backend.Acks);
+        Assert.Equal("rejected", Assert.Single(f.H.Backend.Acks).Json.GetProperty("decision").GetString());
+        Assert.Equal(EnvelopeCodes.StaleStateSeq, f.Replay.Find(f.H.AgentId, stale.Id)!.RejectReason);
         Assert.Empty(f.H.Backend.Results);
         Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, f.Replay.Find(f.H.AgentId, stale.Id)!.State);
         Assert.Equal(0, f.Executions);
@@ -253,11 +255,14 @@ public sealed partial class CommandEnvelopeStateControlTests
         public EnvelopeExecutionQueue Queue { get; private set; } = null!;
         public EnvelopeCommandProcessor Processor { get; private set; } = null!;
         public AgentStateCommandHandler Handler { get; private set; } = null!;
+        public AgentRevokeFinalResults FinalResults { get; private set; } = null!;
         public AgentLifecycleController Lifecycle { get; } = new(new InMemoryAgentLifecycleStateStore());
         public AgentStateDeliveryContext CurrentContext { get; set; }
         public bool FailAfterApply { get; set; }
         public Action? BeforeApply { get; set; }
         public Func<CancellationToken, Task<string>>? CurrentAgent { get; set; }
+        public Func<CancellationToken, Task<AgentRevokeRegistration>>? CurrentRegistration { get; set; }
+        public bool NetworkStopped { get; set; }
         public int Executions { get; private set; }
 
         public Worker()
@@ -287,12 +292,14 @@ public sealed partial class CommandEnvelopeStateControlTests
             State = ReloadState();
             Replay = new CommandReplayStore(H.StorePath, H.Time);
             var current = State.Track(ct => CurrentAgent?.Invoke(ct) ?? Task.FromResult(H.AgentId));
+            FinalResults = new AgentRevokeFinalResults();
             Handler = new AgentStateCommandHandler(State, current, Lifecycle, () => Queue.CancelAll(), H.Log,
-                () => { }, new AgentRevokeFinalResults(), _ => Task.FromResult(new AgentRevokeRegistration(H.AgentId, "t1", null)));
+                () => NetworkStopped = true, FinalResults, ct => CurrentRegistration?.Invoke(ct) ??
+                    Task.FromResult(new AgentRevokeRegistration(H.AgentId, CurrentContext.TenantId, CurrentContext.EnrollmentNonce)));
             var observed = new ObservedHandler(Handler, () => BeforeApply?.Invoke(),
                 () => { Executions++; if (FailAfterApply) throw new IOException("Owned post-write interruption."); });
             Queue = new EnvelopeExecutionQueue(H.Api, Replay, new ICommandHandler[] { H.Ping, observed }, current,
-                State.IsQuarantined, H.Time, signedState: State, controlContext: H.ControlContext,
+                State.IsQuarantined, H.Time, signedState: State, controlContext: CurrentContext,
                 currentControlContext: _ => Task.FromResult(CurrentContext));
             Processor = new EnvelopeCommandProcessor(H.Api, new[] { H.Signer.Anchor }, Queue,
                 new HashSet<string> { "ping", EnvelopeTypes.AgentState });

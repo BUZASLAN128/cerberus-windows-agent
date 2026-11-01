@@ -71,7 +71,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task InlineAgentStateResult_WhoseWriteFails_StaysPendingWithoutAckOrUnknown()
+    public async Task InlineAgentStateUnprovenWriteFailureClosesRejectedWithoutDoneOrUnknown()
     {
         await using var h = EnvelopeHarness.Create(o => o.StartQueue = false);
         FileStream? lockFile = null;
@@ -89,6 +89,7 @@ public sealed partial class CommandEnvelopeProcessorTests
             await h.Queue.DrainOutboxOnceAsync(default);
             Assert.Empty(h.Backend.Acks);
             Assert.Empty(h.Backend.Results);
+            Assert.Equal(EnvelopeRecordStates.Started, h.Record(state)!.State);
         }
         finally
         {
@@ -98,8 +99,12 @@ public sealed partial class CommandEnvelopeProcessorTests
         await h.Queue.DrainOutboxOnceAsync(CancellationToken.None);
 
         Assert.Empty(h.Backend.Results);
-        Assert.Equal(EnvelopeRecordStates.Started, h.Record(state)!.State);
-        Assert.True(h.Queue.RecoveryControlOnly);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(state)!.State);
+        Assert.Equal(EnvelopeCodes.ReplayStoreUnavailable, h.Record(state)!.RejectReason);
+        Assert.Equal("rejected", Assert.Single(h.Backend.Acks).Json.GetProperty("decision").GetString());
+        Assert.False(h.Record(state)!.ResultSubmitted);
+        Assert.False(h.Queue.RecoveryControlOnly);
+        Assert.Equal(1, h.State.Calls);
     }
 
     [Fact]
