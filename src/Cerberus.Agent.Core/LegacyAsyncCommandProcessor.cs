@@ -30,6 +30,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     private readonly IHeartbeatCommandProcessor _legacy;
     private readonly CommandReplayStore _store;
     private readonly Func<CancellationToken, Task<string>> _currentAgentId;
+    private readonly Func<bool> _recoveryControlOnly;
     private readonly IAgentLogger _log;
     private readonly AgentRetryGate _resultRetry;
     private readonly ConcurrentQueue<(AgentCommand Command, CommandReplayRecord Record)> _pending = new();
@@ -39,16 +40,20 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     private readonly Task _worker;
     private int _slots;
     private int _disposed;
+    private int _executionPaused;
+    private readonly object _executionAdmissionGate = new();
 
     public LegacyAsyncCommandProcessor(AgentApiClient api, CommandDispatcher dispatcher,
         IHeartbeatCommandProcessor legacy, CommandReplayStore store,
-        Func<CancellationToken, Task<string>> currentAgentId, IAgentLogger? log = null, TimeProvider? time = null)
+        Func<CancellationToken, Task<string>> currentAgentId, IAgentLogger? log = null, TimeProvider? time = null,
+        Func<bool>? recoveryControlOnly = null)
     {
         _api = api;
         _dispatcher = dispatcher;
         _legacy = legacy;
         _store = store;
         _currentAgentId = currentAgentId;
+        _recoveryControlOnly = recoveryControlOnly ?? (() => false);
         _log = log ?? NullAgentLogger.Instance;
         _resultRetry = new AgentRetryGate(time ?? TimeProvider.System);
         _worker = Task.Run(() => RunAsync(_stop.Token));
@@ -58,10 +63,12 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     public async Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct)
     {
         _stop.Token.ThrowIfCancellationRequested();
+        if (ExecutionHeld()) return;
         var inline = new List<AgentCommand>();
         var agentId = await _currentAgentId(ct).ConfigureAwait(false);
         foreach (var command in commands)
         {
+            if (ExecutionHeld()) break;
             if (command is null || !Types.Contains(command.Type))
             {
                 inline.Add(command!);
@@ -129,15 +136,38 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
                 throw;
             }
         }
-        if (inline.Count > 0)
+        if (inline.Count > 0 && !ExecutionHeld())
             await _legacy.ProcessAsync(inline, ct).ConfigureAwait(false);
         SignalOutbox();
     }
 
     public void SignalOutbox() => _wake.Release();
-    public bool CanAdvertise => _store.IsAvailable && _store.ResetAt == 0;
+    public void SetExecutionPaused(bool paused)
+    {
+        lock (_executionAdmissionGate) Volatile.Write(ref _executionPaused, paused ? 1 : 0);
+        _wake.Release();
+    }
+    public bool CanAdvertise => !RecoveryHeld() && _store.IsAvailable && _store.ResetAt == 0;
     public void CancelAll() => _stop.Cancel();
     internal long OutboxNotBefore => _resultRetry.NotBefore;
+    internal Task DrainOutboxOnceAsync(CancellationToken ct) => DrainAsync(ct);
+
+    private bool RecoveryHeld()
+    {
+        try { return _recoveryControlOnly(); }
+        catch { return true; } // An unreadable authority cannot permit business traffic.
+    }
+
+    private bool ExecutionHeld() => Volatile.Read(ref _executionPaused) != 0 || RecoveryHeld();
+
+    private async Task WaitForExecutionAsync(CancellationToken ct)
+    {
+        while (ExecutionHeld())
+        {
+            await DrainAsync(ct).ConfigureAwait(false);
+            await _wake.WaitAsync(ct).ConfigureAwait(false);
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
@@ -155,7 +185,8 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             try
             {
                 await _wake.WaitAsync(ct).ConfigureAwait(false);
-                while (_pending.TryDequeue(out var item))
+                if (RecoveryHeld()) continue;
+                while (!ExecutionHeld() && _pending.TryDequeue(out var item))
                 {
                     await RunOneAsync(item.Command, item.Record, ct).ConfigureAwait(false);
                     await DrainAsync(ct).ConfigureAwait(false);
@@ -171,16 +202,29 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
     {
         try
         {
-            if (await _currentAgentId(ct).ConfigureAwait(false) != record.AgentId) return;
-            var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (command.SafeLeaseDeadlineTimestamp is not { } deadline || nowTicks >= deadline)
+            long deadline;
+            CommandReplayRecord started;
+            while (true)
             {
-                StoreResult(record, Unknown());
-                return;
+                await WaitForExecutionAsync(ct).ConfigureAwait(false);
+                var agentId = await _currentAgentId(ct).ConfigureAwait(false);
+                lock (_executionAdmissionGate)
+                {
+                    if (ExecutionHeld()) continue;
+                    if (agentId != record.AgentId) return;
+                    var admissionTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (command.SafeLeaseDeadlineTimestamp is not { } safeDeadline || admissionTicks >= safeDeadline)
+                    {
+                        StoreResult(record, Unknown());
+                        return;
+                    }
+                    deadline = safeDeadline;
+                    started = record with { State = EnvelopeRecordStates.Started };
+                    if (_store.TryUpdate(started, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated) return;
+                    break;
+                }
             }
-            var started = record with { State = EnvelopeRecordStates.Started };
-            if (_store.TryUpdate(started, EnvelopeRecordStates.Reserved) != ReplayUpdateOutcome.Updated) return;
-            nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            var nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             if (nowTicks >= deadline)
             {
                 StoreResult(started, Unknown());
@@ -196,7 +240,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             {
                 // A handler can block before returning its Task. Keep even that work off
                 // the queue loop so cancellation and shutdown remain observable.
-                var invocation = Task.Run(() => InvokeBoundedAsync(command, linked.Token), CancellationToken.None);
+                var invocation = Task.Run(() => InvokeBoundedAsync(command, record.AgentId, linked.Token), CancellationToken.None);
                 _ = invocation.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
                     TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 result = await invocation.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -214,15 +258,26 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
         }
     }
 
-    private async Task<CommandResult> InvokeBoundedAsync(AgentCommand command, CancellationToken ct)
+    private async Task<CommandResult> InvokeBoundedAsync(AgentCommand command, string expectedAgentId, CancellationToken ct)
     {
         await HandlerGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            ct.ThrowIfCancellationRequested();
-            if (command.SafeLeaseDeadlineTimestamp is not { } deadline || System.Diagnostics.Stopwatch.GetTimestamp() >= deadline)
-                return Unknown();
-            return await _dispatcher.DispatchAsync(command, ct).ConfigureAwait(false);
+            while (true)
+            {
+                await WaitForExecutionAsync(ct).ConfigureAwait(false);
+                var agentId = await _currentAgentId(ct).ConfigureAwait(false);
+                lock (_executionAdmissionGate)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (ExecutionHeld()) continue;
+                    if (agentId != expectedAgentId || command.SafeLeaseDeadlineTimestamp is not { } deadline ||
+                        System.Diagnostics.Stopwatch.GetTimestamp() >= deadline) return Unknown();
+                }
+                // No await or queued task between the final gate and this invocation.
+                // A synchronously blocking handler must not hold the pause setter's lock.
+                return await _dispatcher.DispatchAsync(command, ct).ConfigureAwait(false);
+            }
         }
         finally { HandlerGate.Release(); }
     }
@@ -240,6 +295,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
 
     private async Task DrainAsync(CancellationToken ct)
     {
+        if (RecoveryHeld()) return;
         if (!_resultRetry.CanTry) return;
         if (!_store.IsAvailable || _store.ResetAt != 0) return;
         var agent = await _currentAgentId(ct).ConfigureAwait(false);
@@ -253,6 +309,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
              r.State == EnvelopeRecordStates.Done && !r.ResultSubmitted && r.ResultB64 is not null)).Take(16))
         {
             ct.ThrowIfCancellationRequested();
+            if (RecoveryHeld()) return;
             var current = record;
             if (current.State is EnvelopeRecordStates.Reserved or EnvelopeRecordStates.Started)
             {
@@ -263,6 +320,7 @@ public sealed class LegacyAsyncCommandProcessor : IHeartbeatCommandProcessor, IA
             var result = JsonSerializer.Deserialize<CommandResult>(Convert.FromBase64String(current.ResultB64), Json);
             if (result is null || await _currentAgentId(ct).ConfigureAwait(false) != current.AgentId) continue;
             var command = new AgentCommand(current.Id, current.Type, current.Id, new { }, current.Nonce);
+            if (RecoveryHeld()) return;
             try { await _api.SubmitCommandResultAsync(command, result, ct).ConfigureAwait(false); }
             catch (HttpRequestException ex) when (ex.StatusCode is { } status && IsFinalRefusal(status))
             { _log.Warn($"Async command id={LogId(current.Id)} result refused with HTTP {(int)status}."); }

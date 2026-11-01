@@ -1,5 +1,6 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Observability;
+using Cerberus.Agent.App.Control;
 
 namespace Cerberus.Agent.App;
 
@@ -57,17 +58,15 @@ internal static class EnrollHeadlessState
     }
 
     /// <summary>
-    /// True when the service committed the staged enrollment: the lifecycle generation moved past <paramref name="before"/>,
-    /// the state is Active and machine credentials exist. Used after a cancelled adopt round-trip; uses its own short deadline.
+    /// Proves the activation's own marker and active credential after an interrupted adopt round-trip.
+    /// An unrelated lifecycle generation change is never enrollment evidence.
     /// </summary>
     internal static async Task<bool> AdoptionCommittedAsync(IHeadlessHost host, AgentLifecycleSnapshot before, IAgentLogger log)
     {
         try
         {
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var now = await host.LoadLifecycleAsync(cleanup.Token).ConfigureAwait(false);
-            return now.Generation > before.Generation && now.State == AgentLifecycleState.Active &&
-                   now.QuiescenceComplete && host.HasMachineCredentials();
+            return await host.IsEnrollmentCommittedAsync(before, cleanup.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -75,4 +74,11 @@ internal static class EnrollHeadlessState
             return false;
         }
     }
+
+    internal static async Task<bool> MatchesCommittedEnrollmentAsync(AgentEnrollmentMarker? marker,
+        AgentLifecycleSnapshot before, AgentLifecycleSnapshot now, ISecretStore active, CancellationToken ct)
+        => marker is not null && marker.ExpectedGeneration >= before.Generation &&
+           now.Generation == marker.ExpectedGeneration + 1 && now.State == AgentLifecycleState.Active && now.QuiescenceComplete &&
+           Guid.TryParseExact(marker.Nonce, "N", out _) && marker.Nonce != before.LastEnrollmentNonce &&
+           now.LastEnrollmentNonce == marker.Nonce && await AgentEnrollmentPromotion.MatchesAsync(marker, active, ct).ConfigureAwait(false);
 }

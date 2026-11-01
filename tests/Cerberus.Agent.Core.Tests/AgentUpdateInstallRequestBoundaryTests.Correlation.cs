@@ -9,12 +9,43 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
     private const string Attempt = "11111111111111111111111111111111";
 
     [Fact]
+    public Task PendingStateRejectsAdmissionAndPausesScheduledWork() => WithCorrelationJournal(async root =>
+    {
+        var journal = new AgentUpdateJournalStore(root);
+        var lifecycle = new AgentLifecycleSnapshot { Generation = 7 };
+        var initial = FixtureWriter(root)(_ => new() { AttemptId = Attempt, LifecycleGeneration = 7,
+            Phase = AgentUpdateStates.AwaitingConsent, Required = true, RequiredPolicyGeneration = 7,
+            ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1) });
+        var admissionWrites = 0;
+        AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> change)
+        {
+            admissionWrites++;
+            return FixtureWriter(root)(change);
+        }
+        Assert.False(await AgentUpdateLocalService.RequestInstallAsync(DateTimeOffset.UtcNow,
+            _ => Task.FromResult(lifecycle), Change, () => false, _ => true, default,
+            "pending-command", "campaign", "idem", Release));
+        Assert.Equal(0, admissionWrites);
+        var work = 0;
+        await AgentUpdateLocalService.RunScheduledTickAsync(journal, lifecycle, () => false, _ => true,
+            _ => { work++; return Task.FromResult(true); }, _ => { work++; return Task.CompletedTask; },
+            () => { work++; return Task.CompletedTask; }, default);
+        Assert.Equal(0, work);
+        Assert.Equal(initial, journal.Read());
+        var due = initial with { InstallRequest = CorrelatedRequest() };
+        FixtureWriter(root)(_ => due);
+        Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(due, lifecycle, () => false, _ => true,
+            FixtureWriter(root), _ => { work++; return Task.FromResult(true); }, NullAgentLogger.Instance, default));
+        Assert.Equal(0, work);
+    });
+
+    [Fact]
     public Task DuplicateAfterRestartPreservesRequestIdentityBudgetAndExpiry() => WithCorrelationJournal(async root =>
     {
         var due = DateTimeOffset.UtcNow;
         Task<bool> Request(DateTimeOffset at, string campaign = "campaign", string idem = "idem", AgentUpdateExpectedPlan? plan = null)
             => AgentUpdateLocalService.RequestInstallAsync(at,
-                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false,
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, _ => false,
                 default, "command", campaign, idem, plan ?? Release);
         Assert.True(await Request(due));
         FixtureWriter(root)(before => before with { InstallRequest = before.InstallRequest! with
@@ -41,7 +72,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         Assert.Equal(("staging_failed", 3), (terminal.TerminalReason, terminal.Attempts));
         Assert.NotNull(terminal.TerminalUtc);
         Assert.True(await AgentUpdateLocalService.RequestInstallAsync(DateTimeOffset.UtcNow,
-            _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false,
+            _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, _ => false,
             default, request.CommandId, request.CampaignId, request.IdempotencyKey, request.ExpectedPlan));
         Assert.False(await AgentUpdateLocalService.RunInstallRequestAsync(new AgentUpdateJournalStore(root).Read(),
             7, true, FixtureWriter(root), Fail, NullAgentLogger.Instance, default));
@@ -63,12 +94,12 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         FixtureWriter(root)(_ => new() { InstallRequest = request });
         Task<bool> NoStage(bool _) => throw new InvalidOperationException("A terminal request must not stage.");
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(new AgentUpdateJournalStore(root).Read(),
-            lifecycle, () => true, FixtureWriter(root), NoStage, NullAgentLogger.Instance, default));
+            lifecycle, () => true, _ => false, FixtureWriter(root), NoStage, NullAgentLogger.Instance, default));
         var ended = new AgentUpdateJournalStore(root).Read().InstallRequest!;
         Assert.Equal(reason, ended.TerminalReason);
         Assert.NotNull(ended.TerminalUtc);
         await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(new AgentUpdateJournalStore(root).Read(),
-            lifecycle, () => true, FixtureWriter(root), NoStage, NullAgentLogger.Instance, default);
+            lifecycle, () => true, _ => false, FixtureWriter(root), NoStage, NullAgentLogger.Instance, default);
         Assert.Equal(ended, new AgentUpdateJournalStore(root).Read().InstallRequest);
     });
 
@@ -227,7 +258,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             var reports = 0;
             var ticks = 0;
             await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
-                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false, _ => false,
                     _ => { AgentUpdateLocalService.RequireExpectedRelease(journal.Read().InstallRequest, Release); return Task.FromResult(true); },
                     _ => throw new InvalidOperationException("No installer call expected."), () => Task.CompletedTask, ct),
                 error => { reports++; return AgentUpdateLocalService.ReportFailureAsync(journal, () => Task.CompletedTask, error); });
@@ -253,7 +284,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             if (tick == 2) journal.Change(before => before with { InstallRequest = before.InstallRequest! with
                 { ExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(-1) } });
             journal.Change(before => AgentUpdateLocalService.CompleteInstallRequest(before, Plan(), DateTimeOffset.UtcNow));
-            await AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => tick < 3,
+            await AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => tick < 3, _ => false,
                 _ => throw new InvalidOperationException("No new stage expected."),
                 _ => { launches++; return Task.CompletedTask; }, () => Task.CompletedTask, ct);
         }, _ => throw new InvalidOperationException("Expiration is a hold, not an installation failure."));
@@ -279,7 +310,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         var reports = 0;
         var ticks = 0;
         await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
-            ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+            ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false, _ => false,
                 _ => throw new IOException("fixture stage I/O"), _ => throw new IOException("fixture installer I/O"),
                 () => Task.CompletedTask, ct),
             error => { reports++; return AgentUpdateLocalService.ReportFailureAsync(journal, () => Task.CompletedTask, error); });
@@ -301,12 +332,12 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
                 ApplyNotBeforeUtc = expiredAt, InstallRequest = CorrelatedRequest() with { BoundAttemptId = Attempt,
                     VerifiedRelease = Release, ExpiresUtc = expiredAt, TerminalReason = "expired", TerminalUtc = expiredAt } });
             Assert.True(await AgentUpdateLocalService.RequestInstallAsync(mismatch ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddHours(1),
-                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), journal.Change, () => false, default,
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), journal.Change, () => false, _ => false, default,
                 "replacement", "campaign", "replacement-idem", mismatch ? Release with { ReleaseId = "stable:43" } : Release));
             var ticks = 0;
             var launches = 0;
             await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
-                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false, _ => false,
                     _ => { AgentUpdateLocalService.RequireExpectedRelease(journal.Read().InstallRequest, Release); return Task.FromResult(true); },
                     _ => { launches++; return Task.CompletedTask; }, () => Task.CompletedTask, ct),
                 _ => throw new InvalidOperationException("Expired authority and plan mismatch are not installer failures."));
@@ -338,7 +369,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
                     ExpiresUtc = expiredAt, TerminalReason = "expired", TerminalUtc = expiredAt } };
             FixtureWriter(root)(_ => seed);
             Assert.True(await AgentUpdateLocalService.RequestInstallAsync(mismatch ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddHours(1),
-                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, default,
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, _ => false, default,
                 "replacement", "campaign", "replacement-idem", mismatch ? Release with { ReleaseId = "stable:43" } : Release));
             var after = journal.Read();
             Assert.Equal(independentPolicy, after.Required);
@@ -400,7 +431,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             {
                 admissions++;
                 return AgentUpdateLocalService.RequestInstallAsync(due,
-                    _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false,
+                    _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, _ => false,
                     ct, command, campaign, idem, expected);
             }, _ => Task.FromResult(AgentUpdateState.NotChecked("1.0.0")),
             () => new(false, true, "https://updates.example.test/manifest.json", "fixture", "stable"));

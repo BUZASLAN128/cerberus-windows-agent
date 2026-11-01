@@ -32,6 +32,8 @@ internal interface IHeadlessHost
     HttpClient CreateHttpClient(Uri backend);
     /// <summary>Hands the saved pending credentials to the service (<c>false</c>) or commits them directly (<c>true</c>). Null on success, otherwise a code.</summary>
     Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct);
+    /// <summary>Proves this activation's marker against the committed lifecycle and active credential.</summary>
+    Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct) => Task.FromResult(false);
     string? ReadFingerprintLine();
     void WriteFingerprintFile(string content);
     Task WriteTenantContextAsync(AgentIdentity identity, string? tenantName, CancellationToken ct);
@@ -233,17 +235,21 @@ internal static class EnrollHeadlessMode
             var failure = await ActivateAsync(host, userScope, fromInstaller, installService, ct).ConfigureAwait(false);
             if (failure is not null)
             {
-                log.Error($"Enrolled credentials were not activated ({failure}).");
-                await DiscardPendingAsync(host, log).ConfigureAwait(false);
-                return new(HeadlessEnrollmentExit.NewProofRequired, failure);
+                if (!await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
+                {
+                    log.Error($"Enrolled credentials were not activated ({failure}).");
+                    await DiscardPendingAsync(host, log).ConfigureAwait(false);
+                    return new(HeadlessEnrollmentExit.NewProofRequired, failure);
+                }
+                log.Warn("Enrollment adoption was committed; local cleanup remains pending.");
             }
         }
         catch (Exception ex)
         {
             // Cancellation counts as a failure too (the proof is spent), unless the service already committed the adoption.
-            if (ex is OperationCanceledException && await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
+            if (await EnrollHeadlessState.AdoptionCommittedAsync(host, state, log).ConfigureAwait(false))
             {
-                log.Warn("Enrollment adoption was committed before the run was cancelled.");
+                log.Warn("Enrollment adoption was committed before activation completed.");
                 ct = CancellationToken.None;
             }
             else

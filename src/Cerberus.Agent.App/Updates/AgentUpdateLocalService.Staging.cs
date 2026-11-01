@@ -135,6 +135,7 @@ internal static partial class AgentUpdateLocalService
         AgentUpdateInstallRequest? installRequest = null)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+        if (PendingStateDelivery(lifecycle)) return null;
         if (automatic && !AllowsAutomatic(lifecycle))
             return null;
         // Bind the incoming policy to the generation observed at the start of

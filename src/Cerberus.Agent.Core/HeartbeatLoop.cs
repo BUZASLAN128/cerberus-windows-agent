@@ -181,7 +181,7 @@ public sealed partial class HeartbeatLoop
                 if (recoveringState)
                 {
                     _signedState!.SetRecoverySourceSupported(hb.SignedStateRecovery == true);
-                    if (hb.SignedStateRecovery == true)
+                    if (hb.SignedStateRecovery == true || _signedState.HasPendingControl)
                     {
                         if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false)) return;
                         if (_wakeupClient is not null) await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
@@ -196,6 +196,8 @@ public sealed partial class HeartbeatLoop
                 var control = _responseHandler is null
                     ? HeartbeatControlAction.Continue
                     : await _responseHandler.HandleAsync(hb, ct).ConfigureAwait(false);
+                if (control == HeartbeatControlAction.SkipCommands)
+                    _commandProcessor.SetExecutionPaused(true);
                 if (control == HeartbeatControlAction.Stop)
                 {
                     if (_wakeupClient is not null)
@@ -209,6 +211,7 @@ public sealed partial class HeartbeatLoop
 #if !CERBERUS_SERVER_PROFILE
                 if (!_signedStateOnly && string.Equals(hb.VersionPolicy?.Decision, "upgrade_required", StringComparison.Ordinal))
                 {
+                    _commandProcessor.SetExecutionPaused(true);
                     if (_wakeupClient is not null)
                         await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _log.Warn(
@@ -222,6 +225,7 @@ public sealed partial class HeartbeatLoop
 #endif
 
                 var skipCommands = control == HeartbeatControlAction.SkipCommands;
+                if (!skipCommands) _commandProcessor.SetExecutionPaused(false);
 
                 await TryFlushTelemetryBufferAsync(ct).ConfigureAwait(false);
 

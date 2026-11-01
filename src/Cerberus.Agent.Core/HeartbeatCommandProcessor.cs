@@ -8,6 +8,9 @@ public interface IHeartbeatCommandProcessor
 {
     Task ProcessAsync(IReadOnlyList<AgentCommand> commands, CancellationToken ct);
 
+    /// <summary>Holds future background execution; running work and result delivery continue.</summary>
+    void SetExecutionPaused(bool paused) { }
+
     /// <summary>
     /// Wakes the result outbox without accepting or running any command. The loop calls it
     /// when the server's control state skips commands. Default: nothing to drain.

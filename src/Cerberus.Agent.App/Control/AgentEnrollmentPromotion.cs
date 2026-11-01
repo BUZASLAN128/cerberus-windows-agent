@@ -35,14 +35,25 @@ internal static class AgentEnrollmentPromotion
     internal static bool IsAwaitingAdoption(AgentEnrollmentMarker? marker, AgentLifecycleSnapshot state)
         => marker is not null && marker.ExpectedGeneration == state.Generation && marker.Nonce != state.LastEnrollmentNonce;
 
+    /// <summary>Caller holds the launch fence and has verified the enrollment identity and central proof.</summary>
+    internal static Task<AgentLifecycleSnapshot> CommitVerifiedAsync(DurableAgentLifecycleStateStore lifecycle,
+        AgentEnrollmentMarker marker, CancellationToken ct,
+        Func<long, string, string, string, CancellationToken, Task<IAsyncDisposable>>? publication = null)
+        => lifecycle.CommitEnrollmentAsync(marker.ExpectedGeneration, marker.Nonce,
+            cancel => publication is null
+                ? AgentCredentialPublication.BeginAsync(lifecycle, marker.ExpectedGeneration, marker.Nonce, cancel,
+                    marker.AgentId, marker.Product ?? AgentProducts.Cerberus)
+                : publication(marker.ExpectedGeneration, marker.Nonce, marker.AgentId,
+                    marker.Product ?? AgentProducts.Cerberus, cancel), ct);
+
     /// <summary>After credential publication and lifecycle commit; failed/incomplete enrollment cannot drop a revoke.</summary>
     internal static bool CompleteLegacyRevoke(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
-        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState, bool credentialProbeAccepted)
+        AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState, bool verifiedEnrollment)
         => marker.ExpectedGeneration == before.Generation && adopted.Generation == before.Generation + 1 &&
            adopted.State == AgentLifecycleState.Active && adopted.QuiescenceComplete &&
            Guid.TryParseExact(marker.Nonce, "N", out _) && marker.Nonce != before.LastEnrollmentNonce &&
            adopted.LastEnrollmentNonce == marker.Nonce &&
-           signedState.TryClearLegacyRevokeAfterEnrollment(marker.AgentId, credentialProbeAccepted);
+           signedState.TryClearLegacyRevokeAfterEnrollment(marker.AgentId, verifiedEnrollment);
 
     internal static async Task WriteAsync(long generation, ISecretStore promoted, CancellationToken ct)
     {

@@ -51,34 +51,20 @@ public sealed partial class AgentRegistrarTests
         public string? CapturedBody { get; private set; }
         public HttpResponseMessage Response => _response;
 
-        public CaptureHandler(HttpResponseMessage response, bool headersArriveAfterDeadline = false)
+        public CaptureHandler(HttpResponseMessage response, Action? beforeHeaders = null)
         {
             _response = response;
-            _headersArriveAfterDeadline = headersArriveAfterDeadline;
+            _beforeHeaders = beforeHeaders;
         }
 
-        private readonly bool _headersArriveAfterDeadline;
+        private readonly Action? _beforeHeaders;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             CapturedRequest = request;
             if (request.Content is not null)
                 CapturedBody = await request.Content.ReadAsStringAsync(cancellationToken);
-            if (_headersArriveAfterDeadline)
-            {
-                // A transport that ignores cancellation: the headers come back only once the deadline has fired.
-                try
-                {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                }
-
-                // HttpClient's timeout and the caller's deadline are separate timers with no guaranteed order;
-                // wait out any skew so the deadline has fired before the headers are returned.
-                await Task.Delay(TimeSpan.FromMilliseconds(500), CancellationToken.None);
-            }
+            _beforeHeaders?.Invoke();
 
             return _response;
         }

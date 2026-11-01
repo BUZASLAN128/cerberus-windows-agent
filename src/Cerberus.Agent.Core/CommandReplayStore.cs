@@ -29,11 +29,12 @@ public sealed record CommandReplayRecord(
     [property: JsonPropertyName("result_b64")] string? ResultB64,
     [property: JsonPropertyName("result_sha256")] string? ResultSha256,
     [property: JsonPropertyName("result_submitted")] bool ResultSubmitted,
-    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null)
+    [property: JsonPropertyName("reject_reason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RejectReason = null,
+    [property: JsonPropertyName("state_control"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AgentPreparedStateControl? StateControl = null)
 {
     /// <summary>A result is held and has not reached a final outcome at the server yet.</summary>
     [JsonIgnore]
-    public bool HasPendingResult => State == EnvelopeRecordStates.Started
+    public bool HasPendingResult => AgentPreparedStateControl.IsPending(this) || State == EnvelopeRecordStates.Started
                                     || (State == EnvelopeRecordStates.Done && !ResultSubmitted && ResultB64 is not null);
 }
 
@@ -221,7 +222,7 @@ public sealed partial class CommandReplayStore
 
     /// <summary>
     /// Compare-and-set: replaces the record only while it is still in <paramref name="expectedState"/> and has not
-    /// been submitted. In <c>done</c> the stored result must be the one in <paramref name="updated"/>; in any other
+    /// been submitted. In <c>done</c> or <c>rejected_after_reserve</c> the stored result must be the one in <paramref name="updated"/>; in any other
     /// state the stored record must hold no result. A write failure keeps the previous content.
     /// </summary>
     public ReplayUpdateOutcome TryUpdate(CommandReplayRecord updated, string expectedState)
@@ -236,7 +237,8 @@ public sealed partial class CommandReplayStore
                 return ReplayUpdateOutcome.Conflict;
 
             var current = _records[index];
-            var resultMatches = expectedState == EnvelopeRecordStates.Done
+            var resultMatches = expectedState == EnvelopeRecordStates.Done ||
+                expectedState == EnvelopeRecordStates.RejectedAfterReserve && current.ResultB64 is not null
                 ? current.ResultB64 is not null && string.Equals(current.ResultSha256, updated.ResultSha256, StringComparison.Ordinal)
                 : current.ResultB64 is null;
             if (current.State != expectedState || current.ResultSubmitted || !resultMatches
@@ -478,7 +480,7 @@ public sealed partial class CommandReplayStore
            && !string.IsNullOrEmpty(r.AgentId) && !string.IsNullOrEmpty(r.Id) && !string.IsNullOrEmpty(r.Nonce)
            && !string.IsNullOrEmpty(r.Type) && r.EnvelopeSha256 is { Length: 64 }
            && EnvelopeRecordStates.IsKnown(r.State) && r.IssuedAt > 0 && r.ExpiresAt > r.IssuedAt
-           && (r.ResultSha256 is null || r.ResultSha256.Length == 64);
+           && (r.ResultSha256 is null || r.ResultSha256.Length == 64) && (r.StateControl is null || r.Type == EnvelopeTypes.AgentState && r.StateControl.IsValid(r.AgentId));
 
     private static bool Same(CommandReplayRecord record, string agentId, string id)
         => string.Equals(record.AgentId, agentId, StringComparison.Ordinal)

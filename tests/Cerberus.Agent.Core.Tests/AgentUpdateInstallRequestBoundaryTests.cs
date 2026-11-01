@@ -30,9 +30,9 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
 
         // A true result ends the whole scheduler tick, including when no request exists.
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(new AgentUpdateJournal(), lifecycle,
-            gate, Change, Stage, NullAgentLogger.Instance, default));
+            gate, _ => false, Change, Stage, NullAgentLogger.Instance, default));
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(active, lifecycle,
-            gate, Change, Stage, NullAgentLogger.Instance, default));
+            gate, _ => false, Change, Stage, NullAgentLogger.Instance, default));
         Assert.Equal(0, staged);
         Assert.Equal(0, changes);
         Assert.Equal(request, active.InstallRequest);
@@ -42,12 +42,12 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         quarantined = false;
         AgentUpdateLocalService.HoldWhileQuarantined(true, default, gate);
         Assert.True(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(active, lifecycle,
-            gate, Change, Stage, NullAgentLogger.Instance, default));
+            gate, _ => false, Change, Stage, NullAgentLogger.Instance, default));
         Assert.Equal(1, staged);
         Assert.Null(active.InstallRequest);
         active = active with { InstallRequest = request with { LifecycleGeneration = 6 } };
         Assert.False(await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(active, lifecycle,
-            gate, Change, Stage, NullAgentLogger.Instance, default));
+            gate, _ => false, Change, Stage, NullAgentLogger.Instance, default));
         Assert.Equal(1, staged);
         Assert.Null(active.InstallRequest);
     }
@@ -62,7 +62,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
             var journal = new AgentUpdateJournalStore(root);
             var due = DateTimeOffset.UtcNow.AddHours(2);
             Assert.True(await AgentUpdateLocalService.RequestInstallAsync(due,
-                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 17 }), FixtureWriter(root), () => false, default));
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 17 }), FixtureWriter(root), () => false, _ => false, default));
             var persisted = new AgentUpdateJournalStore(root).Read();
             Assert.Equal(new AgentUpdateInstallRequest(due, 17, due.AddHours(24)), persisted.InstallRequest);
             Assert.Null(persisted.AttemptId);
@@ -86,7 +86,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
                 new AgentUpdateStateStore(Path.Combine(root, "state.json"), Path.Combine(root, "result.json")),
                 NullAgentLogger.Instance, "1.2.3",
                 (due, commandId, campaignId, idempotencyKey, expectedPlan, ct) => AgentUpdateLocalService.RequestInstallAsync(due, _ => Task.FromResult(lifecycle),
-                    FixtureWriter(root), () => quarantined, ct, commandId, campaignId, idempotencyKey, expectedPlan),
+                    FixtureWriter(root), () => quarantined, _ => false, ct, commandId, campaignId, idempotencyKey, expectedPlan),
                 _ => Task.FromResult(projected),
                 () => new AgentUpdateSignal(false, true, "https://updates.example.test/manifest.json", "test", "stable"));
             var due = DateTimeOffset.UtcNow.AddHours(12);

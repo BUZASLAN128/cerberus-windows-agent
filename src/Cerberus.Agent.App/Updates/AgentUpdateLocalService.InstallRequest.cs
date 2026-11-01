@@ -42,18 +42,19 @@ internal static partial class AgentUpdateLocalService
         string idempotencyKey, AgentUpdateExpectedPlan? expectedPlan, CancellationToken ct)
     {
         RequireService();
-        return await RequestInstallAsync(notBeforeUtc, LoadLifecycleAsync, Journal.Change, Quarantined, ct,
+        return await RequestInstallAsync(notBeforeUtc, LoadLifecycleAsync, Journal.Change, Quarantined, PendingStateDelivery, ct,
             commandId, campaignId, idempotencyKey, expectedPlan).ConfigureAwait(false);
     }
 
     internal static async Task<bool> RequestInstallAsync(DateTimeOffset notBeforeUtc,
         Func<CancellationToken, Task<AgentLifecycleSnapshot>> loadLifecycle,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
-        Func<bool> quarantined, CancellationToken ct, string? commandId = null, string? campaignId = null,
+        Func<bool> quarantined, Func<AgentLifecycleSnapshot, bool> pendingState, CancellationToken ct,
+        string? commandId = null, string? campaignId = null,
         string? idempotencyKey = null, AgentUpdateExpectedPlan? expectedPlan = null)
     {
         var lifecycle = await loadLifecycle(ct).ConfigureAwait(false);
-        if (!AllowsAutomatic(lifecycle) || quarantined())
+        if (!AllowsAutomatic(lifecycle, pendingState) || quarantined())
             return false;
         var request = new AgentUpdateInstallRequest(notBeforeUtc, lifecycle.Generation, notBeforeUtc + MaxInstallRequestDelay,
             CommandId: commandId, CampaignId: campaignId, IdempotencyKey: idempotencyKey, ExpectedPlan: expectedPlan);
@@ -108,17 +109,17 @@ internal static partial class AgentUpdateLocalService
     /// </summary>
     private static async Task<bool> HoldOrRunInstallRequestAsync(
         AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
-        => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, Journal.Change,
+        => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, PendingStateDelivery, Journal.Change,
             async required => (await CheckAndStageOwnedAsync(automatic: true, required, ct,
                 bypassSchedule: true, installRequest: active.InstallRequest).ConfigureAwait(false)) is not null,
             _requestLog, ct).ConfigureAwait(false);
 
     internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
-        AgentLifecycleSnapshot lifecycle, Func<bool> quarantined,
+        AgentLifecycleSnapshot lifecycle, Func<bool> quarantined, Func<AgentLifecycleSnapshot, bool> pendingState,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         Func<bool, Task<bool>> stage, IAgentLogger log, CancellationToken ct)
     {
-        var allowed = AllowsAutomatic(lifecycle);
+        var allowed = AllowsAutomatic(lifecycle, pendingState);
         if (NextInstallRequestStep(active, lifecycle.Generation, allowed, DateTimeOffset.UtcNow) == InstallRequestStep.Drop)
         {
             await RunInstallRequestAsync(active, lifecycle.Generation, allowed, change, stage, log, ct).ConfigureAwait(false);

@@ -199,7 +199,7 @@ public sealed class AgentUpdateRequiredIntentTests : IDisposable
         var checkCalls = 0;
         AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> update) => current = update(current);
         var handled = await AgentUpdateLocalService.HoldOrRunInstallRequestAsync(current,
-            new AgentLifecycleSnapshot { Generation = 7 }, () => false, Change,
+            new AgentLifecycleSnapshot { Generation = 7 }, () => false, _ => false, Change,
             _ => { current = current with { Phase = AgentUpdateStates.Current, AttemptId = null, Required = false,
                 RequiredPolicyGeneration = null, NextCheckUtc = Now.AddMinutes(-1) }; return Task.FromResult(false); },
             NullAgentLogger.Instance, default);

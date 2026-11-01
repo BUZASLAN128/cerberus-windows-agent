@@ -16,7 +16,8 @@ public sealed partial class AgentSignedStateTests
         var handler = new AgentStateCommandHandler(state, current, new AgentLifecycleController(new InMemoryAgentLifecycleStateStore()),
             () => { }, h.Log, () => { }, new AgentRevokeFinalResults());
         await using var queue = new EnvelopeExecutionQueue(h.Api, h.Store, new ICommandHandler[] { h.Ping, handler },
-            current, state.IsQuarantined, h.Time, signedState: state);
+            current, state.IsQuarantined, h.Time, signedState: state,
+            controlContext: h.ControlContext, currentControlContext: _ => Task.FromResult(h.ControlContext));
         queue.Start();
         var processor = new EnvelopeCommandProcessor(h.Api, new[] { h.Signer.Anchor }, queue,
             new HashSet<string> { "ping", "agent_state" });
@@ -27,6 +28,7 @@ public sealed partial class AgentSignedStateTests
         Assert.Empty(h.Backend.Acks);
         var fresh = h.Cmd(p => { p.Type = "agent_state"; p.PayloadJson = """{"state_seq":8,"quarantine":{"active":false}}"""; });
         await processor.ProcessAsync(new[] { fresh }, default);
+        await queue.DrainOutboxOnceAsync(default);
         Assert.False(state.RequiresRecovery);
         await processor.ProcessAsync(new[] { h.Cmd() }, default);
         await Wait.UntilAsync(() => h.Ping.Calls == 1, "business reopened after fresh state");

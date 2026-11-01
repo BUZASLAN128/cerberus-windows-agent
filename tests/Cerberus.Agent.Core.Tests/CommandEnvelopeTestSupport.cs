@@ -362,12 +362,16 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
     {
         Store = new CommandReplayStore(StorePath, Time);
         Queue = new EnvelopeExecutionQueue(
-            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time, Log);
+            Api, Store, new ICommandHandler[] { Ping, Facts, State }, _ => Task.FromResult(AgentId), () => Quarantined, Time, Log,
+            controlContext: ControlContext, currentControlContext: _ => Task.FromResult(ControlContext));
         var anchors = _options.Anchors ?? new[] { TestSigner.Default.Anchor };
         Processor = new EnvelopeCommandProcessor(Api, anchors, Queue, Allowed, Log, legacy: _options.Legacy ?? _options.LegacyFactory?.Invoke(Api));
         if (_options.StartQueue)
             Queue.Start();
     }
+
+    public AgentStateDeliveryContext ControlContext => new(AgentId, "t1", 0, null, AgentProducts.Cerberus,
+        AgentKeyFingerprint.Prefix + new string('a', 64));
 
     public AgentCommand Cmd(Action<EnvelopeParts>? edit = null)
     {

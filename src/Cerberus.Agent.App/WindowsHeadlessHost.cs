@@ -13,6 +13,7 @@ namespace Cerberus.Agent.App;
 /// <summary>Production host: SCM, control pipe, DPAPI stores and the protected provisioning directory.</summary>
 internal sealed class WindowsHeadlessHost : IHeadlessHost
 {
+    private AgentEnrollmentMarker? _activationMarker;
     private static readonly Regex FingerprintLine = new(
         "^Agent key fingerprint=sha256:[0-9a-f]{64}$", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
@@ -84,6 +85,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
 
     public async Task<string?> ActivateAsync(bool commitDirectly, CancellationToken ct)
     {
+        _activationMarker = null;
         if (commitDirectly)
             return await CommitDirectlyAsync(ct).ConfigureAwait(false);
 
@@ -97,6 +99,8 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
                 AgentCredentialPublication.RequireNoUnresolvedPublication();
                 await AgentEnrollmentPromotion.WriteAsync(lifecycle.Generation, AgentEnrollmentPromotion.OpenPendingStore(), ct)
                     .ConfigureAwait(false);
+                _activationMarker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false)
+                    ?? throw new InvalidDataException("Enrollment activation marker is unavailable.");
             }
             var response = await AgentLocalControlClient.SendAsync(new("enrollment-adopt"), ct).ConfigureAwait(false);
             if (response.Success)
@@ -110,7 +114,7 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
     }
 
     // LocalSystem with the service stopped: publication is committed here, without the service's heartbeat probe.
-    private static async Task<string?> CommitDirectlyAsync(CancellationToken ct)
+    private async Task<string?> CommitDirectlyAsync(CancellationToken ct)
     {
         using var fence = await AgentUpdateLaunchFence.AcquireAsync(ct).ConfigureAwait(false);
         var durable = new DurableAgentLifecycleStateStore();
@@ -123,16 +127,27 @@ internal sealed class WindowsHeadlessHost : IHeadlessHost
         var marker = await AgentEnrollmentPromotion.ReadAsync(ct).ConfigureAwait(false);
         if (marker is null || !await AgentEnrollmentPromotion.MatchesAsync(marker, pending, ct).ConfigureAwait(false))
             return "enrollment_identity_mismatch";
-        var adopted = await durable.CommitEnrollmentAsync(current.Generation, marker.Nonce,
-            cancel => AgentCredentialPublication.BeginAsync(durable, current.Generation, marker.Nonce, cancel), ct).ConfigureAwait(false);
+        _activationMarker = marker;
+        var adopted = await AgentEnrollmentPromotion.CommitVerifiedAsync(durable, marker, ct).ConfigureAwait(false);
         var signedState = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(marker.Product ?? AgentProducts.Cerberus));
         return CompleteDirectEnrollment(marker, current, adopted, signedState);
     }
 
+    public async Task<bool> IsEnrollmentCommittedAsync(AgentLifecycleSnapshot before, CancellationToken ct)
+    {
+        if (_activationMarker is not { } marker) return false;
+        using var fence = await AgentUpdateLaunchFence.AcquireForEnrollmentPromotionAsync(ct).ConfigureAwait(false);
+        var now = await new DurableAgentLifecycleStateStore().LoadAsync(ct).ConfigureAwait(false);
+        return await EnrollHeadlessState.MatchesCommittedEnrollmentAsync(marker, before, now,
+            new DpapiSecretStore(SecretStoreScope.Machine), ct).ConfigureAwait(false);
+    }
+
     internal static string? CompleteDirectEnrollment(AgentEnrollmentMarker marker, AgentLifecycleSnapshot before,
         AgentLifecycleSnapshot adopted, AgentSignedStateStore signedState)
-        => AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, credentialProbeAccepted: false)
-            ? null : "legacy_revoke_cleanup_pending";
+    {
+        _ = AgentEnrollmentPromotion.CompleteLegacyRevoke(marker, before, adopted, signedState, verifiedEnrollment: true);
+        return null; // The committed registration remains successful; its receipt owns cleanup retries.
+    }
 
     public string? ReadFingerprintLine()
     {

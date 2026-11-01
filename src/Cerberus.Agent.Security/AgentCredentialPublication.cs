@@ -201,14 +201,13 @@ public sealed class AgentCredentialPublication
         {
             if (activeDigest != journal.NextCiphertextSha256)
                 throw new InvalidDataException("Committed machine credential binding is inconsistent.");
-            if (journal.LegacyRevokeAgentId is not null)
-            {
-                if (snapshot.Generation != journal.ExpectedGeneration + 1 ||
-                    journal.LegacyRevokeProduct is not (AgentProducts.Cerberus or AgentProducts.Secondary) ||
-                    !CleanupStore(journal.LegacyRevokeProduct).RecordCommitted(new(snapshot.Generation,
-                        journal.Nonce, journal.LegacyRevokeAgentId, journal.LegacyRevokeProduct)))
-                    throw new InvalidDataException("Committed enrollment cleanup obligation could not be recorded.");
-            }
+            if (journal.LegacyRevokeAgentId is null || journal.LegacyRevokeProduct is null)
+                throw new InvalidDataException("Committed enrollment cleanup identity is missing; operator recovery is required.");
+            if (snapshot.Generation != journal.ExpectedGeneration + 1 ||
+                journal.LegacyRevokeProduct is not (AgentProducts.Cerberus or AgentProducts.Secondary) ||
+                !CleanupStore(journal.LegacyRevokeProduct).RecordCommitted(new(snapshot.Generation,
+                    journal.Nonce, journal.LegacyRevokeAgentId, journal.LegacyRevokeProduct)))
+                throw new InvalidDataException("Committed enrollment cleanup obligation could not be recorded.");
             if (ExistsValidated(PromotionMarkerPath))
             {
                 var markerBytes = await ReadBoundedAsync(PromotionMarkerPath, 4096, ct).ConfigureAwait(false);
