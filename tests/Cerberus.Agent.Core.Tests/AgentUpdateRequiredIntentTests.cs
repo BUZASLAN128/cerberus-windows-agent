@@ -25,22 +25,70 @@ public sealed class AgentUpdateRequiredIntentTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void ExpiredRequestAuthorityCannotBecomeManualRetryAuthority(bool alreadyExpired)
+    {
+        var retry = Recommended() with { Required = false, Phase = AgentUpdateStates.RetryableBusy, Automatic = true,
+            NextRetryUtc = Now.AddMinutes(-1), InstallRequestAuthorityExpiresUtc = alreadyExpired ? Now.AddMinutes(-1) : null };
+        if (alreadyExpired)
+            Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(retry, true, default));
+        else AgentUpdateLocalService.HoldExpiredInstallRequest(retry, true, default);
+        AgentUpdateLocalService.HoldExpiredInstallRequest(retry, false, default);
+    }
+
+    [Fact]
+    public void DeferredSnapshotCannotRestoreExpiredRequestRequiredFlag()
+    {
+        var request = Recommended() with { Required = true, RequiredInstallAttemptId = "attempt-a",
+            InstallRequestAuthorityExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) };
+        var deferred = AgentUpdateLocalService.TransitionReconciliationDeferred(request, Now);
+        var restored = AgentUpdateLocalService.RestoreReconciliationSnapshot(deferred, 7);
+        Assert.False(restored.Required);
+        Assert.Null(restored.RequiredInstallAttemptId);
+        Assert.Equal(request.InstallRequestAuthorityExpiresUtc, restored.InstallRequestAuthorityExpiresUtc);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExplicitManualConsentReplacesExpiredRequestAuthorityAndAllowsItsBusyRetry(bool independent)
+    {
+        var request = Recommended() with { Required = true, RequiredInstallAttemptId = "attempt-a",
+            RequiredPolicyGeneration = independent ? 7 : null, InstallRequestAuthorityExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) };
+        var launched = AgentUpdateLocalService.TransitionLaunchRequested(request, 7, false, default);
+        Assert.Equal("launch_requested", launched.Phase);
+        Assert.False(launched.Automatic);
+        Assert.Equal(independent, launched.Required);
+        Assert.Equal(independent ? 7L : (long?)null, launched.RequiredPolicyGeneration);
+        Assert.Null(launched.RequiredInstallAttemptId);
+        Assert.Null(launched.InstallRequestAuthorityExpiresUtc);
+        AgentUpdateLocalService.HoldExpiredInstallRequest(launched with { Phase = AgentUpdateStates.RetryableBusy,
+            Automatic = true }, true, default);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void RequestGrantIsDurablyAttemptScopedWhileIndependentPolicySurvivesRetirement(bool independent)
     {
-        var before = Recommended() with { Required = independent, RequiredPolicyGeneration = independent ? 7 : null };
+        var before = Recommended() with { Required = independent, RequiredPolicyGeneration = independent ? 7 : null,
+            InstallRequest = new(Now, 7, Now.AddHours(1)) };
         var granted = Persist(AgentUpdateLocalService.TransitionInstallRequested(before, 7, Now));
         Assert.True(granted.Required);
         Assert.Equal(independent ? null : "attempt-a", granted.RequiredInstallAttemptId);
         Assert.Equal(independent ? 7L : (long?)null, granted.RequiredPolicyGeneration);
+        Assert.Equal(independent ? null : Now.AddHours(1), granted.InstallRequestAuthorityExpiresUtc);
 
         var deferred = Persist(AgentUpdateLocalService.TransitionReconciliationDeferred(granted, Now.AddMinutes(5)));
         Assert.Equal(granted.RequiredInstallAttemptId, deferred.RequiredInstallAttemptId);
         Assert.Equal(granted.RequiredPolicyGeneration, deferred.RequiredPolicyGeneration);
+        Assert.Equal(granted.InstallRequestAuthorityExpiresUtc, deferred.InstallRequestAuthorityExpiresUtc);
         var restored = Persist(AgentUpdateLocalService.RestoreReconciliationSnapshot(deferred, 7));
         Assert.Equal(granted.RequiredInstallAttemptId, restored.RequiredInstallAttemptId);
+        Assert.Equal(granted.InstallRequestAuthorityExpiresUtc, restored.InstallRequestAuthorityExpiresUtc);
         // The production trusted-manifest mismatch owner retires this exact attempt.
         var retired = Persist(AgentUpdateLocalService.TransitionReconciliationFailure(restored, Now));
         Assert.Null(retired.RequiredInstallAttemptId);
+        Assert.Null(retired.InstallRequestAuthorityExpiresUtc);
         Assert.Equal(independent, retired.Required);
         var required = AgentUpdateLocalService.CarryRequiredBlockedIntent(retired, false, 7);
         Assert.Equal(independent, required);

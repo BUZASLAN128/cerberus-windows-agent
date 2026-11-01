@@ -52,6 +52,7 @@ internal static partial class AgentUpdateLocalService
 
     internal static AgentUpdateJournal CompleteInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, DateTimeOffset now)
     {
+        active = ExpireInstallRequestAuthority(active, now);
         if (active.InstallRequest is not { IsCorrelated: true, BoundAttemptId: not null } request ||
             request.TerminalReason is not (null or "expired"))
             return active;

@@ -268,7 +268,7 @@ internal static partial class AgentUpdateLocalService
     internal static async Task RunScheduledTickAsync(AgentUpdateJournalStore journal, AgentLifecycleSnapshot lifecycle,
         Func<bool> quarantined, Func<bool, Task<bool>> stageRequest, Func<string, Task> apply, Func<Task> check, CancellationToken ct)
     {
-        var active = journal.Read();
+        var active = ReadInstallAuthority(journal);
         if (await HoldOrRunInstallRequestAsync(active, lifecycle, quarantined, journal.Change, stageRequest,
             _requestLog, ct).ConfigureAwait(false)) return;
         active = journal.Read();
@@ -285,7 +285,7 @@ internal static partial class AgentUpdateLocalService
 
     private static async Task ApplyAsync(string attemptId, bool automatic, CancellationToken ct)
     {
-        var active = Journal.Read();
+        var active = ReadInstallAuthority(Journal);
         if (active.AttemptId != attemptId)
             throw new InvalidOperationException("Update attempt does not match the requested consent.");
         if (active.MayHaveStartedInstallation || active.Phase == "launch_requested")
@@ -307,16 +307,12 @@ internal static partial class AgentUpdateLocalService
             lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
             if (automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
-            var latest = Journal.Read();
+            var latest = ReadInstallAuthority(Journal);
             if (latest.AttemptId != attemptId) throw new InvalidOperationException("Update attempt changed before launch.");
             HoldExpiredInstallRequest(latest, automatic, ct);
             HoldWhileQuarantined(automatic, ct);
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
-            Journal.ChangeAttempt(attemptId, before => before with
-            {
-                Phase = "launch_requested", LifecycleGeneration = lifecycle.Generation, Automatic = automatic,
-                InstallerResult = null, NextRetryUtc = null,
-            });
+            Journal.ChangeAttempt(attemptId, before => TransitionLaunchRequested(before, lifecycle.Generation, automatic, ct));
             var start = new ProcessStartInfo(runner) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(runner)! };
             start.ArgumentList.Add("--attempt");
             start.ArgumentList.Add(attemptId);

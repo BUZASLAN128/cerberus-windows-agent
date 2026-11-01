@@ -137,6 +137,7 @@ public sealed class AgentUpdateStager
             {
                 AttemptId = attemptId, Phase = AgentUpdateStates.Downloading, Required = signal.Required,
                 RequiredInstallAttemptId = null,
+                InstallRequestAuthorityExpiresUtc = null,
                 RetryCount = 0, NextRetryUtc = null, RunnerProcessId = null, RunnerStartedUtc = null,
                 InstallerProcessId = null, InstallerStartedUtc = null, InstallerResult = null,
                 InstallationBootId = null,

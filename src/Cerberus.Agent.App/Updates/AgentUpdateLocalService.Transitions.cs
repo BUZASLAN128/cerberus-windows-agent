@@ -63,6 +63,7 @@ internal static partial class AgentUpdateLocalService
                 LifecycleGeneration = operationStart.LifecycleGeneration,
                 RequiredPolicyGeneration = operationStart.RequiredPolicyGeneration,
                 RequiredInstallAttemptId = operationStart.RequiredInstallAttemptId,
+                InstallRequestAuthorityExpiresUtc = operationStart.InstallRequestAuthorityExpiresUtc,
                 InstallerResult = operationStart.InstallerResult,
                 RetryCount = operationStart.RetryCount,
                 NextRetryUtc = operationStart.NextRetryUtc,
@@ -91,6 +92,7 @@ internal static partial class AgentUpdateLocalService
             InstallationBootId = null,
             RequiredPolicyGeneration = null,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             NextCheckUtc = retryAtUtc,
         };
     }
@@ -128,10 +130,11 @@ internal static partial class AgentUpdateLocalService
                 {
                     Required = true,
                     RequiredInstallAttemptId = null,
+                    InstallRequestAuthorityExpiresUtc = null,
                     RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, true, requiredPolicyGeneration),
                 }
                 : current with { Required = current.Required && current.RequiredPolicyGeneration is not null,
-                    RequiredInstallAttemptId = null };
+                    RequiredInstallAttemptId = null, InstallRequestAuthorityExpiresUtc = null };
 
         if (current.Phase == "launch_requested" ||
             current.MayHaveStartedInstallation ||
@@ -143,6 +146,7 @@ internal static partial class AgentUpdateLocalService
             Phase = AgentUpdateStates.Blocked,
             Required = required || (current.Required && current.RequiredPolicyGeneration is not null),
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             RequiredPolicyGeneration = RequiredPolicyGenerationFor(
                 current,
                 required,
@@ -226,7 +230,9 @@ internal static partial class AgentUpdateLocalService
                 requiredPolicyGeneration);
         }
 
-        var effectiveRequired = current.Required || snapshot.Required || required;
+        current = ExpireInstallRequestAuthority(current, DateTimeOffset.UtcNow);
+        var effectiveRequired = current.Required || required || snapshot.Required &&
+            (current.InstallRequestAuthorityExpiresUtc is null || current.InstallRequestAuthorityExpiresUtc > DateTimeOffset.UtcNow);
         var applyNotBeforeUtc = snapshot.ApplyNotBeforeUtc;
         if (applyNotBeforeUtc is null && effectiveRequired && !snapshot.Required &&
             snapshot.Phase == AgentUpdateStates.AwaitingConsent && current.AttemptId is not null)
@@ -250,6 +256,8 @@ internal static partial class AgentUpdateLocalService
                 requiredPolicyGeneration),
             RequiredInstallAttemptId = required && requiredPolicyGeneration == lifecycleGeneration
                 ? null : current.RequiredInstallAttemptId,
+            InstallRequestAuthorityExpiresUtc = required && requiredPolicyGeneration == lifecycleGeneration
+                ? null : current.InstallRequestAuthorityExpiresUtc,
             ApplyNotBeforeUtc = applyNotBeforeUtc,
             RetryCount = snapshot.RetryCount,
             NextRetryUtc = snapshot.NextRetryUtc,
@@ -335,6 +343,7 @@ internal static partial class AgentUpdateLocalService
             Phase = AgentUpdateStates.NotChecked,
             AttemptId = null,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             LifecycleGeneration = lifecycleGeneration,
             Required = effectiveRequired,
             RequiredPolicyGeneration = effectiveRequired
@@ -368,6 +377,7 @@ internal static partial class AgentUpdateLocalService
             InstallerResult = null,
             Phase = AgentUpdateStates.Checking,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             Automatic = automatic,
             LifecycleGeneration = lifecycleGeneration,
             Required = required,
@@ -390,6 +400,7 @@ internal static partial class AgentUpdateLocalService
             InstallerResult = null,
             Phase = available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             Required = available && required,
             RequiredPolicyGeneration = RequiredPolicyGenerationForResult(
                 before, available && required, lifecycleGeneration, requiredPolicyGeneration),
@@ -409,6 +420,7 @@ internal static partial class AgentUpdateLocalService
             Phase = AgentUpdateStates.Checking,
             AttemptId = null,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             InstallerResult = null,
             Automatic = automatic,
             LifecycleGeneration = lifecycleGeneration,
@@ -439,6 +451,7 @@ internal static partial class AgentUpdateLocalService
         {
             Phase = plan is null ? AgentUpdateStates.Current : AgentUpdateStates.AwaitingConsent,
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             Automatic = automatic,
             LifecycleGeneration = lifecycleGeneration,
             Required = required,

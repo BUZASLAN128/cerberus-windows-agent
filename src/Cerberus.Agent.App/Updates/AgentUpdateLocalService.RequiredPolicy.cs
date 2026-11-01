@@ -26,6 +26,7 @@ internal static partial class AgentUpdateLocalService
             Required = true,
             RequiredPolicyGeneration = RequiredPolicyGenerationFor(current, true, signalGeneration),
             RequiredInstallAttemptId = null,
+            InstallRequestAuthorityExpiresUtc = null,
             ApplyNotBeforeUtc = applyAt,
         };
     }

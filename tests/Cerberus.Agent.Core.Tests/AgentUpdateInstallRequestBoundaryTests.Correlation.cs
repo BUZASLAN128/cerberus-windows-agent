@@ -261,7 +261,8 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         var ended = journal.Read();
         Assert.Equal("expired", ended.InstallRequest!.TerminalReason);
         Assert.Equal(AgentUpdateStates.AwaitingConsent, ended.Phase);
-        Assert.True(ended.Required);
+        Assert.False(ended.Required);
+        Assert.Null(ended.RequiredInstallAttemptId);
         Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(ended, true, default));
         AgentUpdateLocalService.HoldExpiredInstallRequest(ended, false, default);
     }, protectedJournal: true);
@@ -273,7 +274,7 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
     {
         var journal = new AgentUpdateJournalStore(root);
         journal.Change(_ => new() { AttemptId = Attempt, Phase = AgentUpdateStates.AwaitingConsent, LifecycleGeneration = 7,
-            Required = true, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
+            Required = true, RequiredPolicyGeneration = installer ? 7 : null, ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddMinutes(-1),
             InstallRequest = installer ? null : CorrelatedRequest() });
         var reports = 0;
         var ticks = 0;
@@ -285,6 +286,72 @@ public sealed partial class AgentUpdateInstallRequestBoundaryTests
         Assert.Equal(1, reports);
         Assert.Equal(AgentUpdateStates.Failed, journal.Read().Phase);
     }, protectedJournal: true);
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public Task RealSchedulerTickReplacementCannotInheritExpiredRequestAuthority(bool mismatch, bool independentPolicy)
+        => WithCorrelationJournal(async root =>
+        {
+            var journal = new AgentUpdateJournalStore(root);
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            journal.Change(_ => new() { AttemptId = Attempt, Phase = AgentUpdateStates.AwaitingConsent, LifecycleGeneration = 7,
+                Required = true, RequiredInstallAttemptId = Attempt, RequiredPolicyGeneration = independentPolicy ? 7 : null,
+                ApplyNotBeforeUtc = expiredAt, InstallRequest = CorrelatedRequest() with { BoundAttemptId = Attempt,
+                    VerifiedRelease = Release, ExpiresUtc = expiredAt, TerminalReason = "expired", TerminalUtc = expiredAt } });
+            Assert.True(await AgentUpdateLocalService.RequestInstallAsync(mismatch ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddHours(1),
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), journal.Change, () => false, default,
+                "replacement", "campaign", "replacement-idem", mismatch ? Release with { ReleaseId = "stable:43" } : Release));
+            var ticks = 0;
+            var launches = 0;
+            await AgentUpdateLocalService.RunScheduledAsync(default, _ => ValueTask.FromResult(ticks++ == 0),
+                ct => AgentUpdateLocalService.RunScheduledTickAsync(journal, new() { Generation = 7 }, () => false,
+                    _ => { AgentUpdateLocalService.RequireExpectedRelease(journal.Read().InstallRequest, Release); return Task.FromResult(true); },
+                    _ => { launches++; return Task.CompletedTask; }, () => Task.CompletedTask, ct),
+                _ => throw new InvalidOperationException("Expired authority and plan mismatch are not installer failures."));
+            var after = journal.Read();
+            Assert.Equal(independentPolicy ? 1 : 0, launches);
+            Assert.Equal(independentPolicy, after.Required);
+            Assert.Null(after.RequiredInstallAttemptId);
+            Assert.Equal(independentPolicy ? 7L : (long?)null, after.RequiredPolicyGeneration);
+            Assert.Equal(expiredAt, after.InstallRequestAuthorityExpiresUtc);
+            Assert.Equal("replacement", after.InstallRequest!.CommandId);
+            Assert.Equal(mismatch ? "plan_mismatch" : null, after.InstallRequest.TerminalReason);
+            Assert.Equal((Attempt, AgentUpdateStates.AwaitingConsent), (after.AttemptId, after.Phase));
+        }, protectedJournal: true);
+
+    // Unit/support admission + launch guard: this does not execute the protected scheduler journal writer.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public Task ReplacementAdmissionRevokesExpiredAuthorityAndPreservesIndependentPolicy(bool mismatch, bool independentPolicy)
+        => WithCorrelationJournal(async root =>
+        {
+            var journal = new AgentUpdateJournalStore(root);
+            var expiredAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var seed = new AgentUpdateJournal { AttemptId = Attempt, Phase = AgentUpdateStates.RetryableBusy, LifecycleGeneration = 7,
+                Required = true, RequiredInstallAttemptId = Attempt, RequiredPolicyGeneration = independentPolicy ? 7 : null,
+                RetryCount = 1, ApplyNotBeforeUtc = expiredAt, NextRetryUtc = expiredAt,
+                InstallRequest = CorrelatedRequest() with { BoundAttemptId = Attempt, VerifiedRelease = Release,
+                    ExpiresUtc = expiredAt, TerminalReason = "expired", TerminalUtc = expiredAt } };
+            FixtureWriter(root)(_ => seed);
+            Assert.True(await AgentUpdateLocalService.RequestInstallAsync(mismatch ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddHours(1),
+                _ => Task.FromResult(new AgentLifecycleSnapshot { Generation = 7 }), FixtureWriter(root), () => false, default,
+                "replacement", "campaign", "replacement-idem", mismatch ? Release with { ReleaseId = "stable:43" } : Release));
+            var after = journal.Read();
+            Assert.Equal(independentPolicy, after.Required);
+            Assert.Null(after.RequiredInstallAttemptId);
+            Assert.Equal(expiredAt, after.InstallRequestAuthorityExpiresUtc);
+            Assert.Equal((seed.AttemptId, seed.Phase, seed.RequiredPolicyGeneration, seed.ApplyNotBeforeUtc, seed.RetryCount, seed.NextRetryUtc),
+                (after.AttemptId, after.Phase, after.RequiredPolicyGeneration, after.ApplyNotBeforeUtc, after.RetryCount, after.NextRetryUtc));
+            if (mismatch)
+                Assert.Throws<AgentUpdatePlanMismatchException>(() => AgentUpdateLocalService.RequireExpectedRelease(after.InstallRequest, Release));
+            if (independentPolicy) AgentUpdateLocalService.HoldExpiredInstallRequest(after, true, default);
+            else Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(after, true, default));
+            AgentUpdateLocalService.HoldExpiredInstallRequest(after, false, default);
+        });
 
 #if CERBERUS_SERVER_PROFILE
     [Fact]

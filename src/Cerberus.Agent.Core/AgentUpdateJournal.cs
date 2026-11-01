@@ -37,6 +37,8 @@ public sealed record AgentUpdateJournal
     public long? RequiredPolicyGeneration { get; init; }
     /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
     public string? RequiredInstallAttemptId { get; init; }
+    /// <summary>Request authority deadline, retained after expiry so receipt replacement cannot turn it into manual retry authority.</summary>
+    public DateTimeOffset? InstallRequestAuthorityExpiresUtc { get; init; }
     public int? RunnerProcessId { get; init; }
     public DateTimeOffset? RunnerStartedUtc { get; init; }
     public int? InstallerProcessId { get; init; }

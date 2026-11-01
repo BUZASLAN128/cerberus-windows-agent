@@ -61,6 +61,7 @@ internal static partial class AgentUpdateLocalService
         var accepted = false;
         change(before =>
         {
+            before = ExpireInstallRequestAuthority(before, DateTimeOffset.UtcNow);
             if (request.IsCorrelated && before.InstallRequest is { } existing)
             {
                 if (existing.SameIdentity(request)) { accepted = true; return before; }
@@ -97,7 +98,8 @@ internal static partial class AgentUpdateLocalService
         => before.AttemptId is not null && before.Phase == AgentUpdateStates.AwaitingConsent &&
            before.LifecycleGeneration == lifecycleGeneration && (!before.Required || before.ApplyNotBeforeUtc is null || before.ApplyNotBeforeUtc > now)
             ? before with { Required = true, ApplyNotBeforeUtc = now,
-                RequiredInstallAttemptId = before.RequiredPolicyGeneration is null ? before.AttemptId : null }
+                RequiredInstallAttemptId = before.RequiredPolicyGeneration is null ? before.AttemptId : null,
+                InstallRequestAuthorityExpiresUtc = before.RequiredPolicyGeneration is null ? before.InstallRequest?.ExpiresUtc : null }
             : before;
 
     /// <summary>
@@ -197,11 +199,53 @@ internal static partial class AgentUpdateLocalService
 
     internal static void HoldExpiredInstallRequest(AgentUpdateJournal active, bool automatic, CancellationToken ct)
     {
-        if (automatic && active.RequiredPolicyGeneration is null &&
-            active.InstallRequest is { BoundAttemptId: not null } request &&
-            request.BoundAttemptId == active.AttemptId && !RequestInstallationStarted(active, request) &&
-            (request.ExpiresUtc <= DateTimeOffset.UtcNow || request.TerminalReason == "expired"))
-            throw new IntentionalUpdateCancellationException("Install request expired before launch.", ct);
+        if (!automatic || active.MayHaveStartedInstallation || active.Phase == "launch_requested") return;
+        active = ExpireInstallRequestAuthority(active, DateTimeOffset.UtcNow);
+        var policy = active.Required && active.RequiredPolicyGeneration == active.LifecycleGeneration;
+        var request = active.Required && active.RequiredInstallAttemptId == active.AttemptId &&
+            active.InstallRequestAuthorityExpiresUtc > DateTimeOffset.UtcNow;
+        // Existing manual installer-busy retries have neither request authority nor its expiry marker.
+        var manualRetry = active.Phase == AgentUpdateStates.RetryableBusy && !active.Required &&
+            active.RequiredInstallAttemptId is null && active.InstallRequestAuthorityExpiresUtc is null;
+        if (!policy && !request && !manualRetry)
+            throw new IntentionalUpdateCancellationException("Automatic install authority is unavailable or expired.", ct);
+    }
+
+    internal static AgentUpdateJournal ExpireInstallRequestAuthority(AgentUpdateJournal active, DateTimeOffset now)
+    {
+        if (active.MayHaveStartedInstallation || active.Phase is "launch_requested" or AgentUpdateStates.Installed or
+            AgentUpdateStates.Failed or AgentUpdateStates.Quarantined ||
+            active.Phase == AgentUpdateStates.Blocked && active.ReconciliationSnapshot is null ||
+            active.RequiredInstallAttemptId is null && active.InstallRequestAuthorityExpiresUtc is null)
+            return active;
+        var receipt = active.InstallRequest;
+        var matching = active.RequiredInstallAttemptId is { } sourceAttempt && receipt is not null &&
+            receipt.BoundAttemptId == sourceAttempt && sourceAttempt == active.AttemptId && receipt.LifecycleGeneration == active.LifecycleGeneration;
+        var deadline = active.InstallRequestAuthorityExpiresUtc ?? (matching ? receipt!.ExpiresUtc : DateTimeOffset.MinValue);
+        if (matching && receipt!.ExpiresUtc < deadline) deadline = receipt.ExpiresUtc;
+        var tracked = active with { InstallRequestAuthorityExpiresUtc = deadline };
+        return deadline > now && active.RequiredInstallAttemptId == active.AttemptId && receipt?.TerminalReason != "expired"
+            ? tracked : tracked with { RequiredInstallAttemptId = null,
+                Required = active.Required && active.RequiredPolicyGeneration is not null };
+    }
+
+    private static AgentUpdateJournal ReadInstallAuthority(AgentUpdateJournalStore journal)
+    {
+        var active = journal.Read();
+        return ExpireInstallRequestAuthority(active, DateTimeOffset.UtcNow) == active ? active
+            : journal.Change(before => ExpireInstallRequestAuthority(before, DateTimeOffset.UtcNow));
+    }
+
+    internal static AgentUpdateJournal TransitionLaunchRequested(AgentUpdateJournal before, long generation, bool automatic, CancellationToken ct)
+    {
+        before = ExpireInstallRequestAuthority(before, DateTimeOffset.UtcNow);
+        HoldExpiredInstallRequest(before, automatic, ct);
+        // Explicit local consent is its own source; an old signed request must not obstruct its later busy retries.
+        return before with { Phase = "launch_requested", LifecycleGeneration = generation, Automatic = automatic,
+            InstallerResult = null, NextRetryUtc = null,
+            Required = before.Required && (automatic || before.RequiredPolicyGeneration is not null),
+            RequiredInstallAttemptId = automatic ? before.RequiredInstallAttemptId : null,
+            InstallRequestAuthorityExpiresUtc = automatic ? before.InstallRequestAuthorityExpiresUtc : null };
     }
 
     private static AgentUpdateJournal Replace(
