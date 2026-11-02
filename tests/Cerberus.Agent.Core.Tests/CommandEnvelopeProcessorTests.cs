@@ -66,7 +66,13 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         Assert.Equal(1, h.Rejections(code));
         Assert.Equal(0, h.Ping.Calls + h.Facts.Calls + h.State.Calls);
-        Assert.Empty(h.Store.Records(h.AgentId));
+        if (row.StartsWith("14_", StringComparison.Ordinal))
+        {
+            var decision = Assert.Single(h.Store.Records(h.AgentId));
+            Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, decision.State);
+            Assert.Equal(code, decision.RejectReason);
+        }
+        else Assert.Empty(h.Store.Records(h.AgentId));
         if (!ack)
         {
             Assert.Empty(h.Backend.Requests);
@@ -208,13 +214,14 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         Assert.Equal(T0, h.Store.ResetAt);
         Assert.Equal(1, h.Rejections("issued_before_reset"));
-        Assert.Null(h.Record(before));
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(before)!.State);
+        Assert.Equal(EnvelopeCodes.IssuedBeforeReset, h.Record(before)!.RejectReason);
         Assert.NotNull(h.Record(after));
         Assert.Contains(Directory.GetFiles(Path.GetDirectoryName(h.StorePath)!), f => f.Contains(".corrupt-", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task ReusedNonce_IsRejectedForAnotherIdAndStoresNothing()
+    public async Task ReusedNonce_IsRejectedForAnotherIdAndStoresTheNegativeDecision()
     {
         await using var h = EnvelopeHarness.Create();
         var first = h.Cmd(p => p.Nonce = "shared");
@@ -224,7 +231,8 @@ public sealed partial class CommandEnvelopeProcessorTests
         await h.Process(second);
 
         Assert.Equal(1, h.Rejections("nonce_reused"));
-        Assert.Null(h.Record(second));
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(second)!.State);
+        Assert.Equal(EnvelopeCodes.NonceReused, h.Record(second)!.RejectReason);
         Assert.Equal("rejected", h.Backend.Acks.Last().Json.GetProperty("decision").GetString());
         await Wait.UntilAsync(() => h.Ping.Calls == 1, "first ping run");
     }
@@ -286,15 +294,19 @@ public sealed partial class CommandEnvelopeProcessorTests
         });
         await h.Queue.DrainOutboxOnceAsync(default);
         Assert.True(h.Record(state)!.ResultSubmitted);
-        await h.Process(facts, ping);
+        var newFacts = h.Cmd(p => p.Type = "collect_facts");
+        var newPing = h.Cmd();
+        await h.Process(newFacts, newPing);
 
         Assert.Equal(1, h.State.Calls);
         Assert.Equal(state.Id, h.Backend.Acks[0].CommandId);
         Assert.Equal("accepted", h.Backend.Acks[0].Json.GetProperty("decision").GetString());
-        var rejected = h.Backend.Acks.Last(a => a.CommandId == facts.Id);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(facts)!.State);
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(ping)!.State);
+        var rejected = h.Backend.Acks.Single(a => a.CommandId == newFacts.Id);
         Assert.Equal("quarantined", rejected.Json.GetProperty("reason").GetString());
         Assert.Equal(0, h.Facts.Calls);
-        Assert.Equal("accepted", h.Backend.Acks.Last(a => a.CommandId == ping.Id).Json.GetProperty("decision").GetString());
+        Assert.Equal("accepted", h.Backend.Acks.Single(a => a.CommandId == newPing.Id).Json.GetProperty("decision").GetString());
     }
 
     [Fact]

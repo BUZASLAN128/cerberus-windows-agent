@@ -21,7 +21,7 @@ public sealed partial class AgentSignedStateTests
         Assert.Equal(EnvelopeCodes.StateRecoveryRequired, rejected.Json.GetProperty("reason").GetString());
         Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.StateRecoveryRequired]);
         Assert.Contains(h.Log.Lines, l => l.StartsWith("WARN ") && l.Contains("code=state_recovery_required"));
-        Assert.Null(h.Record(command));
+        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(command)!.State);
         Assert.Equal(0, queue.QueuedCount);
         Assert.Equal(0, h.Ping.Calls);
         h.Backend.Respond = (_, _) => Task.FromResult(HttpStatusCode.OK);
@@ -29,7 +29,7 @@ public sealed partial class AgentSignedStateTests
         await processor.ProcessAsync(new[] { command }, default);
         Assert.Equal(2, h.Backend.Acks.Count);
         Assert.Equal(rejected.Body, h.Backend.Acks[1].Body);
-        Assert.Equal(2, processor.RejectionCounts[EnvelopeCodes.StateRecoveryRequired]);
+        Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.StateRecoveryRequired]);
         Assert.True(state.RequiresRecovery);
     }
 
