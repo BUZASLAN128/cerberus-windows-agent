@@ -123,6 +123,7 @@
 
     <?if $(var.AgentBuildProfile) = server ?>
     <Feature Id="ServerMainFeature" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="AgentProxyConfiguration" />
       <ComponentGroupRef Id="ServerAgentComponents" />
       <ComponentRef Id="ServerLegalConsentRegistryComponent" />
       <ComponentRef Id="ServerDataCleanupComponent" />
@@ -131,6 +132,7 @@
     </Feature>
     <?else ?>
     <Feature Id="MainFeature" Title="Cerberus Windows Agent" Level="1">
+      <ComponentGroupRef Id="AgentProxyConfiguration" />
       <ComponentGroupRef Id="AgentComponents" />
       <ComponentRef Id="StartMenuShortcutComponent" />
       <ComponentRef Id="DesktopAgentShortcutComponent" />

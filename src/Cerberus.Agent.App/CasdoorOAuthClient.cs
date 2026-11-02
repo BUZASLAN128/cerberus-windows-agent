@@ -1,3 +1,4 @@
+using Cerberus.Agent.Core;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -55,7 +56,7 @@ internal sealed class CasdoorOAuthClient
         if (!string.Equals(callback.State, state, StringComparison.Ordinal))
             throw new InvalidOperationException("OAuth state mismatch.");
 
-        using var http = new HttpClient { BaseAddress = _baseUri, Timeout = TimeSpan.FromSeconds(30) };
+        using var http = new HttpClient(AgentProxySettings.Apply(new HttpClientHandler())) { BaseAddress = _baseUri, Timeout = TimeSpan.FromSeconds(30) };
 
         // Casdoor token endpoint (common default).
         var tokenEndpoint = new Uri(_baseUri, "/api/login/oauth/access_token");
