@@ -6,6 +6,8 @@ namespace Cerberus.Agent.Integrations.Tailscale;
 public static class TailscaleStatusProbe
 {
     public const string StatusArguments = "status --json";
+    internal static string ExecutablePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe");
     private static readonly object CacheGate = new();
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(5);
     private static DateTimeOffset _cachedAtUtc;
@@ -13,7 +15,7 @@ public static class TailscaleStatusProbe
 
     public static ProcessStartInfo CreateStatusStartInfo() => new()
     {
-        FileName = "tailscale",
+        FileName = ExecutablePath,
         Arguments = StatusArguments,
         RedirectStandardOutput = true,
         RedirectStandardError = true,

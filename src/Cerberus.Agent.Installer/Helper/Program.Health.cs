@@ -34,16 +34,7 @@ internal static partial class Program
         try
         {
             runtime = Path.GetFullPath(runtime);
-            try
-            {
-                await VerifyRuntimeAsync(service, runtime, expectedVersion, executableHash, assemblyHash, options, trace).ConfigureAwait(false);
-            }
-            catch (Exception error) when (options.AllowPendingReboot && AgentUpdateRollbackPolicy.PendingRebootExcuses(
-                trace.Phase, error is OperationCanceledException or TimeoutException, ReadPendingRenames(), runtime))
-            {
-                // The new files replace the running ones at the next restart, so this process cannot be judged now.
-                Console.Error.WriteLine("Cerberus installer health skipped: a restart is pending for the application folder.");
-            }
+            await VerifyRuntimeAsync(service, runtime, expectedVersion, executableHash, assemblyHash, options, trace).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -65,10 +56,23 @@ internal static partial class Program
     {
         var executable = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
         var assembly = Path.Combine(runtime, "Cerberus.Agent.Service.dll");
-        trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;
-        VerifyHash(executable, runtime, executableHash);
+        if (AgentBuildProfile.IsServer)
+        {
+            if (!ValidateServerRuntimeImage(runtime, executableHash, trace)) return;
+        }
+        else
+        {
+            trace.Phase = AgentInstallerHealthPhase.ServiceExecutableHash;
+            VerifyHash(executable, runtime, executableHash);
+        }
         trace.Phase = AgentInstallerHealthPhase.ServiceAssemblyHash;
-        VerifyHash(assembly, runtime, assemblyHash);
+        if (AgentBuildProfile.IsServer)
+        {
+            var actual = AgentServiceImage.ReadAssemblySha256(executable);
+            if (!string.Equals(actual, assemblyHash, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Embedded service assembly hash does not match the package.");
+        }
+        else VerifyHash(assembly, runtime, assemblyHash);
         using var overall = new CancellationTokenSource(options.Overall);
         using var first = CancellationTokenSource.CreateLinkedTokenSource(overall.Token);
         first.CancelAfter(TimeSpan.FromSeconds(60));

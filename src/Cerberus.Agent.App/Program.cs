@@ -18,6 +18,12 @@ internal static class Program
         AgentLocalizer.ApplyThreadCulture();
         var parsed = Args.Parse(args ?? Array.Empty<string>());
 
+        if (AgentBuildProfile.IsServer && parsed.InstallService && !parsed.EnrollHeadless)
+        {
+            Console.Error.WriteLine("Server service installation is owned by the MSI.");
+            return 2;
+        }
+
         if (parsed.Product is not null && !parsed.EnrollHeadless)
         {
             Console.Error.WriteLine("--product is supported only with --enroll-headless.");

@@ -30,7 +30,7 @@ internal static partial class Program
             if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7) || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
-            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running"))
+            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running" or "validate-runtime"))
                 return 2;
             // The optional seventh argument belongs to health: only "1" requires backend contact; any other value is off.
             if (args.Length == 7 && operation != "health")
@@ -40,6 +40,12 @@ internal static partial class Program
                 // Fresh MSI installs have no service yet. Establish authority before the UI can write machine data.
                 // Existing namespaces pass the same provenance gate; bootstrap never repairs or resets them.
                 AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+                return 0;
+            }
+            if (operation == "validate-runtime")
+            {
+                if (!AgentBuildProfile.IsServer) return 2;
+                _ = ValidateServerRuntimeImage(args[2], args[4], new HealthTrace());
                 return 0;
             }
             var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions");
@@ -262,12 +268,17 @@ internal static partial class Program
 
     private static void VerifyHash(string path, string root, string expected)
     {
+        if (!MatchesHash(path, root, expected))
+            throw new InvalidOperationException("Package service identity mismatch.");
+    }
+
+    private static bool MatchesHash(string path, string root, string expected)
+    {
         if (expected.Length != 64 || !expected.All(Uri.IsHexDigit))
             throw new InvalidOperationException("Package service identity is missing.");
         AgentUpdateSecurity.ValidateTrustedPath(path, root, allowMissing: false);
         using var stream = File.OpenRead(path);
-        if (!Convert.ToHexString(SHA256.HashData(stream)).Equals(expected, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Package service identity mismatch.");
+        return Convert.ToHexString(SHA256.HashData(stream)).Equals(expected, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void Check(bool success)

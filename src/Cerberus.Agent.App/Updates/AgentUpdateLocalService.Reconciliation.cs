@@ -336,14 +336,17 @@ internal static partial class AgentUpdateLocalService
         var expected = Path.Combine(directory, "Cerberus.Agent.Service.exe");
         if (!string.Equals(Environment.ProcessPath, expected, StringComparison.OrdinalIgnoreCase)) return false;
         using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(AgentInstallIdentity.RegistryPath, writable: false);
-        foreach (var (file, name) in new[] { (expected, "serviceExeSha256"), (Path.Combine(directory, "Cerberus.Agent.Service.dll"), "serviceAssemblySha256") })
-        {
-            var digest = key?.GetValue(name)?.ToString();
-            if (digest is null || digest.Length != 64) return false;
-            using var stream = File.OpenRead(file);
-            if (!Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).Equals(digest, StringComparison.OrdinalIgnoreCase)) return false;
-        }
-        return true;
+        return MatchesCanonicalServiceImage(Environment.ProcessPath, expected,
+            key?.GetValue("serviceExeSha256")?.ToString(), key?.GetValue("serviceAssemblySha256")?.ToString());
+    }
+
+    internal static bool MatchesCanonicalServiceImage(string? processPath, string expected, string? executableHash, string? assemblyHash)
+    {
+        if (!string.Equals(processPath, expected, StringComparison.OrdinalIgnoreCase) ||
+            executableHash?.Length != 64 || assemblyHash?.Length != 64) return false;
+        using var executable = File.OpenRead(expected);
+        if (!Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(executable)).Equals(executableHash, StringComparison.OrdinalIgnoreCase)) return false;
+        return AgentServiceImage.ReadAssemblySha256(expected).Equals(assemblyHash, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsProcessAlive(int? id, DateTimeOffset? startedUtc)

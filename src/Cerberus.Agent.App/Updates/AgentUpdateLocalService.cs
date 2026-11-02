@@ -96,6 +96,9 @@ internal static partial class AgentUpdateLocalService
         {
             if (request.Operation == "status")
                 return await StatusAsync("ok", ct).ConfigureAwait(false);
+            var manualLifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+            RequireManualServerPolicy(Journal.Read(), manualLifecycle, Quarantined(), ct,
+                AgentBuildProfile.IsServer && PendingStateDelivery(manualLifecycle));
             if (request.Operation == "check")
             {
                 if (!await OperationGate.WaitAsync(0, ct).ConfigureAwait(false))
@@ -135,7 +138,7 @@ internal static partial class AgentUpdateLocalService
 
     private static async Task RunManualCheckAsync()
     {
-        try { await CheckAndStageOwnedAsync(automatic: false, required: false, CancellationToken.None).ConfigureAwait(false); }
+        try { await CheckAndStageOwnedAsync(automatic: AgentBuildProfile.IsServer, required: false, CancellationToken.None, bypassSchedule: true).ConfigureAwait(false); }
         catch (IntentionalUpdateCancellationException) { }
         catch (AgentUpdateReconciliationDeferredException) { }
         catch (Exception ex) { await ReportFailureAsync(ex).ConfigureAwait(false); }
@@ -294,7 +297,7 @@ internal static partial class AgentUpdateLocalService
         if (active.Phase is not (AgentUpdateStates.Staged or AgentUpdateStates.AwaitingConsent or AgentUpdateStates.RetryableBusy))
             throw new InvalidOperationException("Update attempt cannot be applied.");
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
-        if (PendingStateDelivery(lifecycle) || automatic && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
+        if (PendingStateDelivery(lifecycle) || (automatic || AgentBuildProfile.IsServer) && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
             throw new InvalidOperationException("Automatic update authorization changed.");
         if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Update installer retry is not admitted.");
@@ -307,6 +310,8 @@ internal static partial class AgentUpdateLocalService
         {
             var latest = ReadInstallAuthority(Journal);
             if (latest.AttemptId != attemptId) throw new InvalidOperationException("Update attempt changed before launch.");
+            RequireManualServerPolicy(latest, launchLifecycle, Quarantined(), ct,
+                AgentBuildProfile.IsServer && PendingStateDelivery(launchLifecycle));
             HoldExpiredInstallRequest(latest, automatic, ct);
             HoldWhileQuarantined(automatic, ct);
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
@@ -321,6 +326,15 @@ internal static partial class AgentUpdateLocalService
             });
         }, ct).ConfigureAwait(false);
         await ProjectAsync(ct).ConfigureAwait(false);
+    }
+
+    internal static void RequireManualServerPolicy(AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, bool quarantined, CancellationToken ct,
+        bool pendingState = false)
+    {
+        if (!AgentBuildProfile.IsServer) return;
+        if (quarantined || pendingState || !AllowsAutomaticLifecycle(lifecycle) || active.HasUnfinishedAttempt && active.LifecycleGeneration != lifecycle.Generation)
+            throw new IntentionalUpdateCancellationException("Server update policy does not permit this operation.", ct);
+        HoldExpiredInstallRequest(active, automatic: false, ct);
     }
 
     private static async Task<AgentLocalControlResponse> StatusAsync(string code, CancellationToken ct)

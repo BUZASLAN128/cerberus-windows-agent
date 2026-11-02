@@ -1,0 +1,267 @@
+using Cerberus.Agent.App;
+using Cerberus.Agent.App.Legal;
+using Cerberus.Agent.Core;
+using System.Text.RegularExpressions;
+using System.Text.Json;
+
+namespace Cerberus.Agent.Core.Tests;
+
+public sealed partial class AgentLegalConsentTests
+{
+    [Fact]
+    public void InstallerPackage_UsesCurrentLegalVersionsAndMsiRegistryConsent()
+    {
+        var repoRoot = FindRepoRoot();
+
+        var project = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Cerberus.Agent.Installer.wixproj"));
+        Assert.Contains("WixToolset.Sdk/7.0.0", project);
+        Assert.Contains("WixToolset.Util.wixext", project);
+        Assert.Contains("<AcceptEula>wix7</AcceptEula>", project);
+        Assert.Contains("<InstallerPlatform>x64</InstallerPlatform>", project);
+        Assert.Contains("<SuppressIces>ICE91</SuppressIces>", project);
+        Assert.Contains("<SuppressIces Condition=\"'$(Channel)' == 'dev'\">$(SuppressIces);ICE61</SuppressIces>", project);
+        Assert.Contains("UpdateManifestPublicKeyB64", project);
+        Assert.DoesNotContain("UpdateAllowedArtifactPrefixes", project);
+        Assert.Contains($"EulaVersion={AgentLegalConsent.EulaVersion}", project);
+        Assert.Contains($"PrivacyNoticeVersion={AgentLegalConsent.PrivacyNoticeVersion}", project);
+        Assert.Contains($"SecurityDisclosureVersion={AgentLegalConsent.SecurityDisclosureVersion}", project);
+        Assert.Contains("MsiProductVersion=$(MsiProductVersion)", project);
+        Assert.Contains("UpdateManifestUrl", project);
+        Assert.Contains("releases/download/$(Channel)-latest", project);
+
+        var package = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Package.wxs"));
+        Assert.Contains("Version=\"$(var.MsiProductVersion)\"", package);
+        Assert.Contains("WixUILicenseRtf", package);
+        Assert.Contains("Assets\\EULA.rtf", package);
+        Assert.Contains("WIXUI_ACCEPT_LICENSE_AGREEMENT", package);
+        Assert.Contains("CERBERUS_EULA_ACCEPTED", package);
+        Assert.Contains("BlockInstallWithoutEula", package);
+        Assert.Contains("UILevel &lt; 5", package);
+        Assert.Contains("CERBERUS_EULA_ACCEPTED = 1", package);
+        Assert.DoesNotContain("WIXUI_ACCEPT_LICENSE_AGREEMENT = 1", package);
+        Assert.DoesNotContain("LicenseAccepted = 1", package);
+        Assert.Contains(@"Software\Cerberus\WindowsAgent\LegalConsent", package);
+        Assert.Contains("msi_explicit", package);
+        Assert.Contains("Scope=\"perMachine\"", package);
+        Assert.Contains("ProgramFiles64Folder", package);
+        Assert.DoesNotContain("ProgramFilesFolder", package);
+        Assert.DoesNotContain("RemoveLegacyAppDataInstallFolder", package);
+        Assert.DoesNotContain("LegacyAppDataCleanupComponent", package);
+        Assert.Contains("<Directory Id=\"APPFOLDER\" Name=\"app\" />", package);
+        Assert.Contains("<ComponentGroup Id=\"AgentComponents\" Directory=\"APPFOLDER\">", package);
+        Assert.Contains("<Files Include=\"$(var.AgentPublishDir)\\**\">", package);
+        Assert.Contains("<Exclude Files=\"$(var.AgentPublishDir)\\**\\*.pdb\" />", package);
+        Assert.Contains("Cerberus.Agent.exe", package);
+        Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
+        Assert.Contains("LaunchAgentUi", package);
+        Assert.Contains("ExeCommand='\"[APPFOLDER]Cerberus.Agent.exe\" --open'", package);
+        Assert.DoesNotContain("Cerberus.Agent.App.exe\" --tray", package);
+        Assert.Contains("CloseRunningAgentTray", package);
+        Assert.Contains("CloseRunningAgentSetup", package);
+        Assert.Contains("CloseRunningAgentUi", package);
+        Assert.Contains("Target=\"Cerberus.Agent.exe\"", package);
+        Assert.Contains("Target=\"Cerberus.Agent.Tray.exe\"", package);
+        Assert.Contains("Target=\"Cerberus.Agent.Setup.exe\"", package);
+        Assert.Contains("Cerberus.Agent.Uninstall.exe", package);
+        Assert.Contains("CERBERUS_BACKEND_URL", package);
+        Assert.Contains("CERBERUS_SSO_BASE_URL", package);
+        Assert.Contains("CERBERUS_SSO_CLIENT_ID", package);
+        Assert.Contains("CERBERUS_CHANNEL", package);
+        Assert.Contains("CERBERUS_LANGUAGE", package);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_URL", package);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", package);
+        Assert.DoesNotContain("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", package);
+        Assert.Contains("Value=\"$(var.UpdateManifestUrl)\"", package);
+        Assert.Contains("Value=\"$(var.UpdateManifestPublicKeyB64)\"", package);
+        Assert.DoesNotContain("Value=\"$(var.UpdateAllowedArtifactPrefixes)\"", package);
+        Assert.Contains("CREATE_DESKTOP_SHORTCUT", package);
+        Assert.Contains("START_TRAY_ON_LOGIN", package);
+        Assert.Contains("Name=\"backendUrl\"", package);
+        Assert.Contains("Name=\"runtimeRoot\"", package);
+        Assert.Contains("Value=\"[APPFOLDER]\"", package);
+        Assert.Contains("Name=\"ssoBaseUrl\"", package);
+        Assert.Contains("Name=\"ssoClientId\"", package);
+        Assert.Contains("Name=\"language\"", package);
+        Assert.Contains("Name=\"updateManifestUrl\"", package);
+        Assert.Contains("Name=\"updateManifestPublicKeyB64\"", package);
+        Assert.DoesNotContain("Name=\"updateAllowedArtifactPrefixes\"", package);
+        Assert.Contains("DesktopAgentShortcutComponent", package);
+        Assert.Contains("DesktopFolder", package);
+        Assert.Contains("DesktopAgentShortcut", package);
+        Assert.Contains("desktopAgentShortcut", package);
+        Assert.Contains("Condition=\"CREATE_DESKTOP_SHORTCUT = 1\"", package);
+        Assert.Contains("ControlExistingCerberusAgentService", package);
+        Assert.Contains("Name=\"CerberusAgent\"", package);
+        Assert.Contains("Stop=\"both\"", package);
+        Assert.Contains("Wait=\"yes\"", package);
+        Assert.Contains("TerminateProcess=\"1\"", package);
+        Assert.Contains("Schedule=\"afterInstallExecute\"", package);
+        Assert.Contains("<?if $(var.ReleaseChannel) = dev ?>", package);
+        Assert.Contains("AllowDowngrades=\"yes\"", package);
+        Assert.Contains("<?else ?>", package);
+        Assert.Contains("DowngradeErrorMessage=\"A newer version of Cerberus Windows Agent is already installed.\"", package);
+        Assert.Contains("override Wix4CloseApplications_X64", package);
+        Assert.Contains("After=\"InstallInitialize\"", package);
+        Assert.Contains("After=\"RemoveExistingProducts\"", package);
+        Assert.Contains("RepairExistingCerberusServicePath", package);
+        Assert.Contains("Condition=\"NOT REMOVE AND WIX_UPGRADE_DETECTED\"", package);
+        var installerXml = System.Xml.Linq.XDocument.Parse(package);
+        System.Xml.Linq.XNamespace wix = "http://wixtoolset.org/schemas/v4/wxs";
+        var packageElement = installerXml.Root!.Element(wix + "Package")!;
+        var executeSequence = packageElement.Element(wix + "InstallExecuteSequence")!;
+        System.Xml.Linq.XElement Action(string id) => packageElement.Elements(wix + "CustomAction").Single(element => (string?)element.Attribute("Id") == id);
+        System.Xml.Linq.XElement Scheduled(string id) => executeSequence.Elements(wix + "Custom").Single(element => (string?)element.Attribute("Action") == id);
+        foreach (var (id, mode) in new[]
+        {
+            ("CaptureCerberusServiceBeforeUpgrade", "deferred"),
+            ("RestoreCerberusServicePathOnRollback", "rollback"),
+            ("StopCerberusServiceOnRollback", "rollback"),
+            ("RepairExistingCerberusServicePath", "deferred"),
+            ("CheckCerberusServiceHealth", "deferred"),
+        })
+        {
+            Assert.Equal("CerberusInstallerHelper", (string?)Action(id).Attribute("BinaryRef"));
+            Assert.Equal(mode, (string?)Action(id).Attribute("Execute"));
+            Assert.Equal("no", (string?)Action(id).Attribute("Impersonate"));
+            Assert.Equal("check", (string?)Action(id).Attribute("Return"));
+            Assert.Equal("NOT REMOVE AND WIX_UPGRADE_DETECTED", (string?)Scheduled(id).Attribute("Condition"));
+        }
+        Assert.Equal("CaptureCerberusServiceBeforeUpgrade", (string?)Scheduled("RestoreCerberusServicePathOnRollback").Attribute("Before"));
+        Assert.Equal("BootstrapCerberusMachineNamespace", (string?)Scheduled("CaptureCerberusServiceBeforeUpgrade").Attribute("Before"));
+        Assert.Equal("StopServices", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Before"));
+        Assert.Equal("NOT REMOVE", (string?)Scheduled("BootstrapCerberusMachineNamespace").Attribute("Condition"));
+        Assert.Equal("CerberusInstallerHelper", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("BinaryRef"));
+        Assert.Equal("deferred", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Execute"));
+        Assert.Equal("no", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Impersonate"));
+        Assert.Equal("check", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("Return"));
+        Assert.StartsWith("bootstrap ", (string?)Action("BootstrapCerberusMachineNamespace").Attribute("ExeCommand"));
+        Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("StopCerberusServiceOnRollback").Attribute("Before"));
+        Assert.Equal("RemoveExistingProducts", (string?)Scheduled("RepairExistingCerberusServicePath").Attribute("After"));
+        Assert.Equal("RepairExistingCerberusServicePath", (string?)Scheduled("CheckCerberusServiceHealth").Attribute("After"));
+        Assert.Equal("InstallInitialize", (string?)Scheduled("BlockUpgradeWithoutRollback").Attribute("Before"));
+        Assert.Equal("WIX_UPGRADE_DETECTED AND RollbackDisabled", (string?)Scheduled("BlockUpgradeWithoutRollback").Attribute("Condition"));
+        Assert.Contains("$(var.ServiceExeSha256)", (string?)Action("CheckCerberusServiceHealth").Attribute("ExeCommand"));
+        Assert.Contains("$(var.ServiceAssemblySha256)", (string?)Action("CheckCerberusServiceHealth").Attribute("ExeCommand"));
+        Assert.DoesNotContain("sc.exe&quot; config CerberusAgent", package);
+        Assert.DoesNotContain("sc.exe&quot; start CerberusAgent", package);
+        Assert.Contains("RemoveLegacyUserStartupShortcut", package);
+        Assert.Contains("Cerberus Agent Tray.lnk", package);
+        Assert.Contains("WIXUI_EXITDIALOGOPTIONALCHECKBOX", package);
+        Assert.Contains("Dialog=\"ExitDialog\"", package);
+        Assert.Contains("Value=\"LaunchAgentUi\"", package);
+        Assert.Contains("Condition=\"WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT REMOVE\"", package);
+        Assert.Contains("StartupShortcutComponent", package);
+        Assert.Contains("StartupFolder", package);
+        Assert.Contains("trayAutostart", package);
+        Assert.Contains("Condition=\"START_TRAY_ON_LOGIN = 1\"", package);
+        Assert.Contains("ProductCode", package);
+        Assert.DoesNotContain("--accept-eula", package, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("powershell.exe", package, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ExecutionPolicy", package, StringComparison.OrdinalIgnoreCase);
+
+        var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
+        var publishLib = File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-publish-lib.ps1"));
+        Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
+        Assert.Contains("@(Get-RuntimeBundlePublishArgs $BuildProfile)", releaseScript);
+        var profileLib = Path.Combine(repoRoot, "scripts", "release-profile-lib.ps1").Replace("'", "''");
+        var desktopPublish = ServerPackageStaticTests.RunPwsh($". '{profileLib}'; (Get-RuntimeBundlePublishArgs 'desktop') -join '|' ");
+        Assert.True(desktopPublish.ExitCode == 0, desktopPublish.Output);
+        Assert.Equal("-p:PublishSingleFile=false", desktopPublish.Output.Trim());
+        Assert.Contains("-p:DebugSymbols=false", releaseScript);
+        Assert.Contains("Cerberus.Agent.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
+        Assert.Contains("Cerberus.Agent.Uninstall.exe", releaseScript);
+        Assert.Contains("ui_binary = \"app/Cerberus.Agent.exe\"", publishLib);
+        Assert.Contains("service_binary = \"app/Cerberus.Agent.Service.exe\"", publishLib);
+        Assert.Contains("updater_binary = \"app/Cerberus.Agent.Updater.exe\"", publishLib);
+        Assert.Contains("uninstall_binary = \"app/Cerberus.Agent.Uninstall.exe\"", publishLib);
+        Assert.Contains("Compress-Archive -Path (Join-Path $runtimePublishDir \"*\")", releaseScript);
+        Assert.Contains("Copy-ChannelLatestAliases", publishLib);
+        Assert.Contains("Cerberus.Agent.Bundle-$Channel-latest", publishLib);
+        Assert.Contains("Cerberus.Agent-$Channel-latest", publishLib);
+        Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
+        Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
+        Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);
+        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
+        Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
+        Assert.DoesNotContain("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", releaseScript);
+        Assert.Contains("GitHub dev releases require stable AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM", releaseScript);
+        Assert.Single(Regex.Matches(releaseScript, @"IsNullOrWhiteSpace\(\$UpdateAllowedArtifactPrefixes\)").Cast<Match>());
+
+        var updater = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Updater", "Program.cs"));
+        Assert.Contains("CERBERUS_EULA_ACCEPTED=1", updater);
+        Assert.Contains("/l*v", updater);
+        Assert.Contains("msiexec exit code", updater);
+        Assert.Contains("AgentUpdateInstallerResult.FromMsiExitCode", updater);
+        Assert.Contains("WriteInstallerResult", updater);
+        Assert.Contains("AgentUpdateStateStore.CreateDefault()", updater);
+
+        Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.en-us.wxl")));
+        Assert.True(File.Exists(Path.Combine(repoRoot, "src", "Cerberus.Agent.Installer", "Package.tr-tr.wxl")));
+
+        var workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "auto-publish-exe.yml"));
+        Assert.Contains("./scripts/build-agent-public-release.ps1", workflow);
+        Assert.Contains("GITHUB_REPOSITORY", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_URL", releaseScript);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", workflow);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64", workflow);
+        Assert.Contains("CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES", workflow);
+        Assert.Contains("$latestAssetBase", workflow);
+        Assert.Contains("$latestInstallerBase", workflow);
+        Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.v2.json", workflow);
+        Assert.Contains("$latestAssetBase.update-manifest.json", workflow);
+        Assert.Contains("$latestAssetBase.update-manifest.v2.json", workflow);
+        Assert.Contains("$latestInstallerBase.msi", workflow);
+
+        var installerHelper = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Helper",
+            "Program.cs"));
+        Assert.Contains("ErrorServiceDoesNotExist", installerHelper);
+        Assert.Contains("ServicePresent = false", installerHelper);
+        Assert.Contains("if (snapshot is not null && !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("operation == \"capture\" && (snapshot is null || !snapshot.ServicePresent)", installerHelper);
+        Assert.Contains("if (service is null)", installerHelper);
+
+        var eulaRtf = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "src",
+            "Cerberus.Agent.Installer",
+            "Assets",
+            "EULA.rtf"));
+        Assert.Contains($"Document version: {AgentLegalConsent.EulaVersion}", eulaRtf);
+        Assert.Contains($"Privacy Notice version: {AgentLegalConsent.PrivacyNoticeVersion}", eulaRtf);
+        Assert.Contains("secure network connector", eulaRtf);
+        Assert.Contains("Cerberus-operated tailnet control plane", eulaRtf);
+        Assert.DoesNotContain("Headscale", eulaRtf, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DERP", eulaRtf, StringComparison.OrdinalIgnoreCase);
+
+        var privacyNotice = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "docs",
+            "legal",
+            "PRIVACY-NOTICE.md"));
+        Assert.Contains($"Document version: `{AgentLegalConsent.PrivacyNoticeVersion}`", privacyNotice);
+        Assert.Contains("optional secure network connector status", privacyNotice);
+        Assert.Contains("device identity, connection state, private network addressing", privacyNotice);
+        Assert.Contains("connector auth keys", privacyNotice);
+        Assert.Contains("THIRD-PARTY-NOTICES.md", privacyNotice);
+        Assert.Contains("official Tailscale services", privacyNotice);
+        Assert.Contains("organization-managed Tailscale account", privacyNotice);
+        Assert.DoesNotContain("Headscale", privacyNotice, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DERP", privacyNotice, StringComparison.OrdinalIgnoreCase);
+    }
+
+}

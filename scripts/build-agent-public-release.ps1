@@ -232,7 +232,6 @@ function Publish-AgentProject([string]$Project) {
     "-c", $Configuration,
     "-r", $Runtime,
     "--self-contained", "true",
-    "-p:PublishSingleFile=false",
     "-p:DebugType=None",
     "-p:DebugSymbols=false",
     "-p:Version=$Version",
@@ -252,7 +251,7 @@ function Publish-AgentProject([string]$Project) {
       "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
       "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
       "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
-  ) + $releaseProfile.MsBuildArgs
+  ) + $releaseProfile.MsBuildArgs + @(Get-RuntimeBundlePublishArgs $BuildProfile)
   dotnet @args
   if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
 }
@@ -297,6 +296,7 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
   throw "Unexpected runtime executable(s) produced: $($unexpectedRuntimeExecutables -join ', ')"
 }
 
+if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
@@ -340,13 +340,13 @@ Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
 dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-  -p:Version=$Version @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
+  -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
-$serviceAssemblySha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.dll")).Hash.ToLowerInvariant()
+$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash $runtimePublishDir $BuildProfile
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
 $installerProjectDir = Split-Path -Parent $installerProject
 Remove-Item -LiteralPath (Join-Path $installerProjectDir "obj") -Recurse -Force -ErrorAction SilentlyContinue

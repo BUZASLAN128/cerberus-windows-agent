@@ -32,7 +32,9 @@ public sealed class AgentUpdateRequiredIntentTests : IDisposable
         if (alreadyExpired)
             Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(retry, true, default));
         else AgentUpdateLocalService.HoldExpiredInstallRequest(retry, true, default);
-        AgentUpdateLocalService.HoldExpiredInstallRequest(retry, false, default);
+        if (AgentBuildProfile.IsServer)
+            Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.HoldExpiredInstallRequest(retry, false, default));
+        else AgentUpdateLocalService.HoldExpiredInstallRequest(retry, false, default);
     }
 
     [Fact]
@@ -54,6 +56,11 @@ public sealed class AgentUpdateRequiredIntentTests : IDisposable
     {
         var request = Recommended() with { Required = true, RequiredInstallAttemptId = "attempt-a",
             RequiredPolicyGeneration = independent ? 7 : null, InstallRequestAuthorityExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1) };
+        if (AgentBuildProfile.IsServer)
+        {
+            Assert.ThrowsAny<OperationCanceledException>(() => AgentUpdateLocalService.TransitionLaunchRequested(request, 7, false, default));
+            return;
+        }
         var launched = AgentUpdateLocalService.TransitionLaunchRequested(request, 7, false, default);
         Assert.Equal("launch_requested", launched.Phase);
         Assert.False(launched.Automatic);

@@ -131,6 +131,11 @@ public static class AgentUpdateSecurity
     {
         ValidateProtectedPath(root, root, allowMissing: false);
         if (!OperatingSystem.IsWindows()) return;
+        ValidateProtectedDescendants(root, path => ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false));
+    }
+
+    internal static void ValidateProtectedDescendants(string root, Action<string> validateAuthority)
+    {
         var pending = new Stack<string>();
         pending.Push(NormalizeRoot(root));
         var count = 0;
@@ -140,7 +145,7 @@ public static class AgentUpdateSecurity
             {
                 if (++count > 65536) throw new InvalidOperationException("Protected update inventory exceeds validation bounds.");
                 ValidateNoReparsePoint(path, "Protected update descendant");
-                ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false);
+                validateAuthority(path);
                 if (Directory.Exists(path)) pending.Push(path);
             }
         }
@@ -159,6 +164,18 @@ public static class AgentUpdateSecurity
             ValidateObjectAuthority(parent.FullName, allowTrustedInstaller: true, isProductRoot: true);
             parent = parent.Parent;
         }
+    }
+
+    /// <summary>Read-only service gate: the runtime belongs to SYSTEM/Admin and ancestors cannot replace it.</summary>
+    public static void ValidateInstalledServiceSource(string path, string runtimeDirectory)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        if (AgentBuildProfile.IsServer && !string.Equals(NormalizeRoot(runtimeDirectory),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Cerberus", "Server Agent", "app"),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Server runtime must use the canonical Program Files directory.");
+        ValidateProtectedPath(runtimeDirectory, runtimeDirectory, allowMissing: false);
+        ValidateInstalledSource(path, runtimeDirectory);
     }
 
     public static FileStream AcquireGlobalLock(string root)

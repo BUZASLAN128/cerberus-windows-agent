@@ -223,7 +223,9 @@ public sealed class AgentUxStaticTests
         var source = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "ServiceInstaller.cs"));
         var normalized = source.Replace("\r\n", "\n");
 
-        Assert.Contains("public static void InstallOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
+        Assert.Contains("public static void InstallOrThrow()\n    {\n        if (AgentBuildProfile.IsServer)\n" +
+            "            throw new InvalidOperationException(\"Server service installation is owned by the MSI.\");\n" +
+            "        RequireAdminOrThrow();", normalized);
         Assert.Contains("public static void UninstallOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
         Assert.Contains("public static void StartOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);
         Assert.Contains("public static void StopOrThrow()\n    {\n        RequireAdminOrThrow();", normalized);

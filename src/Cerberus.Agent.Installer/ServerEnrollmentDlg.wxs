@@ -10,7 +10,7 @@
           <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="CERBERUS_ENROLLMENT_PROOF" />
         </Control>
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
-          <Publish Event="NewDialog" Value="InstallDirDlg" />
+          <Publish Event="NewDialog" Value="LicenseAgreementDlg" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
           <Publish Event="SpawnDialog" Value="CancelDlg" />
@@ -36,7 +36,9 @@
       <Error Id="1722" Message="!(loc.ServerCustomActionFailed)" />
 
       <!-- Stock InstallDirDlg Next opens VerifyReadyDlg at Order 4 and VerifyReadyDlg Back opens InstallDirDlg at Order 1; the last NewDialog wins. -->
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="ServerEnrollmentDlg" Order="5" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="ServerEnrollmentDlg" Order="5" Condition='LicenseAccepted = "1" AND NOT Installed AND NOT WIX_UPGRADE_DETECTED' />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Order="6" Condition='LicenseAccepted = "1" AND WIX_UPGRADE_DETECTED' />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="4" Condition="WIX_UPGRADE_DETECTED" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ServerEnrollmentDlg" Order="3" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
     </UI>
 

@@ -2,14 +2,55 @@
 # Dot-source only, after release-signing-lib.ps1 (uses ConvertTo-NormalizedSignerPins). Loading this file has no side effects.
 # No function here prompts for, accepts or logs a PIN or password.
 
-function Read-AssemblyMetadataValues {
-  param([Parameter(Mandatory = $true)][string]$AssemblyPath)
-  # Reads AssemblyMetadata(key, value) attributes from the file without loading the assembly.
-  if (-not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
-    throw "Built runtime assembly was not found: $AssemblyPath"
+function Import-AgentBundleReader {
+  if (-not ('Cerberus.Agent.Core.AgentSingleFileBundle' -as [type])) {
+    Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/Cerberus.Agent.Core/AgentSingleFileBundle.cs')))
   }
+}
+
+function Assert-ServerBundleLayout([string]$RuntimeDir) {
+  Import-AgentBundleReader
+  foreach ($hostName in @('Cerberus.Agent', 'Cerberus.Agent.Service', 'Cerberus.Agent.Updater')) {
+    $null = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $RuntimeDir "$hostName.exe"), "$hostName.dll")
+    if (Test-Path -LiteralPath (Join-Path $RuntimeDir "$hostName.dll")) { throw "Server entry assembly is external: $hostName" }
+  }
+}
+
+function Get-ReleaseServiceAssemblyHash {
+  param([string]$RuntimeDir, [string]$BuildProfile)
+  if ($BuildProfile -ne 'server') {
+    return (Get-FileHash -Algorithm SHA256 (Join-Path $RuntimeDir 'Cerberus.Agent.Service.dll')).Hash.ToLowerInvariant()
+  }
+  Import-AgentBundleReader
+  $bytes = [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly((Join-Path $RuntimeDir 'Cerberus.Agent.Service.exe'), 'Cerberus.Agent.Service.dll')
+  return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Read-AssemblyMetadataValues {
+  param([Parameter(Mandatory = $true)][string]$AssemblyPath, [string]$BundlePath = '')
+  # Reads AssemblyMetadata(key, value) attributes from the file without loading the assembly.
   $tokens = [System.Reflection.Metadata.Ecma335.MetadataTokens]
-  $stream = [IO.File]::Open($AssemblyPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  if (-not $BundlePath) {
+    $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.Service.exe' }
+      else { [IO.Path]::GetFileNameWithoutExtension($AssemblyPath) + '.exe' }
+    $candidate = Join-Path ([IO.Path]::GetDirectoryName($AssemblyPath)) $hostName
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      Import-AgentBundleReader
+      if ([Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($candidate)) { $BundlePath = $candidate }
+    }
+  }
+  if ($BundlePath -or -not (Test-Path -LiteralPath $AssemblyPath -PathType Leaf)) {
+    if (-not $BundlePath) {
+      $hostName = if ([IO.Path]::GetFileName($AssemblyPath) -eq 'Cerberus.Agent.Runtime.dll') { 'Cerberus.Agent.Service.exe' }
+        else { [IO.Path]::GetFileNameWithoutExtension($AssemblyPath) + '.exe' }
+      $BundlePath = Join-Path ([IO.Path]::GetDirectoryName($AssemblyPath)) $hostName
+    }
+    if (-not (Test-Path -LiteralPath $BundlePath -PathType Leaf)) { throw "Built runtime assembly was not found: $AssemblyPath" }
+    Import-AgentBundleReader
+    $stream = [IO.MemoryStream]::new([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly($BundlePath, [IO.Path]::GetFileName($AssemblyPath)))
+  } else {
+    $stream = [IO.File]::Open($AssemblyPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  }
   # Ordinal keys and first-wins semantics match AgentUpdateDefaults.ReadAssemblyMetadata; a repeated key is refused.
   $values = [hashtable]::new([StringComparer]::Ordinal)
   try {
@@ -46,9 +87,9 @@ function Read-AssemblyMetadataValues {
 }
 
 function Get-EmbeddedReleaseTrust {
-  param([Parameter(Mandatory = $true)][string]$AssemblyPath)
+  param([Parameter(Mandatory = $true)][string]$AssemblyPath, [string]$BundlePath = '')
   # Manifest public keys and signer pins exactly as the shipped agent reads them (runtime assembly metadata).
-  $metadata = Read-AssemblyMetadataValues $AssemblyPath
+  $metadata = Read-AssemblyMetadataValues $AssemblyPath -BundlePath $BundlePath
   $keys = New-Object System.Collections.Generic.List[string]
   # Same separators as AgentUpdateTrustFactory.SplitPublicKeySource. The agent silently drops a key it cannot import,
   # so every item must decode to a PEM that imports as an RSA public key; otherwise the build would carry fewer keys than declared.
@@ -96,6 +137,20 @@ function Get-BuiltReleaseTrust {
   if (-not [string]::Equals($trust.ManifestUrl, $runtime.ManifestUrl, [StringComparison]::Ordinal)) { throw "Cerberus.Agent.dll and Cerberus.Agent.Runtime.dll embed different update manifest URLs." }
   Assert-NoUnsignedDevBuild $trust "Cerberus.Agent.dll"
   Assert-NoUnsignedDevBuild $runtime "Cerberus.Agent.Runtime.dll"
+  Import-AgentBundleReader
+  if (Test-Path -LiteralPath (Join-Path $RuntimeDir 'Cerberus.Agent.exe')) {
+    $isBundled = [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle((Join-Path $RuntimeDir 'Cerberus.Agent.exe'))
+  } else { $isBundled = $false }
+  if ($isBundled) {
+    if (Test-Path -LiteralPath (Join-Path $RuntimeDir 'Cerberus.Agent.dll')) { throw 'Server bundle carries an external entry assembly.' }
+    foreach ($hostName in @('Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe')) {
+      $embedded = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath (Join-Path $RuntimeDir $hostName)
+      foreach ($name in 'PublicKeyPems', 'SignerPins', 'ArtifactPrefixes', 'Channel', 'ManifestUrl', 'AllowUnsignedDevBuild') {
+        if (-not (Test-SameStringSet $trust.$name $embedded.$name)) { throw "Bundle $hostName embeds different $name." }
+      }
+      Assert-NoUnsignedDevBuild $embedded $hostName
+    }
+  }
   return $trust
 }
 

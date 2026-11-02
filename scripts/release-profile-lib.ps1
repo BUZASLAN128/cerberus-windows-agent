@@ -1,6 +1,12 @@
 # Build-profile helpers for scripts/build-agent-public-release.ps1.
 # Dot-source only. Loading this file has no side effects.
 
+function Get-RuntimeBundlePublishArgs([string]$BuildProfile) {
+  if ($BuildProfile -ne 'server') { return '-p:PublishSingleFile=false' }
+  return @('-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+    '-p:EnableCompressionInSingleFile=false', '-p:StartupHookSupport=false')
+}
+
 function ConvertTo-Base64Utf8([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) {
     return ""

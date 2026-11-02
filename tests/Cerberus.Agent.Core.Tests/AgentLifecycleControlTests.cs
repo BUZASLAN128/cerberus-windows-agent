@@ -339,14 +339,18 @@ public sealed class AgentLifecycleControlTests
     [InlineData("unregister", true, true)]
     [InlineData("https://untrusted.invalid/file.msi", true, false)]
     public void PipeOperationAuthorityIsExplicit(string operation, bool privileged, bool allowed)
-        => Assert.Equal(allowed, AgentLocalControlProtocol.IsAllowed(new(operation), privileged));
+        => Assert.Equal(allowed && !(AgentBuildProfile.IsServer && !privileged && operation == "check"),
+            AgentLocalControlProtocol.IsAllowed(new(operation), privileged));
 
     [Fact]
     public async Task PipeRejectsUnknownFieldsAndUnboundApply()
     {
         Assert.False(AgentLocalControlProtocol.IsAllowed(new("apply"), true));
         Assert.False(AgentLocalControlProtocol.IsAllowed(new("apply", "../installer.exe"), true));
-        Assert.True(AgentLocalControlProtocol.IsAllowed(new("apply", Guid.NewGuid().ToString("N")), false));
+        Assert.Equal(!AgentBuildProfile.IsServer,
+            AgentLocalControlProtocol.IsAllowed(new("apply", Guid.NewGuid().ToString("N")), false));
+        Assert.True(AgentLocalControlProtocol.IsAllowed(new("check"), true));
+        Assert.True(AgentLocalControlProtocol.IsAllowed(new("apply", Guid.NewGuid().ToString("N")), true));
         using var stream = new MemoryStream();
         await AgentLocalControlProtocol.WriteAsync(stream, new { operation = "check", schemaVersion = AgentLocalControlProtocol.SchemaVersion, url = "https://untrusted.invalid" }, default);
         stream.Position = 0;
