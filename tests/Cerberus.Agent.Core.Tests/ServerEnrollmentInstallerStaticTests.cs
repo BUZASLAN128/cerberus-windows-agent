@@ -48,7 +48,7 @@ public sealed class ServerEnrollmentInstallerStaticTests
         Assert.Equal(2, next.Length);
         Assert.Contains(("SpawnDialog", "ServerEnrollmentRequiredDlg", "1", "NOT CERBERUS_ENROLLMENT_PROOF"), next);
         Assert.Contains(("NewDialog", "VerifyReadyDlg", "2", "CERBERUS_ENROLLMENT_PROOF"), next);
-        Assert.Equal(new[] { ("NewDialog", "InstallDirDlg", (string?)null, (string?)null) }, Publishes(Control(dialog, "Back")));
+        Assert.Equal(new[] { ("NewDialog", "LicenseAgreementDlg", (string?)null, (string?)null) }, Publishes(Control(dialog, "Back")));
     }
 
     [Fact]
@@ -65,16 +65,26 @@ public sealed class ServerEnrollmentInstallerStaticTests
     {
         var publishes = Dialogs("server").Descendants(Wix + "UI").Single().Elements(Wix + "Publish").ToArray();
 
-        var forward = publishes.Single(p => (string?)p.Attribute("Dialog") == "InstallDirDlg" && (string?)p.Attribute("Control") == "Next");
+        var forward = publishes.Single(p => (string?)p.Attribute("Dialog") == "LicenseAgreementDlg" && (string?)p.Attribute("Value") == "ServerEnrollmentDlg");
+        Assert.Equal("Next", (string)forward.Attribute("Control")!);
         Assert.Equal("NewDialog", (string)forward.Attribute("Event")!);
         Assert.Equal("ServerEnrollmentDlg", (string)forward.Attribute("Value")!);
-        Assert.Equal(Fresh, (string)forward.Attribute("Condition")!);
-        Assert.True(int.Parse((string)forward.Attribute("Order")!) > 4, "must outrank the stock InstallDirDlg Next -> VerifyReadyDlg row (Order 4)");
+        Assert.Equal("LicenseAccepted = \"1\" AND " + Fresh, (string)forward.Attribute("Condition")!);
+        Assert.True(int.Parse((string)forward.Attribute("Order")!) > 4, "must outrank the stock license Next route and preserve license acceptance");
 
-        var back = publishes.Single(p => (string?)p.Attribute("Dialog") == "VerifyReadyDlg" && (string?)p.Attribute("Control") == "Back");
+        var back = publishes.Single(p => (string?)p.Attribute("Dialog") == "VerifyReadyDlg" && (string?)p.Attribute("Control") == "Back" && (string?)p.Attribute("Value") == "ServerEnrollmentDlg");
         Assert.Equal("ServerEnrollmentDlg", (string)back.Attribute("Value")!);
         Assert.Equal(Fresh, (string)back.Attribute("Condition")!);
-        Assert.True(int.Parse((string)back.Attribute("Order")!) > 1, "must outrank the stock VerifyReadyDlg Back -> InstallDirDlg row (Order 1)");
+        Assert.True(int.Parse((string)back.Attribute("Order")!) > 1, "must outrank the stock VerifyReadyDlg Back route on fresh installs");
+        var upgrade = publishes.Single(p => (string?)p.Attribute("Dialog") == "LicenseAgreementDlg" && (string?)p.Attribute("Value") == "VerifyReadyDlg");
+        Assert.Equal("LicenseAccepted = \"1\" AND WIX_UPGRADE_DETECTED", (string)upgrade.Attribute("Condition")!);
+        Assert.Equal("Next", (string)upgrade.Attribute("Control")!);
+        Assert.True(int.Parse((string)upgrade.Attribute("Order")!) > 4);
+        var upgradeBack = publishes.Single(p => (string?)p.Attribute("Dialog") == "VerifyReadyDlg" && (string?)p.Attribute("Value") == "LicenseAgreementDlg");
+        Assert.Equal("Back", (string)upgradeBack.Attribute("Control")!);
+        Assert.Equal("WIX_UPGRADE_DETECTED", (string)upgradeBack.Attribute("Condition")!);
+        Assert.True(int.Parse((string)upgradeBack.Attribute("Order")!) > 1);
+        Assert.DoesNotContain(publishes, p => (string?)p.Attribute("Dialog") == "InstallDirDlg" || (string?)p.Attribute("Value") == "InstallDirDlg");
     }
 
     [Fact]

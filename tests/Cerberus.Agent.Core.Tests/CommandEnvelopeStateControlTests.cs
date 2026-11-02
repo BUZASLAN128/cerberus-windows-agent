@@ -3,6 +3,8 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
+// Recovery intentionally defers while another process-wide state handler owns its permit.
+[Collection("StateControlProcessPermit")]
 public sealed partial class CommandEnvelopeStateControlTests
 {
     [Fact]

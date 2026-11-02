@@ -418,7 +418,7 @@ public sealed class ServerPackageStaticTests
         return string.Join('\n', output);
     }
 
-    private static (int ExitCode, string Output) RunPwsh(string command)
+    internal static (int ExitCode, string Output) RunPwsh(string command)
     {
         var startInfo = new ProcessStartInfo
         {
