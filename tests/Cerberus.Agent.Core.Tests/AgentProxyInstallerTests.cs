@@ -15,22 +15,61 @@ public sealed class AgentProxyInstallerTests
     {
         var fragment = Fragment();
         var property = fragment.Descendants(Wix + "Property").Single(p => (string?)p.Attribute("Id") == "CERBERUS_PROXY_URL");
-        Assert.Equal("yes", (string?)property.Attribute("Secure"));
+        Assert.Null(property.Attribute("Secure"));
         Assert.Equal("yes", (string?)property.Attribute("Hidden"));
         var search = Assert.Single(fragment.Descendants(Wix + "RegistrySearch"));
         Assert.Equal("HKLM", (string?)search.Attribute("Root"));
         Assert.Equal("always64", (string?)search.Attribute("Bitness"));
-        var retain = Assert.Single(fragment.Descendants(Wix + "SetProperty"));
-        Assert.Equal("NOT CERBERUS_PROXY_URL AND CERBERUS_EXISTING_PROXY_URL", (string?)retain.Attribute("Condition"));
+        var retain = fragment.Descendants(Wix + "SetProperty").Single(p => (string?)p.Attribute("Id") == "CERBERUS_PROXY_URL");
+        Assert.Equal("Installed OR (NOT CERBERUS_PROXY_URL AND CERBERUS_EXISTING_PROXY_URL)", (string?)retain.Attribute("Condition"));
         var package = XDocument.Load(Path.Combine(InstallerPath, "Package.wxs"));
         Assert.All(package.Descendants(Wix + "Feature"), feature => Assert.Contains(feature.Elements(Wix + "ComponentGroupRef"),
             reference => (string?)reference.Attribute("Id") == "AgentProxyConfiguration"));
     }
 
     [Fact]
+    public void MaintenanceRestoresOnlyTheExecuteSideMachineSearchValueBeforeComponentSelection()
+    {
+        var fragment = Fragment();
+        var search = Assert.Single(fragment.Descendants(Wix + "RegistrySearch"));
+        var stored = Assert.IsType<XElement>(search.Parent);
+        Assert.Equal("CERBERUS_EXISTING_PROXY_URL", (string?)stored.Attribute("Id"));
+        Assert.Equal("yes", (string?)stored.Attribute("Hidden"));
+        Assert.Null(stored.Attribute("Secure"));
+        Assert.Null(stored.Attribute("Value"));
+        var clear = fragment.Descendants(Wix + "SetProperty").Single(p => (string?)p.Attribute("Id") == "CERBERUS_EXISTING_PROXY_URL");
+        Assert.Equal("[AgentProxyUnset]", (string?)clear.Attribute("Value"));
+        Assert.Null(clear.Attribute("Condition"));
+        Assert.Equal("AppSearch", (string?)clear.Attribute("Before"));
+        Assert.Equal("execute", (string?)clear.Attribute("Sequence"));
+        Assert.DoesNotContain(fragment.Descendants(Wix + "Property"), p => (string?)p.Attribute("Id") == "AgentProxyUnset");
+        var restore = fragment.Descendants(Wix + "SetProperty").Single(p => (string?)p.Attribute("Id") == "CERBERUS_PROXY_URL");
+        Assert.Equal("CERBERUS_PROXY_URL", (string?)restore.Attribute("Id"));
+        Assert.Equal("[CERBERUS_EXISTING_PROXY_URL]", (string?)restore.Attribute("Value"));
+        Assert.Equal("Installed OR (NOT CERBERUS_PROXY_URL AND CERBERUS_EXISTING_PROXY_URL)", (string?)restore.Attribute("Condition"));
+        Assert.Equal("CostFinalize", (string?)restore.Attribute("Before"));
+        Assert.Equal("execute", (string?)restore.Attribute("Sequence"));
+    }
+
+    [Fact]
+    public void MachineSearchRunsOnTheExecuteSideWithoutAnEarlierUiSearch()
+    {
+        var fragment = Fragment();
+        var ui = Assert.Single(fragment.Descendants(Wix + "InstallUISequence")).Element(Wix + "AppSearch");
+        Assert.Equal("yes", (string?)ui!.Attribute("Suppress"));
+        var execute = Assert.Single(fragment.Descendants(Wix + "InstallExecuteSequence")).Element(Wix + "AppSearch");
+        Assert.Equal("CostInitialize", (string?)execute!.Attribute("Before"));
+        var names = new[] { "RegistrySearch", "DirectorySearch", "FileSearch", "ComponentSearch", "ProductSearch" };
+        var searches = Directory.GetFiles(InstallerPath, "*.wxs").Select(XDocument.Load)
+            .SelectMany(document => document.Descendants()).Where(element => element.Name.Namespace == Wix && names.Contains(element.Name.LocalName));
+        Assert.Equal("ExistingAgentProxyUrl", (string?)Assert.Single(searches).Attribute("Id"));
+    }
+
+    [Fact]
     public void ProxyRegistryAclAllowsOnlySystemAndAdministratorsToWrite()
     {
         var permissions = Assert.Single(Fragment().Descendants(Wix + "PermissionEx"));
+        Assert.Equal("yes", (string?)permissions.Parent!.Attribute("ForceCreateOnInstall"));
         var descriptor = new RawSecurityDescriptor((string)permissions.Attribute("Sddl")!);
         Assert.Equal(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), descriptor.Owner);
         Assert.True(descriptor.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected));

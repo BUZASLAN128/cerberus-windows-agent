@@ -9,21 +9,30 @@
   <?endif ?>
   <Fragment>
     <!-- Hidden=yes includes both proxy values in the compiled MsiHiddenProperties list. -->
-    <Property Id="CERBERUS_PROXY_URL" Secure="yes" Hidden="yes" />
+    <Property Id="CERBERUS_PROXY_URL" Hidden="yes" />
     <Property Id="AgentProxyForbiddenQuote" Value="&quot;" />
-    <Property Id="CERBERUS_EXISTING_PROXY_URL" Secure="yes" Hidden="yes">
+    <Property Id="CERBERUS_EXISTING_PROXY_URL" Hidden="yes">
       <RegistrySearch Id="ExistingAgentProxyUrl" Root="HKLM" Key="$(var.ProxyRegistryPath)"
                       Name="proxyUrl" Type="raw" Bitness="always64" />
     </Property>
+    <!-- Locator properties must be public. Discard caller data before the execute-side machine lookup. -->
+    <SetProperty Id="CERBERUS_EXISTING_PROXY_URL" Value="[AgentProxyUnset]"
+                 Before="AppSearch" Sequence="execute" />
+    <!-- Maintenance always restores machine state, including clearing a caller value when no setting exists. -->
     <SetProperty Id="CERBERUS_PROXY_URL" Value="[CERBERUS_EXISTING_PROXY_URL]"
-                 Before="CostFinalize" Sequence="both"
-                 Condition="NOT CERBERUS_PROXY_URL AND CERBERUS_EXISTING_PROXY_URL" />
+                 Before="CostFinalize" Sequence="execute"
+                 Condition="Installed OR (NOT CERBERUS_PROXY_URL AND CERBERUS_EXISTING_PROXY_URL)" />
     <!-- The existing SYSTEM-only helper gate is retained; validate before any registry value is written. -->
     <CustomAction Id="RejectQuotedAgentProxyUrl" Error="Proxy URL must not contain quotation marks." />
     <CustomAction Id="ValidateAgentProxyUrl" BinaryRef="CerberusInstallerHelper"
                   ExeCommand='validate-proxy "[ProductCode]" "[CERBERUS_PROXY_URL]" "" "" ""'
                   Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <!-- This is the package's only AppSearch; never depend on a UI-private value crossing elevation. -->
+    <InstallUISequence>
+      <AppSearch Suppress="yes" />
+    </InstallUISequence>
     <InstallExecuteSequence>
+      <AppSearch Before="CostInitialize" />
       <Custom Action="RejectQuotedAgentProxyUrl" Before="InstallInitialize"
               Condition="NOT REMOVE AND (CERBERUS_PROXY_URL &gt;&lt; AgentProxyForbiddenQuote)" />
       <Custom Action="ValidateAgentProxyUrl" Before="WriteRegistryValues" Condition="NOT REMOVE AND CERBERUS_PROXY_URL" />
@@ -31,7 +40,7 @@
     <ComponentGroup Id="AgentProxyConfiguration">
       <Component Id="AgentProxyRegistry" Directory="INSTALLFOLDER" Guid="$(var.ProxyComponentGuid)" Bitness="always64"
                  Condition="CERBERUS_PROXY_URL">
-        <RegistryKey Root="HKLM" Key="$(var.ProxyRegistryPath)">
+        <RegistryKey Root="HKLM" Key="$(var.ProxyRegistryPath)" ForceCreateOnInstall="yes">
           <RegistryValue Name="proxyUrl" Type="string" Value="[CERBERUS_PROXY_URL]" KeyPath="yes" />
           <PermissionEx Sddl="O:SYG:SYD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)" />
         </RegistryKey>
