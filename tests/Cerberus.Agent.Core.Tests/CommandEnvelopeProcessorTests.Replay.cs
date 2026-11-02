@@ -57,7 +57,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     }
 
     [Fact]
-    public async Task ReservedRecordPastItsWindow_BecomesRejectedAfterReserveAndLaterRedeliveriesOnlyResendTheRejectedAck()
+    public async Task ReservedRecordPastItsWindowReconcilesUnknownWithoutReversingAPossibleAcceptedAck()
     {
         await using var h = EnvelopeHarness.Create();
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.ServiceUnavailable);
@@ -68,21 +68,21 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         await h.Process(cmd);
 
-        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(cmd)!.State);
-        var rejection = h.Backend.Acks.Last().Json;
-        Assert.Equal("rejected", rejection.GetProperty("decision").GetString());
-        Assert.Equal("expired", rejection.GetProperty("reason").GetString());
+        await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "uncertain reservation reconciled");
+        Assert.Equal(EnvelopeRecordStates.Done, h.Record(cmd)!.State);
+        var result = Assert.Single(h.Backend.Results);
+        Assert.Equal(EnvelopeExecutionQueue.OutcomeUnknown, result.Json.GetProperty("status").GetString());
 
         var acks = h.Backend.Acks.Count;
         await h.Process(cmd);
         Assert.Equal(acks + 1, h.Backend.Acks.Count);
-        Assert.Equal(rejection.ToString(), h.Backend.Acks.Last().Json.ToString());
-        Assert.Empty(h.Backend.Results);
+        Assert.All(h.Backend.Acks, a => Assert.Equal("accepted", a.Json.GetProperty("decision").GetString()));
+        Assert.Single(h.Backend.Results);
         Assert.Equal(0, h.Ping.Calls);
     }
 
     [Fact]
-    public async Task RejectedAckLostToATransientError_IsSentAgainWithTheSameReasonOnRedeliveryAndNothingRuns()
+    public async Task UncertainExpiredReservationRetriesStoredOutcomeWithoutReversingItsAck()
     {
         await using var h = EnvelopeHarness.Create();
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.ServiceUnavailable);
@@ -90,10 +90,9 @@ public sealed partial class CommandEnvelopeProcessorTests
         await h.Process(cmd);
         h.Time.Advance(TimeSpan.FromSeconds(400));
         await h.Process(cmd);
-        Assert.Equal(EnvelopeRecordStates.RejectedAfterReserve, h.Record(cmd)!.State);
-        Assert.Equal("expired", h.Record(cmd)!.RejectReason);
-        var lost = h.Backend.Acks.Last();
-        Assert.Equal("rejected", lost.Json.GetProperty("decision").GetString());
+        Assert.Equal(EnvelopeRecordStates.Done, h.Record(cmd)!.State);
+        var stored = Convert.FromBase64String(h.Record(cmd)!.ResultB64!);
+        await Wait.UntilAsync(() => h.Queue.ResultRetryNotBefore > h.Time.GetTimestamp(), "outcome failure paced");
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
         var before = h.Backend.Acks.Count;
@@ -101,17 +100,17 @@ public sealed partial class CommandEnvelopeProcessorTests
         await h.Process(cmd);
 
         Assert.Equal(before + 1, h.Backend.Acks.Count);
-        Assert.Equal(lost.Body, h.Backend.Acks.Last().Body);
+        await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "stored uncertain outcome delivered");
+        Assert.Equal(stored, h.Backend.Results.Last().Body);
         Assert.Equal(0, h.Ping.Calls);
-        Assert.Empty(h.Backend.Results);
+        Assert.Equal(EnvelopeExecutionQueue.OutcomeUnknown, h.Backend.Results.Last().Json.GetProperty("status").GetString());
 
         await h.Process(cmd);
 
         Assert.Equal(before + 2, h.Backend.Acks.Count);
-        Assert.Equal(lost.Body, h.Backend.Acks.Last().Body);
-        Assert.All(h.Backend.Acks.Skip(1), a => Assert.Equal("rejected", a.Json.GetProperty("decision").GetString()));
+        Assert.All(h.Backend.Acks, a => Assert.Equal("accepted", a.Json.GetProperty("decision").GetString()));
         Assert.Equal(0, h.Ping.Calls);
-        Assert.Empty(h.Backend.Results);
+        Assert.Equal(stored, h.Backend.Results.Last().Body);
     }
 
     [Fact]

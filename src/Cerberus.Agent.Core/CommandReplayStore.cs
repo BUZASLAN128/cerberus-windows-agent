@@ -169,35 +169,7 @@ public sealed partial class CommandReplayStore
     /// the record-count gate and the unsubmitted-bytes budget (the reader has no count limit); the file size guard still applies.
     /// </summary>
     public ReplayReserveOutcome TryReserve(CommandReplayRecord record)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        lock (_gate)
-        {
-            if (!EnsureLoaded() || _records.Any(r => Same(r, record.AgentId, record.Id)))
-                return ReplayReserveOutcome.Unavailable;
-
-            var now = NowUnix();
-            var next = DropForeignPending(Purge(_records, now), record.AgentId);
-            // A signed agent_state (quarantine, revoke) always reserves: its result is small and fixed-schema.
-            var exempt = record.Type == EnvelopeTypes.AgentState;
-            if (!exempt && next.Count >= MaxRecords)
-            {
-                var evictable = next.Where(r => IsEvictable(r, now))
-                    .OrderBy(r => r.ExpiresAt).ThenBy(r => r.Id, StringComparer.Ordinal)
-                    .Take(next.Count - MaxRecords + 1).ToHashSet();
-                next = next.Where(r => !evictable.Contains(r)).ToList();
-                if (next.Count >= MaxRecords)
-                    return ReplayReserveOutcome.Full;
-            }
-
-            var unsubmitted = exempt ? 0 : next.Where(r => !r.ResultSubmitted && string.Equals(r.AgentId, record.AgentId, StringComparison.Ordinal)).Sum(r => ExposureBytes(r, now));
-            if (!exempt && unsubmitted + EnvelopeExecutionQueue.MaxResultBodyBytes > MaxUnsubmittedResultBytes)
-                return ReplayReserveOutcome.Full;
-
-            next.Add(record with { State = EnvelopeRecordStates.Reserved });
-            return Commit(next) ? ReplayReserveOutcome.Reserved : ReplayReserveOutcome.Unavailable;
-        }
-    }
+        => TryInsert(record, rejection: false);
 
     /// <summary>
     /// Replaces the record with the same agent id and id and persists it. On a write failure

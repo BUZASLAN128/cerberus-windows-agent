@@ -77,6 +77,8 @@ public sealed partial class CommandEnvelopeStateControlTests
         Assert.Equal(EnvelopeRecordStates.Reserved, f.Replay.Find(f.H.AgentId, business.Id)!.State);
         Assert.DoesNotContain(f.H.Backend.Results, r => r.CommandId == business.Id);
 
+        // Recording the HTTP request precedes its failure; advance fake time only after retry pacing is stored.
+        await Wait.UntilAsync(() => f.Queue.ResultRetryNotBefore > f.H.Time.GetTimestamp(), "control failure pacing stored");
         f.H.Backend.Respond = (_, _) => Task.FromResult(HttpStatusCode.OK);
         f.H.Time.Advance(TimeSpan.FromMinutes(1));
         f.Queue.SignalHeartbeat();

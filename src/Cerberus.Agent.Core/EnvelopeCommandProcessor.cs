@@ -158,8 +158,8 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             _queue.HoldUnboundState(existing, envelope);
             return; // Legacy metadata cannot be inferred into a current registration binding.
         }
-        if (_queue.RequiresStateRecovery && (envelope.Type != EnvelopeTypes.AgentState ||
-            existing?.StateControl is null && envelope.Payload.GetProperty("state_seq").GetInt64() <= (_queue.SignedState?.RecoveryFloor ?? 0)))
+        if (_queue.RequiresStateRecovery && envelope.Type == EnvelopeTypes.AgentState &&
+            existing?.StateControl is null && envelope.Payload.GetProperty("state_seq").GetInt64() <= (_queue.SignedState?.RecoveryFloor ?? 0))
             return;
         if (existing is not null)
         {
@@ -197,6 +197,13 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
             }
         }
 
+        if (existing is not null && envelope.Type != EnvelopeTypes.AgentState &&
+            (_queue.RequiresStateRecovery || _queue.IsQuarantined() && envelope.Type != EnvelopeTypes.Ping))
+        {
+            _log.Warn($"Command envelope id={envelope.Id} deferred: prior reservation retained while signed state holds execution.");
+            return;
+        }
+
         var window = CommandEnvelopeVerifier.CheckReplayWindow(
             envelope,
             _queue.Time.GetUtcNow().ToUnixTimeSeconds(),
@@ -205,6 +212,14 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
         if (!window.Passed)
         {
             await RejectReservedOrNewAsync(existing, window, agentId, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // Preserve prior Started/Done outcomes above: a rejected ACK means this command never ran.
+        if (_queue.RequiresStateRecovery && envelope.Type != EnvelopeTypes.AgentState)
+        {
+            await RejectReservedOrNewAsync(existing,
+                EnvelopeCheck.Fail(17, EnvelopeCodes.StateRecoveryRequired, ack: true, envelope), agentId, ct).ConfigureAwait(false);
             return;
         }
 
@@ -275,6 +290,28 @@ public sealed class EnvelopeCommandProcessor : IHeartbeatCommandProcessor
 
     private async Task RejectReservedOrNewAsync(CommandReplayRecord? existing, EnvelopeCheck check, string agentId, CancellationToken ct)
     {
+        if (check.Envelope is { Type: not EnvelopeTypes.AgentState } ordinary)
+        {
+            if (existing is not null)
+            {
+                // A reservation may already have a positive ACK. Reconcile with a result, never reverse that ACK.
+                _queue.RecoverOrphan(existing);
+                return;
+            }
+            var rejected = new CommandReplayRecord(agentId, ordinary.Id, ordinary.EnvelopeSha256, ordinary.Nonce,
+                ordinary.Type, ordinary.IssuedAt, ordinary.ExpiresAt, EnvelopeRecordStates.RejectedAfterReserve,
+                null, null, false, RejectReason: check.Code);
+            var outcome = _queue.Store.TryRejectNew(rejected);
+            if (outcome != ReplayReserveOutcome.Reserved)
+            {
+                LogRejection(EnvelopeCheck.Fail(18, outcome == ReplayReserveOutcome.Full
+                    ? EnvelopeCodes.ReplayStoreFull : EnvelopeCodes.ReplayStoreUnavailable, ack: false, ordinary));
+                return; // No terminal decision is advertised without its durable record.
+            }
+            await RejectAsync(check, agentId, ct).ConfigureAwait(false);
+            return;
+        }
+
         if (existing is not null
             && _queue.Store.TryUpdate(existing with
             {
