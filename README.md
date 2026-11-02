@@ -130,6 +130,8 @@ Snapshots that cannot be sent are buffered in `telemetry-offline.json`; one-time
 - Secrets (`agent_id`, `tenant_id`, refresh token, agent private key, backend URL, optional Tailscale pre-auth) are DPAPI-encrypted in `secrets.json` in the data directory. The machine-scope file is limited to SYSTEM and Administrators; a user-scope onboarding file also grants the signed-in user.
 - Access tokens are refreshed shortly before expiry with the stored refresh token.
 - Updates: the manifest is signed with a Cerberus key, and the MSI and binaries must carry an Authenticode signature whose publisher key matches a key pinned at build time.
+- Staging and applying an update require a positive `artifact_length` covered by the signed v2 manifest. Known HTTP/BITS lengths must match it, excess HTTP bytes are rejected before writing, and the final file must match both length and SHA256. There is no separate fixed artifact-size cap; legacy v1 manifests do not satisfy this transfer contract.
+- Before downloading, the agent checks the destination volume for the artifact length plus download headroom. This is an available-space check, not a reservation or a guarantee of space for the later MSI installation.
 - Logs pass through `Sanitizer`, which redacts token, secret, password, private key, API key and authorization values, JWT-like strings and Headscale keys.
 
 ## Configuration

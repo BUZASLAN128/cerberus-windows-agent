@@ -20,9 +20,8 @@ public sealed class AgentUpdateBitsDownloader
     public async Task DownloadAsync(
         Uri source,
         string destination,
-        long maxBytes,
-        CancellationToken ct,
-        long? expectedBytes = null)
+        long expectedBytes,
+        CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows())
             throw new InvalidOperationException("Windows BITS is unavailable.");
@@ -30,8 +29,8 @@ public sealed class AgentUpdateBitsDownloader
             throw new InvalidOperationException("Update artifact URL is not a trusted HTTPS URL.");
         if (string.IsNullOrWhiteSpace(destination))
             throw new ArgumentException("BITS destination is required.", nameof(destination));
-        if (maxBytes <= 0)
-            throw new ArgumentOutOfRangeException(nameof(maxBytes));
+        if (expectedBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(expectedBytes));
 
         var fullDestination = Path.GetFullPath(destination);
         var attemptDirectory = Path.GetDirectoryName(fullDestination) ?? throw new InvalidOperationException("BITS destination directory is missing.");
@@ -44,6 +43,7 @@ public sealed class AgentUpdateBitsDownloader
             Path.GetFileName(fullDestination) != AgentUpdateSecurity.ArtifactFileName + ".part")
             throw new InvalidOperationException("BITS update attempt binding is invalid.");
         AgentUpdateSecurity.ValidateTrustedPath(fullDestination, attemptDirectory, allowMissing: true);
+        AgentUpdateArtifactTransfer.EnsureDiskSpace(fullDestination, expectedBytes);
         TryDelete(fullDestination);
 
         IBackgroundCopyManager? manager = null;
@@ -75,16 +75,13 @@ public sealed class AgentUpdateBitsDownloader
 
                 Check(job.GetState(out var state), "BITS state could not be read.");
                 Check(job.GetProgress(out var progress), "BITS progress could not be read.");
-                if (progress.BytesTransferred > (ulong)maxBytes ||
-                    (progress.BytesTotal != ulong.MaxValue && progress.BytesTotal > (ulong)maxBytes))
-                    throw new InvalidOperationException("BITS update artifact exceeds size limit.");
+                AgentUpdateArtifactTransfer.ValidateBitsProgress(expectedBytes, progress.BytesTotal,
+                    progress.BytesTransferred, state == BackgroundCopyJobState.Transferred);
                 switch (state)
                 {
                     case BackgroundCopyJobState.Transferred:
                         Check(job.Complete(), "BITS job could not be completed.");
-                        VerifyDownloadedFile(fullDestination, maxBytes);
-                        if (expectedBytes is not null && new FileInfo(fullDestination).Length != expectedBytes.Value)
-                            throw new InvalidOperationException("BITS update artifact length mismatch.");
+                        VerifyDownloadedFile(fullDestination, expectedBytes);
                         completed = true;
                         return;
                     case BackgroundCopyJobState.Error:
@@ -292,10 +289,10 @@ public sealed class AgentUpdateBitsDownloader
         finally { Marshal.ReleaseComObject(files); }
     }
 
-    private static void VerifyDownloadedFile(string path, long maxBytes)
+    private static void VerifyDownloadedFile(string path, long expectedBytes)
     {
         var info = new FileInfo(path);
-        if (!info.Exists || info.Length <= 0 || info.Length > maxBytes)
+        if (!info.Exists || info.Length != expectedBytes)
             throw new InvalidOperationException("BITS update artifact length is invalid.");
     }
 

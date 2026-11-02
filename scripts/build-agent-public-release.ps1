@@ -56,7 +56,6 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 . (Join-Path $PSScriptRoot "release-profile-lib.ps1")
-. (Join-Path $PSScriptRoot "release-size-lib.ps1")
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -383,7 +382,6 @@ if (-not (Test-Path -LiteralPath $msi)) {
 if (-not (Test-Path -LiteralPath $msi)) {
   throw "MSI installer was not produced: $msi"
 }
-Assert-ReleaseArtifactSize $msi $runtimePublishDir
 if ($signed) {
   Write-Step "Signing MSI installer"
   $signtool = Find-SignTool
@@ -405,7 +403,6 @@ if ($signed) {
   Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll") -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 }
 
-Assert-ReleaseArtifactSize $msi $runtimePublishDir # Includes the final Authenticode size.
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
 Compress-Archive -Path (Join-Path $runtimePublishDir "*") -DestinationPath $zip -Force

@@ -10,7 +10,6 @@ public sealed record AgentUpdateTrust(
     string CurrentVersion,
     bool AllowRollbackManifest = false,
     bool AllowChannelDowngrade = false,
-    long MaxArtifactBytes = 200 * 1024 * 1024,
     string? ConfiguredManifestUrl = null,
     string? AllowedSignerKeyIdentity = null,
     bool AllowUnsignedDevBuild = false,

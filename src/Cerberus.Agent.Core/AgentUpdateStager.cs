@@ -14,15 +14,21 @@ public sealed class AgentUpdateStager
     private readonly AgentUpdateTrust _trust;
     private readonly string _stagingRoot;
     private readonly IAgentLogger _log;
+    private readonly Func<string, long>? _availableDiskBytes;
 
     public static string DefaultStagingRoot => AgentUpdateSecurity.DefaultPrivilegedRoot;
 
     public AgentUpdateStager(HttpClient http, AgentUpdateTrust trust, string stagingRoot, IAgentLogger? log = null)
+        : this(http, trust, stagingRoot, log, null) { }
+
+    internal AgentUpdateStager(HttpClient http, AgentUpdateTrust trust, string stagingRoot, IAgentLogger? log,
+        Func<string, long>? availableDiskBytes)
     {
         _http = http ?? throw new ArgumentNullException(nameof(http));
         _trust = trust ?? throw new ArgumentNullException(nameof(trust));
         _stagingRoot = AgentUpdateSecurity.NormalizeRoot(stagingRoot);
         _log = log ?? NullAgentLogger.Instance;
+        _availableDiskBytes = availableDiskBytes;
     }
 
     public static AgentUpdateSignal FromHeartbeat(HeartbeatResponse response)
@@ -122,6 +128,7 @@ public sealed class AgentUpdateStager
             return new(null, release, false);
         }
 
+        _ = AgentUpdateArtifactTransfer.ExpectedLength(manifest);
         var existing = FindExistingAttempt(manifest);
         if (existing is not null)
             return new(existing, release, false);
@@ -158,8 +165,7 @@ public sealed class AgentUpdateStager
             var hash = await HashFileAsync(artifactPath, ct).ConfigureAwait(false);
             if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Staged update checksum mismatch.");
-            if (manifest.ArtifactLength is not null && manifest.ArtifactLength.Value != artifactLength)
-                throw new InvalidOperationException("Staged update length mismatch.");
+            AgentUpdateArtifactTransfer.ValidateFileLength(manifest, artifactLength);
 
             var manifestPath = Path.Combine(attemptDir, AgentUpdateSecurity.ManifestFileName);
             var planPath = Path.Combine(attemptDir, AgentUpdateSecurity.PlanFileName);
@@ -293,6 +299,12 @@ public sealed class AgentUpdateStager
         var plan = AgentUpdateDurableFile.Read<AgentUpdatePlan>(Path.Combine(directory, AgentUpdateSecurity.PlanFileName), directory);
         if (plan is null || plan.Sequence != manifest.Sequence || plan.ManifestDigest != AgentUpdateManifestValidator.Digest(manifest))
             throw new InvalidOperationException("Another update attempt is active or requires recovery.");
+        AgentUpdateSecurity.ValidateTrustedPath(plan.ArtifactPath, directory, allowMissing: false);
+        AgentUpdateArtifactTransfer.ValidateFileLength(manifest, new FileInfo(plan.ArtifactPath).Length);
+        using var artifact = File.OpenRead(plan.ArtifactPath);
+        var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
+        if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Update artifact checksum mismatch.");
         return plan;
     }
 
@@ -302,15 +314,16 @@ public sealed class AgentUpdateStager
         CancellationToken ct)
     {
         AgentUpdateSecurity.ValidateTrustedPath(artifactPath, _stagingRoot, allowMissing: true);
+        var expectedBytes = AgentUpdateArtifactTransfer.ExpectedLength(manifest);
+        AgentUpdateArtifactTransfer.EnsureDiskSpace(artifactPath, expectedBytes, _availableDiskBytes);
         if (_trust.RequireBitsDownloader)
         {
             await new AgentUpdateBitsDownloader()
                 .DownloadAsync(
                     new Uri(manifest.ArtifactUrl, UriKind.Absolute),
                     artifactPath,
-                    _trust.MaxArtifactBytes,
-                    ct,
-                    expectedBytes: manifest.ArtifactLength)
+                    expectedBytes,
+                    ct)
                 .ConfigureAwait(false);
             return;
         }
@@ -331,9 +344,8 @@ public sealed class AgentUpdateStager
 
         using (response)
         {
-            if (response.Content.Headers.ContentLength is > 0 &&
-                response.Content.Headers.ContentLength > _trust.MaxArtifactBytes)
-                throw new InvalidOperationException("Update artifact exceeds size limit.");
+            if (response.Content.Headers.ContentLength is { } declaredBytes && declaredBytes != expectedBytes)
+                throw new InvalidOperationException("Update artifact Content-Length does not match the manifest.");
 
             try
             {
@@ -346,28 +358,30 @@ public sealed class AgentUpdateStager
                 var contentLength = response.Content.Headers.ContentLength;
                 while (true)
                 {
-                    var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false);
+                    var remaining = expectedBytes - total;
+                    var requested = remaining >= buffer.Length ? buffer.Length : (int)remaining + 1;
+                    var read = await source.ReadAsync(buffer.AsMemory(0, requested), ct).ConfigureAwait(false);
                     if (read <= 0)
                         break;
+                    if (read > remaining)
+                        throw new InvalidOperationException("Update artifact length exceeds the manifest.");
                     total += read;
-                    if (total > _trust.MaxArtifactBytes)
-                        throw new InvalidOperationException("Update artifact exceeds size limit.");
                     await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
                     sha.TransformBlock(buffer, 0, read, null, 0);
                     if (total >= nextProgressBytes)
                     {
                         LogDownloadProgress(total, contentLength);
-                        nextProgressBytes = total + (8 * 1024 * 1024);
+                        nextProgressBytes = total > long.MaxValue - (8 * 1024 * 1024)
+                            ? long.MaxValue : total + (8 * 1024 * 1024);
                     }
                 }
 
                 LogDownloadProgress(total, contentLength);
+                AgentUpdateArtifactTransfer.ValidateFileLength(manifest, total);
                 sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
                 var hash = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
                 if (!string.Equals(hash, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Update artifact checksum mismatch.");
-                if (manifest.ArtifactLength is not null && manifest.ArtifactLength.Value != total)
-                    throw new InvalidOperationException("Update artifact length mismatch.");
             }
             catch
             {
