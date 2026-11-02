@@ -30,11 +30,16 @@ internal static partial class Program
             if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7) || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
-            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running" or "validate-runtime"))
+            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running" or "validate-runtime" or "validate-proxy"))
                 return 2;
             // The optional seventh argument belongs to health: only "1" requires backend contact; any other value is off.
             if (args.Length == 7 && operation != "health")
                 return 2;
+            if (operation == "validate-proxy")
+            {
+                _ = AgentProxySettings.Parse(args[2]);
+                return 0;
+            }
             if (operation == "bootstrap")
             {
                 // Fresh MSI installs have no service yet. Establish authority before the UI can write machine data.

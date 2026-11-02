@@ -8,7 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class BackendTrustTests
+public sealed partial class BackendTrustTests
 {
     [Fact]
     public async Task Handler_WithAnchor_AcceptsPrivateCaChain()

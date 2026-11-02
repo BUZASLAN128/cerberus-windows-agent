@@ -75,7 +75,7 @@ internal static class TailscaleInstaller
         log($"URL: {Sanitizer.Redact(downloadUrl)}");
         log($"To: {destPath}");
 
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+        using var http = new HttpClient(AgentProxySettings.Apply(new HttpClientHandler())) { Timeout = TimeSpan.FromMinutes(3) };
         using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
         resp.EnsureSuccessStatusCode();
 

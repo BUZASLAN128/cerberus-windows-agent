@@ -25,6 +25,7 @@ internal static class BackendTrust
 
     public static HttpClientHandler Apply(HttpClientHandler handler, X509Certificate2Collection anchors)
     {
+        AgentProxySettings.Apply(handler);
         if (anchors.Count > 0)
             handler.ServerCertificateCustomValidationCallback = (_, certificate, chain, errors) => Validate(certificate, chain, errors, anchors);
         return handler;

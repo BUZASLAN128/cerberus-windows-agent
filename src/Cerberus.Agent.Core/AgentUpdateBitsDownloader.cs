@@ -43,6 +43,7 @@ public sealed class AgentUpdateBitsDownloader
             Path.GetFileName(fullDestination) != AgentUpdateSecurity.ArtifactFileName + ".part")
             throw new InvalidOperationException("BITS update attempt binding is invalid.");
         AgentUpdateSecurity.ValidateTrustedPath(fullDestination, attemptDirectory, allowMissing: true);
+        var proxy = AgentProxySettings.Read();
         AgentUpdateArtifactTransfer.EnsureDiskSpace(fullDestination, expectedBytes);
         TryDelete(fullDestination);
 
@@ -61,6 +62,7 @@ public sealed class AgentUpdateBitsDownloader
             // BITS creates suspended jobs. Persist its identity before any Resume;
             // a crash before this write leaves an identifiable suspended orphan.
             AgentUpdateDurableFile.Write(Path.Combine(attemptDirectory, ReceiptFileName), attemptDirectory, new JobReceipt(jobId, attemptId));
+            AgentProxySettings.ApplyBits(job.SetProxySettings, proxy);
             AllowCompiledBackendRoot(job);
             Check(job.AddFile(source.AbsoluteUri, fullDestination), "BITS file registration failed.");
             ct.ThrowIfCancellationRequested();

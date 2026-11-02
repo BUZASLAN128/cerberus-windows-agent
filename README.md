@@ -71,6 +71,7 @@ Non-secret public properties, stored under `HKLM\Software\Cerberus\WindowsAgent`
 | `CERBERUS_SSO_BASE_URL`, `CERBERUS_SSO_CLIENT_ID` | build default | both |
 | `CERBERUS_SSO_SCOPE` | `openid profile email groups` | both |
 | `CERBERUS_CHANNEL` | release channel | both |
+| `CERBERUS_PROXY_URL` | system proxy settings | both |
 | `CERBERUS_LANGUAGE` | `auto` (`en-US`, `tr-TR`) | both |
 | `CERBERUS_EULA_ACCEPTED` | unset; `1` for approved managed installs | both |
 | `CREATE_DESKTOP_SHORTCUT` | `0` | desktop |
@@ -78,6 +79,12 @@ Non-secret public properties, stored under `HKLM\Software\Cerberus\WindowsAgent`
 | `CERBERUS_ENROLLMENT_PROOF` | none; hidden, not logged | server |
 
 Do not pass secrets in other MSI properties.
+
+`CERBERUS_PROXY_URL` accepts an absolute `http://host:port` or `https://host:port` proxy authority with an explicit port. Credentials, paths, queries and fragments are rejected before registry writes. The setting is stored in the product's protected `HKLM\Software\Cerberus\WindowsAgent\Network\proxyUrl` value (server: `ServerAgent\Network\proxyUrl`). With no configured value, installation skips proxy validation and registry writes. An upgrade without a new property retains an existing setting. Administrators can remove that value to restore system proxy selection on the next process start; an empty or missing value keeps the existing system behavior. Unreadable or invalid configured values stop network setup instead of falling back to a direct connection.
+
+New MSI proxy values require an elevated administrator installation or a policy-controlled deployment. Maintenance, repair and reinstall ignore the supplied property and preserve the machine setting, including an unset setting. MSI Debug policy `7` can log command-line properties even when marked hidden: never put credentials in a proxy URL on an `msiexec` command line.
+
+The setting applies to enrollment, OAuth token exchange, backend/collector requests, wakeup, update checks and HTTP downloads, and BITS update jobs. It does not change the external browser's or Tailscale process's own network configuration. HTTPS origins retain their TLS validation through the proxy's CONNECT tunnel; the proxy does not become a backend trust anchor. Proxy authentication and bypass lists are not configured by this setting.
 
 ## Backend contract
 
