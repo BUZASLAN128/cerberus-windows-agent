@@ -90,6 +90,21 @@ internal static partial class AgentUpdateLocalService
     public static async Task<AgentLocalControlResponse> HandleAsync(AgentLocalControlRequest request, CancellationToken ct)
     {
         RequireService();
+        return await RespondAsync(() => HandleRequestAsync(request, ct), ct).ConfigureAwait(false);
+    }
+
+    internal static async Task<AgentLocalControlResponse> RespondAsync(
+        Func<Task<AgentLocalControlResponse>> execute, CancellationToken ct)
+    {
+        try { return await execute().ConfigureAwait(false); }
+        catch (IntentionalUpdateCancellationException) when (!ct.IsCancellationRequested)
+        {
+            return new(false, "update_policy_held");
+        }
+    }
+
+    private static async Task<AgentLocalControlResponse> HandleRequestAsync(AgentLocalControlRequest request, CancellationToken ct)
+    {
         if (request.SchemaVersion != AgentLocalControlProtocol.SchemaVersion || request.Operation is not ("status" or "check" or "apply"))
             return new(false, "operation_denied");
         try

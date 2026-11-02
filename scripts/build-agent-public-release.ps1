@@ -48,16 +48,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-
 if ($PSVersionTable.PSEdition -ne "Core") {
   throw "PowerShell 7+ (pwsh) is required for public release signing and manifest generation."
 }
-
 . (Join-Path $PSScriptRoot "release-signing-lib.ps1")
 . (Join-Path $PSScriptRoot "release-trust-lib.ps1")
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 . (Join-Path $PSScriptRoot "release-profile-lib.ps1")
+. (Join-Path $PSScriptRoot "release-size-lib.ps1")
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -322,7 +321,7 @@ function Invoke-FirstPartySigning([string[]]$Files) {
     Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
   }
 }
-# Sign every first-party PE before anything hashes the payload (service assembly hash, MSI, zip, SBOM, manifest);
+# Sign first-party PE before hashes (service assembly, MSI, zip, SBOM, manifest);
 # Invoke-FirstPartySigning also signs the installer helper below.
 $firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
 if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
@@ -335,11 +334,10 @@ if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir }
 if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
   throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."
 }
-
 Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
 dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
-  -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+  -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true `
   -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
@@ -385,7 +383,7 @@ if (-not (Test-Path -LiteralPath $msi)) {
 if (-not (Test-Path -LiteralPath $msi)) {
   throw "MSI installer was not produced: $msi"
 }
-
+Assert-ReleaseArtifactSize $msi $runtimePublishDir
 if ($signed) {
   Write-Step "Signing MSI installer"
   $signtool = Find-SignTool
@@ -407,6 +405,7 @@ if ($signed) {
   Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll") -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 }
 
+Assert-ReleaseArtifactSize $msi $runtimePublishDir # Includes the final Authenticode size.
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
 Compress-Archive -Path (Join-Path $runtimePublishDir "*") -DestinationPath $zip -Force
