@@ -6,7 +6,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>Cerberus.Agent.Installer.Helper</AssemblyName>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(AgentBuildProfile)' != 'server'">true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(AgentBuildProfile)' == 'server'">false</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile Condition="'$(AgentBuildProfile)' == 'server'">true</EnableCompressionInSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>

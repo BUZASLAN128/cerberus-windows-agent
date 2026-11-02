@@ -1,6 +1,8 @@
 <Project>
   <PropertyGroup>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Keep supported UI cultures alongside the English/Turkish framework resources. -->
+    <SatelliteResourceLanguages>en;tr;tr-TR;de-DE</SatelliteResourceLanguages>
     <!-- Build-time profile: -p:AgentBuildProfile=server selects the server profile. Default is empty. -->
     <DefineConstants Condition="'$(AgentBuildProfile)' == 'server'">$(DefineConstants);CERBERUS_SERVER_PROFILE</DefineConstants>
   </PropertyGroup>

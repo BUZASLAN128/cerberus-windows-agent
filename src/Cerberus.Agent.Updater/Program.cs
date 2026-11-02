@@ -159,7 +159,7 @@ internal static class Program
             !string.Equals(plan.Channel, manifest.Channel, StringComparison.Ordinal) ||
             !string.Equals(plan.Sha256, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update plan does not match the manifest.");
-        if (manifest.ArtifactLength is not null && plan.ArtifactLength != manifest.ArtifactLength)
+        if (plan.ArtifactLength != AgentUpdateArtifactTransfer.ExpectedLength(manifest))
             throw new InvalidOperationException("Update plan length does not match the manifest.");
         var digest = AgentUpdateManifestValidator.Digest(manifest);
         if (plan.ManifestDigest != digest)
@@ -195,10 +195,7 @@ internal static class Program
         var artifactPath = Path.Combine(attemptDirectory, AgentUpdateSecurity.ArtifactFileName);
         AgentUpdateSecurity.ValidateTrustedPath(artifactPath, root, allowMissing: false);
         var info = new FileInfo(artifactPath);
-        if (info.Length <= 0 || info.Length > trust.MaxArtifactBytes)
-            throw new InvalidOperationException("Update artifact length is invalid.");
-        if (manifest.ArtifactLength is not null && info.Length != manifest.ArtifactLength.Value)
-            throw new InvalidOperationException("Update artifact length does not match the manifest.");
+        AgentUpdateArtifactTransfer.ValidateFileLength(manifest, info.Length);
 
         using var stream = File.OpenRead(artifactPath);
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant();

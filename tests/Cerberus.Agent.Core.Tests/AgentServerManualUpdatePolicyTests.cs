@@ -56,4 +56,44 @@ public sealed class AgentServerManualUpdatePolicyTests
         }
         else Assert.Null(launched.InstallRequestAuthorityExpiresUtc);
     }
+
+    [Theory]
+    [InlineData("quarantine")]
+    [InlineData("pending")]
+    [InlineData("window")]
+    [InlineData("lifecycle")]
+    public async Task IntentionalPolicyHoldHasDistinctResponse(string reason)
+    {
+        var journal = reason == "window" ? Staged() with { ApplyNotBeforeUtc = DateTimeOffset.UtcNow.AddHours(1) } : Staged();
+        var lifecycle = reason == "lifecycle" ? Active with { QuiescenceComplete = false } : Active;
+        var result = await AgentUpdateLocalService.RespondAsync(() =>
+        {
+            AgentUpdateLocalService.RequireManualServerPolicy(journal, lifecycle, reason == "quarantine",
+                CancellationToken.None, pendingState: reason == "pending");
+            return Task.FromResult(new AgentLocalControlResponse(true, "apply_admitted"));
+        }, CancellationToken.None);
+        Assert.Equal(!AgentBuildProfile.IsServer, result.Success);
+        Assert.Equal(AgentBuildProfile.IsServer ? "update_policy_held" : "apply_admitted", result.Code);
+    }
+
+    [Fact]
+    public async Task OrdinaryCancellationStillEscapesToPipe()
+    {
+        var error = new OperationCanceledException();
+        var actual = await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            AgentUpdateLocalService.RespondAsync(() => throw error, CancellationToken.None));
+        Assert.Same(error, actual);
+    }
+
+    [Fact]
+    public async Task CancelledRequestDoesNotBecomePolicyResponse()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AgentUpdateLocalService.RespondAsync(() =>
+        {
+            AgentUpdateLocalService.RequireManualServerPolicy(Staged(), Active, true, cts.Token);
+            throw new OperationCanceledException(cts.Token);
+        }, cts.Token));
+    }
 }

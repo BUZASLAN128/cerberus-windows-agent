@@ -14,7 +14,7 @@ public sealed class AgentUpdateStagerTests
         using var rsa = RSA.Create(2048);
         var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
         var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
-        var manifest = SignedManifest(rsa, hash);
+        var manifest = SignedManifest(rsa, hash, artifactLength: artifact.Length);
         var http = new HttpClient(new StaticHandler(request =>
         {
             if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
@@ -39,7 +39,7 @@ public sealed class AgentUpdateStagerTests
                 ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
-                CurrentVersion: "1.1.0"),
+                CurrentVersion: "1.1.0", AllowedSignerKeyIdentity: "test-signer"),
             root,
             log);
 
@@ -245,7 +245,7 @@ public sealed class AgentUpdateStagerTests
         using var rsa = RSA.Create(2048);
         var artifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
         var hash = Convert.ToHexString(SHA256.HashData(artifact)).ToLowerInvariant();
-        var manifest = SignedManifest(rsa, hash);
+        var manifest = SignedManifest(rsa, hash, artifactLength: artifact.Length);
         var requestedPaths = new List<string>();
         var http = new HttpClient(new StaticHandler(request =>
         {
@@ -270,7 +270,7 @@ public sealed class AgentUpdateStagerTests
                 ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
-                CurrentVersion: "1.1.0"),
+                CurrentVersion: "1.1.0", AllowedSignerKeyIdentity: "test-signer"),
             root);
 
         var first = await stager.StageAsync(UpdateResponse(), CancellationToken.None);
@@ -290,9 +290,9 @@ public sealed class AgentUpdateStagerTests
         using var rsa = RSA.Create(2048);
         var expectedArtifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
         var existingArtifact = Encoding.UTF8.GetBytes("existing-msi-must-not-be-truncated");
-        var corruptDownload = Encoding.UTF8.GetBytes("corrupt-msi");
+        var corruptDownload = new byte[expectedArtifact.Length];
         var hash = Convert.ToHexString(SHA256.HashData(expectedArtifact)).ToLowerInvariant();
-        var manifest = SignedManifest(rsa, hash);
+        var manifest = SignedManifest(rsa, hash, artifactLength: expectedArtifact.Length);
         var http = new HttpClient(new StaticHandler(request =>
         {
             if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
@@ -314,7 +314,7 @@ public sealed class AgentUpdateStagerTests
                 ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
-                CurrentVersion: "1.1.0"),
+                CurrentVersion: "1.1.0", AllowedSignerKeyIdentity: "test-signer"),
             root);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -331,7 +331,7 @@ public sealed class AgentUpdateStagerTests
         using var rsa = RSA.Create(2048);
         var expectedArtifact = Encoding.UTF8.GetBytes("agent-binary-v1.2.0");
         var hash = Convert.ToHexString(SHA256.HashData(expectedArtifact)).ToLowerInvariant();
-        var manifest = SignedManifest(rsa, hash);
+        var manifest = SignedManifest(rsa, hash, artifactLength: Encoding.UTF8.GetByteCount("agent-binary-v1.2.0"));
         var http = new HttpClient(new ResponseHandler(request =>
         {
             if (request.RequestUri?.AbsolutePath.EndsWith("manifest.json") == true)
@@ -354,7 +354,7 @@ public sealed class AgentUpdateStagerTests
                 ManifestPublicKeyPems: new[] { PublicKeyPem(rsa) },
                 ExpectedChannel: "stable",
                 AllowedArtifactPrefixes: new[] { "https://releases.cerberus.local/" },
-                CurrentVersion: "1.1.0"),
+                CurrentVersion: "1.1.0", AllowedSignerKeyIdentity: "test-signer"),
             root);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -586,7 +586,8 @@ public sealed class AgentUpdateStagerTests
         RSA rsa,
         string sha256,
         string version = "1.2.0",
-        string channel = "stable")
+        string channel = "stable",
+        long? artifactLength = null)
     {
         var unsigned = new AgentUpdateManifest(
             ArtifactKind: "msi",
@@ -599,6 +600,14 @@ public sealed class AgentUpdateStagerTests
             MinimumProtocolVersion: "agent.heartbeat.v1",
             RollbackAllowed: false,
             Signature: "");
+        if (artifactLength is not null)
+            unsigned = unsigned with
+            {
+                SchemaVersion = AgentUpdateManifest.V2SchemaVersion, Sequence = 1,
+                ReleasedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"),
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(1).ToString("O"),
+                ArtifactLength = artifactLength, SignerKeyIdentity = "test-signer",
+            };
         var signature = rsa.SignData(
             Encoding.UTF8.GetBytes(AgentUpdateManifestValidator.CanonicalPayload(unsigned)),
             HashAlgorithmName.SHA256,
