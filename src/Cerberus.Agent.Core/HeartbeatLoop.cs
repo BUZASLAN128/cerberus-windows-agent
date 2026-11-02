@@ -153,7 +153,7 @@ public sealed partial class HeartbeatLoop
                 if (legacyAsyncAvailable) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
                 var hbReq = new Dictionary<string, object?>
                 {
-                    ["status"] = degraded ? "degraded" : "connected",
+                    ["status"] = degraded || recoveringState ? "degraded" : "connected",
                     ["agent_version"] = _agentVersion,
                     ["build_id"] = _buildId,
                     ["build_channel"] = _buildChannel,
@@ -163,12 +163,11 @@ public sealed partial class HeartbeatLoop
                     ["ad"] = controlRecovery || _adStatusProvider is null ? null : await _adStatusProvider(ct),
                     ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
                     ["capabilities"] = _dispatcher.HandlerTypes,
+                    ["signed_state_reset"] = recoveringState,
+                    ["signed_state_floor"] = recoveringState ? _signedState!.RecoveryFloor : 0,
+                    ["signed_state_recovery_rejections"] = _commandProcessor is EnvelopeCommandProcessor envelopes &&
+                        envelopes.RejectionCounts.TryGetValue(EnvelopeCodes.StateRecoveryRequired, out var rejected) ? rejected : 0,
                 };
-                if (recoveringState)
-                {
-                    hbReq["signed_state_reset"] = true;
-                    hbReq["signed_state_floor"] = _signedState!.RecoveryFloor;
-                }
 
                 var heartbeatStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 var hb = await _api.HeartbeatAsync(hbReq, ct);
@@ -186,8 +185,8 @@ public sealed partial class HeartbeatLoop
                         if (!await WaitForLifecycleGateAsync(ct).ConfigureAwait(false)) return;
                         if (_wakeupClient is not null) await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                         // No unsigned update, manifest, lease, telemetry or business command during recovery.
-                        await _commandProcessor.ProcessAsync(hb.PendingCommands
-                            .Where(command => command.Type == EnvelopeTypes.AgentState).ToArray(), ct).ConfigureAwait(false);
+                        // Let the signed processor reject ordinary envelopes visibly; it still runs only state recovery.
+                        await _commandProcessor.ProcessAsync(hb.PendingCommands, ct).ConfigureAwait(false);
                         await Task.Delay(TimeSpan.FromSeconds(Math.Max(30, _timing.Bounds.PollFloor)), ct).ConfigureAwait(false);
                         continue;
                     }

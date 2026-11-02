@@ -26,6 +26,7 @@ public static class EnvelopeCodes
     public const string NonceReused = "nonce_reused";
     public const string StaleStateSeq = "stale_state_seq";
     public const string Quarantined = "quarantined";
+    public const string StateRecoveryRequired = "state_recovery_required";
     public const string ReplayStoreFull = "replay_store_full";
     public const string ReplayStoreUnavailable = "replay_store_unavailable";
 }

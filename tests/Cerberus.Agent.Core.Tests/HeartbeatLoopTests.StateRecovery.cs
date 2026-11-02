@@ -41,8 +41,10 @@ public sealed partial class HeartbeatLoopTests
         using var body = JsonDocument.Parse(wire.Body);
         Assert.True(body.RootElement.GetProperty("signed_state_reset").GetBoolean());
         Assert.Equal(7, body.RootElement.GetProperty("signed_state_floor").GetInt64());
+        Assert.Equal("degraded", body.RootElement.GetProperty("status").GetString());
+        Assert.Equal(0, body.RootElement.GetProperty("signed_state_recovery_rejections").GetInt64());
         Assert.Equal(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(wire.Body))).ToLowerInvariant(), wire.BodyHash);
-        Assert.Equal(supported ? new[] { "agent_state" } : new[] { "agent_state", "ping" }, processor.Types);
+        Assert.Equal(new[] { "agent_state", "ping" }, processor.Types);
 #if CERBERUS_SERVER_PROFILE
         Assert.Equal(0, updates.Calls); // The server profile never accepts unsigned update hints.
 #else
@@ -53,7 +55,7 @@ public sealed partial class HeartbeatLoopTests
         Assert.True(state.IsQuarantined());
     }
 
-    private sealed class StateRecoveryHandler(bool supported) : HttpMessageHandler
+    private sealed class StateRecoveryHandler(bool supported, AgentCommand[]? commands = null) : HttpMessageHandler
     {
         public string Body = "", BodyHash = "";
         public List<string> Paths = [];
@@ -65,7 +67,7 @@ public sealed partial class HeartbeatLoopTests
             var response = JsonSerializer.Serialize(new { signed_state_recovery = supported, next_poll_seconds = 30,
                 next_snapshot_seconds = 300, server_time = 1, update = new { available = true },
                 wakeup = new { version = 1, path = "/api/v1/agents/agent-1/wakeup" },
-                pending_commands = new[] { new { id = "state", type = "agent_state", idempotency_key = "state", payload = new { } },
+                pending_commands = (object?)commands ?? new[] { new { id = "state", type = "agent_state", idempotency_key = "state", payload = new { } },
                                           new { id = "business", type = "ping", idempotency_key = "business", payload = new { } } } });
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response, Encoding.UTF8, "application/json") };
         }

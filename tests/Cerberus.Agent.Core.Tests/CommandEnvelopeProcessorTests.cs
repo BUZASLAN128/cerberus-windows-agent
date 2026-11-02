@@ -277,7 +277,13 @@ public sealed partial class CommandEnvelopeProcessorTests
 
         await h.Process(facts, ping, state);
 
-        Assert.DoesNotContain(h.Backend.Acks, a => a.CommandId == facts.Id || a.CommandId == ping.Id);
+        var held = h.Backend.Acks.Where(a => a.CommandId == facts.Id || a.CommandId == ping.Id).ToArray();
+        Assert.Equal(2, held.Length);
+        Assert.All(held, ack =>
+        {
+            Assert.Equal("rejected", ack.Json.GetProperty("decision").GetString());
+            Assert.Equal(EnvelopeCodes.StateRecoveryRequired, ack.Json.GetProperty("reason").GetString());
+        });
         await h.Queue.DrainOutboxOnceAsync(default);
         Assert.True(h.Record(state)!.ResultSubmitted);
         await h.Process(facts, ping);
@@ -285,10 +291,10 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal(1, h.State.Calls);
         Assert.Equal(state.Id, h.Backend.Acks[0].CommandId);
         Assert.Equal("accepted", h.Backend.Acks[0].Json.GetProperty("decision").GetString());
-        var rejected = h.Backend.Acks.Single(a => a.CommandId == facts.Id);
+        var rejected = h.Backend.Acks.Last(a => a.CommandId == facts.Id);
         Assert.Equal("quarantined", rejected.Json.GetProperty("reason").GetString());
         Assert.Equal(0, h.Facts.Calls);
-        Assert.Equal("accepted", h.Backend.Acks.Single(a => a.CommandId == ping.Id).Json.GetProperty("decision").GetString());
+        Assert.Equal("accepted", h.Backend.Acks.Last(a => a.CommandId == ping.Id).Json.GetProperty("decision").GetString());
     }
 
     [Fact]

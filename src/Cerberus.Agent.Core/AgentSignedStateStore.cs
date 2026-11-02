@@ -253,7 +253,10 @@ public sealed partial class AgentSignedStateStore
             if (!_file.Exists())
             {
                 if (_currentAgentId is not null || _hwm is not null)
+                {
+                    _log.Warn("Signed agent state snapshot missing; signed recovery required.");
                     EnterReset(_currentAgentId ?? _hwm!.Value.AgentId);
+                }
                 return;
             }
             _file.ValidateFile();

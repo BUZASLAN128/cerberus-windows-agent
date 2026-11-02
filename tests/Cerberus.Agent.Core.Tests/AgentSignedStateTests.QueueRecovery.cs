@@ -25,7 +25,10 @@ public sealed partial class AgentSignedStateTests
         await processor.ProcessAsync(new[] { old, h.Cmd() }, default);
         Assert.True(state.RequiresRecovery);
         Assert.Equal(0, h.Ping.Calls);
-        Assert.Empty(h.Backend.Acks);
+        var rejection = Assert.Single(h.Backend.Acks);
+        Assert.Equal("rejected", rejection.Json.GetProperty("decision").GetString());
+        Assert.Equal(EnvelopeCodes.StateRecoveryRequired, rejection.Json.GetProperty("reason").GetString());
+        Assert.Equal(1, processor.RejectionCounts[EnvelopeCodes.StateRecoveryRequired]);
         var fresh = h.Cmd(p => { p.Type = "agent_state"; p.PayloadJson = """{"state_seq":8,"quarantine":{"active":false}}"""; });
         await processor.ProcessAsync(new[] { fresh }, default);
         await queue.DrainOutboxOnceAsync(default);

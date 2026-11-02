@@ -101,6 +101,14 @@ Every agent request carries a bearer token and a signature:
 - `X-Body-Hash`: SHA-256 of the body, Base64
 - `X-Signature`: RSA PKCS#1 v1.5 SHA-256 over `v1:{METHOD}:{PATH}:{NONCE}:{TIMESTAMP}:{BODY_HASH}`, Base64 (path without query)
 
+### Signed-state recovery
+
+An upgrade reads the existing protected v1 signed-state snapshot, including its registration, quarantine/revoke and sequence floor. A missing or unreadable snapshot for an enrolled agent stays fail-closed; credentials alone do not prove that the registration is claimed or that quarantine was cleared. The reset marker `unreadable` can therefore also mean that the old agent never received a signed snapshot, rather than that the file format or DPAPI failed.
+
+During recovery, each heartbeat reports `status=degraded`, `signed_state_reset=true`, `signed_state_floor` (the minimum sequence a recovery command must exceed), and `signed_state_recovery_rejections` (the process-lifetime rejection count). Normal heartbeats explicitly send reset=false and floor=0; the counter remains cumulative. Backend consumers projecting an `agent_runtime` fact should retain these fields and their cleared values.
+
+New verified ordinary envelopes receive a signed ACK with `decision=rejected` and `reason=state_recovery_required`, a warning and a counter increment; no handler runs. Prior execution outcomes keep their replay semantics. The backend must deliver an authorized signed `agent_state` above the reported floor and advertise `signed_state_recovery=true` when it supports that recovery path. A local update or upgrade does not clear recovery by itself.
+
 ## Commands
 
 Commands are idempotent per command id (`idempotency.json`, 24 h). Unknown types fail and are cached the same way.
