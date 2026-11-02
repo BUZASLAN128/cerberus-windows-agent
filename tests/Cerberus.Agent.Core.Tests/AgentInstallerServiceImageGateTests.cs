@@ -84,6 +84,31 @@ public sealed class AgentInstallerServiceImageGateTests
             Assert.Equal(new[] { "authority", "hash", "all-bundles" }, calls);
         });
 
+    [Theory]
+    [InlineData("Cerberus.Agent.Service.dll")]
+    [InlineData("Cerberus.Agent.Core.dll")]
+    public void UnsafeLegacyDescendant_IsRejectedBeforeHashOrDeferral(string name)
+        => InRuntime((runtime, service) =>
+        {
+            var legacy = Path.Combine(runtime, name);
+            File.WriteAllText(legacy, "legacy dependency fixture");
+            var hashCalled = false;
+            var queueRead = false;
+            var bundleCalled = false;
+            // Exercise the actual bounded descendant inventory; ACL outcomes are supplied, not an elevated ACL test.
+            var error = Assert.Throws<UnauthorizedAccessException>(() => AgentInstallerServiceImageGate.Validate(runtime,
+                () => AgentUpdateSecurity.ValidateProtectedDescendants(runtime, path =>
+                {
+                    if (path == legacy) throw new UnauthorizedAccessException("Unsafe legacy descendant: " + path);
+                }),
+                () => { hashCalled = true; return false; }, _ => bundleCalled = true,
+                () => { queueRead = true; return new[] { "replacement.tmp", service }; }));
+            Assert.Contains(legacy, error.Message);
+            Assert.False(hashCalled);
+            Assert.False(queueRead);
+            Assert.False(bundleCalled);
+        });
+
     private static void InRuntime(Action<string, string> check)
     {
         var root = Path.Combine(Path.GetTempPath(), "installer-image-" + Guid.NewGuid().ToString("N"));

@@ -10,6 +10,7 @@ internal static partial class Program
     private static void ValidateRuntimeAuthority(string runtime)
     {
         runtime = Path.GetFullPath(runtime);
+        AgentUpdateSecurity.ValidateProtectedTree(runtime);
         string Metadata(string key) => typeof(Program).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
             .SingleOrDefault(attribute => attribute.Key == key)?.Value ?? "";
         var pins = Metadata("AgentUpdateAllowedSignerKeyIdentity");

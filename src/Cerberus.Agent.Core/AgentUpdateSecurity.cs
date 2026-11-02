@@ -131,6 +131,11 @@ public static class AgentUpdateSecurity
     {
         ValidateProtectedPath(root, root, allowMissing: false);
         if (!OperatingSystem.IsWindows()) return;
+        ValidateProtectedDescendants(root, path => ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false));
+    }
+
+    internal static void ValidateProtectedDescendants(string root, Action<string> validateAuthority)
+    {
         var pending = new Stack<string>();
         pending.Push(NormalizeRoot(root));
         var count = 0;
@@ -140,7 +145,7 @@ public static class AgentUpdateSecurity
             {
                 if (++count > 65536) throw new InvalidOperationException("Protected update inventory exceeds validation bounds.");
                 ValidateNoReparsePoint(path, "Protected update descendant");
-                ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false);
+                validateAuthority(path);
                 if (Directory.Exists(path)) pending.Push(path);
             }
         }
