@@ -39,6 +39,7 @@ public sealed class WindowsTelemetryCollectorTests
             "clock",
             "runtime",
             "capabilities",
+            "sessions", "hardware", "services", "listening_ports", "updates", "software", "processes",
         };
 
         Assert.Equal(expected.OrderBy(x => x), snapshot.Sections.Keys.OrderBy(x => x));
@@ -47,7 +48,6 @@ public sealed class WindowsTelemetryCollectorTests
     }
 #endif
 
-#if !CERBERUS_SERVER_PROFILE
     [Fact]
     public async Task BuildSnapshotAsync_HonorsTelemetrySectionAllowlist()
     {
@@ -65,8 +65,6 @@ public sealed class WindowsTelemetryCollectorTests
 
         Assert.Equal(new[] { "clock", "identity" }, snapshot.Sections.Keys.OrderBy(x => x));
     }
-#endif
-
     [Fact]
     public async Task CapabilitiesTelemetry_OmitsLocalUserCreateWhenPolicyDisabled()
     {

@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
 /// <summary>
-/// Time budget for the server profile sections: 20 s per collection run shared by all wrapped sections, at most
+/// Time budget for periodic and signed fact sections: 20 s per collection run shared by all wrapped sections, at most
 /// 5 s each. The run is identified by its <see cref="WindowsTelemetryContext"/> instance, so a new context
 /// starts a new budget. A section that runs over, or starts after the budget is spent, reports
 /// <c>status: unavailable</c>.
@@ -28,9 +28,9 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
 
     public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
-        var now = _time.GetUtcNow();
+        var now = _time.GetTimestamp();
         var clock = Runs.GetValue(context, _ => new RunClock(now));
-        var remaining = TotalBudget - (now - clock.Started);
+        var remaining = TotalBudget - _time.GetElapsedTime(clock.Started, now);
         if (remaining <= TimeSpan.Zero)
             return ServerFactText.Unavailable(SectionName, "time_budget_exhausted");
 
@@ -54,8 +54,8 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
 
     private sealed class RunClock
     {
-        public RunClock(DateTimeOffset started) => Started = started;
+        public RunClock(long started) => Started = started;
 
-        public DateTimeOffset Started { get; }
+        public long Started { get; }
     }
 }

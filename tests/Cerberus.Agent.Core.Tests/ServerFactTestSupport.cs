@@ -14,6 +14,8 @@ internal sealed class ManualTimeProvider : TimeProvider
     private DateTimeOffset _now;
 
     public ManualTimeProvider(DateTimeOffset start) => _now = start;
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+    public override long GetTimestamp() => GetUtcNow().UtcTicks;
 
     public override DateTimeOffset GetUtcNow()
     {

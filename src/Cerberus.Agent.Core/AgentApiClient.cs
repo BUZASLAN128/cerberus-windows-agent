@@ -25,6 +25,9 @@ public sealed partial class AgentApiClient
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
     private readonly long? _expectedGeneration;
+    private int _snapshotByteLimit = AgentTelemetryLimits.DefaultSnapshotBytes;
+    private bool _snapshotRejectedAsTooLarge;
+    public int SnapshotByteLimit => _snapshotByteLimit;
     private static readonly HttpRequestOptionsKey<long> LifecycleGenerationKey = new("CerberusLifecycleGeneration");
     private static readonly ConditionalWeakTable<HeartbeatResponse, ResponseGeneration> ResponseGenerations = new();
 
@@ -66,14 +69,16 @@ public sealed partial class AgentApiClient
     public async Task<HeartbeatResponse> HeartbeatAsync(object body, CancellationToken ct)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        var json = JsonSerializer.Serialize(body, JsonOpts);
+        AgentTelemetryLimits.ThrowIfJsonTooLarge(json);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/heartbeat";
 
         using var deadline = AgentHttpFailure.CreateDeadline(_http, ct);
-        using var resp = await SendSignedRequestAsync(
+        using var resp = await SendSignedJsonRequestAsync(
             HttpMethod.Post,
             path,
-            body,
+            json,
             ct,
             HttpCompletionOption.ResponseHeadersRead,
             deadline.Token).ConfigureAwait(false);
@@ -125,6 +130,9 @@ public sealed partial class AgentApiClient
                 .MarkActiveAsync(ct, RequestGeneration(resp)).ConfigureAwait(false);
             ResponseGenerations.Add(payload, new ResponseGeneration(lifecycle.Generation));
         }
+        _snapshotByteLimit = AgentTelemetryLimits.SnapshotBytesFor(payload.SnapshotMaxBytes);
+        if (_snapshotRejectedAsTooLarge)
+            _snapshotByteLimit = Math.Min(_snapshotByteLimit, AgentTelemetryLimits.MaxJsonBytes);
         return payload;
     }
 
@@ -261,7 +269,7 @@ public sealed partial class AgentApiClient
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("snapshot", body, retryTransient: true, ct: ct);
+        SubmitIngestAsync("snapshot", AgentSnapshotFactory.Fit(body, SnapshotByteLimit), retryTransient: true, ct: ct);
 
     public Task<AgentIngestAckResponse> SubmitEventsAsync(AgentEventBatchRequest body, CancellationToken ct) =>
         SubmitIngestAsync("events", body, retryTransient: false, ct: ct);
@@ -275,6 +283,7 @@ public sealed partial class AgentApiClient
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var json = JsonSerializer.Serialize(body, JsonOpts);
+        AgentTelemetryLimits.ThrowIfJsonTooLarge(json, AgentTelemetryLimits.MaxDiagnosticBundleBytes);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/diagnostic-bundles";
 
@@ -316,7 +325,14 @@ public sealed partial class AgentApiClient
             OfflineTelemetryKinds.ProbeResult => true,
             _ => false,
         };
-        return await SubmitIngestJsonAsync(endpoint, record.Json, retryTransient, ct).ConfigureAwait(false);
+        var json = record.Json;
+        if (record.Kind == OfflineTelemetryKinds.Snapshot)
+        {
+            var snapshot = JsonSerializer.Deserialize<AgentSnapshotRequest>(json, JsonOpts)
+                ?? throw new InvalidOperationException("Offline snapshot missing.");
+            json = JsonSerializer.Serialize(AgentSnapshotFactory.Fit(snapshot, SnapshotByteLimit), JsonOpts);
+        }
+        return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -403,6 +419,8 @@ public sealed partial class AgentApiClient
         CancellationToken ct)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
+        AgentTelemetryLimits.ThrowIfJsonTooLarge(json,
+            endpoint == "snapshot" ? SnapshotByteLimit : AgentTelemetryLimits.MaxJsonBytes);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
 
@@ -414,6 +432,11 @@ public sealed partial class AgentApiClient
                 json,
                 ct,
                 HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            if (endpoint == "snapshot" && resp.StatusCode == HttpStatusCode.RequestEntityTooLarge)
+            {
+                _snapshotRejectedAsTooLarge = true;
+                _snapshotByteLimit = Math.Min(SnapshotByteLimit, AgentTelemetryLimits.MaxJsonBytes);
+            }
             await EnsureSuccessAsync($"Agent {endpoint}", resp, ct).ConfigureAwait(false);
 
             var payload = await AgentHttpFailure.ReadJsonAsync<AgentIngestAckResponse>(

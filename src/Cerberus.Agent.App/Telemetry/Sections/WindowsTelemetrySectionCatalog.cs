@@ -7,7 +7,7 @@ internal static class WindowsTelemetrySectionCatalog
 {
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
 
-    // Sections sent in the server build profile; the environment allowlist is not consulted there.
+    // Signed facts retain the command allowlist; periodic telemetry includes every core and fact section.
     private static readonly HashSet<string> ServerProfileSections =
         new(EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
 
@@ -25,9 +25,6 @@ internal static class WindowsTelemetrySectionCatalog
         bool publishServiceObservation)
     {
         var sections = CreateAll(publishServiceObservation);
-        if (AgentBuildProfile.IsServer)
-            return sections.Where(section => ServerProfileSections.Contains(section.SectionName)).ToArray();
-
         if (string.IsNullOrWhiteSpace(configured))
             return sections;
 
@@ -50,15 +47,11 @@ internal static class WindowsTelemetrySectionCatalog
     private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation)
     {
         var sections = CreateCoreSections(publishServiceObservation);
-#if CERBERUS_SERVER_PROFILE
         // Core sections run under the same run budget, so a slow core collector cannot start outside it.
         return sections
             .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
             .Concat(CreateServerFactSections(TimeProvider.System))
             .ToArray();
-#else
-        return sections;
-#endif
     }
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts()

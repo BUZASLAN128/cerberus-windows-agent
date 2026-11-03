@@ -14,7 +14,8 @@ public sealed partial class HeartbeatLoop
         AgentSnapshotRequest snapshot;
         try
         {
-            snapshot = await _telemetryProvider.BuildSnapshotAsync(_metadata, heartbeat, ct).ConfigureAwait(false);
+            snapshot = await _telemetryProvider.BuildSnapshotAsync(_metadata,
+                heartbeat with { SnapshotMaxBytes = _api.SnapshotByteLimit }, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
