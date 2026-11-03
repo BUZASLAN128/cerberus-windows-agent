@@ -31,7 +31,12 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
                 windowsInstaller = s.WindowsInstaller,
             })
             .Where(s => s.name.Length > 0)
-            .Distinct()
+            .GroupBy(s => new { s.name, s.version, s.publisher, s.installed_on, s.arch, s.scope, s.user_sid })
+            .Select(g => new
+            {
+                g.Key.name, g.Key.version, g.Key.publisher, g.Key.installed_on, g.Key.arch, g.Key.scope, g.Key.user_sid,
+                windowsInstaller = g.Any(s => s.windowsInstaller),
+            })
             .OrderBy(s => s.name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(s => s.name, StringComparer.Ordinal)
             .ThenBy(s => s.version, StringComparer.OrdinalIgnoreCase)

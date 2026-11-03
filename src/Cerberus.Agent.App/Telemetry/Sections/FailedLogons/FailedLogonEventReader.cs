@@ -262,7 +262,7 @@ internal static class FailedLogonEventReader
                     case 4624:
                         return SecurityLogEventParser.Logon(time, data.Named);
                     default:
-                        return SecurityLogEventParser.GroupChange(record.Id, time, data.Named);
+                        return SecurityLogEventParser.GroupChange(record.Id, time, data.Named, record.RecordId);
                 }
             case RdpCore:
                 // Fixed manifest field only: no scan of other values.

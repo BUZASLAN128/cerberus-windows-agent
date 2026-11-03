@@ -19,7 +19,8 @@ internal sealed record AdminGroupChange(
     string? MemberSid,
     string GroupSid,
     DateTimeOffset TimeUtc,
-    string? AddedBy = null);
+    string? AddedBy = null,
+    long? RecordId = null);
 
 /// <summary>Turns the named data of a Security event into the typed detail carried by a <see cref="FailedLogonEvent"/>.</summary>
 internal static class SecurityLogEventParser
@@ -49,7 +50,7 @@ internal static class SecurityLogEventParser
         return new FailedLogonEvent(FailedLogonSource.SuccessfulLogon4624, time, logon.SourceIp, type, Detail: logon);
     }
 
-    internal static FailedLogonEvent? GroupChange(int eventId, DateTimeOffset time, IReadOnlyDictionary<string, string> data)
+    internal static FailedLogonEvent? GroupChange(int eventId, DateTimeOffset time, IReadOnlyDictionary<string, string> data, long? recordId = null)
     {
         var action = eventId switch
         {
@@ -67,7 +68,8 @@ internal static class SecurityLogEventParser
             Clean(data.GetValueOrDefault("MemberSid")),
             groupSid,
             time,
-            eventId is 4732 or 4728 ? AdditionActor(data) : null);
+            eventId is 4732 or 4728 ? AdditionActor(data) : null,
+            recordId);
         return new FailedLogonEvent(FailedLogonSource.GroupChange, time, null, Detail: change);
     }
 

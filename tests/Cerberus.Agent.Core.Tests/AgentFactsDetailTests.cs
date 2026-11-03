@@ -73,17 +73,60 @@ public sealed class AgentFactsDetailTests
             case "wrong_member": changes[0] = add with { MemberSid = MemberSid + "0" }; break;
             case "wrong_group": changes[0] = add with { GroupSid = "S-1-5-21-1-2-3-512" }; break;
             case "partial": status = "partial"; break;
-            case "removed": changes.Add(add with { EventId = 4733, Action = "removed", TimeUtc = Time.AddSeconds(1) }); break;
+            case "removed": changes.Add(add with { EventId = 4733, Action = "removed", TimeUtc = Time.AddSeconds(1), RecordId = 101 }); break;
             case "simultaneous": changes.Add(add with { EventId = 4733, Action = "removed" }); break;
             case "outside_cap":
                 changes.AddRange(Enumerable.Range(1, SecurityLogFields.MaxChanges)
-                    .Select(i => add with { MemberSid = MemberSid + i, TimeUtc = Time.AddMinutes(i) }));
+                    .Select(i => add with { MemberSid = MemberSid + i, TimeUtc = Time.AddMinutes(-i), RecordId = 100 + i }));
                 break;
         }
         var member = Member(SecurityLogFields.AdminChanges(status, changes));
         Assert.False(member.AsObject().ContainsKey("added_by"));
         Assert.False(member.AsObject().ContainsKey("added_at_utc"));
         Assert.False(member.AsObject().ContainsKey("addition_source"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AdminAttribution_UsesRecordOrderAcrossUtcRollback(bool lastWasRemoval)
+    {
+        var alice = Parsed(4732, "alice", "CORP");
+        var removed = alice with { EventId = 4733, Action = "removed", TimeUtc = Time.AddMinutes(-1), RecordId = 101 };
+        var bob = Parsed(4732, "bob", "CORP") with { TimeUtc = Time.AddMinutes(-2), RecordId = 102 };
+        var feed = lastWasRemoval ? new[] { alice, removed } : new[] { alice, removed, bob };
+        var member = Member(SecurityLogFields.AdminChanges("ok", feed));
+        if (lastWasRemoval)
+            Assert.False(member.AsObject().ContainsKey("added_by"));
+        else
+        {
+            Assert.Equal("CORP\\bob", (string?)member["added_by"]);
+            Assert.Equal("2026-11-03T11:58:00Z", (string?)member["added_at_utc"]);
+        }
+    }
+
+    [Fact]
+    public void AdminAttribution_MissingRecordOrderIsOmitted()
+    {
+        var change = Parsed(4732, "alice", "CORP") with { RecordId = null };
+        Assert.False(Member(SecurityLogFields.AdminChanges("ok", new[] { change })).AsObject().ContainsKey("added_by"));
+    }
+
+    [Fact]
+    public void InstallerMarker_IsMergedAfterExistingIdentityDedupBeforeFiveHundredCap()
+    {
+        var rows = Enumerable.Range(0, 500).SelectMany(i =>
+        {
+            var row = new SoftwareTelemetrySectionCollector.RawSoftware($"App{i:D3}", "1", null, null, "x64");
+            return new[] { row, row with { WindowsInstaller = true } };
+        });
+        var node = Obj(SoftwareTelemetrySectionCollector.Build(rows));
+        Assert.Equal(500, (int)node["software_count"]!);
+        Assert.False((bool)node["truncated"]!);
+        var entries = node["software"]!.AsArray();
+        Assert.Equal(500, entries.Count);
+        Assert.All(entries, entry => Assert.Equal("windows_installer", (string?)entry!["install_source"]));
+        Assert.Equal("App499", (string?)entries[^1]!["name"]);
     }
 
     [Fact]
@@ -200,7 +243,7 @@ public sealed class AgentFactsDetailTests
         };
         if (user is not null)
             data["SubjectUserName"] = user;
-        return Assert.IsType<AdminGroupChange>(SecurityLogEventParser.GroupChange(eventId, Time, data)!.Detail);
+        return Assert.IsType<AdminGroupChange>(SecurityLogEventParser.GroupChange(eventId, Time, data, recordId: 100)!.Detail);
     }
 
     private static System.Text.Json.Nodes.JsonNode Member(AdminChangeReport changes)

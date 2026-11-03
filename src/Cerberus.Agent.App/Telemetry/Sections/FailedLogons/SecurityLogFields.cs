@@ -106,7 +106,16 @@ internal static class SecurityLogFields
                     time_utc = FailedLogonSection.Iso(c.TimeUtc),
                 })
                 .ToArray(),
-        }, changes.OrderByDescending(c => c.TimeUtc).Take(MaxChanges).ToArray());
+        }, AttributionEvidence(changes));
+
+    private static IReadOnlyList<AdminGroupChange> AttributionEvidence(IReadOnlyList<AdminGroupChange> changes)
+    {
+        // UTC is not an event sequence. Do not infer order if this window lacks unique native record IDs.
+        if (changes.Any(c => c.RecordId is null or <= 0)
+            || changes.Select(c => c.RecordId).Distinct().Count() != changes.Count)
+            return Array.Empty<AdminGroupChange>();
+        return changes.OrderByDescending(c => c.RecordId).Take(MaxChanges).ToArray();
+    }
 
     internal static object LogCleared(string status, DateTimeOffset? lastClearedUtc)
         => new { status, last_cleared_utc = lastClearedUtc is { } t ? FailedLogonSection.Iso(t) : null };
@@ -146,13 +155,13 @@ internal static class SecurityLogFields
         var matched = changes.Evidence
             .Where(c => string.Equals(c.MemberSid, member.Sid, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(c.GroupSid, SecurityLogEventParser.AdministratorsSid, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(c => c.TimeUtc).ToArray();
+            .OrderByDescending(c => c.RecordId).ToArray();
         if (matched.Length == 0)
             return result;
         var latest = matched[0];
-        // A removal, simultaneous ambiguous events, or another admin group is not evidence of this addition.
+        // A removal, ambiguous record order, or another admin group is not evidence of this addition.
         if (latest.Action != "added" || latest.EventId is not (4732 or 4728)
-            || matched.Skip(1).Any(c => c.TimeUtc == latest.TimeUtc))
+            || latest.RecordId is null or <= 0 || matched.Skip(1).Any(c => c.RecordId == latest.RecordId))
             return result;
         if (latest.AddedBy is not null)
             result["added_by"] = latest.AddedBy;
