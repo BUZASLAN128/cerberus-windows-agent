@@ -32,6 +32,7 @@ public sealed partial class HeartbeatLoop
     private readonly bool _legacyAsyncSupported;
     private readonly Func<bool> _legacyAsyncReady;
     private readonly AgentSignedStateStore? _signedState;
+    private readonly bool _supportsUpdateInstall;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -65,7 +66,8 @@ public sealed partial class HeartbeatLoop
         bool signedCommandsOnly = false,
         bool legacyAsyncSupported = false,
         Func<bool>? legacyAsyncReady = null,
-        AgentSignedStateStore? signedState = null)
+        AgentSignedStateStore? signedState = null,
+        bool supportsUpdateInstall = false)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _api = api;
@@ -114,6 +116,8 @@ public sealed partial class HeartbeatLoop
         _legacyAsyncSupported = legacyAsyncSupported;
         _legacyAsyncReady = legacyAsyncReady ?? (() => true);
         _signedState = signedState;
+        _supportsUpdateInstall = AgentBuildProfile.IsServer && supportsUpdateInstall &&
+            dispatcher.HandlerTypes.Contains(EnvelopeTypes.AgentUpdateRequest);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -151,6 +155,8 @@ public sealed partial class HeartbeatLoop
                 if (_signedCommandsOnly) supported = supported.Append(CommandEnvelope.SignedOnlyCapability);
                 var legacyAsyncAvailable = !controlRecovery && _legacyAsyncSupported && _legacyAsyncReady();
                 if (legacyAsyncAvailable) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
+                IReadOnlyList<string> capabilities = _dispatcher.HandlerTypes;
+                if (_supportsUpdateInstall) capabilities = capabilities.Append("agent.update.install.v1").ToArray();
                 var hbReq = new Dictionary<string, object?>
                 {
                     ["status"] = degraded || recoveringState ? "degraded" : "connected",
@@ -162,7 +168,7 @@ public sealed partial class HeartbeatLoop
                     ["tailscale"] = tailscale,
                     ["ad"] = controlRecovery || _adStatusProvider is null ? null : await _adStatusProvider(ct),
                     ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
-                    ["capabilities"] = _dispatcher.HandlerTypes,
+                    ["capabilities"] = capabilities,
                     ["signed_state_reset"] = recoveringState,
                     ["signed_state_floor"] = recoveringState ? _signedState!.RecoveryFloor : 0,
                     ["signed_state_recovery_rejections"] = _commandProcessor is EnvelopeCommandProcessor envelopes &&

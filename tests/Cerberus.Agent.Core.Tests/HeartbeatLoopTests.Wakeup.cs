@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -9,22 +10,30 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class HeartbeatLoopTests
 {
     [Fact]
-    public async Task HeartbeatAdvertisesRegisteredUpdateCommandWhileWakeupIsUnavailable()
+    public async Task HeartbeatAdvertisesInstallOnlyForSupportingUpdateHandlerWhileWakeupIsUnavailable()
     {
         var wire = new ProductLoopHandler();
         using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
         var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
-        var dispatcher = new CommandDispatcher(new[] { new FakeCommandHandler(EnvelopeTypes.AgentUpdateRequest) },
-            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests",
-                Guid.NewGuid().ToString("N"), "idem.json"), 10, TimeSpan.FromMinutes(5)));
+        var dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        var handler = new AgentUpdateRequestCommandHandler(() => null,
+            new AgentUpdateStateStore(Path.Combine(dir, "state.json"), Path.Combine(dir, "result.json")),
+            NullAgentLogger.Instance, "1.2.3");
+        var dispatcher = new CommandDispatcher(new[] { handler },
+            new IdempotencyCache(Path.Combine(dir, "idem.json"), 10, TimeSpan.FromMinutes(5)));
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromSeconds(1),
-            commandProcessor: new ProductLoopProcessor(stop), supportsEvents: false);
+            commandProcessor: new ProductLoopProcessor(stop), supportsEvents: false,
+            supportsUpdateInstall: AgentUpdateRequestCommandHandler.SupportsMode("install"));
         await loop.RunAsync(stop.Token);
         Assert.Equal("/api/v1/agents/agent-1/heartbeat", Assert.Single(wire.Paths));
         using var body = JsonDocument.Parse(wire.Body);
-        Assert.Equal(EnvelopeTypes.AgentUpdateRequest,
-            Assert.Single(body.RootElement.GetProperty("capabilities").EnumerateArray()).GetString());
+        var capabilities = body.RootElement.GetProperty("capabilities").EnumerateArray().Select(x => x.GetString()).ToArray();
+        var expected = AgentBuildProfile.IsServer
+            ? new[] { EnvelopeTypes.AgentUpdateRequest, "agent.update.install.v1" }
+            : new[] { EnvelopeTypes.AgentUpdateRequest };
+        Assert.Equal(expected, capabilities);
+        Assert.Equal(EnvelopeTypes.AgentUpdateRequest, Assert.Single(dispatcher.HandlerTypes));
     }
 
     [Fact]

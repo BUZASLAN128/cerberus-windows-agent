@@ -355,7 +355,9 @@ internal static partial class ServiceMode
             signedCommandMode: (AgentBuildProfile.IsServer || secondary) && EnvelopeWiring.HasCommandTrust(loadedSecrets.Identity.Product, log),
             signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
             legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true,
-            signedState: signedState);
+            signedState: signedState,
+            supportsUpdateInstall: AgentUpdateRequestCommandHandler.SupportsMode("install") &&
+                handlers.OfType<AgentUpdateRequestCommandHandler>().Any());
 
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;
