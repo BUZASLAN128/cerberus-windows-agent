@@ -327,7 +327,7 @@ public sealed partial class AgentApiClient
         {
             var snapshot = JsonSerializer.Deserialize<AgentSnapshotRequest>(json, JsonOpts)
                 ?? throw new InvalidOperationException("Offline snapshot missing.");
-            json = JsonSerializer.Serialize(PrepareSnapshot(snapshot), JsonOpts);
+            json = JsonSerializer.Serialize(PrepareSnapshot(snapshot, isReplay: true), JsonOpts);
         }
         return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
     }

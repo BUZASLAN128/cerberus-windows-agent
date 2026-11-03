@@ -54,8 +54,8 @@ internal static class WindowsTelemetrySectionCatalog
             .ToArray();
     }
 
-    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts()
-        => CreateCoreSections(false)
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts(Func<bool>? hasDetailConsent = null)
+        => CreateCoreSections(false, hasDetailConsent)
             .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
             .Concat(CreateServerFactSections(TimeProvider.System))
             .Where(section => ServerProfileSections.Contains(section.SectionName))
@@ -75,7 +75,7 @@ internal static class WindowsTelemetrySectionCatalog
         };
         return facts.Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, time)).ToArray();
     }
-    private static IWindowsTelemetrySectionCollector[] CreateCoreSections(bool publishServiceObservation) => new IWindowsTelemetrySectionCollector[]
+    private static IWindowsTelemetrySectionCollector[] CreateCoreSections(bool publishServiceObservation, Func<bool>? hasDetailConsent = null) => new IWindowsTelemetrySectionCollector[]
     {
         new IdentityTelemetrySectionCollector(),
         new OsTelemetrySectionCollector(),
@@ -84,7 +84,7 @@ internal static class WindowsTelemetrySectionCatalog
         new TailscaleTelemetrySectionCollector(),
         new RdpTelemetrySectionCollector(),
         new FirewallTelemetrySectionCollector(),
-        new SecurityTelemetrySectionCollector(publishServiceObservation),
+        new SecurityTelemetrySectionCollector(publishServiceObservation, true, null, hasDetailConsent: hasDetailConsent),
         new ClockTelemetrySectionCollector(),
         new RuntimeTelemetrySectionCollector(),
         publishServiceObservation

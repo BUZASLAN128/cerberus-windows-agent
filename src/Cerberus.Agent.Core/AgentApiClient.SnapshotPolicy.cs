@@ -7,6 +7,9 @@ public sealed partial class AgentApiClient
     private bool _snapshotSectionsRejected;
     private bool _secondarySnapshot;
     private IReadOnlySet<string> _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null);
+    private Func<AgentSnapshotRequest, bool, AgentSnapshotRequest>? _snapshotFilter;
+
+    internal void SetSnapshotFilter(Func<AgentSnapshotRequest, bool, AgentSnapshotRequest>? filter) => _snapshotFilter = filter;
 
     public int SnapshotByteLimit => _snapshotByteLimit;
     public IReadOnlySet<string> SnapshotSections => _snapshotSections;
@@ -14,6 +17,6 @@ public sealed partial class AgentApiClient
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
         SubmitIngestAsync("snapshot", PrepareSnapshot(body), retryTransient: true, ct: ct);
 
-    private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body)
-        => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(body, SnapshotSections), SnapshotByteLimit);
+    private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body, bool isReplay = false)
+        => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(_snapshotFilter?.Invoke(body, isReplay) ?? body, SnapshotSections), SnapshotByteLimit);
 }

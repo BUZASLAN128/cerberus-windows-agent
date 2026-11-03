@@ -46,6 +46,8 @@ public interface IAgentTelemetryProvider
 {
     // Receiver limits must be applied before checking optional refresh triggers.
     void ConfigureSnapshot(HeartbeatResponse? heartbeat) { }
+    // Re-evaluate platform-local data policy for live submissions and persisted replay alike.
+    AgentSnapshotRequest PrepareSnapshotForSubmission(AgentSnapshotRequest snapshot, bool isReplay) => snapshot;
 
     Task<AgentSnapshotRequest> BuildSnapshotAsync(
         AgentBuildMetadata metadata,
