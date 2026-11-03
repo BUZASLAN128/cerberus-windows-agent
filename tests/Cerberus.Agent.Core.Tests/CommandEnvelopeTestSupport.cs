@@ -110,6 +110,7 @@ internal sealed class FakeBackend : HttpMessageHandler
     public Func<BackendRequest, CancellationToken, Task<HttpStatusCode>> Respond { get; set; }
         = (_, _) => Task.FromResult(HttpStatusCode.OK);
     public string? RetryAfter { get; set; }
+    public Func<BackendRequest, string>? ResponseBody { get; set; }
 
     public IReadOnlyList<BackendRequest> Requests
     {
@@ -131,7 +132,7 @@ internal sealed class FakeBackend : HttpMessageHandler
         lock (_gate)
             _requests.Add(recorded);
         var status = await Respond(recorded, cancellationToken);
-        var response = new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") };
+        var response = new HttpResponseMessage(status) { Content = new StringContent(ResponseBody?.Invoke(recorded) ?? "{}", Encoding.UTF8, "application/json") };
         if (RetryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", RetryAfter);
         return response;
     }
@@ -286,6 +287,7 @@ internal static class Wait
 
 internal sealed class EnvelopeHarnessOptions
 {
+    public Func<string, string>? OutgoingPolicy { get; set; }
     public string AgentId { get; set; } = EnvelopeHarness.DefaultAgent;
     public long NowUnix { get; set; } = EnvelopeHarness.T0;
     public IReadOnlyList<CommandTrustAnchor>? Anchors { get; set; }
@@ -322,14 +324,14 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
         }
 
         _http = new HttpClient(Backend) { BaseAddress = new Uri("http://backend.test") };
-        Api = new AgentApiClient(_http, new EnvSecretStore(() => AgentId), new EnvTokenManager(), new EnvRequestSigner());
+        Api = CreateApi();
         Ping = new FakeCommandHandler("ping");
         Facts = new FakeCommandHandler("collect_facts");
         State = new FakeCommandHandler("agent_state");
         Build();
     }
 
-    public AgentApiClient Api { get; }
+    public AgentApiClient Api { get; private set; }
     public FakeBackend Backend { get; } = new();
     public FakeTime Time { get; }
     public string AgentId { get; set; }
@@ -352,11 +354,15 @@ internal sealed class EnvelopeHarness : IAsyncDisposable
     }
 
     /// <summary>Simulates a process restart: queue stopped, store and processor rebuilt from disk.</summary>
-    public async Task RestartAsync()
+    public async Task RestartAsync(bool recreateApi = false)
     {
         await Queue.StopAsync();
+        if (recreateApi) Api = CreateApi();
         Build();
     }
+
+    private AgentApiClient CreateApi() => new(_http, new EnvSecretStore(() => AgentId),
+        new EnvTokenManager(), new EnvRequestSigner(), outgoingPolicy: _options.OutgoingPolicy);
 
     private void Build()
     {

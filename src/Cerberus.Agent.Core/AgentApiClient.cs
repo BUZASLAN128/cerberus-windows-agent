@@ -21,6 +21,7 @@ public sealed partial class AgentApiClient
     private readonly ISecretStore _secrets;
     private readonly ITokenManager _tokens;
     private readonly IRequestSigner _signer;
+    private readonly Func<string, string> _outgoingPolicy;
     private readonly IAgentLifecycleStateStore? _lifecycleState;
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
@@ -43,7 +44,8 @@ public sealed partial class AgentApiClient
         IAgentLifecycleStateStore? lifecycleState = null,
         bool manualOperation = false,
         Func<CancellationToken, Task>? quiesce = null,
-        long? expectedGeneration = null)
+        long? expectedGeneration = null,
+        Func<string, string>? outgoingPolicy = null)
     {
         _http = http;
         _secrets = secrets;
@@ -53,6 +55,7 @@ public sealed partial class AgentApiClient
         _manualOperation = manualOperation;
         _quiesce = quiesce;
         _expectedGeneration = expectedGeneration;
+        _outgoingPolicy = outgoingPolicy ?? new AgentOutboundPrivacyPolicy().Prepare;
     }
 
     /// <summary>
@@ -421,7 +424,9 @@ public sealed partial class AgentApiClient
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
         CancellationToken? deadlineCt = null,
         bool resourceOperation = false,
-        Func<string>? jsonFactory = null)
+        Func<string>? jsonFactory = null,
+        Action? onPrivacyRedacted = null,
+        Func<string, string>? prepareAfterPrivacy = null)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var response = await SendSignedJsonRequestOnceAsync(
@@ -430,7 +435,7 @@ public sealed partial class AgentApiClient
             json,
             ct,
             completionOption,
-            deadlineCt, jsonFactory).ConfigureAwait(false);
+            deadlineCt, jsonFactory, onPrivacyRedacted, prepareAfterPrivacy).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.Unauthorized)
         {
             return response;
@@ -469,7 +474,7 @@ public sealed partial class AgentApiClient
             json,
             ct,
             completionOption,
-            deadlineCt, jsonFactory).ConfigureAwait(false);
+            deadlineCt, jsonFactory, onPrivacyRedacted, prepareAfterPrivacy).ConfigureAwait(false);
 
         if (_lifecycleState is not null &&
             (retried.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ||
@@ -571,38 +576,39 @@ public sealed partial class AgentApiClient
         CancellationToken ct,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
         CancellationToken? deadlineCt = null,
-        Func<string>? jsonFactory = null)
+        Func<string>? jsonFactory = null,
+        Action? onPrivacyRedacted = null,
+        Func<string, string>? prepareAfterPrivacy = null)
     {
-        using var req = await BuildSignedJsonRequestAsync(method, path, json, ct, jsonFactory).ConfigureAwait(false);
+        using var req = await BuildSignedJsonRequestAsync(method, path, json, ct, jsonFactory, onPrivacyRedacted, prepareAfterPrivacy).ConfigureAwait(false);
         return await _http.SendAsync(req, completionOption, deadlineCt ?? ct).ConfigureAwait(false);
     }
 
-    private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct, Func<string>? jsonFactory = null)
+    private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct, Func<string>? jsonFactory = null, Action? onPrivacyRedacted = null, Func<string, string>? prepareAfterPrivacy = null)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
 
-        var bodyBytes = Encoding.UTF8.GetBytes(jsonFactory?.Invoke() ?? json);
-
-        var req = new HttpRequestMessage(method, path)
-        {
-            Content = new ByteArrayContent(bodyBytes),
-        };
         if (generation is not null)
         {
             var current = await _lifecycleState!.LoadAsync(ct).ConfigureAwait(false);
             if (current.Generation != generation)
             {
-                req.Dispose();
                 throw new AgentLifecycleDormantException(current);
             }
-            req.Options.Set(LifecycleGenerationKey, generation.Value);
         }
-        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
+        // Last preparation point: no await separates current policy from body hashing/signing.
+        var candidate = jsonFactory?.Invoke() ?? json;
+        var prepared = _outgoingPolicy(candidate);
+        if (prepared != candidate) onPrivacyRedacted?.Invoke();
+        prepared = prepareAfterPrivacy?.Invoke(prepared) ?? prepared;
+        var bodyBytes = Encoding.UTF8.GetBytes(prepared);
+        var req = new HttpRequestMessage(method, path) { Content = new ByteArrayContent(bodyBytes) };
+        if (generation is not null) req.Options.Set(LifecycleGenerationKey, generation.Value);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         AgentRequestSigning.AddHeaders(req, bodyBytes, id.AgentId, _http.BaseAddress!, _signer);
 
         return req;

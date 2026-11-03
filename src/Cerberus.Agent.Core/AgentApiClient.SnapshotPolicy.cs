@@ -9,9 +9,9 @@ public sealed partial class AgentApiClient
     private bool _snapshotSectionsRejected;
     private bool _secondarySnapshot;
     private IReadOnlySet<string> _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null);
-    private Func<AgentSnapshotRequest, bool, AgentSnapshotRequest>? _snapshotFilter;
+    private Action? _snapshotPrivacyRedacted;
 
-    internal void SetSnapshotFilter(Func<AgentSnapshotRequest, bool, AgentSnapshotRequest>? filter) => _snapshotFilter = filter;
+    internal void SetSnapshotPrivacyRedacted(Action? callback) => _snapshotPrivacyRedacted = callback;
 
     public int SnapshotByteLimit => _snapshotByteLimit;
     public IReadOnlySet<string> SnapshotSections => _snapshotSections;
@@ -22,10 +22,14 @@ public sealed partial class AgentApiClient
     private Task<AgentIngestAckResponse> SubmitPreparedSnapshotAsync(AgentSnapshotRequest body,
         bool isReplay, bool retryTransient, CancellationToken ct)
     {
-        string PrepareJson() => JsonSerializer.Serialize(PrepareSnapshot(body, isReplay), JsonOpts);
-        return SubmitIngestJsonAsync("snapshot", PrepareJson(), retryTransient, ct, PrepareJson);
+        string PrepareJson() => JsonSerializer.Serialize(AgentSnapshotFactory.ForSections(body, SnapshotSections), JsonOpts);
+        string FitJson(string candidate)
+        {
+            var snapshot = JsonSerializer.Deserialize<AgentSnapshotRequest>(candidate, JsonOpts)
+                ?? throw new InvalidOperationException("Snapshot body missing.");
+            return JsonSerializer.Serialize(AgentSnapshotFactory.Fit(snapshot, SnapshotByteLimit), JsonOpts);
+        }
+        return SubmitIngestJsonAsync("snapshot", PrepareJson(), retryTransient, ct, PrepareJson,
+            isReplay ? null : _snapshotPrivacyRedacted, FitJson);
     }
-
-    private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body, bool isReplay = false)
-        => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(_snapshotFilter?.Invoke(body, isReplay) ?? body, SnapshotSections), SnapshotByteLimit);
 }

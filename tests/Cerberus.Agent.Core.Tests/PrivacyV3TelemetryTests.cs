@@ -101,17 +101,22 @@ public sealed class PrivacyV3TelemetryTests
     public void LiveSubmission_RechecksConsentAfterBuildAndRehashesWithoutDroppingBaseline()
     {
         var granted = true;
-        var collector = new WindowsTelemetryCollector(new[] { new SecurityTelemetrySectionCollector() },
-            hasSnapshotConsent: () => granted);
+        var policy = new AgentOutboundPrivacyPolicy(() => granted);
         var original = AgentSnapshotFactory.Create(ServerFactJson.Metadata(), DateTimeOffset.UtcNow,
             new Dictionary<string, object?>
             {
                 ["security"] = new { status = "ok", ad = new { domain_joined = false },
                     successful_logons = new { user = "PRIVATE_USER" }, local_admins = new { members = new[] { "PRIVATE_MEMBER" } } },
             });
-        Assert.Same(original, collector.PrepareSnapshotForSubmission(original, isReplay: false));
+        var json = JsonSerializer.Serialize(original);
+        Assert.Same(json, policy.Prepare(json));
         granted = false;
-        var prepared = collector.PrepareSnapshotForSubmission(original, isReplay: false);
+        var prepared = JsonSerializer.Deserialize<AgentSnapshotRequest>(policy.Prepare(json))!;
+        if (AgentBuildProfile.IsServer)
+        {
+            Assert.Equal(json, policy.Prepare(json));
+            return;
+        }
         var security = JsonSerializer.SerializeToNode(prepared.Sections["security"])!;
         Assert.False(security.AsObject().ContainsKey("local_admins"));
         Assert.False(security.AsObject().ContainsKey("successful_logons"));

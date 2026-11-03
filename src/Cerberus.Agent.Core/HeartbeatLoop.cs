@@ -98,7 +98,7 @@ public sealed partial class HeartbeatLoop
         _buildChannel = _metadata.BuildChannel;
         _responseHandler = responseHandler;
         _telemetryProvider = telemetryProvider;
-        if (telemetryProvider is not null) _api.SetSnapshotFilter(telemetryProvider.PrepareSnapshotForSubmission);
+        if (telemetryProvider is not null) _api.SetSnapshotPrivacyRedacted(telemetryProvider.SnapshotPrivacyRedacted);
         _telemetryBuffer = telemetryBuffer;
         _log = log ?? NullAgentLogger.Instance;
         _commandProcessor = commandProcessor ?? new LegacyHeartbeatCommandProcessor(

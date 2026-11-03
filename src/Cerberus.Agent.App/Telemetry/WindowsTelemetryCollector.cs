@@ -1,9 +1,6 @@
 using Cerberus.Agent.Core;
 using Cerberus.Agent.App.Telemetry.Sections;
 using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
-using Cerberus.Agent.App.Legal;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace Cerberus.Agent.App.Telemetry;
 
@@ -13,7 +10,6 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
     private IReadOnlyList<IAgentTelemetrySnapshotTrigger> _snapshotTriggers = Array.Empty<IAgentTelemetrySnapshotTrigger>();
     private IReadOnlySet<string> _acceptedSections = null!;
     private readonly bool _signedFacts;
-    private readonly Func<bool> _hasSnapshotConsent;
 
     public WindowsTelemetryCollector()
         : this(WindowsTelemetrySectionCatalog.CreateDefault(publishServiceObservation: false))
@@ -25,13 +21,12 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
     {
     }
 
-    internal WindowsTelemetryCollector(IReadOnlyList<IWindowsTelemetrySectionCollector> sections, bool signedFacts = false, Func<bool>? hasSnapshotConsent = null)
+    internal WindowsTelemetryCollector(IReadOnlyList<IWindowsTelemetrySectionCollector> sections, bool signedFacts = false)
     {
         _sections = sections.Count == 0
             ? throw new ArgumentException("At least one telemetry section is required.", nameof(sections))
             : sections;
         _signedFacts = signedFacts;
-        _hasSnapshotConsent = hasSnapshotConsent ?? SecurityTelemetryConsent.IsAllowed;
         ConfigureSnapshot(null);
     }
 
@@ -45,18 +40,8 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
     public bool IsSnapshotRefreshRequired()
         => _snapshotTriggers.Any(trigger => trigger.IsSnapshotRefreshRequired());
 
-    public AgentSnapshotRequest PrepareSnapshotForSubmission(AgentSnapshotRequest snapshot, bool isReplay)
-    {
-        if (!snapshot.Sections.TryGetValue("security", out var security) || security is null || _hasSnapshotConsent())
-            return snapshot;
-        if (JsonSerializer.SerializeToNode(security) is not JsonObject)
-            throw new InvalidOperationException("Security section is not an object; privacy filtering refused.");
-        foreach (var field in new[] { "failed_logons", "successful_logons", "local_admins", "log_cleared" })
-            snapshot = AgentSnapshotFactory.WithoutSectionField(snapshot, "security", field);
-        // A redacted live upload must not commit the original, unreported security cursor.
-        if (!isReplay) FailedLogonSection.KeepPendingIfReported(snapshot.Sections.GetValueOrDefault("security"));
-        return snapshot;
-    }
+    // The common signed-body policy signals only a redacted live snapshot; replay never calls this.
+    public void SnapshotPrivacyRedacted() => FailedLogonSection.KeepPendingIfReported(null);
 
     public void MarkSnapshotSubmitted()
     {

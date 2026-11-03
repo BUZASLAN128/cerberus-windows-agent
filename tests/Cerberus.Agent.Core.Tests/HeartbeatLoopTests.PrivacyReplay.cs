@@ -30,17 +30,11 @@ public sealed partial class HeartbeatLoopTests
     private sealed class RevocablePrivacyProvider : IAgentTelemetryProvider
     {
         public bool MachineConsent = true;
-        private readonly WindowsTelemetryCollector _policy;
-        public RevocablePrivacyProvider()
-            => _policy = new WindowsTelemetryCollector(new[] { new PrivacyReplaySection() },
-                hasSnapshotConsent: () => AgentBuildProfile.IsServer || MachineConsent);
 
         public Task<AgentSnapshotRequest> BuildSnapshotAsync(AgentBuildMetadata metadata, HeartbeatResponse? lastHeartbeat, CancellationToken ct)
             => Task.FromResult(AgentSnapshotFactory.Create(metadata, DateTimeOffset.UtcNow,
                 new Dictionary<string, object?> { ["security"] = PrivacyReplaySecurity() }));
 
-        public AgentSnapshotRequest PrepareSnapshotForSubmission(AgentSnapshotRequest snapshot, bool isReplay)
-            => _policy.PrepareSnapshotForSubmission(snapshot, isReplay);
     }
 
     private sealed class PrivacyReplayWire(LoopCaptureHandler accepted) : DelegatingHandler(accepted)
@@ -87,16 +81,10 @@ public sealed partial class HeartbeatLoopTests
         var machineConsent = true;
         var wire = new ConsentChangingWire((HttpStatusCode)firstStatus, () => machineConsent = false);
         using var http = new HttpClient(wire) { BaseAddress = new Uri("http://backend.test") };
-        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner(),
+            outgoingPolicy: new AgentOutboundPrivacyPolicy(() => machineConsent).Prepare);
         var snapshot = AgentSnapshotFactory.Create(ServerFactJson.Metadata(), DateTimeOffset.UtcNow,
             new Dictionary<string, object?> { ["security"] = PrivacyReplaySecurity() });
-        // This tests Core's per-attempt policy callback; the real Windows redactor is covered above.
-        api.SetSnapshotFilter((body, isReplay) =>
-        {
-            Assert.Equal(offline, isReplay);
-            return AgentBuildProfile.IsServer || machineConsent ? body
-                : AgentSnapshotFactory.WithoutSectionField(body, "security", "local_admins");
-        });
         if (offline)
             await api.SubmitOfflineTelemetryAsync(new OfflineTelemetryRecord("retry", OfflineTelemetryKinds.Snapshot,
                 JsonSerializer.Serialize(snapshot), DateTimeOffset.UtcNow, null, 0), default);
@@ -119,12 +107,13 @@ public sealed partial class HeartbeatLoopTests
         var accepted = new LoopCaptureHandler();
         var wire = new PrivacyReplayWire(accepted);
         using var http = new HttpClient(wire) { BaseAddress = new Uri("http://backend.test") };
-        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var provider = new RevocablePrivacyProvider();
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner(),
+            outgoingPolicy: new AgentOutboundPrivacyPolicy(() => provider.MachineConsent).Prepare);
         var root = Path.Combine(Path.GetTempPath(), "cerberus-privacy-replay", Guid.NewGuid().ToString("N"));
         var dispatcher = new CommandDispatcher(Array.Empty<ICommandHandler>(),
             new IdempotencyCache(Path.Combine(root, "idempotency.json"), 10, TimeSpan.FromMinutes(5)));
         var buffer = new OfflineTelemetryBuffer(Path.Combine(root, "buffer.json"));
-        var provider = new RevocablePrivacyProvider();
         HeartbeatLoop Loop(TimeSpan initial) => new(api, dispatcher, TimeSpan.FromMilliseconds(10),
             telemetryProvider: provider, telemetryBuffer: buffer, initialSnapshotDelay: initial,
             timingPolicy: ShortPollTiming, log: NullAgentLogger.Instance);

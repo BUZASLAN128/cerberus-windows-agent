@@ -242,7 +242,8 @@ internal static partial class ServiceMode
         var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce,
             expectedGeneration: persistedLifecycle.Generation);
         var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce,
-            expectedGeneration: persistedLifecycle.Generation);
+            expectedGeneration: persistedLifecycle.Generation,
+            outgoingPolicy: new AgentOutboundPrivacyPolicy(Legal.SecurityTelemetryConsent.IsAllowed).Prepare);
         var agentVersion = WindowsDeviceInfo.GetAgentVersion();
         var buildId = WindowsDeviceInfo.GetBuildId();
         var buildChannel = WindowsDeviceInfo.GetBuildChannel();

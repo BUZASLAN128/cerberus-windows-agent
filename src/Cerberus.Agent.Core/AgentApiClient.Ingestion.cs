@@ -20,13 +20,21 @@ public sealed partial class AgentApiClient
         string json,
         bool retryTransient,
         CancellationToken ct,
-        Func<string>? jsonFactory = null)
+        Func<string>? jsonFactory = null,
+        Action? onPrivacyRedacted = null,
+        Func<string, string>? prepareAfterPrivacy = null)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
-        AgentTelemetryLimits.ThrowIfJsonTooLarge(json,
-            endpoint == "snapshot" ? SnapshotByteLimit : AgentTelemetryLimits.MaxJsonBytes);
+        if (endpoint != "snapshot") AgentTelemetryLimits.ThrowIfJsonTooLarge(json, AgentTelemetryLimits.MaxJsonBytes);
         var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
         var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
+        string PrepareBody(string candidate)
+        {
+            var prepared = prepareAfterPrivacy?.Invoke(candidate) ?? candidate;
+            AgentTelemetryLimits.ThrowIfJsonTooLarge(prepared,
+                endpoint == "snapshot" ? SnapshotByteLimit : AgentTelemetryLimits.MaxJsonBytes);
+            return prepared;
+        }
 
         async Task<AgentIngestAckResponse> SubmitOnceAsync()
         {
@@ -35,7 +43,8 @@ public sealed partial class AgentApiClient
                 path,
                 json,
                 ct,
-                HttpCompletionOption.ResponseHeadersRead, jsonFactory: jsonFactory).ConfigureAwait(false);
+                HttpCompletionOption.ResponseHeadersRead, jsonFactory: jsonFactory, onPrivacyRedacted: onPrivacyRedacted,
+                prepareAfterPrivacy: PrepareBody).ConfigureAwait(false);
             if (endpoint == "snapshot" && resp.StatusCode == HttpStatusCode.RequestEntityTooLarge)
             {
                 _snapshotRejectedAsTooLarge = true;

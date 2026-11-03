@@ -198,6 +198,51 @@ public sealed partial class AgentApiClientTelemetryTests
         AssertSnapshotHashes(wire.Snapshots[1]);
     }
 
+    [Fact]
+    public async Task SnapshotBudget_PrivacyRedactionPrecedesFitForPersistedCopy()
+    {
+        var consent = true;
+        var wire = new SnapshotBudgetWire { Advertised = 65536 };
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner(),
+            outgoingPolicy: new AgentOutboundPrivacyPolicy(() => consent).Prepare);
+        await api.HeartbeatAsync(new { }, default);
+        var original = AgentSnapshotFactory.Create(Metadata(), DateTimeOffset.UtcNow,
+            new Dictionary<string, object?>
+            {
+                ["security"] = new { status = "ok", local_admins = new
+                {
+                    members = Enumerable.Range(0, 100).Select(n => new { name = new string('a', 180) + n }).ToArray(),
+                } },
+                ["software"] = new { status = "ok", count = 100, truncated = false,
+                    software = Enumerable.Range(0, 100).Select(n => new { name = new string('s', 380) + n, version = "1" }).ToArray() },
+            });
+        var json = JsonSerializer.Serialize(original, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.InRange(Encoding.UTF8.GetByteCount(json), 50001, 65536);
+        var path = Path.Combine(Path.GetTempPath(), "cerberus-privacy-budget", Guid.NewGuid().ToString("N"), "outbox.json");
+        await new OfflineTelemetryBuffer(path).EnqueueAsync(OfflineTelemetryKinds.Snapshot, original, "budget", 0, default);
+        consent = false;
+        wire.Advertised = 50000;
+        await api.HeartbeatAsync(new { }, default);
+        var persisted = Assert.Single(await new OfflineTelemetryBuffer(path).ReadBatchAsync(10, default));
+        await api.SubmitOfflineTelemetryAsync(persisted, default);
+        var sent = Assert.Single(wire.Snapshots);
+        Assert.InRange(Encoding.UTF8.GetByteCount(sent), 1, 50000);
+        AssertSnapshotHashes(sent);
+        using var doc = JsonDocument.Parse(sent);
+        var sections = doc.RootElement.GetProperty("sections");
+        var software = sections.GetProperty("software");
+        if (AgentBuildProfile.IsServer)
+            Assert.InRange(software.GetProperty("software").GetArrayLength(), 1, 99);
+        else
+        {
+            Assert.False(sections.GetProperty("security").TryGetProperty("local_admins", out _));
+            Assert.Equal(100, software.GetProperty("software").GetArrayLength());
+            Assert.False(software.GetProperty("truncated").GetBoolean());
+        }
+        Assert.Equal(persisted.Json, Assert.Single(await new OfflineTelemetryBuffer(path).ReadBatchAsync(10, default)).Json);
+    }
+
     [Theory]
     [InlineData(false, 65536)]
     [InlineData(false, 65537)]
