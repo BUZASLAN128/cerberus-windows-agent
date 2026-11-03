@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using Cerberus.Agent.App;
 using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.App.Telemetry.Sections;
-using Cerberus.Agent.Observability;
+using Cerberus.Agent.Core;
 using static Cerberus.Agent.Core.Tests.ServerFactJson;
 
 namespace Cerberus.Agent.Core.Tests;

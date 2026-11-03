@@ -1,5 +1,5 @@
 using Cerberus.Agent.App.Telemetry;
-using Cerberus.Agent.Observability;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App;
 
