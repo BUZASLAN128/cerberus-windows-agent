@@ -59,6 +59,60 @@ public sealed partial class HeartbeatLoopTests
         }
     }
 
+    private sealed class ConsentChangingWire(HttpStatusCode firstStatus, Action afterFirst) : HttpMessageHandler
+    {
+        public List<string> Bodies { get; } = new();
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Bodies.Add(await request.Content!.ReadAsStringAsync(ct));
+            if (Bodies.Count == 1)
+            {
+                afterFirst();
+                return new HttpResponseMessage(firstStatus) { Content = new StringContent("{}") };
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"status":"accepted","accepted":1,"ignored":0,"changed_sections":[]}"""),
+            };
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 503)]
+    [InlineData(false, 401)]
+    [InlineData(true, 503)]
+    [InlineData(true, 401)]
+    public async Task PrivacyReplay_SnapshotPolicyIsReappliedPerSignedAttempt(bool offline, int firstStatus)
+    {
+        var machineConsent = true;
+        var wire = new ConsentChangingWire((HttpStatusCode)firstStatus, () => machineConsent = false);
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("http://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var snapshot = AgentSnapshotFactory.Create(ServerFactJson.Metadata(), DateTimeOffset.UtcNow,
+            new Dictionary<string, object?> { ["security"] = PrivacyReplaySecurity() });
+        // This tests Core's per-attempt policy callback; the real Windows redactor is covered above.
+        api.SetSnapshotFilter((body, isReplay) =>
+        {
+            Assert.Equal(offline, isReplay);
+            return AgentBuildProfile.IsServer || machineConsent ? body
+                : AgentSnapshotFactory.WithoutSectionField(body, "security", "local_admins");
+        });
+        if (offline)
+            await api.SubmitOfflineTelemetryAsync(new OfflineTelemetryRecord("retry", OfflineTelemetryKinds.Snapshot,
+                JsonSerializer.Serialize(snapshot), DateTimeOffset.UtcNow, null, 0), default);
+        else
+            await api.SubmitSnapshotAsync(snapshot, default);
+
+        Assert.Equal(2, wire.Bodies.Count);
+        Assert.Contains("PRIVATE_MEMBER", wire.Bodies[0]);
+        using var second = JsonDocument.Parse(wire.Bodies[1]);
+        var security = second.RootElement.GetProperty("sections").GetProperty("security");
+        Assert.Equal(AgentBuildProfile.IsServer, security.TryGetProperty("local_admins", out _));
+        Assert.Equal(AgentSnapshotFactory.HashSection(security),
+            second.RootElement.GetProperty("section_hashes").GetProperty("security").GetString());
+        if (!AgentBuildProfile.IsServer) Assert.DoesNotContain("PRIVATE_", wire.Bodies[1]);
+    }
+
     [Fact]
     public async Task PrivacyReplay_CurrentConsentIsRecheckedBeforePersistedSnapshotFlush()
     {

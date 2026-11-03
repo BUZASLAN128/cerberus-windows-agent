@@ -327,7 +327,7 @@ public sealed partial class AgentApiClient
         {
             var snapshot = JsonSerializer.Deserialize<AgentSnapshotRequest>(json, JsonOpts)
                 ?? throw new InvalidOperationException("Offline snapshot missing.");
-            json = JsonSerializer.Serialize(PrepareSnapshot(snapshot, isReplay: true), JsonOpts);
+            return await SubmitPreparedSnapshotAsync(snapshot, isReplay: true, retryTransient, ct).ConfigureAwait(false);
         }
         return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
     }
@@ -399,62 +399,6 @@ public sealed partial class AgentApiClient
         return payload ?? throw new InvalidOperationException("Agent self-deactivate response missing.");
     }
 
-    private async Task<AgentIngestAckResponse> SubmitIngestAsync(
-        string endpoint,
-        object body,
-        bool retryTransient,
-        CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(body, JsonOpts);
-        return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
-    }
-
-    private async Task<AgentIngestAckResponse> SubmitIngestJsonAsync(
-        string endpoint,
-        string json,
-        bool retryTransient,
-        CancellationToken ct)
-    {
-        await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
-        AgentTelemetryLimits.ThrowIfJsonTooLarge(json,
-            endpoint == "snapshot" ? SnapshotByteLimit : AgentTelemetryLimits.MaxJsonBytes);
-        var (id, _, _, _, _, _) = await _secrets.LoadAsync(ct).ConfigureAwait(false);
-        var path = $"/api/v1/agents/{id.AgentId}/{endpoint}";
-
-        async Task<AgentIngestAckResponse> SubmitOnceAsync()
-        {
-            using var resp = await SendSignedJsonRequestAsync(
-                HttpMethod.Post,
-                path,
-                json,
-                ct,
-                HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (endpoint == "snapshot" && resp.StatusCode == HttpStatusCode.RequestEntityTooLarge)
-            {
-                _snapshotRejectedAsTooLarge = true;
-                _snapshotByteLimit = Math.Min(SnapshotByteLimit, AgentTelemetryLimits.MaxJsonBytes);
-            }
-            if (endpoint == "snapshot" && resp.StatusCode == HttpStatusCode.UnprocessableEntity)
-            {
-                _snapshotSectionsRejected = true;
-                _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null, _secondarySnapshot);
-            }
-            await EnsureSuccessAsync($"Agent {endpoint}", resp, ct).ConfigureAwait(false);
-
-            var payload = await AgentHttpFailure.ReadJsonAsync<AgentIngestAckResponse>(
-                $"Agent {endpoint}",
-                resp,
-                _http,
-                JsonOpts,
-                ct).ConfigureAwait(false);
-            return payload ?? throw new InvalidOperationException("Agent ingestion response missing.");
-        }
-
-        return retryTransient
-            ? await RetryHelper.WithRetryAsync(SubmitOnceAsync, maxRetries: 1, ct: ct).ConfigureAwait(false)
-            : await SubmitOnceAsync().ConfigureAwait(false);
-    }
-
     private async Task<HttpResponseMessage> SendSignedRequestAsync(
         HttpMethod method,
         string path,
@@ -476,7 +420,8 @@ public sealed partial class AgentApiClient
         CancellationToken ct,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
         CancellationToken? deadlineCt = null,
-        bool resourceOperation = false)
+        bool resourceOperation = false,
+        Func<string>? jsonFactory = null)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var response = await SendSignedJsonRequestOnceAsync(
@@ -485,7 +430,7 @@ public sealed partial class AgentApiClient
             json,
             ct,
             completionOption,
-            deadlineCt).ConfigureAwait(false);
+            deadlineCt, jsonFactory).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.Unauthorized)
         {
             return response;
@@ -524,7 +469,7 @@ public sealed partial class AgentApiClient
             json,
             ct,
             completionOption,
-            deadlineCt).ConfigureAwait(false);
+            deadlineCt, jsonFactory).ConfigureAwait(false);
 
         if (_lifecycleState is not null &&
             (retried.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ||
@@ -625,19 +570,20 @@ public sealed partial class AgentApiClient
         string json,
         CancellationToken ct,
         HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
-        CancellationToken? deadlineCt = null)
+        CancellationToken? deadlineCt = null,
+        Func<string>? jsonFactory = null)
     {
-        using var req = await BuildSignedJsonRequestAsync(method, path, json, ct).ConfigureAwait(false);
+        using var req = await BuildSignedJsonRequestAsync(method, path, json, ct, jsonFactory).ConfigureAwait(false);
         return await _http.SendAsync(req, completionOption, deadlineCt ?? ct).ConfigureAwait(false);
     }
 
-    private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct)
+    private async Task<HttpRequestMessage> BuildSignedJsonRequestAsync(HttpMethod method, string path, string json, CancellationToken ct, Func<string>? jsonFactory = null)
     {
         await EnsureAutomaticNetworkAllowedAsync(ct).ConfigureAwait(false);
         var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var accessToken = await _tokens.GetAccessTokenAsync(ct).ConfigureAwait(false);
 
-        var bodyBytes = Encoding.UTF8.GetBytes(json);
+        var bodyBytes = Encoding.UTF8.GetBytes(jsonFactory?.Invoke() ?? json);
 
         var req = new HttpRequestMessage(method, path)
         {

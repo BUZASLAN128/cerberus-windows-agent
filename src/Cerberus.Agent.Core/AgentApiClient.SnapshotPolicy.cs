@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Cerberus.Agent.Core;
 
 public sealed partial class AgentApiClient
@@ -15,7 +17,14 @@ public sealed partial class AgentApiClient
     public IReadOnlySet<string> SnapshotSections => _snapshotSections;
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("snapshot", PrepareSnapshot(body), retryTransient: true, ct: ct);
+        SubmitPreparedSnapshotAsync(body, isReplay: false, retryTransient: true, ct);
+
+    private Task<AgentIngestAckResponse> SubmitPreparedSnapshotAsync(AgentSnapshotRequest body,
+        bool isReplay, bool retryTransient, CancellationToken ct)
+    {
+        string PrepareJson() => JsonSerializer.Serialize(PrepareSnapshot(body, isReplay), JsonOpts);
+        return SubmitIngestJsonAsync("snapshot", PrepareJson(), retryTransient, ct, PrepareJson);
+    }
 
     private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body, bool isReplay = false)
         => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(_snapshotFilter?.Invoke(body, isReplay) ?? body, SnapshotSections), SnapshotByteLimit);
