@@ -21,11 +21,15 @@ public sealed class AgentTimingPolicy
     public AgentTimingBounds Bounds => _bounds;
 
     /// <summary>
-    /// Clamps an already jittered poll delay to [floor, ceiling], then applies an
-    /// existing caller minimum (error, blocked or skip-commands) on top.
+    /// Clamps an already jittered poll delay and any caller minimum to the same bounds.
     /// </summary>
     public int PollDelaySeconds(int jitteredSeconds, int minimumSeconds = 0)
-        => Math.Max(minimumSeconds, Math.Clamp(jitteredSeconds, _bounds.PollFloor, _bounds.PollCeiling));
+        => Math.Clamp(Math.Max(minimumSeconds, jitteredSeconds), _bounds.PollFloor, _bounds.PollCeiling);
+
+    /// <summary>Final bound for collector-influenced contact waits, after jitter and Retry-After.</summary>
+    public TimeSpan ClampContactDelay(TimeSpan delay)
+        => delay <= TimeSpan.Zero ? TimeSpan.Zero
+            : delay > TimeSpan.FromSeconds(_bounds.PollCeiling) ? TimeSpan.FromSeconds(_bounds.PollCeiling) : delay;
 
     /// <summary>0 selects the profile default; any other value is clamped to [floor, ceiling].</summary>
     public int SnapshotDelaySeconds(int serverSeconds)

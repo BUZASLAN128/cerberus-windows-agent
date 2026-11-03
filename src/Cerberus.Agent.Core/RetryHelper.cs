@@ -35,7 +35,7 @@ public static class RetryHelper
             {
                 var delay = CalculateDelay(attempt, baseDelayMs);
                 log?.Warn($"Retry {attempt + 1}/{maxRetries}: {ex.GetType().Name}: {ex.Message}. Waiting {delay}ms...");
-                await Task.Delay(delay, ct);
+                await Task.Delay(AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMilliseconds(delay)), ct);
             }
         }
 

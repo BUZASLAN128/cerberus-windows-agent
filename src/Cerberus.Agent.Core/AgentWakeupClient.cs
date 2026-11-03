@@ -130,8 +130,9 @@ public sealed class AgentWakeupClient : IAsyncDisposable
             {
                 // Some ASGI servers cannot forward a pre-upgrade 429 and expose it
                 // as 403 without Retry-After. Retain the server's maximum bucket wait.
-                _notBefore = _time.GetUtcNow().AddMinutes(10);
-                _log.Warn("Wakeup connection rejected: unauthorized_or_forbidden; retry deferred for 600 seconds.");
+                var rejectedWait = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(10));
+                _notBefore = _time.GetUtcNow().Add(rejectedWait);
+                _log.Warn($"Wakeup connection rejected: unauthorized_or_forbidden; retry deferred for {rejectedWait.TotalSeconds:0} seconds.");
                 return;
             }
             catch (InvalidOperationException)
@@ -143,8 +144,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
             catch (WakeupRateLimitedException rateLimit)
             {
                 // Preserve this deadline even if a later heartbeat reconfigures the connection.
-                var wait = rateLimit.RetryAfter < TimeSpan.Zero ? TimeSpan.Zero
-                    : rateLimit.RetryAfter > TimeSpan.FromMinutes(15) ? TimeSpan.FromMinutes(15) : rateLimit.RetryAfter;
+                var wait = AgentTimingPolicy.Current.ClampContactDelay(rateLimit.RetryAfter);
                 _notBefore = _time.GetUtcNow().Add(wait);
                 _log.Warn($"Wakeup connection deferred: rate_limited_or_server_unavailable; retry after {wait.TotalSeconds:0} seconds.");
                 ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
@@ -166,7 +166,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
 
             // Spread fleet reconnects over a wider window after disconnect or failure.
             var cap = Math.Min(300, 30 * (1 << Math.Max(0, ConsecutiveFailures - 1)));
-            var delay = TimeSpan.FromSeconds(RandomNumberGenerator.GetInt32(1, cap + 1));
+            var delay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(RandomNumberGenerator.GetInt32(1, cap + 1)));
             try { await Task.Delay(delay, _time, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         }

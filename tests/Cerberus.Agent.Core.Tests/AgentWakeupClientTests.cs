@@ -52,7 +52,7 @@ public sealed partial class AgentWakeupClientTests
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));
-        Assert.Contains("retry after 900 seconds", Assert.Single(log.Lines));
+        Assert.Contains($"retry after {AgentTimingPolicy.Current.Bounds.PollCeiling} seconds", Assert.Single(log.Lines));
         await client.StopAsync(default);
     }
 
@@ -76,17 +76,19 @@ public sealed partial class AgentWakeupClientTests
         var api = new AgentApiClient(http, new FakeSecrets(), new FakeToken(), new FakeSigner());
         var called = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
-        Task Listen(JsonElement _, AgentWakeupSignal __, CancellationToken ___)
+        var clock = new FakeTime(EnvelopeHarness.T0);
+        Task Listen(JsonElement _, AgentWakeupSignal __, Action ___, CancellationToken ____)
         {
             Interlocked.Increment(ref calls);
             called.TrySetResult();
             throw new WakeupRejectedException();
         }
         var log = new RecordingLogger();
-        await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen, log);
+        await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen, log, clock);
         using var json = JsonDocument.Parse("{\"version\":1,\"path\":\"/api/ws\"}");
         await client.ConfigureAsync(json.RootElement, default);
         await called.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(clock.Now.AddSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), client.NotBefore);
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));

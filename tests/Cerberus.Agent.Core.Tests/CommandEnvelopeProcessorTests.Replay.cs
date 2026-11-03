@@ -117,7 +117,7 @@ public sealed partial class CommandEnvelopeProcessorTests
     public async Task AckRetryHonorsRetryAfterWithoutStartingTheCommand()
     {
         await using var h = EnvelopeHarness.Create();
-        h.Backend.RetryAfter = "60";
+        h.Backend.RetryAfter = "3600";
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.TooManyRequests);
         var cmd = h.Cmd();
         await h.Process(cmd);
@@ -125,12 +125,13 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal(0, h.Ping.Calls);
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
-        h.Time.Advance(TimeSpan.FromSeconds(30));
+        h.Time.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling - 1));
         await h.Process(cmd);
         Assert.Single(h.Backend.Acks);
         Assert.Equal(0, h.Ping.Calls);
-        h.Time.Advance(TimeSpan.FromSeconds(30));
-        await h.Process(cmd);
+        h.Time.Advance(TimeSpan.FromSeconds(1));
+        // The original envelope has expired; only a fresh signed command may start.
+        await h.Process(h.Cmd());
         await Wait.UntilAsync(() => h.Ping.Calls == 1, "command after Retry-After");
         Assert.Equal(2, h.Backend.Acks.Count);
     }
@@ -281,15 +282,15 @@ public sealed partial class CommandEnvelopeProcessorTests
     public async Task SignedResultRetryHonorsRetryAfter()
     {
         await using var h = EnvelopeHarness.Create();
-        h.Backend.RetryAfter = "60";
+        h.Backend.RetryAfter = "3600";
         h.Backend.Respond = (r, _) => Status(r.Leaf == "result" ? HttpStatusCode.TooManyRequests : HttpStatusCode.OK);
         var cmd = h.Cmd();
         await h.Process(cmd);
         await Wait.UntilAsync(() => h.Queue.ResultRetryNotBefore > h.Time.GetTimestamp(), "result retry gate");
-        Assert.Equal(h.Time.GetTimestamp() + 60 * h.Time.TimestampFrequency, h.Queue.ResultRetryNotBefore);
+        Assert.Equal(h.Time.GetTimestamp() + AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency, h.Queue.ResultRetryNotBefore);
         Assert.False(h.Record(cmd)!.ResultSubmitted);
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
-        h.Time.Advance(TimeSpan.FromSeconds(60));
+        h.Time.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));
         h.Processor.SignalOutbox();
         await Wait.UntilAsync(() => h.Record(cmd)!.ResultSubmitted, "result after Retry-After");
         Assert.Equal(1, h.Ping.Calls);

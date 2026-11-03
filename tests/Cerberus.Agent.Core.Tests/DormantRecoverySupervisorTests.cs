@@ -23,13 +23,13 @@ public sealed class DormantRecoverySupervisorTests
         var supervisor = Create(store, new MemorySecretStore(OldBackend), log, () => clock,
             probe: (_, _) => { probes++; return Task.FromResult(false); });
 
-        // First observation writes the schedule (due in 15 min); every later durable write throws.
+        // First observation writes the schedule (due within the contact ceiling); every later durable write throws.
         var scheduled = await supervisor.TickAsync(await store.LoadAsync(default), false, default);
-        Assert.Equal(Now + TimeSpan.FromMinutes(15), scheduled.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay, scheduled.NextAttemptUtc);
         store.FailSaves = true;
 
-        var start = Now + TimeSpan.FromMinutes(15);
-        for (var elapsed = TimeSpan.Zero; elapsed <= TimeSpan.FromMinutes(25); elapsed += LoopTick)
+        var start = Now + AgentDormantRecoveryPolicy.InitialDelay;
+        for (var elapsed = TimeSpan.Zero; elapsed <= DormantRecoverySupervisor.AttemptInterval * 2 + LoopTick; elapsed += LoopTick)
         {
             clock = start + elapsed;
             await supervisor.TickAsync(await store.LoadAsync(default), false, default);
@@ -58,7 +58,7 @@ public sealed class DormantRecoverySupervisorTests
             var probes = 0;
             var supervisor = Create(store, secrets, log, () => clock, probe: (_, _) => { probes++; return Task.FromResult(true); });
 
-            for (var elapsed = TimeSpan.Zero; elapsed <= TimeSpan.FromMinutes(25); elapsed += LoopTick)
+            for (var elapsed = TimeSpan.Zero; elapsed <= DormantRecoverySupervisor.AttemptInterval * 2 + LoopTick; elapsed += LoopTick)
             {
                 clock = Now + elapsed;
                 await supervisor.TickAsync(await store.LoadAsync(default), false, default);
@@ -66,7 +66,7 @@ public sealed class DormantRecoverySupervisorTests
 
             var stored = await store.LoadAsync(default);
             Assert.Equal(0, probes);
-            // Three migrate windows in 25 minutes. On the server profile a readable store is read twice per
+            // Three migrate windows across two intervals. On the server profile a readable store is read twice per
             // window (the migration check and the local configuration re-check); an unreadable one fails on
             // the first read.
 #if CERBERUS_SERVER_PROFILE

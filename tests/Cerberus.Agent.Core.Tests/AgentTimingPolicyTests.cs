@@ -22,6 +22,7 @@ public sealed class AgentTimingPolicyTests
         Assert.Equal(Expected, AgentProfileMetadata.Timing);
         Assert.Equal(Expected, AgentTimingPolicy.Current.Bounds);
         Assert.Equal(300, AgentTimingPolicy.Current.PollDelaySeconds(3600));
+        Assert.Equal(300, AgentTimingPolicy.Current.PollDelaySeconds(1, 3600));
         Assert.Equal(Desktop.PollFloor, Server.PollFloor);
         Assert.Equal(Desktop.PollCeiling, Server.PollCeiling);
     }

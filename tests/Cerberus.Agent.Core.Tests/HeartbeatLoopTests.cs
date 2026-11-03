@@ -427,7 +427,7 @@ public sealed partial class HeartbeatLoopTests
         Assert.Equal(TimeSpan.FromSeconds(10), HeartbeatLoop.CalculateErrorDelay(min, max, 1));
         Assert.Equal(TimeSpan.FromSeconds(20), HeartbeatLoop.CalculateErrorDelay(min, max, 2));
         Assert.Equal(TimeSpan.FromSeconds(40), HeartbeatLoop.CalculateErrorDelay(min, max, 3));
-        Assert.Equal(max, HeartbeatLoop.CalculateErrorDelay(min, max, 20));
+        Assert.Equal(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), HeartbeatLoop.CalculateErrorDelay(min, max, 20));
     }
 
     [Fact]

@@ -137,11 +137,11 @@ public sealed partial class AgentApiClient
         {
             var value = values.FirstOrDefault();
             if (int.TryParse(value, out var seconds))
-                return TimeSpan.FromSeconds(Math.Max(seconds, 5));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(seconds, 5)));
             if (DateTimeOffset.TryParse(value, out var date))
-                return TimeSpan.FromSeconds(Math.Max((date - DateTimeOffset.UtcNow).TotalSeconds, 5));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max((date - DateTimeOffset.UtcNow).TotalSeconds, 5)));
         }
-        return TimeSpan.FromSeconds(30);
+        return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(30));
     }
 }
 

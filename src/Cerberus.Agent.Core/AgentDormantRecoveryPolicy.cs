@@ -11,8 +11,8 @@ namespace Cerberus.Agent.Core;
 /// </summary>
 public sealed class AgentDormantRecoveryPolicy
 {
-    public static readonly TimeSpan InitialDelay = TimeSpan.FromMinutes(15);
-    public static readonly TimeSpan MaxDelay = TimeSpan.FromHours(6);
+    public static readonly TimeSpan InitialDelay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(15));
+    public static readonly TimeSpan MaxDelay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromHours(6));
     public const int MaxAttemptCount = 30;
 
     private const double MinJitterFactor = 0.75;
@@ -44,7 +44,7 @@ public sealed class AgentDormantRecoveryPolicy
             snapshot.ReasonCode?.StartsWith("credentials_", StringComparison.Ordinal) != true;
     }
 
-    /// <summary>Delay after <paramref name="failedAttempts"/> unsuccessful probes: 15 min doubling to 6 h, jittered downward, never above 6 h.</summary>
+    /// <summary>Jittered retry for eligible probes, bounded by the same contact ceiling as polling.</summary>
     public TimeSpan DelayFor(int failedAttempts)
     {
         var attempts = Math.Clamp(failedAttempts, 0, MaxAttemptCount);
@@ -52,7 +52,7 @@ public sealed class AgentDormantRecoveryPolicy
         var capped = Math.Min(seconds, MaxDelay.TotalSeconds);
         var random = Math.Clamp(_nextDouble(), 0d, 1d);
         var factor = MinJitterFactor + ((1d - MinJitterFactor) * random);
-        return TimeSpan.FromSeconds(Math.Min(capped * factor, MaxDelay.TotalSeconds));
+        return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(capped * factor));
     }
 
     /// <summary>True when no schedule exists yet (first dormant observation).</summary>

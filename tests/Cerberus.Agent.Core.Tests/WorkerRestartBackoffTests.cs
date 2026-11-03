@@ -31,6 +31,7 @@ public sealed class WorkerRestartBackoffTests
         Assert.Equal(TimeSpan.FromSeconds(8), gaps[2]);
         Assert.All(gaps, g => Assert.True(g <= WorkerRestartBackoff.MaxDelay));
         Assert.Equal(WorkerRestartBackoff.MaxDelay, gaps[^1]);
+        Assert.True(gaps[^1] <= TimeSpan.FromSeconds(Cerberus.Agent.Core.AgentTimingPolicy.Current.Bounds.PollCeiling));
     }
 
     [Fact]

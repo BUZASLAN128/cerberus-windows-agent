@@ -6,13 +6,12 @@ namespace Cerberus.Agent.App.Control;
 /// Server-profile step of the service loop: backend address migration, then the dormant-state
 /// probe. Each runs at most once per <see cref="AttemptInterval"/> in this process, counted from
 /// before the attempt, so a durable write that keeps failing cannot turn the 2 s loop into a
-/// probe or credential-read loop. The interval is below the policy's shortest jittered delay
-/// (15 min x 0.75), so the durable schedule stays the binding limit while writes succeed. Both
+/// probe or credential-read loop. Both retry schedules obey the shared contact ceiling. Both
 /// limits reset when the lifecycle generation changes.
 /// </summary>
 internal sealed class DormantRecoverySupervisor
 {
-    internal static readonly TimeSpan AttemptInterval = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan AttemptInterval = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(10));
 
     private readonly IAgentLifecycleStateStore _lifecycle;
     private readonly AgentLifecycleController _controller;

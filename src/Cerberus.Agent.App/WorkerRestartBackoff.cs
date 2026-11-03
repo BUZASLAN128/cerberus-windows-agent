@@ -28,7 +28,7 @@ internal sealed class WorkerRestartBackoff
             return;
         }
 
-        _notBefore = now + _delay;
+        _notBefore = now + Cerberus.Agent.Core.AgentTimingPolicy.Current.ClampContactDelay(_delay);
         _delay = _delay * 2 > MaxDelay ? MaxDelay : _delay * 2;
     }
 }

@@ -33,15 +33,15 @@ public sealed class DormantRecoveryPolicyTests
     }
 
     [Fact]
-    public void Recovery_Backoff_StartsAt15MinutesDoublesAndCapsAt6Hours()
+    public void Recovery_Backoff_IsBoundedByCompiledContactCeiling()
     {
         var noJitter = new AgentDormantRecoveryPolicy(() => Now, () => 1d);
-        Assert.Equal(TimeSpan.FromMinutes(15), noJitter.DelayFor(0));
-        Assert.Equal(TimeSpan.FromMinutes(30), noJitter.DelayFor(1));
-        Assert.Equal(TimeSpan.FromMinutes(60), noJitter.DelayFor(2));
-        Assert.Equal(TimeSpan.FromHours(6), noJitter.DelayFor(5));
-        Assert.Equal(TimeSpan.FromHours(6), noJitter.DelayFor(1000));
-        Assert.Equal(TimeSpan.FromMinutes(15), noJitter.DelayFor(-3));
+        Assert.Equal(AgentDormantRecoveryPolicy.InitialDelay, noJitter.DelayFor(0));
+        Assert.Equal(AgentDormantRecoveryPolicy.MaxDelay, noJitter.DelayFor(1));
+        Assert.Equal(AgentDormantRecoveryPolicy.MaxDelay, noJitter.DelayFor(2));
+        Assert.Equal(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), noJitter.DelayFor(5));
+        Assert.Equal(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), noJitter.DelayFor(1000));
+        Assert.Equal(AgentDormantRecoveryPolicy.InitialDelay, noJitter.DelayFor(-3));
     }
 
     [Theory]
@@ -59,7 +59,7 @@ public sealed class DormantRecoveryPolicyTests
             var delay = policy.DelayFor(attempt);
             Assert.True(delay >= unjittered * 0.75 - TimeSpan.FromMilliseconds(1), $"attempt {attempt}: {delay}");
             Assert.True(delay <= unjittered, $"attempt {attempt}: {delay}");
-            Assert.True(delay <= TimeSpan.FromHours(6));
+            Assert.True(delay <= TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));
         }
     }
 
@@ -69,9 +69,9 @@ public sealed class DormantRecoveryPolicyTests
         var policy = new AgentDormantRecoveryPolicy(() => Now, () => 1d);
         var scheduled = policy.Schedule(new AgentLifecycleSnapshot(AgentLifecycleState.AuthSuspect), 2);
 
-        Assert.Equal(Now + TimeSpan.FromMinutes(60), scheduled.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.MaxDelay, scheduled.NextAttemptUtc);
         Assert.Equal(2, scheduled.TransientFailureCount);
         Assert.False(policy.IsDue(scheduled));
-        Assert.True(new AgentDormantRecoveryPolicy(() => Now.AddMinutes(60), () => 1d).IsDue(scheduled));
+        Assert.True(new AgentDormantRecoveryPolicy(() => Now + AgentDormantRecoveryPolicy.MaxDelay, () => 1d).IsDue(scheduled));
     }
 }

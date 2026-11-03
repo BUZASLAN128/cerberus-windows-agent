@@ -65,7 +65,7 @@ public sealed partial class AgentWakeupHandshakeTests
         {
             var failure = await Assert.ThrowsAsync<WakeupRateLimitedException>(() =>
                 client.ListenForWakeupsOnceAsync(json.RootElement, new AgentWakeupSignal(), default));
-            Assert.Equal(TimeSpan.FromSeconds(7200), failure.RetryAfter);
+            Assert.Equal(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), failure.RetryAfter);
         }
         else
             await Assert.ThrowsAsync<WakeupRejectedException>(() =>

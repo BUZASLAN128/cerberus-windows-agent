@@ -410,12 +410,12 @@ public static class AgentHttpFailure
                 return null;
 
             if (int.TryParse(raw, out var seconds) && seconds >= 0)
-                return TimeSpan.FromSeconds(Math.Clamp(seconds, 5, 3600));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(seconds, 5)));
 
             if (DateTimeOffset.TryParse(raw, out var retryAt))
             {
                 var delay = retryAt - DateTimeOffset.UtcNow;
-                return TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 5, 3600));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(delay.TotalSeconds, 5)));
             }
         }
         catch

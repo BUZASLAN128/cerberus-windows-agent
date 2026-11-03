@@ -10,6 +10,8 @@ public sealed partial class HeartbeatLoop
             minDelay = TimeSpan.FromSeconds(10);
         if (maxDelay < minDelay)
             maxDelay = minDelay;
+        maxDelay = AgentTimingPolicy.Current.ClampContactDelay(maxDelay);
+        minDelay = AgentTimingPolicy.Current.ClampContactDelay(minDelay);
 
         var multiplier = Math.Pow(2, Math.Clamp(consecutiveFailures - 1, 0, 12));
         var ticks = minDelay.Ticks * multiplier;
@@ -31,11 +33,11 @@ public sealed partial class HeartbeatLoop
         }
 
         var nextAttempt = snapshot.NextAttemptUtc;
-        if (nextAttempt is null || nextAttempt <= DateTimeOffset.UtcNow)
+        if (nextAttempt is null || nextAttempt <= _time.GetUtcNow())
             return true;
 
-        var remaining = nextAttempt.Value - DateTimeOffset.UtcNow;
-        _log.Info($"Heartbeat retry deferred until {nextAttempt.Value:O}.");
+        var remaining = _timing.ClampContactDelay(nextAttempt.Value - _time.GetUtcNow());
+        _log.Info($"Heartbeat retry deferred until {_time.GetUtcNow().Add(remaining):O}.");
         var resetRequested = await DelayForErrorBackoffAsync(remaining, ct).ConfigureAwait(false);
         if (resetRequested)
             await ClearPersistedRetryAsync(ct).ConfigureAwait(false);
@@ -82,7 +84,7 @@ public sealed partial class HeartbeatLoop
         await _lifecycleState.TrySaveAsync(
             AgentLifecycleStatePolicy.Normalize(snapshot with
             {
-                NextAttemptUtc = DateTimeOffset.UtcNow.Add(delay),
+                NextAttemptUtc = _time.GetUtcNow().Add(_timing.ClampContactDelay(delay)),
                 TransientFailureCount = Math.Min(30, snapshot.TransientFailureCount + 1),
                 UpdatedAtUtc = DateTimeOffset.UtcNow,
             }),
@@ -164,12 +166,12 @@ public sealed partial class HeartbeatLoop
             (rateLimit.RetryAfter is not null || rateLimit.Failure.StatusCode == System.Net.HttpStatusCode.TooManyRequests))
         {
             var retryAfter = rateLimit.RetryAfter ?? TimeSpan.FromSeconds(5);
-            retryAfter = TimeSpan.FromSeconds(Math.Clamp(retryAfter.TotalSeconds, 5, 3600));
+            retryAfter = _timing.ClampContactDelay(retryAfter < TimeSpan.FromSeconds(5) ? TimeSpan.FromSeconds(5) : retryAfter);
             var jitterSeconds = RandomNumberGenerator.GetInt32(1, Math.Max(2, (int)Math.Ceiling(retryAfter.TotalSeconds * 0.20) + 1));
-            return retryAfter.Add(TimeSpan.FromSeconds(jitterSeconds));
+            return _timing.ClampContactDelay(retryAfter.Add(TimeSpan.FromSeconds(jitterSeconds)));
         }
 
-        var cap = TimeSpan.FromMinutes(15);
+        var cap = _timing.ClampContactDelay(TimeSpan.FromMinutes(15));
         var baseDelay = _minDelayOnError <= TimeSpan.Zero ? TimeSpan.FromSeconds(10) : _minDelayOnError;
         if (_lifecycleState is not null && baseDelay < TimeSpan.FromSeconds(10))
             baseDelay = TimeSpan.FromSeconds(10);
@@ -178,7 +180,7 @@ public sealed partial class HeartbeatLoop
             baseDelay.Ticks * (long)Math.Pow(2, Math.Clamp(consecutiveFailures - 1, 0, 20))));
         var upperSeconds = Math.Max(1, (int)Math.Min(int.MaxValue, Math.Ceiling(exponential.TotalSeconds)));
         var jitteredSeconds = RandomNumberGenerator.GetInt32(1, upperSeconds + 1);
-        return TimeSpan.FromSeconds(jitteredSeconds);
+        return _timing.ClampContactDelay(TimeSpan.FromSeconds(jitteredSeconds));
     }
 
     private static async Task WaitUntilCancellationAsync(CancellationToken ct)
@@ -199,23 +201,24 @@ public sealed partial class HeartbeatLoop
 
     private async Task<bool> DelayForErrorBackoffAsync(TimeSpan delay, CancellationToken ct)
     {
+        delay = _timing.ClampContactDelay(delay);
         if (_backoffResetRequested is null)
         {
-            await Task.Delay(delay, ct).ConfigureAwait(false);
+            await Task.Delay(delay, _time, ct).ConfigureAwait(false);
             return false;
         }
 
-        var deadline = DateTimeOffset.UtcNow.Add(delay);
-        while (DateTimeOffset.UtcNow < deadline)
+        var started = _time.GetTimestamp();
+        while (_time.GetElapsedTime(started) < delay)
         {
             if (await ConsumeBackoffResetRequestAsync(ct).ConfigureAwait(false))
                 return true;
 
-            var remaining = deadline - DateTimeOffset.UtcNow;
+            var remaining = delay - _time.GetElapsedTime(started);
             if (remaining <= TimeSpan.Zero)
                 break;
 
-            await Task.Delay(remaining < TimeSpan.FromSeconds(2) ? remaining : TimeSpan.FromSeconds(2), ct)
+            await Task.Delay(remaining < TimeSpan.FromSeconds(2) ? remaining : TimeSpan.FromSeconds(2), _time, ct)
                 .ConfigureAwait(false);
         }
 
