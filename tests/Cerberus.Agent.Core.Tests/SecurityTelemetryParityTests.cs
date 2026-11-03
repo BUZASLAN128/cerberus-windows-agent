@@ -20,8 +20,8 @@ public sealed class SecurityTelemetryParityTests(ITestOutputHelper output)
         output.WriteLine($"security elapsed_ms={watch.ElapsedMilliseconds}; status={node["status"]}");
         foreach (var field in new[] { "failed_logons", "successful_logons", "log_cleared", "local_admins", "unexpected_shutdowns", "defender_av", "smb1" })
         {
-            Assert.True(node.ContainsKey(field), $"Missing security field: {field}");
-            output.WriteLine($"{field} status={node[field]?["status"]}");
+            Assert.True(node.TryGetPropertyValue(field, out var value), $"Missing security field: {field}");
+            output.WriteLine($"{field} status={value?["status"]}");
         }
     }
 }

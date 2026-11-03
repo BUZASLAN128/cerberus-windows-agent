@@ -25,13 +25,6 @@ public sealed partial class AgentApiClient
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
     private readonly long? _expectedGeneration;
-    private int _snapshotByteLimit = AgentTelemetryLimits.DefaultSnapshotBytes;
-    private bool _snapshotRejectedAsTooLarge;
-    private bool _snapshotSectionsRejected;
-    private bool _secondarySnapshot;
-    private IReadOnlySet<string> _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null);
-    public int SnapshotByteLimit => _snapshotByteLimit;
-    public IReadOnlySet<string> SnapshotSections => _snapshotSections;
     private static readonly HttpRequestOptionsKey<long> LifecycleGenerationKey = new("CerberusLifecycleGeneration");
     private static readonly ConditionalWeakTable<HeartbeatResponse, ResponseGeneration> ResponseGenerations = new();
 
@@ -274,12 +267,6 @@ public sealed partial class AgentApiClient
 
         return SubmitCommandResultAsync(command.Id, body, ct);
     }
-
-    public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("snapshot", PrepareSnapshot(body), retryTransient: true, ct: ct);
-
-    private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body)
-        => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(body, SnapshotSections), SnapshotByteLimit);
 
     public Task<AgentIngestAckResponse> SubmitEventsAsync(AgentEventBatchRequest body, CancellationToken ct) =>
         SubmitIngestAsync("events", body, retryTransient: false, ct: ct);
