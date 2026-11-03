@@ -170,13 +170,15 @@ public sealed partial class AgentLegalConsentTests
 
         var releaseScript = File.ReadAllText(Path.Combine(repoRoot, "scripts", "build-agent-public-release.ps1"));
         var publishLib = File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-publish-lib.ps1"));
+        var runtimePublish = File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-runtime-publish-lib.ps1"));
         Assert.Contains("$runtimePublishDir = Join-Path $publishDir \"runtime\"", releaseScript);
-        Assert.Contains("@(Get-RuntimeBundlePublishArgs $BuildProfile)", releaseScript);
+        Assert.Contains("release-runtime-publish-lib.ps1", releaseScript);
+        Assert.Contains("@(Get-RuntimeBundlePublishArgs $BuildProfile)", runtimePublish);
         var profileLib = Path.Combine(repoRoot, "scripts", "release-profile-lib.ps1").Replace("'", "''");
         var desktopPublish = ServerPackageStaticTests.RunPwsh($". '{profileLib}'; (Get-RuntimeBundlePublishArgs 'desktop') -join '|' ");
         Assert.True(desktopPublish.ExitCode == 0, desktopPublish.Output);
         Assert.Equal("-p:PublishSingleFile=false", desktopPublish.Output.Trim());
-        Assert.Contains("-p:DebugSymbols=false", releaseScript);
+        Assert.Contains("-p:DebugSymbols=false", runtimePublish);
         Assert.Contains("Cerberus.Agent.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Service.exe", releaseScript);
         Assert.Contains("Cerberus.Agent.Updater.exe", releaseScript);
@@ -192,7 +194,7 @@ public sealed partial class AgentLegalConsentTests
         Assert.DoesNotContain("Cerberus.Agent.Setup.exe", releaseScript);
         Assert.DoesNotContain("Cerberus.Agent.Tray.exe", releaseScript);
         Assert.Contains("-p:UpdateManifestUrl=$UpdateManifestUrl", releaseScript);
-        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
+        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", runtimePublish);
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
         Assert.DoesNotContain("-p:UpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes", releaseScript);
         Assert.Contains("CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64", releaseScript);

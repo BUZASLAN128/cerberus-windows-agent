@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <OutputType>Bundle</OutputType>
+    <AcceptEula>wix7</AcceptEula>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <AgentBuildProfile Condition="'$(AgentBuildProfile)' == ''">desktop</AgentBuildProfile>
+    <OutputName>$(SetupBase)</OutputName>
+    <DefineConstants>
+      AgentBuildProfile=$(AgentBuildProfile);
+      SetupMsiPath=$(SetupMsiPath);
+      SetupProductName=$(SetupProductName);
+      SetupManufacturer=$(SetupManufacturer);
+      SetupVersion=$(SetupVersion);
+      SetupIcon=$(MSBuildThisFileDirectory)..\Assets\cerberus-favicon.ico
+    </DefineConstants>
+  </PropertyGroup>
+  <Target Name="ValidateSetupInputs" BeforeTargets="Build">
+    <Error Condition="!Exists('$(SetupMsiPath)')" Text="An existing MSI payload is required." />
+    <Error Condition="'$(SetupProductName)' == '' or '$(SetupManufacturer)' == '' or '$(SetupVersion)' == '' or '$(SetupBase)' == ''" Text="Exact MSI product metadata and setup basename are required." />
+  </Target>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Bal.wixext" Version="7.0.0" />
+  </ItemGroup>
+</Project>

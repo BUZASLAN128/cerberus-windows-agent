@@ -197,6 +197,12 @@ Server profile: add `-p:AgentBuildProfile=server`. If a `.slnx` command fails lo
 
 Releases are built by `.github/workflows/auto-publish-exe.yml` (desktop) or `scripts/build-agent-public-release.ps1` (desktop or server). Local builds need PowerShell 7.
 
+Each MSI also has a manual-download Burn `setup.exe` with the same basename and the Cerberus icon. The wrapper embeds that exact MSI and uses its product name, manufacturer and version. Its internal MSI UI owns EULA/privacy acceptance and Server enrollment; the wrapper supplies no acceptance properties. Use the MSI for managed silent installs, GPO/Intune and agent updates. Update manifests continue to select the MSI.
+
+CI uses `scripts/build-agent-ci-packages.ps1` to create unsigned Desktop version `0.0.0` MSI/EXE inspection artifacts in a fresh output directory. This packaging path creates no update/release manifest and uses no signing inputs. The shared runtime publish command also serves the guarded public-release script.
+
+For packaging-only builds, run `pwsh scripts/build-agent-setup.ps1 -MsiPath <existing.msi> -OutputDirectory <directory> -BuildProfile desktop` (or `server`). This builds an unsigned wrapper without running the payload. Release signing runs in this order: sign/verify MSI, build wrapper, detach Burn engine, sign/verify engine, reattach engine, sign/verify final wrapper. The release script uses the configured signer for both engine and wrapper; do not sign the wrapper before reattaching its signed engine. MSI-to-MSI update and uninstall remain the supported maintenance paths; the separate Burn registration needs installed lifecycle acceptance alongside the MSI on the target machine.
+
 Signing (`-SigningMode`):
 
 - `Pfx` (workflow default): `WINDOWS_SIGNING_CERT_BASE64`, `WINDOWS_SIGNING_CERT_PASSWORD` and `AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM`.

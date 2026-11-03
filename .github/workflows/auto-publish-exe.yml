@@ -200,6 +200,7 @@ jobs:
           artifacts: |
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip
             out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi
+            out/public-release/publish/${{ steps.release.outputs.setup_base }}.exe
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json
@@ -242,6 +243,7 @@ jobs:
           }
           & gh release create $latestTag `
             "out/public-release/publish/$setupBase.msi" `
+            "out/public-release/publish/$setupBase.exe" `
             "out/public-release/publish/$assetBase.zip" `
             "out/public-release/publish/$assetBase.sha256" `
             "out/public-release/publish/$assetBase.sbom.json" `
@@ -250,6 +252,7 @@ jobs:
             "out/public-release/publish/$assetBase.update-manifest.json" `
             "out/public-release/publish/$assetBase.update-manifest.v2.json" `
             "out/public-release/publish/$latestInstallerBase.msi" `
+            "out/public-release/publish/$latestInstallerBase.exe" `
             "out/public-release/publish/$latestAssetBase.zip" `
             "out/public-release/publish/$latestAssetBase.sha256" `
             "out/public-release/publish/$latestAssetBase.sbom.json" `
