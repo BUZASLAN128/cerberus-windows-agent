@@ -16,6 +16,9 @@ public sealed class AgentWakeupClient : IAsyncDisposable
     private Task? _runner;
     private string? _discoveryKey;
     private DateTimeOffset _notBefore;
+    private long? _retryStartedAt;
+    private TimeSpan _retryDelay;
+    private readonly Func<double> _retryJitter;
     internal int ConsecutiveFailures { get; private set; }
     internal DateTimeOffset NotBefore => _notBefore;
 
@@ -33,13 +36,14 @@ public sealed class AgentWakeupClient : IAsyncDisposable
 
     internal AgentWakeupClient(AgentApiClient api, AgentWakeupSignal signal,
         Func<JsonElement, AgentWakeupSignal, Action, CancellationToken, Task> listen,
-        IAgentLogger? log = null, TimeProvider? time = null)
+        IAgentLogger? log = null, TimeProvider? time = null, Func<double>? retryJitter = null)
     {
         _api = api;
         _signal = signal;
         _listen = listen;
         _log = log ?? NullAgentLogger.Instance;
         _time = time ?? TimeProvider.System;
+        _retryJitter = retryJitter ?? Random.Shared.NextDouble;
     }
 
     /// <summary>Only a fresh successful heartbeat can enable or change discovery.</summary>
@@ -101,7 +105,9 @@ public sealed class AgentWakeupClient : IAsyncDisposable
             var closeReason = "remote_close_or_lifetime";
             try
             {
-                var remaining = _notBefore - _time.GetUtcNow();
+                var remaining = _retryStartedAt is { } retryStarted
+                    ? AgentTimingPolicy.Current.ClampContactDelay(_retryDelay - _time.GetElapsedTime(retryStarted))
+                    : TimeSpan.Zero;
                 if (remaining > TimeSpan.Zero)
                 {
                     await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
@@ -129,9 +135,9 @@ public sealed class AgentWakeupClient : IAsyncDisposable
             catch (WakeupRejectedException)
             {
                 // Some ASGI servers cannot forward a pre-upgrade 429 and expose it
-                // as 403 without Retry-After. Retain the server's maximum bucket wait.
-                var rejectedWait = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(10));
-                _notBefore = _time.GetUtcNow().Add(rejectedWait);
+                // as 403 without Retry-After. Apply the same bounded, jittered retry policy.
+                var rejectedWait = AgentTimingPolicy.Current.JitterContactRetry(TimeSpan.FromMinutes(10), _retryJitter());
+                SetRetryDeadline(rejectedWait);
                 _log.Warn($"Wakeup connection rejected: unauthorized_or_forbidden; retry deferred for {rejectedWait.TotalSeconds:0} seconds.");
                 return;
             }
@@ -144,8 +150,8 @@ public sealed class AgentWakeupClient : IAsyncDisposable
             catch (WakeupRateLimitedException rateLimit)
             {
                 // Preserve this deadline even if a later heartbeat reconfigures the connection.
-                var wait = AgentTimingPolicy.Current.ClampContactDelay(rateLimit.RetryAfter);
-                _notBefore = _time.GetUtcNow().Add(wait);
+                var wait = AgentTimingPolicy.Current.JitterContactRetry(rateLimit.RetryAfter, _retryJitter());
+                SetRetryDeadline(wait);
                 _log.Warn($"Wakeup connection deferred: rate_limited_or_server_unavailable; retry after {wait.TotalSeconds:0} seconds.");
                 ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
             }
@@ -176,5 +182,12 @@ public sealed class AgentWakeupClient : IAsyncDisposable
     {
         await StopAsync(CancellationToken.None).ConfigureAwait(false);
         _gate.Dispose();
+    }
+
+    private void SetRetryDeadline(TimeSpan wait)
+    {
+        _retryStartedAt = _time.GetTimestamp();
+        _retryDelay = AgentTimingPolicy.Current.ClampContactDelay(wait);
+        _notBefore = _time.GetUtcNow().Add(_retryDelay);
     }
 }

@@ -52,7 +52,7 @@ public sealed partial class AgentWakeupClientTests
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));
-        Assert.Contains($"retry after {AgentTimingPolicy.Current.Bounds.PollCeiling} seconds", Assert.Single(log.Lines));
+        Assert.Contains("rate_limited_or_server_unavailable", Assert.Single(log.Lines));
         await client.StopAsync(default);
     }
 
@@ -88,7 +88,8 @@ public sealed partial class AgentWakeupClientTests
         using var json = JsonDocument.Parse("{\"version\":1,\"path\":\"/api/ws\"}");
         await client.ConfigureAsync(json.RootElement, default);
         await called.Task.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.Equal(clock.Now.AddSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), client.NotBefore);
+        Assert.InRange(client.NotBefore - clock.Now, TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling * 0.75),
+            TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));

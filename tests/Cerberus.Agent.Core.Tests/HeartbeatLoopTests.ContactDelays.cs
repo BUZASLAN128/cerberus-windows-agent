@@ -7,18 +7,24 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class HeartbeatLoopTests
 {
     [Theory]
-    [InlineData(200, false, false)] // successful next_poll
-    [InlineData(429, false, false)] // heartbeat Retry-After
-    [InlineData(503, false, false)] // exponential error backoff
-    [InlineData(429, true, false)]  // actual token refresh Retry-After
-    [InlineData(200, false, true)]  // retry deadline persisted by an older build
-    public async Task CollectorContactWaitNeverExceedsCompiledCeiling(int firstStatus, bool refresh, bool persisted)
+    [InlineData(200, false, false, 3600, 1d, 300)] // successful next_poll
+    [InlineData(429, false, false, 3600, 1d, 300)]
+    [InlineData(429, false, false, 3600, 0d, 225)]
+    [InlineData(429, false, false, 300, 1d, 300)]
+    [InlineData(429, false, false, 300, 0d, 225)]
+    [InlineData(429, false, false, 120, 1d, 144)]
+    [InlineData(429, false, false, 120, 0d, 120)]
+    [InlineData(503, false, false, 3600, 1d, 300)] // exponential error backoff
+    [InlineData(429, true, false, 3600, 1d, 300)]  // actual token refresh
+    [InlineData(200, false, true, 3600, 1d, 300)]  // old persisted retry
+    public async Task CollectorContactWaitNeverExceedsCompiledCeiling(int firstStatus, bool refresh, bool persisted,
+        int retryAfter, double jitter, int expectedSeconds)
     {
         var clock = new FakeTime(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         var startedAt = clock.Now;
         var ceiling = TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling);
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var wire = new ContactDelayCollector(firstStatus, refresh, clock);
+        var wire = new ContactDelayCollector(firstStatus, refresh, clock, retryAfter);
         using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
         ISecretStore secrets = refresh ? new RefreshContactSecrets() : new StaticSecretStore();
         ITokenManager tokens = refresh ? new AgentTokenManager(http, secrets) : new StaticTokenManager();
@@ -31,7 +37,7 @@ public sealed partial class HeartbeatLoopTests
             new IdempotencyCache(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "idem.json"), 10, ceiling));
         var signal = new AgentWakeupSignal();
         var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromHours(1), lifecycleState: state,
-            supportsEvents: false, wakeupSignal: firstStatus == 200 ? null : signal, timeProvider: clock);
+            supportsEvents: false, wakeupSignal: firstStatus == 200 ? null : signal, timeProvider: clock, retryJitter: () => jitter);
         var run = loop.RunAsync(stop.Token);
         try
         {
@@ -44,7 +50,7 @@ public sealed partial class HeartbeatLoopTests
             Assert.Equal(initialContacts, wire.Contacts); // hints do not bypass rate limiting
             if (firstStatus == 429 || persisted)
             {
-                clock.Advance(ceiling - TimeSpan.FromSeconds(1));
+                clock.Advance(TimeSpan.FromSeconds(expectedSeconds - 1));
                 await Task.Yield();
                 Assert.Equal(initialContacts, wire.Contacts);
                 clock.Advance(TimeSpan.FromSeconds(1));
@@ -60,7 +66,7 @@ public sealed partial class HeartbeatLoopTests
         }
     }
 
-    private sealed class ContactDelayCollector(int status, bool refresh, FakeTime clock) : HttpMessageHandler
+    private sealed class ContactDelayCollector(int status, bool refresh, FakeTime clock, int retryAfter) : HttpMessageHandler
     {
         private int _contacts;
         public int Contacts => Volatile.Read(ref _contacts);
@@ -76,7 +82,7 @@ public sealed partial class HeartbeatLoopTests
                     ? """{"access_token":"fixture","expires_in":300}"""
                     : """{"pending_commands":[],"next_poll_seconds":3600,"next_snapshot_seconds":300,"server_time":1}"""),
             };
-            if (count == 1 && status == 429) response.Headers.TryAddWithoutValidation("Retry-After", "3600");
+            if (count == 1 && status == 429) response.Headers.TryAddWithoutValidation("Retry-After", retryAfter.ToString(System.Globalization.CultureInfo.InvariantCulture));
             return Task.FromResult(response);
         }
     }

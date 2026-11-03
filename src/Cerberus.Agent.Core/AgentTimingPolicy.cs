@@ -31,6 +31,17 @@ public sealed class AgentTimingPolicy
         => delay <= TimeSpan.Zero ? TimeSpan.Zero
             : delay > TimeSpan.FromSeconds(_bounds.PollCeiling) ? TimeSpan.FromSeconds(_bounds.PollCeiling) : delay;
 
+    /// <summary>Capped Retry-After uses downward jitter; smaller values retain their minimum.</summary>
+    public TimeSpan JitterContactRetry(TimeSpan requested, double sample)
+    {
+        if (requested <= TimeSpan.Zero) return TimeSpan.Zero;
+        sample = Math.Clamp(sample, 0d, 1d);
+        var ceiling = TimeSpan.FromSeconds(_bounds.PollCeiling);
+        return requested >= ceiling
+            ? TimeSpan.FromTicks((long)(ceiling.Ticks * (0.75 + 0.25 * sample)))
+            : ClampContactDelay(requested + TimeSpan.FromTicks((long)(requested.Ticks * 0.20 * sample)));
+    }
+
     /// <summary>0 selects the profile default; any other value is clamped to [floor, ceiling].</summary>
     public int SnapshotDelaySeconds(int serverSeconds)
         => serverSeconds == 0

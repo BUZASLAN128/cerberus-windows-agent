@@ -45,7 +45,7 @@ public sealed class DormantStateRecoveryTests
         Assert.Equal(1, probes.Count);
         Assert.Equal(AgentLifecycleState.NeedsReenrollment, first.State);
         Assert.Equal(1, first.TransientFailureCount);
-        Assert.Equal(Now + AgentDormantRecoveryPolicy.MaxDelay, first.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay * 2, first.NextAttemptUtc);
         Assert.Equal(first.NextAttemptUtc, (await store.LoadAsync(default)).NextAttemptUtc);
     }
 
@@ -159,7 +159,7 @@ public sealed class DormantStateRecoveryTests
         Assert.Equal(1, probes.Count);
         Assert.Equal(AgentLifecycleState.AuthSuspect, after.State);
         Assert.Equal(1, after.TransientFailureCount);
-        Assert.Equal(Now + AgentDormantRecoveryPolicy.MaxDelay, after.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay * 2, after.NextAttemptUtc);
         Assert.True(after.NextAttemptUtc > due);
         Assert.Equal(after.NextAttemptUtc, (await store.LoadAsync(default)).NextAttemptUtc);
     }

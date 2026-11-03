@@ -11,7 +11,7 @@ namespace Cerberus.Agent.Core;
 /// </summary>
 public sealed class AgentDormantRecoveryPolicy
 {
-    public static readonly TimeSpan InitialDelay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(15));
+    public static readonly TimeSpan InitialDelay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromMinutes(1));
     public static readonly TimeSpan MaxDelay = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromHours(6));
     public const int MaxAttemptCount = 30;
 
@@ -19,11 +19,16 @@ public sealed class AgentDormantRecoveryPolicy
 
     private readonly Func<DateTimeOffset> _clock;
     private readonly Func<double> _nextDouble;
+    private readonly TimeProvider _time;
+    private (long Generation, DateTimeOffset Next)? _deadlineKey;
+    private long _retryStartedAt;
+    private TimeSpan _retryDelay;
 
-    public AgentDormantRecoveryPolicy(Func<DateTimeOffset>? clock = null, Func<double>? nextDouble = null)
+    public AgentDormantRecoveryPolicy(Func<DateTimeOffset>? clock = null, Func<double>? nextDouble = null, TimeProvider? time = null)
     {
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _nextDouble = nextDouble ?? Random.Shared.NextDouble;
+        _time = time ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -60,17 +65,33 @@ public sealed class AgentDormantRecoveryPolicy
         => snapshot.NextAttemptUtc is null;
 
     public bool IsDue(AgentLifecycleSnapshot snapshot)
-        => snapshot.NextAttemptUtc is { } next && next <= _clock();
+    {
+        if (snapshot.NextAttemptUtc is not { } next) return false;
+        if (next <= _clock()) return true;
+        if (_deadlineKey != (snapshot.Generation, next))
+            RememberDeadline(snapshot.Generation, next, AgentTimingPolicy.Current.ClampContactDelay(next - _clock()));
+        return _time.GetElapsedTime(_retryStartedAt) >= _retryDelay;
+    }
 
     /// <summary>Returns the snapshot carrying the next attempt time after <paramref name="failedAttempts"/> unsuccessful probes.</summary>
     public AgentLifecycleSnapshot Schedule(AgentLifecycleSnapshot snapshot, int failedAttempts)
     {
         var attempts = Math.Clamp(failedAttempts, 0, MaxAttemptCount);
+        var now = _clock();
+        var delay = DelayFor(attempts);
+        RememberDeadline(snapshot.Generation, now + delay, delay);
         return AgentLifecycleStatePolicy.Normalize(snapshot with
         {
-            NextAttemptUtc = _clock() + DelayFor(attempts),
+            NextAttemptUtc = now + delay,
             TransientFailureCount = attempts,
             UpdatedAtUtc = _clock(),
         });
+    }
+
+    private void RememberDeadline(long generation, DateTimeOffset next, TimeSpan delay)
+    {
+        _deadlineKey = (generation, next);
+        _retryStartedAt = _time.GetTimestamp();
+        _retryDelay = AgentTimingPolicy.Current.ClampContactDelay(delay);
     }
 }

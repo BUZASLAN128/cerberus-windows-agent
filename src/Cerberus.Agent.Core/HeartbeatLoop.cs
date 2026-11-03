@@ -34,6 +34,7 @@ public sealed partial class HeartbeatLoop
     private readonly AgentSignedStateStore? _signedState;
     private readonly bool _supportsUpdateInstall;
     private readonly TimeProvider _time;
+    private readonly Func<double> _retryJitter;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -69,10 +70,12 @@ public sealed partial class HeartbeatLoop
         Func<bool>? legacyAsyncReady = null,
         AgentSignedStateStore? signedState = null,
         bool supportsUpdateInstall = false,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<double>? retryJitter = null)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
         _time = timeProvider ?? TimeProvider.System;
+        _retryJitter = retryJitter ?? Random.Shared.NextDouble;
         _api = api;
         _dispatcher = dispatcher;
         _minDelayOnError = minDelayOnError <= TimeSpan.Zero

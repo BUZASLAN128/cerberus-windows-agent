@@ -167,8 +167,7 @@ public sealed partial class HeartbeatLoop
         {
             var retryAfter = rateLimit.RetryAfter ?? TimeSpan.FromSeconds(5);
             retryAfter = _timing.ClampContactDelay(retryAfter < TimeSpan.FromSeconds(5) ? TimeSpan.FromSeconds(5) : retryAfter);
-            var jitterSeconds = RandomNumberGenerator.GetInt32(1, Math.Max(2, (int)Math.Ceiling(retryAfter.TotalSeconds * 0.20) + 1));
-            return _timing.ClampContactDelay(retryAfter.Add(TimeSpan.FromSeconds(jitterSeconds)));
+            return _timing.JitterContactRetry(retryAfter, _retryJitter());
         }
 
         var cap = _timing.ClampContactDelay(TimeSpan.FromMinutes(15));

@@ -125,11 +125,11 @@ public sealed partial class CommandEnvelopeProcessorTests
         Assert.Equal(0, h.Ping.Calls);
 
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
-        h.Time.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling - 1));
+        h.Time.Advance(TimeSpan.FromSeconds(1));
         await h.Process(cmd);
         Assert.Single(h.Backend.Acks);
         Assert.Equal(0, h.Ping.Calls);
-        h.Time.Advance(TimeSpan.FromSeconds(1));
+        h.Time.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling - 1));
         // The original envelope has expired; only a fresh signed command may start.
         await h.Process(h.Cmd());
         await Wait.UntilAsync(() => h.Ping.Calls == 1, "command after Retry-After");
@@ -287,7 +287,9 @@ public sealed partial class CommandEnvelopeProcessorTests
         var cmd = h.Cmd();
         await h.Process(cmd);
         await Wait.UntilAsync(() => h.Queue.ResultRetryNotBefore > h.Time.GetTimestamp(), "result retry gate");
-        Assert.Equal(h.Time.GetTimestamp() + AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency, h.Queue.ResultRetryNotBefore);
+        Assert.InRange(h.Queue.ResultRetryNotBefore - h.Time.GetTimestamp(),
+            (long)(AgentTimingPolicy.Current.Bounds.PollCeiling * 0.75 * h.Time.TimestampFrequency),
+            AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency);
         Assert.False(h.Record(cmd)!.ResultSubmitted);
         h.Backend.Respond = (_, _) => Status(HttpStatusCode.OK);
         h.Time.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));

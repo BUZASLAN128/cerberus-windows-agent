@@ -138,7 +138,9 @@ public sealed partial class LegacyAsyncCommandProcessorTests
             new LegacyHeartbeatCommandProcessor(h.Api, dispatcher, TimeSpan.FromSeconds(5), 1),
             store, _ => Task.FromResult(h.AgentId), h.Log, h.Time);
         await Wait.UntilAsync(() => h.Log.Lines.Any(line => line.Contains("result retained")), "rate limit recorded");
-        Assert.Equal(h.Time.GetTimestamp() + AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency, processor.OutboxNotBefore);
+        Assert.InRange(processor.OutboxNotBefore - h.Time.GetTimestamp(),
+            (long)(AgentTimingPolicy.Current.Bounds.PollCeiling * 0.75 * h.Time.TimestampFrequency),
+            AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency);
         Assert.False(store.Find(h.AgentId, "11111111-1111-4111-8111-111111111111")!.ResultSubmitted);
     }
 

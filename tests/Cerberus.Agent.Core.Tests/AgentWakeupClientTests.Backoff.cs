@@ -49,10 +49,12 @@ public sealed partial class AgentWakeupClientTests
         await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen, time: clock);
         using var discovery = JsonDocument.Parse("""{"version":1,"path":"/api/ws"}""");
         await client.ConfigureAsync(discovery.RootElement, default);
-        Assert.Equal(clock.Now.AddSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling), client.NotBefore);
+        var wait = client.NotBefore - clock.Now;
+        Assert.InRange(wait, TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling * 0.75),
+            TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));
         await client.ConfigureAsync(null, default);
         await client.ConfigureAsync(discovery.RootElement, default);
-        clock.Advance(TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling - 1));
+        clock.Advance(wait - TimeSpan.FromSeconds(1));
         Assert.Equal(1, Volatile.Read(ref calls));
         clock.Advance(TimeSpan.FromSeconds(1));
         await Wait.UntilAsync(() => Volatile.Read(ref calls) == 2, "bounded retry resumes");

@@ -14,8 +14,14 @@ internal sealed class WorkerRestartBackoff
 
     private TimeSpan _delay = InitialDelay;
     private DateTimeOffset _notBefore = DateTimeOffset.MinValue;
+    private readonly TimeProvider _time;
+    private long? _retryStartedAt;
+    private TimeSpan _retryDelay;
 
-    public bool CanStart(DateTimeOffset now) => now >= _notBefore;
+    internal WorkerRestartBackoff(TimeProvider? time = null) => _time = time ?? TimeProvider.System;
+
+    public bool CanStart(DateTimeOffset now) => now >= _notBefore ||
+        (_retryStartedAt is { } started && _time.GetElapsedTime(started) >= _retryDelay);
 
     /// <summary>Records that a worker ended. <paramref name="planned"/> is true when the supervisor stopped it.</summary>
     public void OnWorkerEnded(DateTimeOffset startedUtc, DateTimeOffset now, bool planned)
@@ -28,7 +34,9 @@ internal sealed class WorkerRestartBackoff
             return;
         }
 
-        _notBefore = now + Cerberus.Agent.Core.AgentTimingPolicy.Current.ClampContactDelay(_delay);
+        _retryStartedAt = _time.GetTimestamp();
+        _retryDelay = Cerberus.Agent.Core.AgentTimingPolicy.Current.ClampContactDelay(_delay);
+        _notBefore = now + _retryDelay;
         _delay = _delay * 2 > MaxDelay ? MaxDelay : _delay * 2;
     }
 }
