@@ -23,7 +23,7 @@ public sealed class WindowsTelemetryCollectorTests
                 BuildChannel: "dev",
                 BootId: "boot-1",
                 SupportedSchemaVersions: AgentSchemaVersions.All),
-            lastHeartbeat: null,
+            lastHeartbeat: ServerFactJson.AdvertisedHeartbeat(),
             ct: CancellationToken.None);
 
         var expected = new[]
@@ -44,7 +44,7 @@ public sealed class WindowsTelemetryCollectorTests
 
         Assert.Equal(expected.OrderBy(x => x), snapshot.Sections.Keys.OrderBy(x => x));
         Assert.Equal(expected.Length, snapshot.SectionHashes.Count);
-        Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= AgentTelemetryLimits.MaxJsonBytes);
+        Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= AgentTelemetryLimits.MaxSnapshotBytes);
     }
 #endif
 
@@ -180,6 +180,7 @@ public sealed class WindowsTelemetryCollectorTests
         var collector = new WindowsTelemetryCollector(
             new IWindowsTelemetrySectionCollector[] { capabilities });
         var trigger = (IAgentTelemetrySnapshotTrigger)collector;
+        collector.ConfigureSnapshot(ServerFactJson.AdvertisedHeartbeat());
 
         Assert.False(trigger.IsSnapshotRefreshRequired());
         current = LocalUserCommandPolicy.CreateEnabledPolicy;
@@ -192,7 +193,7 @@ public sealed class WindowsTelemetryCollectorTests
                 BuildChannel: "dev",
                 BootId: "boot-1",
                 SupportedSchemaVersions: AgentSchemaVersions.All),
-            lastHeartbeat: null,
+            lastHeartbeat: ServerFactJson.AdvertisedHeartbeat(),
             ct: CancellationToken.None);
         trigger.MarkSnapshotSubmitted();
 

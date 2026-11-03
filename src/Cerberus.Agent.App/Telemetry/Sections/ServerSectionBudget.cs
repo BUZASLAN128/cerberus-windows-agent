@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
@@ -8,7 +9,7 @@ namespace Cerberus.Agent.App.Telemetry.Sections;
 /// starts a new budget. A section that runs over, or starts after the budget is spent, reports
 /// <c>status: unavailable</c>.
 /// </summary>
-internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
+internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector, IAgentTelemetrySnapshotTrigger
 {
     internal static readonly TimeSpan TotalBudget = TimeSpan.FromSeconds(20);
     internal static readonly TimeSpan SectionBudget = TimeSpan.FromSeconds(5);
@@ -17,6 +18,7 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
 
     private readonly IWindowsTelemetrySectionCollector _inner;
     private readonly TimeProvider _time;
+    private bool _collectedForSubmission;
 
     public ServerSectionBudget(IWindowsTelemetrySectionCollector inner, TimeProvider time)
     {
@@ -26,8 +28,19 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
 
     public string SectionName => _inner.SectionName;
 
+    public bool IsSnapshotRefreshRequired()
+        => _inner is IAgentTelemetrySnapshotTrigger trigger && trigger.IsSnapshotRefreshRequired();
+
+    public void MarkSnapshotSubmitted()
+    {
+        if (_collectedForSubmission && _inner is IAgentTelemetrySnapshotTrigger trigger)
+            trigger.MarkSnapshotSubmitted();
+        _collectedForSubmission = false;
+    }
+
     public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
+        _collectedForSubmission = false;
         var now = _time.GetTimestamp();
         var clock = Runs.GetValue(context, _ => new RunClock(now));
         var remaining = TotalBudget - _time.GetElapsedTime(clock.Started, now);
@@ -43,7 +56,9 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector
         if (await Task.WhenAny(task, timeout).ConfigureAwait(false) == task)
         {
             timer.Cancel();
-            return await task.ConfigureAwait(false);
+            var result = await task.ConfigureAwait(false);
+            _collectedForSubmission = true;
+            return result;
         }
 
         ct.ThrowIfCancellationRequested();

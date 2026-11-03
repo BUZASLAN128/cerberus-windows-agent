@@ -262,6 +262,7 @@ public sealed partial class HeartbeatLoop
                 {
                     try
                     {
+                        _telemetryProvider!.ConfigureSnapshot(TelemetryHeartbeat(hb));
                         snapshotRefreshRequired = snapshotTrigger.IsSnapshotRefreshRequired();
                     }
                     catch (Exception ex)

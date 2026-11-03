@@ -179,5 +179,14 @@ internal static class ServerFactJson
 
     public static AgentBuildMetadata Metadata() => new("1.2.3", "build-1", "dev", "boot-1", AgentSchemaVersions.All);
 
+    public static string[] PeriodicSections => EnvelopeTypes.ServerFactSections.Concat(new[] { "rdp", "tailscale", "capabilities" }).ToArray();
+
+    public static HeartbeatResponse AdvertisedHeartbeat(params string[] sections)
+        => JsonSerializer.Deserialize<HeartbeatResponse>(JsonSerializer.Serialize(new
+        {
+            pending_commands = Array.Empty<AgentCommand>(), next_poll_seconds = 60, next_snapshot_seconds = 300,
+            snapshot_max_bytes = 262144, snapshot_sections = sections.Length == 0 ? PeriodicSections : sections,
+        }, Web), Web)!;
+
     public static WindowsTelemetryContext Context() => new(Metadata(), null);
 }

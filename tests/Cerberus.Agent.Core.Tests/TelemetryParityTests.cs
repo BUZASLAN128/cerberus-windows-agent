@@ -5,9 +5,11 @@ using System.Text.Json.Nodes;
 using Cerberus.Agent.App.Telemetry;
 using Cerberus.Agent.App.Telemetry.Sections;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Integrations.Ad;
 
 namespace Cerberus.Agent.Core.Tests;
 
+[Collection("FailedLogonCursor")]
 public sealed class TelemetryParityTests
 {
     [Theory]
@@ -40,17 +42,114 @@ public sealed class TelemetryParityTests
     private sealed class BudgetProbe(string name) : IWindowsTelemetrySectionCollector
     {
         public int Calls;
+        public Action? OnCollect;
         public string SectionName => name;
         public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
         {
             Calls++;
+            OnCollect?.Invoke();
             return ValueTask.FromResult<object>(new { status = "ok" });
         }
+    }
+
+    [Fact]
+    public async Task WrappedCapabilities_RefreshOnlyClearsAfterItsCollectedSnapshotWasSubmitted()
+    {
+        var clock = new ContactRetryClock();
+        var current = LocalUserCommandPolicy.CreateDisabled;
+        var spendRunBudget = true;
+        var first = new BudgetProbe("identity")
+        {
+            OnCollect = () => { if (spendRunBudget) clock.Advance(ServerSectionBudget.TotalBudget); },
+        };
+        var capabilities = new CapabilitiesTelemetrySectionCollector(() => current);
+        var collector = new WindowsTelemetryCollector(new IWindowsTelemetrySectionCollector[]
+        {
+            new ServerSectionBudget(first, clock),
+            new ServerSectionBudget(capabilities, clock),
+        });
+        var heartbeat = ServerFactJson.AdvertisedHeartbeat();
+        collector.ConfigureSnapshot(heartbeat);
+        Assert.False(collector.IsSnapshotRefreshRequired());
+        current = LocalUserCommandPolicy.CreateEnabledPolicy;
+        Assert.True(collector.IsSnapshotRefreshRequired());
+        var skipped = await collector.BuildSnapshotAsync(ServerFactJson.Metadata(), heartbeat, default);
+        Assert.Contains("time_budget_exhausted", JsonSerializer.Serialize(skipped.Sections["capabilities"]));
+        collector.MarkSnapshotSubmitted();
+        Assert.True(collector.IsSnapshotRefreshRequired()); // an unavailable section did not publish the policy
+        spendRunBudget = false;
+        await collector.BuildSnapshotAsync(ServerFactJson.Metadata(), heartbeat, default);
+        Assert.True(collector.IsSnapshotRefreshRequired()); // collection alone is not an acknowledgement
+        collector.MarkSnapshotSubmitted();
+        Assert.False(collector.IsSnapshotRefreshRequired());
+        current = LocalUserCommandPolicy.UnknownPolicy;
+        Assert.True(collector.IsSnapshotRefreshRequired());
+        collector.ConfigureSnapshot(ServerFactJson.AdvertisedHeartbeat("identity"));
+        Assert.False(collector.IsSnapshotRefreshRequired()); // a receiver that excludes capabilities cannot publish this signal
+    }
+
+    [Fact]
+    public async Task AdvertisedSections_CannotWidenTheLocalOperatorAllowlist()
+    {
+        var collector = new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateDefault("identity,clock"));
+        var snapshot = await collector.BuildSnapshotAsync(ServerFactJson.Metadata(),
+            ServerFactJson.AdvertisedHeartbeat("identity", "services", "raw_event_log"), default);
+        Assert.Equal(new[] { "identity" }, snapshot.Sections.Keys);
     }
 }
 
 public sealed partial class AgentApiClientTelemetryTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotSections_UsesAdvertisedIntersectionOrLegacyProfileSet(bool advertised)
+    {
+        var wire = new SnapshotBudgetWire { Advertised = 262144,
+            AdvertisedSections = advertised ? new[] { "identity", "software", "raw_event_log" } : null };
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        await api.HeartbeatAsync(new { }, default);
+        await api.SubmitSnapshotAsync(AllSectionsSnapshot(), default);
+        var expected = advertised ? new[] { "identity", "software" } : LegacySections();
+        AssertSentSections(Assert.Single(wire.Snapshots), expected);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotSections_422FitsTheNextLiveOrOfflineAttemptToLegacySet(bool offline)
+    {
+        var wire = new SnapshotBudgetWire { Advertised = 262144, RejectNonLegacySections = true };
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        await api.HeartbeatAsync(new { }, default);
+        var original = AllSectionsSnapshot();
+        await Assert.ThrowsAnyAsync<HttpRequestException>(() => api.SubmitSnapshotAsync(original, default));
+        await api.HeartbeatAsync(new { }, default);
+        if (offline)
+            await api.SubmitOfflineTelemetryAsync(new OfflineTelemetryRecord("id", OfflineTelemetryKinds.Snapshot,
+                JsonSerializer.Serialize(original, new JsonSerializerOptions(JsonSerializerDefaults.Web)), DateTimeOffset.UtcNow, null, 1), default);
+        else await api.SubmitSnapshotAsync(original, default);
+        Assert.Equal(2, wire.Snapshots.Count);
+        AssertSentSections(wire.Snapshots[0], ServerFactJson.PeriodicSections);
+        AssertSentSections(wire.Snapshots[1], LegacySections());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SnapshotSections_SecondaryRetainsItsLocalFifteenSections(bool advertised)
+    {
+        var wire = new SnapshotBudgetWire { Advertised = 262144,
+            AdvertisedSections = advertised ? ServerFactJson.PeriodicSections : null };
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new SecondaryTelemetrySecrets(), new StaticTokenManager(), new StaticSigner());
+        await api.HeartbeatAsync(new { }, default);
+        await api.SubmitSnapshotAsync(AllSectionsSnapshot(), default);
+        AssertSentSections(Assert.Single(wire.Snapshots), EnvelopeTypes.ServerFactSections);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData(65536)]
@@ -162,10 +261,37 @@ public sealed partial class AgentApiClientTelemetryTests
                 doc.RootElement.GetProperty("section_hashes").GetProperty(section.Name).GetString());
     }
 
+    private static string[] LegacySections() => AgentBuildProfile.IsServer ? EnvelopeTypes.ServerFactSections.ToArray()
+        : new[] { "identity", "os", "resources", "network", "tailscale", "rdp", "firewall", "security", "clock", "runtime", "capabilities" };
+
+    private static AgentSnapshotRequest AllSectionsSnapshot() => AgentSnapshotFactory.Create(Metadata(), DateTimeOffset.UtcNow,
+        ServerFactJson.PeriodicSections.ToDictionary(name => name, _ => (object?)new { status = "ok" }));
+
+    private static void AssertSentSections(string json, IEnumerable<string> expected)
+    {
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected.OrderBy(n => n), doc.RootElement.GetProperty("sections").EnumerateObject().Select(p => p.Name).OrderBy(n => n));
+        AssertSnapshotHashes(json);
+    }
+
+    private sealed class SecondaryTelemetrySecrets : ISecretStore
+    {
+        private readonly ISecretStore _inner = new StaticSecretStore();
+        public async Task<(AgentIdentity, string, string, string, string?, string?)> LoadAsync(CancellationToken ct)
+        {
+            var value = await _inner.LoadAsync(ct);
+            return (value.Item1 with { Product = AgentProducts.Secondary }, value.Item2, value.Item3, value.Item4, value.Item5, value.Item6);
+        }
+        public Task SaveAsync(AgentIdentity id, string refresh, string key, string url, string? login, string? auth, CancellationToken ct) => Task.CompletedTask;
+        public Task ClearAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
     private sealed class SnapshotBudgetWire : HttpMessageHandler
     {
         public int? Advertised;
+        public IReadOnlyList<string>? AdvertisedSections = ServerFactJson.PeriodicSections;
         public bool RejectAbove64KiB;
+        public bool RejectNonLegacySections;
         public List<string> Snapshots { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -173,10 +299,17 @@ public sealed partial class AgentApiClientTelemetryTests
             {
                 var response = JsonNode.Parse(HeartbeatResponseJson())!.AsObject();
                 if (Advertised is { } limit) response["snapshot_max_bytes"] = limit;
+                if (AdvertisedSections is { } sections) response["snapshot_sections"] = JsonSerializer.SerializeToNode(sections);
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response.ToJsonString()) };
             }
             var json = await request.Content!.ReadAsStringAsync(ct);
             Snapshots.Add(json);
+            if (RejectNonLegacySections)
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.GetProperty("sections").EnumerateObject().Any(p => !LegacySections().Contains(p.Name)))
+                    return new HttpResponseMessage(HttpStatusCode.UnprocessableEntity) { Content = new StringContent("{}") };
+            }
             return RejectAbove64KiB && Encoding.UTF8.GetByteCount(json) > 65536
                 ? new HttpResponseMessage(HttpStatusCode.RequestEntityTooLarge) { Content = new StringContent("{}") }
                 : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"status":"accepted","accepted":1,"ignored":0}""") };

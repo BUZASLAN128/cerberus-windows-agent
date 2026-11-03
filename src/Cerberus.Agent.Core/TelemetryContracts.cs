@@ -130,7 +130,7 @@ public sealed record AgentDiagnosticBundleAckResponse(
 
 public static class AgentSnapshotFactory
 {
-    private static readonly HashSet<string> AllowedSections = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> CoreSections = new(StringComparer.Ordinal)
     {
         "identity",
         "os",
@@ -145,8 +145,28 @@ public static class AgentSnapshotFactory
         "capabilities",
     };
 
+    private static readonly HashSet<string> AllowedSections = new(CoreSections, StringComparer.Ordinal);
     // Both periodic profiles can carry the bounded fact sections.
     static AgentSnapshotFactory() => AllowedSections.UnionWith(EnvelopeTypes.ServerFactSections);
+
+    public static IReadOnlySet<string> SnapshotSectionsFor(IReadOnlyList<string>? advertised, bool signedFacts = false)
+    {
+        var local = signedFacts ? EnvelopeTypes.ServerFactSections : AllowedSections;
+        var fallback = signedFacts || AgentBuildProfile.IsServer ? EnvelopeTypes.ServerFactSections : CoreSections;
+        return (advertised is null ? fallback : advertised.AsEnumerable())
+            .Where(local.Contains).ToHashSet(StringComparer.Ordinal);
+    }
+
+    public static AgentSnapshotRequest ForSections(AgentSnapshotRequest request, IReadOnlySet<string> accepted)
+    {
+        var sections = request.Sections.Where(pair => accepted.Contains(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        return request with
+        {
+            Sections = sections,
+            SectionHashes = sections.ToDictionary(pair => pair.Key, pair => HashSection(pair.Value), StringComparer.Ordinal),
+        };
+    }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 

@@ -21,12 +21,12 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
     /// <param name="commitFailedLogons">True only for the scheduled snapshot path, whose upload success commits the
     /// failed-logon cursor (<see cref="WindowsTelemetryCollector.MarkSnapshotSubmitted"/>); other callers peek.</param>
     public SecurityTelemetrySectionCollector(bool commitFailedLogons)
-        : this(commitFailedLogons, AgentBuildProfile.IsServer, null)
+        : this(commitFailedLogons, true, null)
     {
     }
 
-    /// <param name="collectFailedLogons">Only the server profile reads event logs and keeps a cursor file; the desktop
-    /// payload has no <c>failed_logons</c> field.</param>
+    /// <param name="collectFailedLogons">Both profiles read bounded security facts by default. Explicit callers may
+    /// disable the probes; unavailable permissions retain the existing unavailable result.</param>
     /// <param name="posture">Background Defender/SMB1 cache; the collector only reads its last result.</param>
     internal SecurityTelemetrySectionCollector(bool commitFailedLogons, bool collectFailedLogons, FailedLogonCursorStore? cursor, SecurityPostureCache? posture = null)
     {

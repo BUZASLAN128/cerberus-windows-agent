@@ -44,6 +44,9 @@ public interface IAgentStatusProvider
 
 public interface IAgentTelemetryProvider
 {
+    // Receiver limits must be applied before checking optional refresh triggers.
+    void ConfigureSnapshot(HeartbeatResponse? heartbeat) { }
+
     Task<AgentSnapshotRequest> BuildSnapshotAsync(
         AgentBuildMetadata metadata,
         HeartbeatResponse? lastHeartbeat,

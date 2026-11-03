@@ -7,7 +7,8 @@ namespace Cerberus.Agent.App.Telemetry;
 public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentTelemetrySnapshotTrigger
 {
     private readonly IReadOnlyList<IWindowsTelemetrySectionCollector> _sections;
-    private readonly IAgentTelemetrySnapshotTrigger? _snapshotTrigger;
+    private IReadOnlyList<IAgentTelemetrySnapshotTrigger> _snapshotTriggers = Array.Empty<IAgentTelemetrySnapshotTrigger>();
+    private IReadOnlySet<string> _acceptedSections = null!;
     private readonly bool _signedFacts;
 
     public WindowsTelemetryCollector()
@@ -25,16 +26,24 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
         _sections = sections.Count == 0
             ? throw new ArgumentException("At least one telemetry section is required.", nameof(sections))
             : sections;
-        _snapshotTrigger = sections.OfType<IAgentTelemetrySnapshotTrigger>().FirstOrDefault();
         _signedFacts = signedFacts;
+        ConfigureSnapshot(null);
+    }
+
+    public void ConfigureSnapshot(HeartbeatResponse? heartbeat)
+    {
+        _acceptedSections = AgentSnapshotFactory.SnapshotSectionsFor(heartbeat?.SnapshotSections, _signedFacts);
+        _snapshotTriggers = _sections.Where(section => _acceptedSections.Contains(section.SectionName))
+            .OfType<IAgentTelemetrySnapshotTrigger>().ToArray();
     }
 
     public bool IsSnapshotRefreshRequired()
-        => _snapshotTrigger?.IsSnapshotRefreshRequired() is true;
+        => _snapshotTriggers.Any(trigger => trigger.IsSnapshotRefreshRequired());
 
     public void MarkSnapshotSubmitted()
     {
-        _snapshotTrigger?.MarkSnapshotSubmitted();
+        foreach (var trigger in _snapshotTriggers)
+            trigger.MarkSnapshotSubmitted();
         // The upload was accepted: the failed-logon window of the last scheduled snapshot is now reported.
         FailedLogonSection.CommitPending();
     }
@@ -44,11 +53,13 @@ public sealed class WindowsTelemetryCollector : IAgentTelemetryProvider, IAgentT
         HeartbeatResponse? lastHeartbeat,
         CancellationToken ct)
     {
+        ConfigureSnapshot(lastHeartbeat);
         var context = new WindowsTelemetryContext(metadata, lastHeartbeat);
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
 
         foreach (var section in _sections)
         {
+            if (!_acceptedSections.Contains(section.SectionName)) continue;
             payload[section.SectionName] = await TelemetrySectionCapture
                 .CaptureAsync(section, context, ct)
                 .ConfigureAwait(false);

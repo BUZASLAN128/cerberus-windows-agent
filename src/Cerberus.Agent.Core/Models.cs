@@ -59,7 +59,8 @@ public sealed record HeartbeatResponse(
     [property: JsonPropertyName("tenant_name")] string? TenantName = null,
     [property: JsonPropertyName("wakeup")] JsonElement? Wakeup = null,
     [property: JsonPropertyName("signed_state_recovery")] bool? SignedStateRecovery = null,
-    [property: JsonPropertyName("snapshot_max_bytes")] int? SnapshotMaxBytes = null);
+    [property: JsonPropertyName("snapshot_max_bytes")] int? SnapshotMaxBytes = null,
+    [property: JsonPropertyName("snapshot_sections")] IReadOnlyList<string>? SnapshotSections = null);
 
 public sealed record AgentSelfDeactivateRequest(
     [property: JsonPropertyName("schema_version")] string SchemaVersion,

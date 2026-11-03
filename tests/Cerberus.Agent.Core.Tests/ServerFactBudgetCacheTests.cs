@@ -277,7 +277,7 @@ public sealed partial class ServerFactSectionsTests
             new ListeningPortsTelemetrySectionCollector(), EmptyCacheUpdates(), new SoftwareTelemetrySectionCollector(),
         };
 
-        var snapshot = await new WindowsTelemetryCollector(sections).BuildSnapshotAsync(Metadata(), null, CancellationToken.None);
+        var snapshot = await new WindowsTelemetryCollector(sections).BuildSnapshotAsync(Metadata(), ServerFactJson.AdvertisedHeartbeat(), CancellationToken.None);
 
         Assert.Equal(SixSections.OrderBy(n => n), snapshot.Sections.Keys.OrderBy(n => n));
         Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= 262144);

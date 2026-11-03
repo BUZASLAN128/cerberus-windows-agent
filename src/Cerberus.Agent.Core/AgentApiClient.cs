@@ -27,7 +27,11 @@ public sealed partial class AgentApiClient
     private readonly long? _expectedGeneration;
     private int _snapshotByteLimit = AgentTelemetryLimits.DefaultSnapshotBytes;
     private bool _snapshotRejectedAsTooLarge;
+    private bool _snapshotSectionsRejected;
+    private bool _secondarySnapshot;
+    private IReadOnlySet<string> _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null);
     public int SnapshotByteLimit => _snapshotByteLimit;
+    public IReadOnlySet<string> SnapshotSections => _snapshotSections;
     private static readonly HttpRequestOptionsKey<long> LifecycleGenerationKey = new("CerberusLifecycleGeneration");
     private static readonly ConditionalWeakTable<HeartbeatResponse, ResponseGeneration> ResponseGenerations = new();
 
@@ -133,6 +137,9 @@ public sealed partial class AgentApiClient
         _snapshotByteLimit = AgentTelemetryLimits.SnapshotBytesFor(payload.SnapshotMaxBytes);
         if (_snapshotRejectedAsTooLarge)
             _snapshotByteLimit = Math.Min(_snapshotByteLimit, AgentTelemetryLimits.MaxJsonBytes);
+        _secondarySnapshot = id.Product == AgentProducts.Secondary;
+        _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(
+            _snapshotSectionsRejected ? null : payload.SnapshotSections, _secondarySnapshot);
         return payload;
     }
 
@@ -269,7 +276,10 @@ public sealed partial class AgentApiClient
     }
 
     public Task<AgentIngestAckResponse> SubmitSnapshotAsync(AgentSnapshotRequest body, CancellationToken ct) =>
-        SubmitIngestAsync("snapshot", AgentSnapshotFactory.Fit(body, SnapshotByteLimit), retryTransient: true, ct: ct);
+        SubmitIngestAsync("snapshot", PrepareSnapshot(body), retryTransient: true, ct: ct);
+
+    private AgentSnapshotRequest PrepareSnapshot(AgentSnapshotRequest body)
+        => AgentSnapshotFactory.Fit(AgentSnapshotFactory.ForSections(body, SnapshotSections), SnapshotByteLimit);
 
     public Task<AgentIngestAckResponse> SubmitEventsAsync(AgentEventBatchRequest body, CancellationToken ct) =>
         SubmitIngestAsync("events", body, retryTransient: false, ct: ct);
@@ -330,7 +340,7 @@ public sealed partial class AgentApiClient
         {
             var snapshot = JsonSerializer.Deserialize<AgentSnapshotRequest>(json, JsonOpts)
                 ?? throw new InvalidOperationException("Offline snapshot missing.");
-            json = JsonSerializer.Serialize(AgentSnapshotFactory.Fit(snapshot, SnapshotByteLimit), JsonOpts);
+            json = JsonSerializer.Serialize(PrepareSnapshot(snapshot), JsonOpts);
         }
         return await SubmitIngestJsonAsync(endpoint, json, retryTransient, ct).ConfigureAwait(false);
     }
@@ -436,6 +446,11 @@ public sealed partial class AgentApiClient
             {
                 _snapshotRejectedAsTooLarge = true;
                 _snapshotByteLimit = Math.Min(SnapshotByteLimit, AgentTelemetryLimits.MaxJsonBytes);
+            }
+            if (endpoint == "snapshot" && resp.StatusCode == HttpStatusCode.UnprocessableEntity)
+            {
+                _snapshotSectionsRejected = true;
+                _snapshotSections = AgentSnapshotFactory.SnapshotSectionsFor(null, _secondarySnapshot);
             }
             await EnsureSuccessAsync($"Agent {endpoint}", resp, ct).ConfigureAwait(false);
 
