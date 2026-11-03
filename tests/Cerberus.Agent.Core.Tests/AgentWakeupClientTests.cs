@@ -52,7 +52,7 @@ public sealed partial class AgentWakeupClientTests
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));
-        Assert.Empty(log.Lines);
+        Assert.Contains("retry after 900 seconds", Assert.Single(log.Lines));
         await client.StopAsync(default);
     }
 
@@ -82,13 +82,39 @@ public sealed partial class AgentWakeupClientTests
             called.TrySetResult();
             throw new WakeupRejectedException();
         }
-        await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen);
+        var log = new RecordingLogger();
+        await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen, log);
         using var json = JsonDocument.Parse("{\"version\":1,\"path\":\"/api/ws\"}");
         await client.ConfigureAsync(json.RootElement, default);
         await called.Task.WaitAsync(TimeSpan.FromSeconds(3));
         await client.ConfigureAsync(json.RootElement, default);
         await Task.Delay(100);
         Assert.Equal(1, Volatile.Read(ref calls));
+        Assert.Contains("unauthorized_or_forbidden", Assert.Single(log.Lines));
+    }
+
+    [Fact]
+    public async Task ConnectionLogsTransitionsAndSanitizesProtocolRejection()
+    {
+        using var http = new HttpClient { BaseAddress = new Uri("https://agent.example") };
+        var api = new AgentApiClient(http, new FakeSecrets(), new FakeToken(), new FakeSigner());
+        var log = new RecordingLogger();
+        Task Listen(JsonElement _, AgentWakeupSignal signal, Action opened, CancellationToken ct)
+        {
+            opened();
+            opened();
+            for (var i = 0; i < 20; i++) signal.Signal();
+            throw new InvalidOperationException("sensitive remote body must not appear");
+        }
+        await using var client = new AgentWakeupClient(api, new AgentWakeupSignal(), Listen, log);
+        using var discovery = JsonDocument.Parse("""{"version":1,"path":"/api/ws"}""");
+        await client.ConfigureAsync(discovery.RootElement, default);
+        Assert.Equal(new[]
+        {
+            "INFO Wakeup connection opened.",
+            "WARN Wakeup connection rejected: invalid_protocol_or_configuration.",
+            "INFO Wakeup connection closed: invalid_protocol_or_configuration.",
+        }, log.Lines);
     }
 
     private sealed class FakeSecrets : ISecretStore

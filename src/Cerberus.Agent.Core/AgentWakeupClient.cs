@@ -98,6 +98,7 @@ public sealed class AgentWakeupClient : IAsyncDisposable
         while (!ct.IsCancellationRequested)
         {
             long? openedAt = null;
+            var closeReason = "remote_close_or_lifetime";
             try
             {
                 var remaining = _notBefore - _time.GetUtcNow();
@@ -106,15 +107,23 @@ public sealed class AgentWakeupClient : IAsyncDisposable
                     await Task.Delay(remaining, _time, ct).ConfigureAwait(false);
                     continue;
                 }
-                await _listen(discovery, _signal, () => openedAt ??= _time.GetTimestamp(), ct).ConfigureAwait(false);
+                await _listen(discovery, _signal, () =>
+                {
+                    if (openedAt is not null) return;
+                    openedAt = _time.GetTimestamp();
+                    _log.Info("Wakeup connection opened.");
+                }, ct).ConfigureAwait(false);
                 ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                closeReason = "stopped";
                 return;
             }
             catch (AgentLifecycleDormantException)
             {
+                closeReason = "lifecycle_paused";
+                _log.Info("Wakeup connection stopped: lifecycle_paused.");
                 return;
             }
             catch (WakeupRejectedException)
@@ -122,10 +131,13 @@ public sealed class AgentWakeupClient : IAsyncDisposable
                 // Some ASGI servers cannot forward a pre-upgrade 429 and expose it
                 // as 403 without Retry-After. Retain the server's maximum bucket wait.
                 _notBefore = _time.GetUtcNow().AddMinutes(10);
+                _log.Warn("Wakeup connection rejected: unauthorized_or_forbidden; retry deferred for 600 seconds.");
                 return;
             }
             catch (InvalidOperationException)
             {
+                closeReason = "invalid_protocol_or_configuration";
+                _log.Warn("Wakeup connection rejected: invalid_protocol_or_configuration.");
                 return;
             }
             catch (WakeupRateLimitedException rateLimit)
@@ -134,15 +146,19 @@ public sealed class AgentWakeupClient : IAsyncDisposable
                 var wait = rateLimit.RetryAfter < TimeSpan.Zero ? TimeSpan.Zero
                     : rateLimit.RetryAfter > TimeSpan.FromMinutes(15) ? TimeSpan.FromMinutes(15) : rateLimit.RetryAfter;
                 _notBefore = _time.GetUtcNow().Add(wait);
+                _log.Warn($"Wakeup connection deferred: rate_limited_or_server_unavailable; retry after {wait.TotalSeconds:0} seconds.");
                 ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
             }
             catch (Exception ex)
             {
+                closeReason = ex.GetType().Name;
                 _log.Warn($"Wakeup connection unavailable: {ex.GetType().Name}.");
                 ConsecutiveFailures = Math.Min(ConsecutiveFailures + 1, 6);
             }
             finally
             {
+                if (openedAt is not null)
+                    _log.Info($"Wakeup connection closed: {closeReason}.");
                 // Only time with an actually open socket proves a stable connection.
                 if (openedAt is { } opened && _time.GetElapsedTime(opened) >= TimeSpan.FromSeconds(60))
                     ConsecutiveFailures = 0;

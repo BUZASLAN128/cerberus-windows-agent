@@ -298,10 +298,13 @@ public sealed partial class HeartbeatLoop
                     await Task.Delay(TimeSpan.FromSeconds(delay), ct);
                 else
                 {
-                    // Even an early or repeated hint cannot bypass the profile's poll floor.
-                    var floor = Math.Min(delay, _timing.Bounds.PollFloor);
-                    await Task.Delay(TimeSpan.FromSeconds(floor), ct).ConfigureAwait(false);
-                    await _wakeupSignal.WaitAsync(TimeSpan.FromSeconds(delay - floor), ct).ConfigureAwait(false);
+                    // Hints share a five-second minimum from the last poll, independently of
+                    // profile bounds. An earlier ordinary polling deadline still wins.
+                    var pollDelay = TimeSpan.FromSeconds(delay);
+                    var remaining = TimeSpan.FromSeconds(5) - System.Diagnostics.Stopwatch.GetElapsedTime(heartbeatStarted);
+                    var floor = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining < pollDelay ? remaining : pollDelay;
+                    await Task.Delay(floor, ct).ConfigureAwait(false);
+                    await _wakeupSignal.WaitAsync(pollDelay - floor, ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
