@@ -16,7 +16,7 @@ Depending on configuration, both Desktop and Server profiles may process:
 - agent version, build channel, build identifier, and capability status;
 - service health, heartbeat time, and connectivity status;
 - logon events, including user name, domain, source IP address, and workstation name;
-- local administrator membership, including names and SIDs for up to 100 members;
+- current local administrator membership, including enumeration of member names and SIDs; telemetry includes at most 100 members;
 - administrator membership change events, including member name and SID, group SID, action, and event time;
 - local managed account status, excluding passwords;
 - command result status for authorized operations;
