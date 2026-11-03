@@ -58,20 +58,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
-      - name: Publish Win-x64 Single File
-        run: >
-          dotnet publish src/Cerberus.Agent.App/Cerberus.Agent.App.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
-          -o out/ci/publish
+      - name: Build MSI and logo setup for CI inspection
+        shell: pwsh
+        run: |
+          ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci
 
       - name: Upload Published Agent
         uses: actions/upload-artifact@v7
         with:
           name: cerberus-windows-agent-win-x64
-          path: out/ci/publish/
+          path: |
+            out/ci/publish/Cerberus.Agent-dev-0.0.0.msi
+            out/ci/publish/Cerberus.Agent-dev-0.0.0.exe
           if-no-files-found: error

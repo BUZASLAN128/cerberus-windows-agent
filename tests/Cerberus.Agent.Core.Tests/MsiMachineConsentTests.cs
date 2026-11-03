@@ -12,6 +12,7 @@ public sealed class MsiMachineConsentTests
         ["product"] = AgentLegalConsent.ProductName,
         ["eulaVersion"] = AgentLegalConsent.EulaVersion,
         ["privacyNoticeVersion"] = AgentLegalConsent.PrivacyNoticeVersion,
+        ["privacyNoticeSha256"] = AgentLegalConsent.PrivacyNoticeSha256,
         ["securityDisclosureVersion"] = AgentLegalConsent.SecurityDisclosureVersion,
         ["acceptedVia"] = "msi_explicit",
         ["acceptanceEvidence"] = "explicit-v1",
@@ -21,7 +22,7 @@ public sealed class MsiMachineConsentTests
     public void Machine_record_requires_explicit_evidence_and_every_current_document_version()
     {
         Assert.True(AgentLegalConsent.IsCurrentMachineMsiConsent(Current()));
-        foreach (var name in new[] { "accepted", "product", "eulaVersion", "privacyNoticeVersion", "securityDisclosureVersion", "acceptedVia", "acceptanceEvidence" })
+        foreach (var name in new[] { "accepted", "product", "eulaVersion", "privacyNoticeVersion", "privacyNoticeSha256", "securityDisclosureVersion", "acceptedVia", "acceptanceEvidence" })
         {
             var values = Current();
             values.Remove(name);

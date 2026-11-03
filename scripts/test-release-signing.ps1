@@ -216,10 +216,10 @@ try {
     if ([string]::IsNullOrEmpty($Signature)) { $Signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Fixture.Canonical -Certificate $certB }
     if ($Signature -eq "<none>") { Remove-Item -LiteralPath $sigFile -ErrorAction SilentlyContinue } else { Set-Content -LiteralPath $sigFile -Value $Signature }
   }
-  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB, [string]$Channel = "stable") {
+  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB, [string]$Channel = "stable", [scriptblock]$PayloadCheck = {}) {
     Write-FixtureSignature $Fixture $Signature
     Complete-ExternalManifestSigning -PublishDir $Fixture.Publish -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-      -SignaturePath $sigFile -PublicKeyPath $KeyFile -FileSignatureCheck $SignatureCheck 6>$null | Out-Null
+      -SignaturePath $sigFile -PublicKeyPath $KeyFile -FileSignatureCheck $SignatureCheck -SetupPayloadCheck $PayloadCheck 6>$null | Out-Null
   }
   function Test-NothingPublished([string]$Dir) {
     -not (Test-Path -LiteralPath (Join-Path $Dir $manifestName)) -and -not (Test-Path -LiteralPath (Join-Path $Dir $gateName)) -and
@@ -236,16 +236,16 @@ try {
   Check "finalize with a good detached signature writes the manifest, gate and latest alias" {
     (Test-Path -LiteralPath (Join-Path $good.Publish $manifestName)) -and (Test-Path -LiteralPath (Join-Path $good.Publish $latestName))
   }
-  Check "finalize checks every first-party PE (incl. satellite) in ordinal order, skips third-party, and the MSI" {
+  Check "finalize checks every first-party PE (incl. satellite) in ordinal order, skips third-party, and both installers" {
     $runtimeChecked = @($script:checked | Where-Object { $_ -like "*runtime*" })
     $sorted = @($runtimeChecked); [Array]::Sort($sorted, [StringComparer]::OrdinalIgnoreCase)
-    $script:checked.Count -eq 9 -and ($script:checked -contains $good.Msi) -and $runtimeChecked.Count -eq 8 -and
+    $script:checked.Count -eq 10 -and ($script:checked -contains $good.Msi) -and ($script:checked -contains $good.Setup) -and $runtimeChecked.Count -eq 8 -and
       (@($runtimeChecked | Where-Object { $_ -like "*Fixture.dll" }).Count -eq 0) -and
       (@($runtimeChecked | Where-Object { $_ -like "*resources.dll" }).Count -eq 1) -and
       (($runtimeChecked -join "|") -ceq ($sorted -join "|"))
   }
   Check "finalize hands the embedded signer pins to every signature check" {
-    $script:checkedPins.Count -eq 9 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 9)
+    $script:checkedPins.Count -eq 10 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 10)
   }
   Check "payload gate rejects an unsigned first-party PE and ignores third-party files" {
     Throws { Assert-FirstPartyPeFilesSigned (Join-Path $good.Publish "runtime") } "Unsigned first-party file\(s\).*Cerberus\.Agent\.dll" 
@@ -297,6 +297,11 @@ try {
   Assert-FinalizeRefused "finalize refuses when the signature check fails on a runtime executable" "runtime signature check failed" (New-Fixture) { param($Path, $AllowedPins) throw "runtime signature check failed" }
   Assert-FinalizeRefused "finalize refuses when only the MSI fails the signature check" "msi signature check failed" (New-Fixture) {
     param($Path, $AllowedPins) if ($Path -like "*.msi") { throw "msi signature check failed" } }
+  Assert-FinalizeRefused "finalize refuses when only setup fails the signature check" "setup signature check failed" (New-Fixture) {
+    param($Path, $AllowedPins) if ($Path -like "*stable-9.9.9.exe") { throw "setup signature check failed" } }
+  Assert-FinalizeRefused "finalize refuses a setup payload mismatch before publication" "setup payload mismatch" (New-Fixture) $accept @{
+    PayloadCheck = { param($Msi, $Setup) throw 'setup payload mismatch' }
+  }
 
   # Binding of the pending payload and of both runtime assemblies to what the build embeds
   $pinB = Get-SignerSpkiPin $certB
@@ -357,9 +362,9 @@ try {
   $twoPinError = $null
   try { Invoke-Finalize (New-Fixture -Options @{ ExtraPins = @($pinB) }) $recordAll } catch { $twoPinError = $_.Exception.Message }
   Check "finalize with two embedded signer pins is accepted" { if ($twoPinError) { throw $twoPinError }; $true }
-  Check "finalize hands both embedded signer pins to each of the nine signature checks" {
+  Check "finalize hands both embedded signer pins to each of the ten signature checks" {
     $want = (@($pin, $pinB) | Sort-Object) -join "|"
-    $script:checkedPins.Count -eq 9 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 9)
+    $script:checkedPins.Count -eq 10 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 10)
   }
   # Expected key that differs from an embedded key only in base64 letter case (still a valid RSA public key)
   $lines = $pemB.Trim() -split "\r?\n"

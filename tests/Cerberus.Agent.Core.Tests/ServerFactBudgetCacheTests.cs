@@ -168,13 +168,12 @@ public sealed partial class ServerFactSectionsTests
 
     // ---- catalog and profile caps ----------------------------------------------------------------------------
 
-#if CERBERUS_SERVER_PROFILE
     [Fact]
-    public void Catalog_ServerProfileCarriesAllFifteenSectionsWithCap262144()
+    public void Catalog_ProfilesCarryAllEighteenSectionsWithCap262144()
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
 
-        Assert.Equal(15, names.Length);
+        Assert.Equal(18, names.Length);
         Assert.Contains("processes", names);
         Assert.Subset(names.ToHashSet(), SixSections.ToHashSet());
         Assert.Equal(262144, AgentTelemetryLimits.MaxSnapshotBytes);
@@ -184,7 +183,7 @@ public sealed partial class ServerFactSectionsTests
     }
 
     [Fact]
-    public void Catalog_ServerProfileBudgetsCoreSectionsToo_SoTheRunClockStartsAtTheFirstSection()
+    public void Catalog_ProfilesBudgetCoreSectionsToo_SoTheRunClockStartsAtTheFirstSection()
     {
         var sections = WindowsTelemetrySectionCatalog.CreateDefault((string?)null);
 
@@ -249,7 +248,7 @@ public sealed partial class ServerFactSectionsTests
     }
 
     [Fact]
-    public async Task OfflineBuffer_ServerSnapshotRecordMayExceed64KiBButOtherKindsMayNot()
+    public async Task OfflineBuffer_SnapshotRecordMayExceed64KiBButOtherKindsMayNot()
     {
         var path = Path.Combine(Path.GetTempPath(), $"cerberus-offline-{Guid.NewGuid():N}.json");
         try
@@ -278,50 +277,10 @@ public sealed partial class ServerFactSectionsTests
             new ListeningPortsTelemetrySectionCollector(), EmptyCacheUpdates(), new SoftwareTelemetrySectionCollector(),
         };
 
-        var snapshot = await new WindowsTelemetryCollector(sections).BuildSnapshotAsync(Metadata(), null, CancellationToken.None);
+        var snapshot = await new WindowsTelemetryCollector(sections).BuildSnapshotAsync(Metadata(), ServerFactJson.AdvertisedHeartbeat(), CancellationToken.None);
 
         Assert.Equal(SixSections.OrderBy(n => n), snapshot.Sections.Keys.OrderBy(n => n));
         Assert.True(AgentTelemetryLimits.EstimateJsonBytes(snapshot) <= 262144);
         Assert.All(snapshot.Sections.Values, v => Assert.Equal("ok", (string)Obj(v!)["status"]!));
     }
-#else
-    [Fact]
-    public void Catalog_DesktopProfileStaysAtElevenSectionsAnd64KiB()
-    {
-        var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
-
-        Assert.Equal(11, names.Length);
-        Assert.DoesNotContain(WindowsTelemetrySectionCatalog.CreateDefault((string?)null), s => s is ServerSectionBudget);
-        Assert.Empty(names.Intersect(SixSections.Append("processes")));
-        Assert.Equal(AgentTelemetryLimits.MaxJsonBytes, AgentTelemetryLimits.MaxSnapshotBytes);
-        Assert.Equal(64 * 1024, AgentTelemetryLimits.MaxSnapshotBytes);
-    }
-
-    [Fact]
-    public void Snapshot_DesktopRejectsServerSectionsAndKeepsThe64KiBCap()
-    {
-        foreach (var section in SixSections.Append("processes"))
-            Assert.Throws<InvalidOperationException>(() => AgentSnapshotFactory.Create(
-                Metadata(), T0, new Dictionary<string, object?> { [section] = new { status = "ok" } }));
-
-        Assert.Throws<InvalidOperationException>(() => AgentSnapshotFactory.Create(
-            Metadata(), T0, new Dictionary<string, object?> { ["identity"] = new { blob = new string('a', 70_000) } }));
-    }
-
-    [Fact]
-    public async Task OfflineBuffer_DesktopSnapshotRecordStaysCappedAt64KiB()
-    {
-        var path = Path.Combine(Path.GetTempPath(), $"cerberus-offline-{Guid.NewGuid():N}.json");
-        try
-        {
-            await Assert.ThrowsAsync<InvalidOperationException>(() => new OfflineTelemetryBuffer(path)
-                .EnqueueAsync(OfflineTelemetryKinds.Snapshot, new { blob = new string('a', 100 * 1024) }, "snap", priority: 1, CancellationToken.None));
-        }
-        finally
-        {
-            if (File.Exists(path))
-                File.Delete(path);
-        }
-    }
-#endif
 }

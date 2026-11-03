@@ -6,7 +6,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 // Support tier: evaluates the WiX preprocessor branches of Package.wxs per build profile and checks the
 // release-script profile helper. The MSI itself is proven by the table dump of the built packages, not here.
-public sealed class ServerPackageStaticTests
+public sealed partial class ServerPackageStaticTests
 {
     private static readonly XNamespace Wix = "http://wixtoolset.org/schemas/v4/wxs";
     private static readonly XNamespace Util = "http://wixtoolset.org/schemas/v4/wxs/util";
@@ -155,7 +155,7 @@ public sealed class ServerPackageStaticTests
             var lib = Path.Combine(FindRepoRoot(), "scripts", "release-publish-lib.ps1");
             var command =
                 $". '{lib}'; $d = '{dir}'; " +
-                "foreach ($n in 'Agent.msi','Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') { Set-Content -LiteralPath (Join-Path $d $n) -Value $n }; " +
+                "foreach ($n in 'Agent.msi','Agent.exe','Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') { Set-Content -LiteralPath (Join-Path $d $n) -Value $n }; " +
                 "$m = [ordered]@{ sha256 = 'abc'; sequence = 1; expires_at_utc = 'x'; signer_key_identity = 'k' }; " +
                 $"Publish-ReleaseOutputs -PublishDir $d -Channel dev -AssetBase Bundle -InstallerBase Agent -Manifest $m -LegacyManifest $null -AllowUnsignedBuildMetadata $true -Signed $false -BuildProfile {profile}";
             var run = RunPwsh(command);
@@ -165,6 +165,7 @@ public sealed class ServerPackageStaticTests
             var expected = new[]
             {
                 $"Cerberus.Agent-dev-latest{suffix}.msi",
+                $"Cerberus.Agent-dev-latest{suffix}.exe",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.provenance.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.sbom.json",
@@ -214,29 +215,15 @@ public sealed class ServerPackageStaticTests
     }
 
     [Fact]
-    public void ReleaseScript_SharesTheProfileArgumentsWithEveryBuildStep()
-    {
-        var script = File.ReadAllText(Path.Combine(FindRepoRoot(), "scripts", "build-agent-public-release.ps1"));
-
-        // Publish-AgentProject, the Helper publish and the MSI build.
-        Assert.Equal(3, Regex.Matches(script, Regex.Escape("$releaseProfile.MsBuildArgs")).Count);
-        Assert.Contains("@($releaseProfile.MsiArgs)", script);
-        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.App/Cerberus.Agent.App.csproj\"", script);
-        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj\"", script);
-        Assert.Contains("Publish-AgentProject \"src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj\"", script);
-        Assert.Matches(@"if \(\$BuildProfile -ne ""server""\) \{ Publish-AgentProject ""src/Cerberus\.Agent\.Uninstall/", script);
-        Assert.True(script.Split('\n').Length < 500, "build-agent-public-release.ps1 must stay under 500 lines.");
-    }
-
-    [Fact]
     public void ReleaseScript_MeasuresFinalAssemblyBytesAfterSigning()
     {
         var repo = FindRepoRoot();
         var script = File.ReadAllText(Path.Combine(repo, "scripts", "build-agent-public-release.ps1"));
         Assert.True(script.IndexOf("Assert-ServerBundleLayout", StringComparison.Ordinal) <
             script.IndexOf("Invoke-FirstPartySigning ", StringComparison.Ordinal));
-        Assert.True(script.IndexOf("$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash", StringComparison.Ordinal) >
-            script.LastIndexOf("Invoke-FirstPartySigning ", StringComparison.Ordinal));
+        var measure = script.IndexOf("$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash", StringComparison.Ordinal);
+        Assert.True(measure > script.IndexOf("Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput)", StringComparison.Ordinal));
+        Assert.True(measure < script.IndexOf("dotnet build $installerProject", StringComparison.Ordinal));
         var root = Path.Combine(Path.GetTempPath(), "service-signing-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try

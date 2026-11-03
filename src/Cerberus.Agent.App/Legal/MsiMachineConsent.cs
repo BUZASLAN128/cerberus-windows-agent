@@ -9,7 +9,7 @@ namespace Cerberus.Agent.App.Legal;
 internal static class MsiMachineConsent
 {
     private static readonly string[] ValueNames =
-        ["accepted", "product", "eulaVersion", "privacyNoticeVersion", "securityDisclosureVersion", "acceptedVia", "acceptanceEvidence"];
+        ["accepted", "product", "eulaVersion", "privacyNoticeVersion", "privacyNoticeSha256", "securityDisclosureVersion", "acceptedVia", "acceptanceEvidence"];
 
     internal static bool TryReadCurrent(string path, Func<IReadOnlyDictionary<string, string?>, bool> matches)
     {

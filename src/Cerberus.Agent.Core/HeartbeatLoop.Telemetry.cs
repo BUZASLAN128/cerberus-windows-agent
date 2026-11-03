@@ -2,6 +2,9 @@ namespace Cerberus.Agent.Core;
 
 public sealed partial class HeartbeatLoop
 {
+    private HeartbeatResponse TelemetryHeartbeat(HeartbeatResponse heartbeat)
+        => heartbeat with { SnapshotMaxBytes = _api.SnapshotByteLimit, SnapshotSections = _api.SnapshotSections.ToArray() };
+
     /// <summary>Security fields read from the event-log cursor: reported once, never replayed from a buffered snapshot.</summary>
     private static readonly string[] ConsumeOnceSecurityFields =
         { "failed_logons", "successful_logons", "local_admins.changes" };
@@ -14,7 +17,8 @@ public sealed partial class HeartbeatLoop
         AgentSnapshotRequest snapshot;
         try
         {
-            snapshot = await _telemetryProvider.BuildSnapshotAsync(_metadata, heartbeat, ct).ConfigureAwait(false);
+            snapshot = await _telemetryProvider.BuildSnapshotAsync(_metadata,
+                TelemetryHeartbeat(heartbeat), ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

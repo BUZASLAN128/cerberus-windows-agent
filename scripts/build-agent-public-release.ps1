@@ -56,6 +56,8 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 . (Join-Path $PSScriptRoot "release-profile-lib.ps1")
+. (Join-Path $PSScriptRoot "release-bundle-lib.ps1")
+. (Join-Path $PSScriptRoot "release-runtime-publish-lib.ps1")
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -223,37 +225,6 @@ if (-not $SkipTests) {
   }
 }
 
-function Publish-AgentProject([string]$Project) {
-  $args = @(
-    "publish",
-    (Join-Path $repoRoot $Project),
-    "-c", $Configuration,
-    "-r", $Runtime,
-    "--self-contained", "true",
-    "-p:DebugType=None",
-    "-p:DebugSymbols=false",
-    "-p:Version=$Version",
-    "-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64",
-    "-p:AgentUpdateManifestUrl=$UpdateManifestUrl",
-    "-p:AgentUpdateAllowedArtifactPrefixes=$UpdateAllowedArtifactPrefixes",
-    "-p:AgentReleaseChannel=$Channel",
-    "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild",
-    "-p:AllowUnsignedDevBuild=$($allowUnsignedBuildMetadata.ToString().ToLowerInvariant())",
-    "-o", $runtimePublishDir
-  )
-  # Every publish must pass the same routing metadata to the shared runtime project.
-  # Otherwise later service/updater publishes overwrite it with an unconfigured runtime.
-  $args += @(
-      "-p:AgentDefaultBackendUrlBase64=$(ConvertTo-Base64Utf8 $DefaultBackendUrl)",
-      "-p:AgentDefaultSsoBaseUrlBase64=$(ConvertTo-Base64Utf8 $DefaultSsoBaseUrl)",
-      "-p:AgentDefaultSsoClientIdBase64=$(ConvertTo-Base64Utf8 $DefaultSsoClientId)",
-      "-p:AgentDefaultSsoScopeBase64=$(ConvertTo-Base64Utf8 $DefaultSsoScope)",
-      "-p:AgentDefaultOAuthRedirectPort=$DefaultOAuthRedirectPort"
-  ) + $releaseProfile.MsBuildArgs + @(Get-RuntimeBundlePublishArgs $BuildProfile)
-  dotnet @args
-  if ($LASTEXITCODE -ne 0) { throw "Runtime publish failed." }
-}
-
 Write-Step "Publishing split agent runtime"
 Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj"
 Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
@@ -403,6 +374,10 @@ if ($signed) {
   Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll") -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 }
 
+Write-Step "Building manual-download setup wrapper"
+$setup = New-AgentSetupBundle -MsiPath $msi -PublishDir $publishDir -BuildProfile $BuildProfile `
+  -Configuration $Configuration -BuildDirectory (Join-Path $outputRootPath 'setup-build') `
+  -Signed $signed -SignFile { param($file) Invoke-FirstPartySigning @($file) }
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
 Compress-Archive -Path (Join-Path $runtimePublishDir "*") -DestinationPath $zip -Force
@@ -411,7 +386,8 @@ $msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
 @(
   "$zipHash  $assetBase.zip",
-  "$msiHash  $installerBase.msi"
+  "$msiHash  $installerBase.msi",
+  "$((Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant())  $installerBase.exe"
 ) | Set-Content -LiteralPath $checksums -Encoding utf8
 
 $sbom = Join-Path $publishDir "$assetBase.sbom.json"

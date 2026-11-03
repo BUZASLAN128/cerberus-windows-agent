@@ -18,8 +18,8 @@ public sealed class DormantStateRecoveryTests
 
         Assert.Equal(0, probes.Count);
         Assert.Equal(AgentLifecycleState.AuthSuspect, after.State);
-        Assert.Equal(Now + TimeSpan.FromMinutes(15), after.NextAttemptUtc);
-        Assert.Equal(Now + TimeSpan.FromMinutes(15), (await store.LoadAsync(default)).NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay, after.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay, (await store.LoadAsync(default)).NextAttemptUtc);
     }
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class DormantStateRecoveryTests
     }
 
     [Fact]
-    public async Task Recovery_FailedProbe_PersistsLongerBackoffAndStaysDormant()
+    public async Task Recovery_FailedProbe_PersistsBoundedBackoffAndStaysDormant()
     {
         var (store, probes, run) = Harness(
             new AgentLifecycleSnapshot(AgentLifecycleState.NeedsReenrollment, NextAttemptUtc: Now.AddSeconds(-1)),
@@ -45,7 +45,7 @@ public sealed class DormantStateRecoveryTests
         Assert.Equal(1, probes.Count);
         Assert.Equal(AgentLifecycleState.NeedsReenrollment, first.State);
         Assert.Equal(1, first.TransientFailureCount);
-        Assert.Equal(Now + TimeSpan.FromMinutes(30), first.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay * 2, first.NextAttemptUtc);
         Assert.Equal(first.NextAttemptUtc, (await store.LoadAsync(default)).NextAttemptUtc);
     }
 
@@ -159,7 +159,7 @@ public sealed class DormantStateRecoveryTests
         Assert.Equal(1, probes.Count);
         Assert.Equal(AgentLifecycleState.AuthSuspect, after.State);
         Assert.Equal(1, after.TransientFailureCount);
-        Assert.Equal(Now + TimeSpan.FromMinutes(30), after.NextAttemptUtc);
+        Assert.Equal(Now + AgentDormantRecoveryPolicy.InitialDelay * 2, after.NextAttemptUtc);
         Assert.True(after.NextAttemptUtc > due);
         Assert.Equal(after.NextAttemptUtc, (await store.LoadAsync(default)).NextAttemptUtc);
     }

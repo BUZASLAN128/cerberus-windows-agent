@@ -54,6 +54,7 @@ internal sealed class UpdatesTelemetrySectionCollector : IWindowsTelemetrySectio
                 kb = ServerFactText.CleanOrNull(p.Kb, 16),
                 title = ServerFactText.Clean(p.Title, 160),
                 security = p.Security,
+                classification = ServerFactText.CleanOrNull(p.Classification, 96),
             })
             .ToArray();
         var items = pendingAll.Take(MaxPendingItems).ToArray();

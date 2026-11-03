@@ -7,8 +7,8 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentTimingPolicyTests
 {
-    private static readonly AgentTimingBounds Desktop = new(1, 3600, 60, 86400, 60);
-    private static readonly AgentTimingBounds Server = new(30, 300, 300, 3600, 3600);
+    private static readonly AgentTimingBounds Desktop = new(1, 300, 60, 86400, 60);
+    private static readonly AgentTimingBounds Server = new(1, 300, 300, 3600, 3600);
 
 #if CERBERUS_SERVER_PROFILE
     private static readonly AgentTimingBounds Expected = Server;
@@ -21,6 +21,10 @@ public sealed class AgentTimingPolicyTests
     {
         Assert.Equal(Expected, AgentProfileMetadata.Timing);
         Assert.Equal(Expected, AgentTimingPolicy.Current.Bounds);
+        Assert.Equal(300, AgentTimingPolicy.Current.PollDelaySeconds(3600));
+        Assert.Equal(300, AgentTimingPolicy.Current.PollDelaySeconds(1, 3600));
+        Assert.Equal(Desktop.PollFloor, Server.PollFloor);
+        Assert.Equal(Desktop.PollCeiling, Server.PollCeiling);
     }
 
     [Fact]
@@ -65,15 +69,15 @@ public sealed class AgentTimingPolicyTests
     [Theory]
     [InlineData(1, 0, 1)]
     [InlineData(70, 0, 70)]
-    [InlineData(100000, 0, 3600)]
+    [InlineData(100000, 0, 300)]
     [InlineData(40, 60, 60)]
-    [InlineData(5000, 60, 3600)]
+    [InlineData(5000, 60, 300)]
     public void PollDelay_Desktop_ClampsToFloorAndCeiling_ThenAppliesCallerMinimum(int jittered, int minimum, int expected)
         => Assert.Equal(expected, new AgentTimingPolicy(Desktop).PollDelaySeconds(jittered, minimum));
 
     [Theory]
-    [InlineData(1, 0, 30)]
-    [InlineData(29, 0, 30)]
+    [InlineData(0, 0, 1)]
+    [InlineData(1, 0, 1)]
     [InlineData(30, 0, 30)]
     [InlineData(120, 0, 120)]
     [InlineData(300, 0, 300)]
@@ -138,7 +142,7 @@ public sealed class AgentTimingPolicyTests
     [InlineData("AgentSnapshotFloorSeconds", "3601")]
     [InlineData("AgentSnapshotDefaultSeconds", "299")]
     [InlineData("AgentSnapshotDefaultSeconds", "3601")]
-    [InlineData("AgentPollCeilingSeconds", "29")]
+    [InlineData("AgentPollCeilingSeconds", "0")]
     public void ParseTiming_RejectsInvalidOrInconsistentValues(string key, string value)
     {
         var values = ToDictionary(Server);
