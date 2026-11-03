@@ -8,13 +8,16 @@ This document is a product/legal draft and should be reviewed by counsel before 
 
 ## 1. Data Categories
 
-Depending on configuration, the agent may process:
+Depending on configuration, both Desktop and Server profiles may process:
 
 - device registration identifiers;
 - tenant or workspace identifiers;
 - device fingerprint and machine metadata needed to recognize the enrolled machine;
 - agent version, build channel, build identifier, and capability status;
 - service health, heartbeat time, and connectivity status;
+- logon events, including user name, domain, source IP address, and workstation name;
+- local administrator membership, including names and SIDs for up to 100 members;
+- administrator membership change events, including member name and SID, group SID, action, and event time;
 - local managed account status, excluding passwords;
 - command result status for authorized operations;
 - remote desktop readiness status;
@@ -52,7 +55,7 @@ The agent processes data to:
 
 Local agent credentials are stored using Windows DPAPI. User-scope registration can be promoted to machine-scope service credentials during service installation. The legal consent record is not a secret and is stored as a local JSON record so the installer can verify acceptance.
 
-Backend retention and export behavior should be governed by the customer's Cerberus deployment agreement and environment policy.
+Retention periods for telemetry received by the backend are set by the backend, not by the agent. Backend retention and export behavior should be governed by the customer's Cerberus deployment agreement and environment policy.
 
 ## 5. Sharing
 
