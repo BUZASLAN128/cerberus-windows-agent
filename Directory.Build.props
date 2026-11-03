@@ -10,7 +10,7 @@
   <!-- Common poll bounds; snapshot metadata remains per profile. Override with -p:. -->
   <PropertyGroup>
     <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">1</AgentPollFloorSeconds>
-    <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">3600</AgentPollCeilingSeconds>
+    <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">300</AgentPollCeilingSeconds>
   </PropertyGroup>
   <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
     <AgentSnapshotFloorSeconds Condition="'$(AgentSnapshotFloorSeconds)' == ''">300</AgentSnapshotFloorSeconds>
