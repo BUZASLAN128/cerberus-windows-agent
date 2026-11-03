@@ -28,6 +28,7 @@ public sealed partial class AgentLegalConsentTests
         Assert.DoesNotContain("UpdateAllowedArtifactPrefixes", project);
         Assert.Contains($"EulaVersion={AgentLegalConsent.EulaVersion}", project);
         Assert.Contains($"PrivacyNoticeVersion={AgentLegalConsent.PrivacyNoticeVersion}", project);
+        Assert.Contains($"PrivacyNoticeSha256={AgentLegalConsent.PrivacyNoticeSha256}", project);
         Assert.Contains($"SecurityDisclosureVersion={AgentLegalConsent.SecurityDisclosureVersion}", project);
         Assert.Contains("MsiProductVersion=$(MsiProductVersion)", project);
         Assert.Contains("UpdateManifestUrl", project);

@@ -2,6 +2,7 @@ using Cerberus.Agent.App.Telemetry.Sections.FailedLogons;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Integrations.Ad;
 using Cerberus.Agent.Observability;
+using Cerberus.Agent.App.Legal;
 
 namespace Cerberus.Agent.App.Telemetry.Sections;
 
@@ -12,6 +13,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
     private readonly FailedLogonCursorStore? _cursor;
     private readonly bool _commitFailedLogons;
     private readonly SecurityPostureCache _posture;
+    private readonly Func<bool> _hasDetailConsent;
 
     public SecurityTelemetrySectionCollector()
         : this(commitFailedLogons: false)
@@ -28,9 +30,10 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
     /// <param name="collectFailedLogons">Both profiles read bounded security facts by default. Explicit callers may
     /// disable the probes; unavailable permissions retain the existing unavailable result.</param>
     /// <param name="posture">Background Defender/SMB1 cache; the collector only reads its last result.</param>
-    internal SecurityTelemetrySectionCollector(bool commitFailedLogons, bool collectFailedLogons, FailedLogonCursorStore? cursor, SecurityPostureCache? posture = null)
+    internal SecurityTelemetrySectionCollector(bool commitFailedLogons, bool collectFailedLogons, FailedLogonCursorStore? cursor, SecurityPostureCache? posture = null, Func<bool>? hasDetailConsent = null)
     {
         _posture = posture ?? SecurityPostureCache.Shared;
+        _hasDetailConsent = hasDetailConsent ?? SecurityTelemetryConsent.IsAllowed;
         _commitFailedLogons = commitFailedLogons;
         _cursor = collectFailedLogons ? cursor ?? new FailedLogonCursorStore() : null;
         if (collectFailedLogons)
@@ -56,11 +59,15 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         if (_cursor is not null)
         {
             // One Security scan feeds failed_logons, successful_logons, log_cleared and local_admins.changes.
-            var log = await CollectSecurityLogAsync(_cursor, ct).ConfigureAwait(false);
+            // Consent is checked before log/member probes, not only before serialization.
+            var allowed = _hasDetailConsent();
+            var log = allowed ? await CollectSecurityLogAsync(_cursor, ct).ConfigureAwait(false)
+                : SecurityLogResult.Unavailable(DateTimeOffset.UtcNow);
             section["failed_logons"] = log.FailedLogons;
             section["successful_logons"] = log.SuccessfulLogons;
             section["log_cleared"] = log.LogCleared;
-            section["local_admins"] = await CollectLocalAdminsAsync(log.AdminChanges, ct).ConfigureAwait(false);
+            section["local_admins"] = allowed ? await CollectLocalAdminsAsync(log.AdminChanges, ct).ConfigureAwait(false)
+                : SecurityLogFields.Unavailable;
             section["unexpected_shutdowns"] = await CollectUnexpectedShutdownsAsync(ct).ConfigureAwait(false);
             foreach (var (key, value) in _posture.Current())
                 section[key] = value;

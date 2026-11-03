@@ -143,6 +143,7 @@ public sealed partial class AgentLegalConsentTests
             ["product"] = AgentLegalConsent.ProductName,
             ["eulaVersion"] = AgentLegalConsent.EulaVersion,
             ["privacyNoticeVersion"] = AgentLegalConsent.PrivacyNoticeVersion,
+            ["privacyNoticeSha256"] = AgentLegalConsent.PrivacyNoticeSha256,
             ["securityDisclosureVersion"] = AgentLegalConsent.SecurityDisclosureVersion,
             ["acceptedVia"] = "msi_eula_dialog",
         };
@@ -165,6 +166,7 @@ public sealed partial class AgentLegalConsentTests
             ["product"] = AgentLegalConsent.ProductName,
             ["eulaVersion"] = "old-eula",
             ["privacyNoticeVersion"] = AgentLegalConsent.PrivacyNoticeVersion,
+            ["privacyNoticeSha256"] = AgentLegalConsent.PrivacyNoticeSha256,
             ["securityDisclosureVersion"] = AgentLegalConsent.SecurityDisclosureVersion,
             ["acceptedVia"] = "msi_eula_dialog",
         };

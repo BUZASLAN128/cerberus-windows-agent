@@ -55,9 +55,7 @@ internal static partial class ServiceMode
         Task? schedulerTask = null;
         try
         {
-#if CERBERUS_SERVER_PROFILE
-            WindowsUpdateCache.Shared.Start(log);
-#endif
+            using var telemetryBackground = StartTelemetryBackgroundWork(log);
             await AgentUpdateLocalService.ReconcileOnServiceStartAsync(lifetime.Token).ConfigureAwait(false);
             schedulerTask = AgentUpdateLocalService.RunScheduledAsync(lifetime.Token);
             while (!ct.IsCancellationRequested)

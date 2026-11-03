@@ -30,7 +30,7 @@ internal interface IWindowsUpdateCacheReader
 
 /// <summary>
 /// Background Windows Update search result. Snapshot and collect_facts only read it; the search never runs
-/// inline. Start() is called by the service host (server profile only).
+/// inline. Both service profiles start the same cache and stop it when the host exits.
 /// </summary>
 internal sealed class WindowsUpdateCache : IWindowsUpdateCacheReader, IDisposable
 {

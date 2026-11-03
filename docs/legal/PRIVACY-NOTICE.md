@@ -1,10 +1,12 @@
 # Cerberus Windows Agent Privacy Notice
 
-Document version: `agent-privacy-2026-06-02.v2`
+Document version: `agent-privacy-2026-11-03.v3`
 
 This notice describes the data categories the Cerberus Windows Agent may process during installation, registration, service operation, support, and uninstall.
 
 This document is a product/legal draft and should be reviewed by counsel before public production distribution.
+
+On Desktop, security logon details, local administrator membership and addition-actor fields require administrator acceptance of this v3 notice in the machine scope, bound to this document's content digest. Explicit acceptance during a fresh MSI install can record it; after an upgrade that retains older consent, an administrator can run the installed agent with `--service --accept-eula` from an elevated terminal to record machine consent without starting another worker. Tray acceptance records user consent and does not enable these machine-wide categories. Until machine v3 consent exists, those categories are unavailable while existing telemetry, heartbeat and commands continue. This gate does not change the Server profile's existing security collection or headless behavior; automatic upgrades do not create new consent.
 
 ## 1. Data Categories
 

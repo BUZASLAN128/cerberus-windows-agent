@@ -366,6 +366,7 @@
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Server Agent" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="privacyNoticeSha256" Type="string" Value="$(var.PrivacyNoticeSha256)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_explicit" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\ServerAgent\LegalConsent" Name="acceptanceEvidence" Type="string" Value="[CERBERUS_EXPLICIT_CONSENT]" />
@@ -439,6 +440,7 @@
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="product" Type="string" Value="Cerberus Windows Agent" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="eulaVersion" Type="string" Value="$(var.EulaVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="privacyNoticeVersion" Type="string" Value="$(var.PrivacyNoticeVersion)" />
+      <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="privacyNoticeSha256" Type="string" Value="$(var.PrivacyNoticeSha256)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="securityDisclosureVersion" Type="string" Value="$(var.SecurityDisclosureVersion)" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptedVia" Type="string" Value="msi_explicit" />
       <RegistryValue Root="HKLM" Key="Software\Cerberus\WindowsAgent\LegalConsent" Name="acceptanceEvidence" Type="string" Value="[CERBERUS_EXPLICIT_CONSENT]" />
