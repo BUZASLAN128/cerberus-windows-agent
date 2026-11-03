@@ -21,7 +21,7 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.OpenDatabase($msi, 0)
 try {
   $metadata = @{}
-  foreach ($property in @('ProductName', 'Manufacturer', 'ProductVersion')) {
+  foreach ($property in @('ProductName', 'Manufacturer', 'ProductVersion', 'UpgradeCode')) {
     $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$property'")
     try {
       [void]$view.Execute()
@@ -38,8 +38,11 @@ try {
   [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($database)
   [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer)
 }
-$expectedName = if ($BuildProfile -eq 'server') { 'Cerberus Server Agent' } else { 'Cerberus Windows Agent' }
-if ($metadata.ProductName -cne $expectedName -or $metadata.Manufacturer -cne 'Cerberus' -or
+$expectedUpgrade = if ($BuildProfile -eq 'server') { [guid]'686EF4F7-AC5C-4459-B2B9-540920991AAF' } else { [guid]'8F7E4C22-4D3E-4D50-9B31-0D969B3D0D1E' }
+$actualUpgrade = [guid]::Empty
+# ProductName is customizable; the profile is bound to the MSI's stable upgrade identity.
+if (-not [guid]::TryParse($metadata.UpgradeCode, [ref]$actualUpgrade) -or $actualUpgrade -ne $expectedUpgrade -or
+    [string]::IsNullOrWhiteSpace($metadata.ProductName) -or $metadata.Manufacturer -cne 'Cerberus' -or
     $metadata.ProductVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
   throw "MSI metadata does not match the $BuildProfile agent package."
 }

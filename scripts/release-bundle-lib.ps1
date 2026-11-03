@@ -51,3 +51,13 @@ function Assert-AgentSetupPayload([string]$MsiPath, [string]$SetupPath, [string]
     throw 'Setup payload does not match the published MSI.'
   }
 }
+
+function Get-AgentPublicSetupAsset([string]$GatePath, [string]$SetupPath) {
+  $gate = Get-Content -LiteralPath $GatePath -Raw | ConvertFrom-Json
+  if ($gate.setup.authenticode_signature_present -isnot [bool] -or -not $gate.setup.authenticode_signature_present) {
+    Write-Host 'Unsigned setup.exe stays in the CI artifact; public EXE upload skipped.'
+    return ''
+  }
+  if (-not (Test-Path -LiteralPath $SetupPath -PathType Leaf)) { throw 'Signed setup asset is missing.' }
+  return $SetupPath
+}

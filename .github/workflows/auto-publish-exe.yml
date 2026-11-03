@@ -141,6 +141,7 @@ jobs:
           "prerelease=$(if ($channel -ceq 'stable') { 'false' } else { 'true' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build gated release bundle
+        id: bundle
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
@@ -159,6 +160,8 @@ jobs:
           CERBERUS_RELEASE_CHANNEL: ${{ steps.release.outputs.channel }}
           CERBERUS_RELEASE_VERSION: ${{ steps.release.outputs.version }}
           CERBERUS_RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          CERBERUS_RELEASE_ASSET_BASE: ${{ steps.release.outputs.asset_base }}
+          CERBERUS_RELEASE_SETUP_BASE: ${{ steps.release.outputs.setup_base }}
         run: |
           $channel = $env:CERBERUS_RELEASE_CHANNEL
           $version = $env:CERBERUS_RELEASE_VERSION
@@ -178,6 +181,13 @@ jobs:
               -Version $version `
               -Channel $channel
           }
+          . ./scripts/release-bundle-lib.ps1
+          $gatePath = "out/public-release/publish/$env:CERBERUS_RELEASE_ASSET_BASE.release-gate.json"
+          $setupPath = "out/public-release/publish/$env:CERBERUS_RELEASE_SETUP_BASE.exe"
+          $setupAsset = Get-AgentPublicSetupAsset -GatePath $gatePath -SetupPath $setupPath
+          $setupSuffix = if ([string]::IsNullOrWhiteSpace($setupAsset)) { '' } else { ",$setupAsset" }
+          "setup_asset_suffix=$setupSuffix" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "setup_signed=$((-not [string]::IsNullOrWhiteSpace($setupAsset)).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload gated release bundle artifact
         uses: actions/upload-artifact@v7
@@ -199,8 +209,7 @@ jobs:
           bodyFile: out/release-notes.md
           artifacts: |
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.zip
-            out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi
-            out/public-release/publish/${{ steps.release.outputs.setup_base }}.exe
+            out/public-release/publish/${{ steps.release.outputs.setup_base }}.msi${{ steps.bundle.outputs.setup_asset_suffix }}
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sha256
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.sbom.json
             out/public-release/publish/${{ steps.release.outputs.asset_base }}.provenance.json
@@ -219,6 +228,7 @@ jobs:
           CERBERUS_RELEASE_SETUP_BASE: ${{ steps.release.outputs.setup_base }}
           CERBERUS_RELEASE_ASSET_BASE: ${{ steps.release.outputs.asset_base }}
           CERBERUS_WORKFLOW_SHA: ${{ github.sha }}
+          CERBERUS_SETUP_SIGNED: ${{ steps.bundle.outputs.setup_signed }}
         run: |
           $channel = $env:CERBERUS_RELEASE_CHANNEL
           $setupBase = $env:CERBERUS_RELEASE_SETUP_BASE
@@ -227,6 +237,10 @@ jobs:
           $latestTag = "$channel-latest"
           $latestAssetBase = "Cerberus.Agent.Bundle-$channel-latest"
           $latestInstallerBase = "Cerberus.Agent-$channel-latest"
+          $setupExeAssets = @()
+          if ($env:CERBERUS_SETUP_SIGNED -ceq 'true') {
+            $setupExeAssets = @("out/public-release/publish/$setupBase.exe", "out/public-release/publish/$latestInstallerBase.exe")
+          }
           gh release delete $latestTag --yes --cleanup-tag 2>$null
           if ($LASTEXITCODE -ne 0) {
             Write-Host "$latestTag was not present or could not be deleted; continuing with create."
@@ -243,7 +257,6 @@ jobs:
           }
           & gh release create $latestTag `
             "out/public-release/publish/$setupBase.msi" `
-            "out/public-release/publish/$setupBase.exe" `
             "out/public-release/publish/$assetBase.zip" `
             "out/public-release/publish/$assetBase.sha256" `
             "out/public-release/publish/$assetBase.sbom.json" `
@@ -252,7 +265,6 @@ jobs:
             "out/public-release/publish/$assetBase.update-manifest.json" `
             "out/public-release/publish/$assetBase.update-manifest.v2.json" `
             "out/public-release/publish/$latestInstallerBase.msi" `
-            "out/public-release/publish/$latestInstallerBase.exe" `
             "out/public-release/publish/$latestAssetBase.zip" `
             "out/public-release/publish/$latestAssetBase.sha256" `
             "out/public-release/publish/$latestAssetBase.sbom.json" `
@@ -260,7 +272,7 @@ jobs:
             "out/public-release/publish/$latestAssetBase.release-gate.json" `
             "out/public-release/publish/$latestAssetBase.update-manifest.json" `
             "out/public-release/publish/$latestAssetBase.update-manifest.v2.json" `
-            @latestReleaseOptions
+            @setupExeAssets @latestReleaseOptions
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to publish the $channel-latest release alias."
           }
