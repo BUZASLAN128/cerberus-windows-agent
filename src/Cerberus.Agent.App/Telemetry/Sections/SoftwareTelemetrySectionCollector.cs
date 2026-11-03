@@ -9,7 +9,7 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
     internal const int MaxSoftware = 500;
     private const string UninstallPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 
-    internal sealed record RawSoftware(string? Name, string? Version, string? Publisher, string? InstallDate, string Arch, string Scope = "machine", string? UserSid = null);
+    internal sealed record RawSoftware(string? Name, string? Version, string? Publisher, string? InstallDate, string Arch, string Scope = "machine", string? UserSid = null, bool WindowsInstaller = false);
 
     public string SectionName => "software";
 
@@ -28,6 +28,7 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
                 arch = s.Arch,
                 scope = s.Scope,
                 user_sid = s.Scope == "user" ? ServerFactText.CleanOrNull(s.UserSid, 128) : null,
+                windowsInstaller = s.WindowsInstaller,
             })
             .Where(s => s.name.Length > 0)
             .Distinct()
@@ -56,7 +57,20 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
             status = "ok",
             software_count = software.Length,
             truncated = software.Length > MaxSoftware,
-            software = kept,
+            software = kept.Select(s =>
+            {
+                var entry = new Dictionary<string, object?>
+                {
+                    ["name"] = s.name, ["version"] = s.version, ["publisher"] = s.publisher,
+                    ["installed_on"] = s.installed_on, ["arch"] = s.arch, ["scope"] = s.scope,
+                    ["user_sid"] = s.user_sid,
+                };
+                // The Installer marker identifies the installer technology, not the person who ran it.
+                // Neither the registry-hive owner nor RegisteredOwner proves an installation actor.
+                if (s.windowsInstaller)
+                    entry["install_source"] = "windows_installer";
+                return entry;
+            }).ToArray(),
         };
     }
 
@@ -139,7 +153,8 @@ internal sealed class SoftwareTelemetrySectionCollector : IWindowsTelemetrySecti
                     key.GetValue("InstallDate")?.ToString(),
                     arch,
                     scope,
-                    userSid));
+                    userSid,
+                    key.GetValue("WindowsInstaller") is int and 1));
             }
         }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or System.IO.IOException)

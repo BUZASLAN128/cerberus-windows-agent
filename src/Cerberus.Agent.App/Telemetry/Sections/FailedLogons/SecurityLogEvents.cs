@@ -18,7 +18,8 @@ internal sealed record AdminGroupChange(
     string? MemberName,
     string? MemberSid,
     string GroupSid,
-    DateTimeOffset TimeUtc);
+    DateTimeOffset TimeUtc,
+    string? AddedBy = null);
 
 /// <summary>Turns the named data of a Security event into the typed detail carried by a <see cref="FailedLogonEvent"/>.</summary>
 internal static class SecurityLogEventParser
@@ -65,8 +66,25 @@ internal static class SecurityLogEventParser
             Clean(data.GetValueOrDefault("MemberName")),
             Clean(data.GetValueOrDefault("MemberSid")),
             groupSid,
-            time);
+            time,
+            eventId is 4732 or 4728 ? AdditionActor(data) : null);
         return new FailedLogonEvent(FailedLogonSource.GroupChange, time, null, Detail: change);
+    }
+
+    private static string? AdditionActor(IReadOnlyDictionary<string, string> data)
+    {
+        var rawUser = data.GetValueOrDefault("SubjectUserName")?.Trim();
+        var rawDomain = data.GetValueOrDefault("SubjectDomainName")?.Trim();
+        if (rawUser?.Length > MaxNameLength || rawDomain?.Length > MaxNameLength
+            || rawUser?.Any(char.IsControl) == true || rawDomain?.Any(char.IsControl) == true)
+            return null;
+        var user = Clean(rawUser);
+        if (user is null)
+            return null;
+        var domain = Clean(rawDomain);
+        var actor = domain is null ? user : domain + "\\" + user;
+        // Do not turn a truncated domain/user combination into another apparent account.
+        return actor.Length <= MaxNameLength ? ServerFactText.CleanOrNull(actor, MaxNameLength) : null;
     }
 
     /// <summary>The builtin Administrators group; for domain-wide group events also Domain, Schema and Enterprise Admins (RID 512, 518, 519).</summary>

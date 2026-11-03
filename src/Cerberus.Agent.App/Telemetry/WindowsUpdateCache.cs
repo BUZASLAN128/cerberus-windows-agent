@@ -5,7 +5,7 @@ namespace Cerberus.Agent.App.Telemetry;
 
 internal sealed record WindowsUpdateEntry(string? Kb, string Title, DateTimeOffset? InstalledUtc);
 
-internal sealed record WindowsUpdatePending(string? Kb, string Title, bool Security);
+internal sealed record WindowsUpdatePending(string? Kb, string Title, bool Security, string? Classification = null);
 
 internal sealed record WindowsUpdateScan(
     int PendingCount,
@@ -198,16 +198,29 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
             dynamic categories = update.Categories;
             int categoryCount = categories.Count;
             var isSecurity = false;
+            string? classification = null;
             for (var j = 0; j < categoryCount; j++)
             {
-                string id = categories.Item(j).CategoryID;
+                ct.ThrowIfCancellationRequested();
+                dynamic category = categories.Item(j);
+                string id = category.CategoryID;
                 if (string.Equals(id, SecurityUpdatesCategoryId, StringComparison.OrdinalIgnoreCase))
                 {
                     isSecurity = true;
-                    security++;
-                    break;
+                }
+                // Product names are not update classifications. A missing optional category label
+                // must not discard an otherwise usable cached update scan.
+                try
+                {
+                    if (string.Equals((string?)category.Type, "UpdateClassification", StringComparison.OrdinalIgnoreCase))
+                        classification ??= ServerFactText.CleanOrNull((string?)category.Name, 96);
+                }
+                catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
+                {
                 }
             }
+            if (isSecurity)
+                security++;
 
             // Every pending item is kept here; security items are moved to the front before the cap below.
             string? kb = null;
@@ -219,7 +232,7 @@ internal sealed partial class ComWindowsUpdateSearcher : IWindowsUpdateSearcher
                     kb = first.StartsWith("KB", StringComparison.OrdinalIgnoreCase) ? first.ToUpperInvariant() : "KB" + first;
             }
 
-            items.Add(new WindowsUpdatePending(kb, (string?)update.Title ?? string.Empty, isSecurity));
+            items.Add(new WindowsUpdatePending(kb, (string?)update.Title ?? string.Empty, isSecurity, classification));
         }
 
         var recent = new List<WindowsUpdateEntry>();

@@ -314,7 +314,8 @@ public sealed partial class ServerFactSectionsTests
         var pending = node["pending"]!;
         var list = pending["items"]!.AsArray();
         Assert.Equal(3, list.Count);
-        Assert.Equal(Sorted("kb", "title", "security"), Keys(list[0]));
+        Assert.Equal(Sorted("kb", "title", "security", "classification"), Keys(list[0]));
+        Assert.Null(list[0]!["classification"]); // Older cached scans have no classification.
         // Security items come first (stable within each group), so the cap never drops them.
         Assert.Equal("KB5001234", (string)list[0]!["kb"]!);
         Assert.Equal(Fill("K", 16), (string)list[1]!["kb"]!);

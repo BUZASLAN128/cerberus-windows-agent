@@ -17,6 +17,7 @@ internal sealed class FirewallTelemetrySectionCollector : IWindowsTelemetrySecti
                 ReadProfile("PublicProfile", "public"),
                 ReadProfile("StandardProfile", "private"),
             },
+            adapter_profiles = FirewallAdapterProfiles.Read(ct),
         });
     }
 

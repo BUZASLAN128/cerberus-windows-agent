@@ -234,8 +234,9 @@ internal static class FailedLogonEventReader
         try
         {
             xml = record.ToXml();
-            // Account names are read only for successful interactive logons; failed attempts never expose them.
-            data = ReadData(xml, keepAccountNames: channel == Security && record.Id == 4624);
+            // Names are read for successful logons and requested administrator-addition actors only.
+            // Failed attempts and unrelated/removal events never retain those account-name fields.
+            data = ReadData(xml, keepAccountNames: channel == Security && record.Id is 4624 or 4732 or 4728);
         }
         catch (Exception ex) when (ex is System.Xml.XmlException or EventLogException)
         {
