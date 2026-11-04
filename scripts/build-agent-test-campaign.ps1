@@ -73,7 +73,8 @@ try{
     foreach($hostName in @('Cerberus.Agent.exe','Cerberus.Agent.Service.exe','Cerberus.Agent.Updater.exe')){
       $hostPath=Join-Path $runtime $hostName
       if(-not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)){throw 'Server campaign hosts must retain the verified single-file layout.'}
-      $metadata=Read-AssemblyMetadataValues (Join-Path $runtime 'Cerberus.Agent.Runtime.dll') -BundlePath $hostPath
+      $hostAssembly=if($hostName -ceq 'Cerberus.Agent.exe'){'Cerberus.Agent.dll'}else{'Cerberus.Agent.Runtime.dll'}
+      $metadata=Read-AssemblyMetadataValues (Join-Path $runtime $hostAssembly) -BundlePath $hostPath
       if($metadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $metadata['AgentUpdateLabFeedRootB64'] -cne $lab.RootB64 -or
          $metadata['AgentUpdateManifestPublicKeysB64'] -cne [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKey.Trim()))){throw 'A host embedded different campaign trust.'}
     }
