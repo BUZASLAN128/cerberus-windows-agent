@@ -78,7 +78,8 @@ try{
       if($metadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $metadata['AgentUpdateLabFeedRootB64'] -cne $lab.RootB64 -or
          $metadata['AgentUpdateManifestPublicKeysB64'] -cne [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKey.Trim()))){throw 'A host embedded different campaign trust.'}
     }
-    $helperMetadata=Read-AssemblyMetadataValues (Join-Path $versionOutput 'installer-helper/Cerberus.Agent.Installer.Helper.dll')
+    $helperCompiler=Join-Path $versionOutput 'lab-build-evidence/installer-helper-compiler.dll'
+    $helperMetadata=Read-AssemblyMetadataValues $helperCompiler
     if($helperMetadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $helperMetadata['AllowUnsignedDevBuild'] -cne 'true' -or
        $helperMetadata['AgentUpdateAllowedSignerKeyIdentity'] -cne 'unsigned-dev'){throw 'Installer helper did not retain protected lab admission metadata.'}
     $expectedHashes=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($helperMetadata['AgentUpdateLabRuntimeHashesB64']))|ConvertFrom-Json -AsHashtable
@@ -110,7 +111,10 @@ try{
       $copy|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $manifest -Encoding utf8
       [pscustomobject]@{agentId=$target.agentId;manifestUrl=$target.manifestUrl;path=$manifest;sha256=(Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant();artifactUrl=$copy.artifact_url}
     })
-    $rows.Add([pscustomobject]@{version=$version;source=$ExpectedHead;msi=$msi;sha256=$msiHash;bytes=$msiLength;bootstrap=($version -ceq $lab.Policy.versions[0]);manifests=$manifests})
+    $rows.Add([pscustomobject]@{version=$version;source=$ExpectedHead;msi=$msi;sha256=$msiHash;bytes=$msiLength;bootstrap=($version -ceq $lab.Policy.versions[0]);manifests=$manifests;
+      helperMetadataEvidence='compiler PE support; compressed helper runtime not executed';helperCompiler=$helperCompiler;
+      helperCompilerSha256=(Get-FileHash -LiteralPath $helperCompiler).Hash.ToLowerInvariant();
+      publishedHelperSha256=(Get-FileHash -LiteralPath (Join-Path $versionOutput 'installer-helper/Cerberus.Agent.Installer.Helper.exe')).Hash.ToLowerInvariant()})
     $variantIndex++
   }
   [pscustomobject]@{source=$ExpectedHead;campaignId=$lab.Policy.campaignId;policySha256=$policyHash.ToLowerInvariant();

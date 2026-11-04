@@ -333,6 +333,13 @@ dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberu
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true `
   -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) @helperLabArgs -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
+if ($null -ne $labBuild) {
+  # The helper is compressed; retain compiler metadata evidence without relaxing the runtime bundle reader.
+  $metadataEvidence = Join-Path $outputRootPath 'lab-build-evidence'
+  $null = New-Item -ItemType Directory -Path $metadataEvidence
+  Copy-Item -LiteralPath (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") `
+    -Destination (Join-Path $metadataEvidence 'installer-helper-compiler.dll')
+}
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
