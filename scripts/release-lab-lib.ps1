@@ -32,7 +32,10 @@ function Read-ReleaseLabPolicy {
     $previous=$parsed
   }
   foreach($t in $p.targets){
-    if(-not $t.agentId -or -not $t.tenantId -or $t.keyFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$'){throw 'Lab registration binding is missing.'}
+    $baseline=$null
+    if(-not $t.agentId -or -not $t.tenantId -or $t.keyFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+       -not [version]::TryParse($t.bootstrapSourceVersion,[ref]$baseline) -or $baseline.Build -lt 0 -or $baseline.Revision -ne -1 -or
+       $baseline.ToString(3) -cne $t.bootstrapSourceVersion -or $p.versions -ccontains $t.bootstrapSourceVersion){throw 'Lab registration or installed bootstrap baseline binding is missing.'}
     foreach($u in @($t.manifestUrl,$t.artifactPrefix)){
       $uri=$null
       if(-not [Uri]::TryCreate($u,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -cne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or

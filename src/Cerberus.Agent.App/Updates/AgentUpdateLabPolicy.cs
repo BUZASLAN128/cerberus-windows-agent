@@ -58,6 +58,9 @@ internal sealed record AgentUpdateLabPolicy(
         if (!Versions.Contains(release, StringComparer.Ordinal)) throw Denied();
     }
 
+    internal void RequireSuccessor(string installedVersion, string targetVersion)
+        => AgentUpdateCampaignTransition.RequireNext(Versions, installedVersion, targetVersion);
+
     private void Validate()
     {
         if (SchemaVersion != "agent.update.lab.v1" || !Guid.TryParseExact(CampaignId, "D", out _) ||
@@ -71,6 +74,8 @@ internal sealed record AgentUpdateLabPolicy(
             if (!ValidId(target.AgentId) || !ValidId(target.TenantId) || !ValidFingerprint(target.KeyFingerprint) ||
                 !ValidFeedUri(target.ManifestUrl) || !ValidFeedUri(target.ArtifactPrefix) ||
                 !target.ArtifactPrefix.EndsWith("/", StringComparison.Ordinal) ||
+                !Version.TryParse(target.BootstrapSourceVersion, out var baseline) || baseline.Build < 0 || baseline.Revision != -1 ||
+                baseline.ToString(3) != target.BootstrapSourceVersion || Versions.Contains(target.BootstrapSourceVersion!) ||
                 !AgentUpdateManifestValidator.IsAllowedArtifactUri(new Uri(target.ManifestUrl), target.ArtifactPrefix)) throw Denied();
         }
         if (Targets.Select(t => t.AgentId).Distinct(StringComparer.Ordinal).Count() != 2 ||
@@ -124,4 +129,4 @@ internal sealed record AgentUpdateLabPolicy(
 }
 
 internal sealed record AgentUpdateLabTarget(string AgentId, string TenantId, string KeyFingerprint,
-    string ManifestUrl, string ArtifactPrefix);
+    string ManifestUrl, string ArtifactPrefix, string? BootstrapSourceVersion = null);

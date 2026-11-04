@@ -1,5 +1,6 @@
 using System.IO;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.App.Updates;
 
@@ -24,18 +25,34 @@ internal static class AgentUpdateLabFaults
     internal static bool UsesServiceInterruption(AgentUpdateLabPolicy policy, string version)
         => policy.Versions.Skip(1).Contains(version, StringComparer.Ordinal) && version != policy.Versions[8];
 
-    internal static void InterruptUpdaterOnce(AgentUpdateJournal active, AgentUpdatePlan plan, Action<string> log)
+    // Called inside the updater launch fence, before a launch grant or the MSI-start marker exists.
+    internal static void InterruptUpdaterOnce(AgentUpdateJournal active, AgentUpdatePlan plan,
+        AgentLifecycleSnapshot lifecycle, int processId, DateTimeOffset startedUtc, Action<string> log)
     {
         if (active.InstallRequest?.LocalPolicyId is null) return;
         var scope = AgentUpdateLabRuntime.Resolve();
-        if (scope is null || active.InstallRequest.LocalPolicyId != scope.Policy.CampaignId ||
-            plan.Version != scope.Policy.Versions[8] || active.Phase != "launch_requested" ||
-            active.InstallRequest.VerifiedRelease is not { } release || !release.Matches(AgentUpdateExpectedPlan.FromPlan(plan)) ||
-            !AgentUpdateLocalService.AllowsLabFault(scope.Context.Generation)) return;
+        if (scope is null) throw new InvalidOperationException("Development updater fault authority is missing.");
+        AgentUpdateLabRuntime.RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion());
+        var state = new AgentSignedStateStore(AgentSignedStateStore.DefaultPathForProduct(scope.Context.Product));
+        if (!ShouldInterruptUpdater(scope, active, plan, lifecycle, processId, startedUtc,
+            state.IsQuarantined(scope.Context.AgentId), AgentUpdateLocalService.PendingStateDelivery(lifecycle,
+                new DpapiSecretStore(SecretStoreScope.Machine)))) return;
         if (!RecordOnce(scope, plan.Version, "updater-pre-installer-exit", plan.Sha256, plan.AttemptId)) return;
         log("Controlled development campaign updater interruption before installer handoff.");
         Environment.Exit(86); // The flushed installer fence has not been crossed.
     }
+
+    internal static bool ShouldInterruptUpdater(AgentUpdateLabRuntime.Scope scope, AgentUpdateJournal active,
+        AgentUpdatePlan plan, AgentLifecycleSnapshot lifecycle, int processId, DateTimeOffset startedUtc,
+        bool durableQuarantined, bool pendingState)
+        => !durableQuarantined && !pendingState && lifecycle.QuiescenceComplete &&
+            AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.Generation == scope.Context.Generation &&
+            lifecycle.LastEnrollmentNonce == scope.Context.EnrollmentNonce &&
+            active.LifecycleGeneration == lifecycle.Generation && active.InstallRequest?.LocalPolicyId == scope.Policy.CampaignId &&
+            plan.Version == scope.Policy.Versions[8] && active.Phase == "launch_requested" &&
+            active.InstallRequest.BoundAttemptId == active.AttemptId &&
+            AgentUpdateRunnerFiles.OwnsLaunch(active, plan.AttemptId!, processId, startedUtc) &&
+            active.InstallRequest.VerifiedRelease is { } release && release.Matches(AgentUpdateExpectedPlan.FromPlan(plan));
 
     private static bool RecordOnce(AgentUpdateLabRuntime.Scope scope, string version, string fault,
         string? artifactSha256 = null, string? attemptId = null)

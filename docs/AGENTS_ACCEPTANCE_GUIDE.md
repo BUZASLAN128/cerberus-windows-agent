@@ -164,10 +164,18 @@ No callback support means failure, never a weaker fallback or OS-root import.
 MSI admission runs in the existing SYSTEM bootstrap action before StopServices.
 The updater first flushes a unique transaction grant inside its launch fence;
 the zero-count bootstrap instead requires a fresh, unexpired two-target grant.
-Later runtime/health checks consume that admission with the same product,
+Later runtime/health checks verify that admission with the same product,
 transaction, enrolled identity/key/generation, policy and compiled payload
 hashes. Expiry cannot renew admission or interrupt that transaction's existing
-completion; a consumed admission cannot authorize another repair/install.
+completion. Successful MSI commit consumes admission; health success alone does
+not. A protected campaign/device ledger permits one bootstrap from that target's
+explicit `bootstrapSourceVersion`. Rollback retires only its pending transaction;
+committed state is retained, and ambiguous pending state blocks another bootstrap.
+Every counted admission requires the immediate successor of the installed source
+version before sequence acceptance, request, launch and MSI handoff. Current-version
+polling creates no request and does not advance the sequence floor. The protected
+plan and MSI launch grant retain the predecessor captured before files change;
+the incoming helper's own version is never used as the installed predecessor.
 Desktop service-install and normal preview/stable signature checks stay intact.
 
 Before freezing versions, reserve eleven increasing lab versions below the

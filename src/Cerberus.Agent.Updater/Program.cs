@@ -56,10 +56,11 @@ internal static class Program
             plan = LoadAndValidateAttempt(attemptId, attemptDirectory, log);
             var trust = AgentUpdateTrustFactory.BuildTrust();
             var manifest = LoadAndValidateManifest(plan, attemptDirectory, trust);
-            trust.RequireTestCampaignVersion(manifest.Version);
+            trust.RequireTestCampaignInstallVersion(manifest.Version);
+            if (trust.TestCampaignVersions is not null && plan.LabSourceVersion != AgentUpdateCampaignTransition.Release(trust.CurrentVersion))
+                throw new InvalidOperationException("Development attempt installed predecessor changed.");
             ValidateAttemptArtifact(plan, manifest, attemptDirectory, root, trust);
             ValidateCanonicalServiceLayout();
-            AgentUpdateLabFaults.InterruptUpdaterOnce(active, plan, log.Write);
 
             var msiLogPath = log.CreateSiblingLogPath("msiexec");
             // Never tie the installer lifetime to the service or a cancellation token.
@@ -258,6 +259,8 @@ internal static class Program
                 throw new InvalidOperationException("Update attempt authorization changed.");
             // Only an automatic run that started from a fully active agent must prove backend contact before the install commits.
             AgentUpdateLabRuntime.RequireLaunch(active, lifecycle);
+            AgentUpdateLabFaults.InterruptUpdaterOnce(active, plan, lifecycle, self.Id,
+                new DateTimeOffset(self.StartTime.ToUniversalTime()), log.Write);
             if (active.InstallRequest?.LocalPolicyId is not null)
             {
                 var transaction = Guid.NewGuid().ToString("D");

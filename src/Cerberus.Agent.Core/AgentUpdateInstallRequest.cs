@@ -38,15 +38,18 @@ public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long
     DateTimeOffset ExpiresUtc, int Attempts = 0, string? CommandId = null, string? CampaignId = null,
     string? IdempotencyKey = null, AgentUpdateExpectedPlan? ExpectedPlan = null, string? BoundAttemptId = null,
     AgentUpdateExpectedPlan? VerifiedRelease = null, string? TerminalReason = null, DateTimeOffset? TerminalUtc = null,
-    string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null, string? LocalPolicyId = null)
+    string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null, string? LocalPolicyId = null,
+    string? LocalSourceVersion = null)
 {
     [JsonIgnore] public bool IsPending => BoundAttemptId is null && TerminalReason is null;
     [JsonIgnore] public bool IsCorrelated => CommandId is not null;
     [JsonIgnore] public bool RetainsReceipt => IsCorrelated || LocalPolicyId is not null;
     public bool SameIdentity(AgentUpdateInstallRequest other) => LifecycleGeneration == other.LifecycleGeneration &&
         CommandId == other.CommandId && CampaignId == other.CampaignId && IdempotencyKey == other.IdempotencyKey &&
-        LocalPolicyId == other.LocalPolicyId && ExpectedPlan == other.ExpectedPlan;
+        LocalPolicyId == other.LocalPolicyId && LocalSourceVersion == other.LocalSourceVersion && ExpectedPlan == other.ExpectedPlan;
     public bool IsValid() => LifecycleGeneration >= 0 && Attempts is >= 0 and <= 3 &&
+        (LocalPolicyId is null ? LocalSourceVersion is null : Version.TryParse(LocalSourceVersion, out var source) &&
+            source.Build >= 0 && source.Revision == -1 && source.ToString(3) == LocalSourceVersion) &&
         ((LocalPolicyId is null && CommandId is null && CampaignId is null && IdempotencyKey is null && ExpectedPlan is null) ||
          (LocalPolicyId is null && AgentUpdateExpectedPlan.Bounded(CommandId, 128) && AgentUpdateExpectedPlan.Bounded(CampaignId, 128) &&
           AgentUpdateExpectedPlan.Bounded(IdempotencyKey, 255)) ||

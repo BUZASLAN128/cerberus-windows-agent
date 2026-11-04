@@ -76,7 +76,7 @@ public sealed class AgentUpdateLabPolicyTests
 
     private static AgentUpdateLabPolicy Valid() => new("agent.update.lab.v1", "f4c2ca30-78df-4b86-95d7-9381eebefbe3", Start,
         Start.AddHours(24),
-        [new("pc", "tenant", PcKey, Feed + "pc/latest.json", Feed), new("vm", "tenant", VmKey, Feed + "vm106/latest.json", Feed)],
+        [new("pc", "tenant", PcKey, Feed + "pc/latest.json", Feed, "0.2.1011"), new("vm", "tenant", VmKey, Feed + "vm106/latest.json", Feed, "0.2.1011")],
         Enumerable.Range(1012, 11).Select(v => $"0.2.{v}").ToArray(), "https://collector.example.invalid", "https://sso.invalid");
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class AgentUpdateLabPolicyTests
     {
         var release = new AgentUpdateExpectedPlan("0.2.1013", "dev:43", new string('a', 64));
         var local = new AgentUpdateInstallRequest(Start, 7, Start.AddHours(1), ExpectedPlan: release,
-            LocalPolicyId: Valid().CampaignId);
+            LocalPolicyId: Valid().CampaignId, LocalSourceVersion: "0.2.1012");
         Assert.True(local.IsValid());
         Assert.True(local.RetainsReceipt);
         Assert.False(local.IsCorrelated);
@@ -101,7 +101,7 @@ public sealed class AgentUpdateLabPolicyTests
         var release = new AgentUpdateExpectedPlan("0.2.1013", "dev:43", new string('a', 64));
         var attempt = new string('a', 32);
         var request = new AgentUpdateInstallRequest(Start, 7, Start.AddHours(1), ExpectedPlan: release,
-            LocalPolicyId: policy.CampaignId, BoundAttemptId: attempt, VerifiedRelease: release);
+            LocalPolicyId: policy.CampaignId, BoundAttemptId: attempt, VerifiedRelease: release, LocalSourceVersion: "0.2.1012");
         var active = new AgentUpdateJournal { Phase = AgentUpdateStates.AwaitingConsent, AttemptId = attempt,
             LifecycleGeneration = 7, InstallRequest = request, InstallRequestAuthorityExpiresUtc = request.ExpiresUtc };
         var converted = AgentUpdateLocalService.TransitionVerifiedRequiredPolicy(active, true, 7, 7, Start.AddMinutes(5));
@@ -109,9 +109,9 @@ public sealed class AgentUpdateLabPolicyTests
         Assert.Equal(7, converted.RequiredPolicyGeneration);
         Assert.Same(request, converted.InstallRequest);
         var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], new("pc", "tenant", 7, null, AgentProducts.Cerberus, PcKey));
-        AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 7, Start.AddMinutes(30));
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 7, Start.AddHours(2)));
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 8, Start.AddMinutes(30)));
+        AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 7, Start.AddMinutes(30), "0.2.1012");
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 7, Start.AddHours(2), "0.2.1012"));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, converted, 8, Start.AddMinutes(30), "0.2.1012"));
     }
 
     [Fact]
@@ -129,7 +129,7 @@ public sealed class AgentUpdateLabPolicyTests
         var now = DateTimeOffset.UtcNow;
         var release = new AgentUpdateExpectedPlan("0.2.1013", "dev:43", new string('a', 64));
         var request = new AgentUpdateInstallRequest(now.AddMinutes(-1), 7, now.AddHours(1), Attempts: 1,
-            ExpectedPlan: release, LocalPolicyId: Valid().CampaignId);
+            ExpectedPlan: release, LocalPolicyId: Valid().CampaignId, LocalSourceVersion: "0.2.1012");
         var interrupted = AgentUpdateLocalService.TransitionStageStart(new() { InstallRequest = request }, true, false, 7, now.AddDays(1));
         Assert.Null(interrupted.AttemptId); // The real interruption point precedes artifact attempt creation.
         var journal = AgentUpdateLocalService.TransitionInterruptedPreInstallWithoutAttempt(interrupted, 7, now);
@@ -156,7 +156,7 @@ public sealed class AgentUpdateLabPolicyTests
         var product = Guid.NewGuid();
         var transaction = Guid.NewGuid().ToString("D");
         var receipt = new AgentUpdateLabRuntimeAdmission.Admission(policy.CampaignId, transaction, product.ToString("D"),
-            policy.Versions[1], "policy-hash", "payload-hashes", identity, Start.AddMinutes(5), "attempt", new string('a', 64));
+            policy.Versions[1], "policy-hash", "payload-hashes", identity, Start.AddMinutes(5), "attempt", new string('a', 64), SourceVersion: "0.2.1012");
         Assert.Throws<InvalidOperationException>(() => policy.RequireTarget(new("pc", "tenant", AgentProducts.Cerberus), PcKey, policy.ExpiresAtUtc));
         // Continuation consumes the original admitted time; it does not consult/replace it with a later clock value.
         void Check(AgentUpdateLabRuntimeAdmission.Admission value) => AgentUpdateLabRuntimeAdmission.RequireContinuation(value,
@@ -190,16 +190,16 @@ public sealed class AgentUpdateLabPolicyTests
     {
         var policy = Valid();
         var release = new AgentUpdateExpectedPlan("0.2.1013", "dev:43", new string('a', 64));
-        var admitted = AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, Start.AddHours(1));
+        var admitted = AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, Start.AddHours(1), "0.2.1012");
         Assert.Equal(policy.ExpiresAtUtc, admitted.InstallRequest!.ExpiresUtc);
-        var pending = AgentUpdateLocalService.AdmitLabInstallRequest(admitted, policy, release, 7, Start.AddHours(2));
+        var pending = AgentUpdateLocalService.AdmitLabInstallRequest(admitted, policy, release, 7, Start.AddHours(2), "0.2.1012");
         Assert.Same(admitted, pending);
         var failed = admitted with { InstallRequest = admitted.InstallRequest with { Attempts = 3,
             TerminalReason = "staging_failed", TerminalUtc = Start.AddHours(2) } };
-        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Start.AddHours(3)));
-        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy,
-            release with { Version = "0.2.1014", ReleaseId = "dev:44" }, 7, Start.AddHours(3)));
-        Assert.Null(AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, policy.ExpiresAtUtc).InstallRequest);
+        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Start.AddHours(3), "0.2.1012"));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy,
+            release with { Version = "0.2.1014", ReleaseId = "dev:44" }, 7, Start.AddHours(3), "0.2.1012"));
+        Assert.Null(AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, policy.ExpiresAtUtc, "0.2.1012").InstallRequest);
     }
 
     [Fact]
@@ -208,7 +208,7 @@ public sealed class AgentUpdateLabPolicyTests
         var now = DateTimeOffset.UtcNow;
         var policy = Valid() with { NotBeforeUtc = now.AddMinutes(-1), ExpiresAtUtc = now.AddHours(1) };
         var release = new AgentUpdateExpectedPlan("0.2.1013", "dev:43", new string('a', 64));
-        var journal = AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, now.AddSeconds(-1));
+        var journal = AgentUpdateLocalService.AdmitLabInstallRequest(new(), policy, release, 7, now.AddSeconds(-1), "0.2.1012");
         var deadline = journal.InstallRequest!.ExpiresUtc;
         var handled = await AgentUpdateLocalService.RunInstallRequestAsync(journal, 7, true,
             change => journal = change(journal), _ =>
@@ -235,7 +235,7 @@ public sealed class AgentUpdateLabPolicyTests
     {
         var release = new AgentUpdateExpectedPlan("0.2.1020", "dev:50", new string('a', 64));
         var request = new AgentUpdateInstallRequest(Start, 7, Start.AddHours(1), ExpectedPlan: release,
-            LocalPolicyId: Valid().CampaignId, BoundAttemptId: new string('a', 32), VerifiedRelease: release);
+            LocalPolicyId: Valid().CampaignId, BoundAttemptId: new string('a', 32), VerifiedRelease: release, LocalSourceVersion: "0.2.1019");
         var a = new AgentUpdateJournal { Phase = "launch_requested", AttemptId = new string('a', 32), RunnerProcessId = 100,
             RunnerStartedUtc = Start, RetryCount = 1, InstallRequest = request, LifecycleGeneration = 7 };
         var retired = AgentUpdateLocalService.RetryUnstartedLabRunner(a, a);

@@ -38,19 +38,22 @@ internal static class AgentUpdateLabRuntime
     {
         var scope = Resolve();
         if (scope is null) return;
-        RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow);
+        RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion());
     }
 
-    internal static void RequireLaunchScope(Scope scope, AgentUpdateJournal active, long lifecycleGeneration, DateTimeOffset now)
+    internal static void RequireLaunchScope(Scope scope, AgentUpdateJournal active, long lifecycleGeneration, DateTimeOffset now,
+        string installedVersion)
     {
         if (active.InstallRequest is not { LocalPolicyId: not null, VerifiedRelease: not null } request ||
             request.LocalPolicyId != scope.Policy.CampaignId || request.LifecycleGeneration != scope.Context.Generation ||
             lifecycleGeneration != scope.Context.Generation || request.ExpiresUtc > scope.Policy.ExpiresAtUtc ||
             request.ExpiresUtc <= now || now < scope.Policy.NotBeforeUtc || now >= scope.Policy.ExpiresAtUtc ||
             request.BoundAttemptId != active.AttemptId ||
+            request.LocalSourceVersion != AgentUpdateCampaignTransition.Release(installedVersion) ||
             request.TerminalReason is not null)
             throw new InvalidOperationException("Development update campaign authority expired or changed.");
         scope.Policy.RequireVersion(request.VerifiedRelease.Version);
+        scope.Policy.RequireSuccessor(installedVersion, request.VerifiedRelease.Version);
     }
 
     internal static HttpClientHandler CreateUpdateHandler()

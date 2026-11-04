@@ -30,18 +30,13 @@ internal static partial class Program
     {
         try
         {
-            if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7 or 8) || !Guid.TryParse(args[1], out var product))
+            if (!AgentUpdateSecurity.IsLocalSystem() || !AgentInstallerInvocation.TryParse(args, out var invocation))
                 return 2;
-            var operation = args[0];
+            var product = invocation!.ProductCode;
+            var operation = invocation.Operation;
             _labProduct = product;
             _labVersion = args[3];
-            var transactionIndex = operation == "health" ? 7 : 6;
-            _labTransaction = args.Length > transactionIndex ? args[transactionIndex] : null;
-            if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running" or "validate-runtime" or "validate-proxy"))
-                return 2;
-            // The optional seventh argument belongs to health: only "1" requires backend contact; any other value is off.
-            if (args.Length == 7 && operation != "health")
-                return 2;
+            _labTransaction = invocation.LabTransaction;
             if (operation == "validate-proxy")
             {
                 _ = AgentProxySettings.Parse(args[2]);
@@ -87,8 +82,15 @@ internal static partial class Program
                 ThrowIfInvalid(serverManager);
                 using var serverService = OpenExistingService(serverManager) ?? throw new Win32Exception(ErrorServiceDoesNotExist);
                 await VerifyHealthAsync(serverService, args[2], args[3], args[4], args[5], diagnosticPath, root,
-                    HealthOptions.Server(args.Length >= 7 && args[6] == "1")).ConfigureAwait(false);
-                Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Complete(product, args[3], _labTransaction);
+                    HealthOptions.Server(invocation.RequireBackendContact)).ConfigureAwait(false);
+                return 0;
+            }
+
+            if (operation is "lab-commit" or "lab-rollback")
+            {
+                if (!AgentBuildProfile.IsServer) return 2;
+                if (operation == "lab-commit") Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Complete(product, args[3], _labTransaction);
+                else Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Rollback(product, args[3], _labTransaction);
                 return 0;
             }
 

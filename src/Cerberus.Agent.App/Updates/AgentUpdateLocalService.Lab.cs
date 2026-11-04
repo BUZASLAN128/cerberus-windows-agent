@@ -32,13 +32,14 @@ internal static partial class AgentUpdateLocalService
         if (current.Policy.CampaignId != scope.Policy.CampaignId || current.Context != scope.Context ||
             latestLifecycle.Generation != current.Context.Generation || !AllowsAutomatic(latestLifecycle) || Quarantined()) return;
         Journal.Change(before => AdmitLabInstallRequest(before, current.Policy, release, latestLifecycle.Generation,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion()));
     }
 
     internal static AgentUpdateJournal AdmitLabInstallRequest(AgentUpdateJournal before, AgentUpdateLabPolicy policy,
-        AgentUpdateExpectedPlan release, long generation, DateTimeOffset now)
+        AgentUpdateExpectedPlan release, long generation, DateTimeOffset now, string installedVersion)
     {
         policy.RequireVersion(release.Version);
+        policy.RequireSuccessor(installedVersion, release.Version);
         if (now < policy.NotBeforeUtc || now >= policy.ExpiresAtUtc || !release.IsValid() || generation < 0 ||
             before.HasUnfinishedAttempt || before.MayHaveStartedInstallation || before.InstallRequest is { IsPending: true }) return before;
         if (before.InstallRequest is { LocalPolicyId: not null } previous &&
@@ -47,7 +48,8 @@ internal static partial class AgentUpdateLocalService
         var normalDeadline = now + MaxInstallRequestDelay;
         var request = new AgentUpdateInstallRequest(now, generation,
             policy.ExpiresAtUtc < normalDeadline ? policy.ExpiresAtUtc : normalDeadline,
-            ExpectedPlan: release, LocalPolicyId: policy.CampaignId);
+            ExpectedPlan: release, LocalPolicyId: policy.CampaignId,
+            LocalSourceVersion: AgentUpdateCampaignTransition.Release(installedVersion));
         return request.IsValid() ? before with { InstallRequest = request } : before;
     }
 }

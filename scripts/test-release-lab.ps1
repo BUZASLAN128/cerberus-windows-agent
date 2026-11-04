@@ -17,8 +17,8 @@ try{
     notBeforeUtc=$now.AddMinutes(-1).ToString('o');expiresAtUtc=$now.AddHours(24).ToString('o');
     backendUrl='https://collector.example.invalid';ssoBaseUrl='https://sso.invalid';
     versions=@(1012..1022|ForEach-Object {"0.2.$_"});targets=@(
-      @{agentId='pc';tenantId='tenant';keyFingerprint=('sha256:'+('a'*64));manifestUrl='https://feed.example.invalid/updates/devtest/pc/latest.json';artifactPrefix='https://feed.example.invalid/updates/devtest/'},
-      @{agentId='vm';tenantId='tenant';keyFingerprint=('sha256:'+('b'*64));manifestUrl='https://feed.example.invalid/updates/devtest/vm106/latest.json';artifactPrefix='https://feed.example.invalid/updates/devtest/'}
+      @{agentId='pc';tenantId='tenant';keyFingerprint=('sha256:'+('a'*64));manifestUrl='https://feed.example.invalid/updates/devtest/pc/latest.json';artifactPrefix='https://feed.example.invalid/updates/devtest/';bootstrapSourceVersion='0.2.1010'},
+      @{agentId='vm';tenantId='tenant';keyFingerprint=('sha256:'+('b'*64));manifestUrl='https://feed.example.invalid/updates/devtest/vm106/latest.json';artifactPrefix='https://feed.example.invalid/updates/devtest/';bootstrapSourceVersion='0.2.1011'}
     )}
   $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
   $buildInputs=@{PolicyFile=$policyFile;FeedRootFile=$rootFile;Version='0.2.1012';Channel='dev';BuildProfile='server';SigningMode='Pfx';AllowUnsigned=$true}

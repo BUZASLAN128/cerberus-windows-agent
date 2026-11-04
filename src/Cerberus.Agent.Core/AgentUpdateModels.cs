@@ -21,8 +21,14 @@ public sealed record AgentUpdateTrust(
 {
     public void RequireTestCampaignVersion(string version)
     {
-        if (TestCampaignVersions is not null && !TestCampaignVersions.Contains(version, StringComparer.Ordinal))
-            throw new InvalidOperationException("Update release is outside the authorized development campaign.");
+        if (TestCampaignVersions is null) return;
+        if (version == AgentUpdateCampaignTransition.Release(CurrentVersion) && TestCampaignVersions.Contains(version)) return;
+        RequireTestCampaignInstallVersion(version);
+    }
+
+    public void RequireTestCampaignInstallVersion(string version)
+    {
+        if (TestCampaignVersions is not null) AgentUpdateCampaignTransition.RequireNext(TestCampaignVersions, CurrentVersion, version);
     }
 }
 
@@ -54,7 +60,8 @@ public sealed record AgentUpdatePlan(
     bool Required = false,
     bool RollbackAllowed = false,
     int RetryCount = 0,
-    string? ManifestDigest = null);
+    string? ManifestDigest = null,
+    string? LabSourceVersion = null);
 
 /// <summary>Identity of the currently trusted signed manifest, independent of its artifact.</summary>
 public sealed record AgentUpdateManifestIdentity(long Sequence, string ManifestDigest)
