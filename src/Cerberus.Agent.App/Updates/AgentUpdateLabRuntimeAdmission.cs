@@ -1,5 +1,5 @@
 using System.Reflection;
-using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -301,10 +301,125 @@ internal static class AgentUpdateLabRuntimeAdmission
         var runtime = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Cerberus", "Server Agent", "app");
         var service = Path.Combine(runtime, "Cerberus.Agent.Service.exe");
         AgentUpdateSecurity.ValidateInstalledServiceSource(service, runtime);
-        var version = AgentUpdateCampaignTransition.Release(FileVersionInfo.GetVersionInfo(service).ProductVersion ?? "");
+        var version = AgentUpdateCampaignTransition.Release(AgentInstalledProductVersion.Read(service));
         if (!Version.TryParse(version, out var parsed) || parsed.Build < 0 || parsed.Revision != -1 || parsed.ToString(3) != version)
             throw new InvalidOperationException("Installed service release version is missing.");
         return version;
     }
 
+}
+
+/// <summary>Reads the same Windows string-table ProductVersion as .NET 10 FileVersionInfo, without loading the image.</summary>
+internal static class AgentInstalledProductVersion
+{
+    private const uint Localised = 1, Neutral = 2;
+    internal const int MaximumResourceBytes = 1024 * 1024;
+
+    internal static string Read(string image)
+    {
+        if (string.IsNullOrEmpty(image) || image.Contains('\0') || !Path.IsPathFullyQualified(image))
+            throw new InvalidOperationException("Installed service image path is invalid.");
+
+        // .NET 10 sizes LOCALised data, then reads LOCALised|NEUTRAL (including MUI strings).
+        // Also size the actual read flags, as required by Win32; neither result may be truncated.
+        var localisedSize = GetFileVersionInfoSizeEx(Localised, image, out _);
+        if (localisedSize == 0) throw NativeFailure();
+        _ = RequireResourceSize(localisedSize);
+        var mergedSize = GetFileVersionInfoSizeEx(Localised | Neutral, image, out _);
+        if (mergedSize == 0) throw NativeFailure();
+        _ = RequireResourceSize(mergedSize);
+        var size = RequireResourceSize(Math.Max(localisedSize, mergedSize));
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!GetFileVersionInfoEx(Localised | Neutral, image, 0, (uint)size, buffer))
+                throw NativeFailure();
+            var primary = QueryValue(buffer, @"\VarFileInfo\Translation", out var translation, out var bytes)
+                ? ReadTranslation(buffer, size, translation, bytes)
+                : 0x040904E4U; // Same absent-translation default as .NET FileVersionInfo.
+            string product = "";
+            uint[] codePages = [primary, 0x040904B0, 0x040904E4, 0x04090000];
+            for (var i = 0; i < codePages.Length; i++)
+            {
+                if (i != 0 && codePages[i] == primary) continue;
+                var prefix = @"\StringFileInfo\" + codePages[i].ToString("X8", System.Globalization.CultureInfo.InvariantCulture) + @"\";
+                // FileVersion selects the table in .NET; it is NEVER the admitted release value.
+                var file = ReadString(buffer, size, prefix + "FileVersion");
+                product = ReadString(buffer, size, prefix + "ProductVersion");
+                if (file.Length != 0) break;
+            }
+            if (product.Length == 0) throw new InvalidOperationException("Installed service ProductVersion is missing.");
+            return product;
+        }
+        finally
+        {
+            // All VerQueryValue pointers are borrowed from this allocation, and consumed before freeing it.
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    internal static int RequireResourceSize(uint bytes)
+    {
+        if (bytes is < 6 or > MaximumResourceBytes)
+            throw new InvalidOperationException("Installed service version resource size is invalid.");
+        return (int)bytes;
+    }
+
+    internal static void RequireSlice(IntPtr buffer, int bufferBytes, IntPtr value, ulong valueBytes)
+    {
+        if (buffer == IntPtr.Zero || value == IntPtr.Zero || bufferBytes is < 6 or > MaximumResourceBytes)
+            throw new InvalidOperationException("Installed service version resource pointer is invalid.");
+        var start = unchecked((ulong)buffer.ToInt64());
+        var address = unchecked((ulong)value.ToInt64());
+        if (start > ulong.MaxValue - (uint)bufferBytes || address < start ||
+            address - start > (uint)bufferBytes || valueBytes > (uint)bufferBytes - (address - start) ||
+            (address - start) % 2 != 0)
+            throw new InvalidOperationException("Installed service version resource lies outside its buffer.");
+    }
+
+    internal static uint ReadTranslation(IntPtr buffer, int bufferBytes, IntPtr value, uint bytes)
+    {
+        RequireSlice(buffer, bufferBytes, value, bytes); // Translation length is BYTES, not characters.
+        if (bytes < 4 || bytes % 4 != 0)
+            throw new InvalidOperationException("Installed service version translation is malformed.");
+        return ((uint)(ushort)Marshal.ReadInt16(value) << 16) | (ushort)Marshal.ReadInt16(value, 2);
+    }
+
+    private static string ReadString(IntPtr buffer, int bufferBytes, string key) =>
+        QueryValue(buffer, key, out var value, out var characters)
+            ? ReadUnicode(buffer, bufferBytes, value, characters) : "";
+
+    internal static string ReadUnicode(IntPtr buffer, int bufferBytes, IntPtr value, uint characters)
+    {
+        // String lengths are UTF-16 code units, INCLUDING the terminator; widen before multiplying.
+        var bytes = (ulong)characters * 2;
+        RequireSlice(buffer, bufferBytes, value, bytes);
+        if (characters == 0 || Marshal.ReadInt16(value, checked((int)bytes) - 2) != 0)
+            throw new InvalidOperationException("Installed service version string is not terminated.");
+        var copy = new byte[checked((int)bytes) - 2];
+        Marshal.Copy(value, copy, 0, copy.Length);
+        string result;
+        try { result = new UnicodeEncoding(false, false, true).GetString(copy); }
+        catch (DecoderFallbackException error)
+        { throw new InvalidOperationException("Installed service version string is malformed.", error); }
+        if (result.Contains('\0')) throw new InvalidOperationException("Installed service version string has an embedded terminator.");
+        return result;
+    }
+
+    private static InvalidOperationException NativeFailure() =>
+        new("Installed service version resource cannot be read (Win32 " + Marshal.GetLastPInvokeError() + ").");
+
+    [DllImport("version.dll", EntryPoint = "GetFileVersionInfoSizeExW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern uint GetFileVersionInfoSizeEx(uint flags, string image, out uint handle);
+
+    [DllImport("version.dll", EntryPoint = "GetFileVersionInfoExW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileVersionInfoEx(uint flags, string image, uint handle, uint bytes, IntPtr buffer);
+
+    [DllImport("version.dll", EntryPoint = "VerQueryValueW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryValue(IntPtr buffer, string key, out IntPtr value, out uint length);
 }
