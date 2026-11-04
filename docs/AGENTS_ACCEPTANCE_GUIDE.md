@@ -171,6 +171,8 @@ completion. Successful MSI commit consumes admission; health success alone does
 not. A protected campaign/device ledger permits one bootstrap from that target's
 explicit `bootstrapSourceVersion`. Rollback retires only its pending transaction;
 committed state is retained, and ambiguous pending state blocks another bootstrap.
+The scheduler and lab trust admission wait for bootstrap commit before the first
+counted update, so its controlled service interruption cannot break bootstrap health.
 Every counted admission requires the immediate successor of the installed source
 version before sequence acceptance, request, launch and MSI handoff. Current-version
 polling creates no request and does not advance the sequence floor. The protected
@@ -181,6 +183,10 @@ Desktop service-install and normal preview/stable signature checks stay intact.
 Before freezing versions, reserve eleven increasing lab versions below the
 existing signed return MSI's version. The incoming dev bootstrap permits that
 one preparatory downgrade; its ten counted transitions must then increase.
+Initialize the test feed/controller at the first counted successor, not the
+bootstrap version: a manual bootstrap need not create an updater installed/hash
+record. Its committed ledger gates the agent; the first counted transition then
+supplies the ordinary local proof and backend state required for feed progression.
 Return through the same server MSI major-upgrade path, preserving enrollment,
 protected state and sequence floors. Do not uninstall/re-enroll or clear replay.
 The historic signed manifest can remain below the campaign sequence floor:

@@ -97,11 +97,17 @@ public sealed class AgentUpdateLabRemediationTests
     {
         var policy = Policy(); var identity = Identity(); var transaction = Guid.NewGuid().ToString("D");
         var pending = new AgentUpdateLabRuntimeAdmission.BootstrapLedger(policy.CampaignId, "policy-hash", identity, transaction, "0.2.1010", "pending");
+        Assert.False(AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(null, policy, identity, "policy-hash"));
+        Assert.False(AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(pending, policy, identity, "policy-hash"));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.RequireBootstrapAvailable(pending, policy, identity, "policy-hash"));
         var rolledBack = AgentUpdateLabRuntimeAdmission.RollbackBootstrap(pending, policy, identity, transaction, "policy-hash");
         AgentUpdateLabRuntimeAdmission.RequireBootstrapAvailable(rolledBack, policy, identity, "policy-hash");
+        Assert.False(AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(rolledBack, policy, identity, "policy-hash"));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.CommitBootstrap(rolledBack, policy, identity, transaction, "policy-hash"));
         var committed = AgentUpdateLabRuntimeAdmission.CommitBootstrap(pending, policy, identity, transaction, "policy-hash");
+        Assert.True(AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(committed, policy, identity, "policy-hash"));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(committed, policy,
+            identity with { KeyFingerprint = "changed" }, "policy-hash"));
         Assert.Same(committed, AgentUpdateLabRuntimeAdmission.CommitBootstrap(committed, policy, identity, transaction, "policy-hash"));
         Assert.Same(committed, AgentUpdateLabRuntimeAdmission.RollbackBootstrap(committed, policy, identity, transaction, "policy-hash"));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.RequireBootstrapAvailable(committed, policy, identity with { Generation = 8 }, "policy-hash"));
@@ -109,6 +115,34 @@ public sealed class AgentUpdateLabRemediationTests
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.CommitBootstrap(pending, policy, identity with { KeyFingerprint = "changed" }, transaction, "policy-hash"));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.CommitBootstrap(pending, policy, identity, transaction, "changed-policy"));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntimeAdmission.CommitBootstrap(pending with { SourceVersion = "0.2.1011" }, policy, identity, transaction, "policy-hash"));
+    }
+
+    [Fact]
+    public async Task SameSchedulerWaitsWhileBootstrapPendingThenAdmitsFirstSuccessorWithoutRestart()
+    {
+        var policy = Policy(); var identity = Identity(); var transaction = Guid.NewGuid().ToString("D");
+        var ledger = new AgentUpdateLabRuntimeAdmission.BootstrapLedger(policy.CampaignId, "policy-hash", identity, transaction, "0.2.1010", "pending");
+        var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], identity);
+        var journal = new AgentUpdateJournal();
+        var feedAdmissions = 0;
+        Task Admit(CancellationToken _)
+        {
+            feedAdmissions++;
+            journal = AgentUpdateLocalService.AdmitLabInstallRequest(journal, policy,
+                new("0.2.901", "dev:1", new('a', 64)), 7, Now, "0.2.900");
+            return Task.CompletedTask;
+        }
+        Task<bool> Tick() => AgentUpdateLocalService.RunLabTickAfterBootstrapAsync(scope,
+            s => AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(ledger, s.Policy, s.Context, "policy-hash"), Admit, default);
+        Assert.False(await Tick());
+        Assert.False(await Tick());
+        Assert.Equal(0, feedAdmissions);
+        Assert.Null(journal.InstallRequest);
+        ledger = AgentUpdateLabRuntimeAdmission.CommitBootstrap(ledger, policy, identity, transaction, "policy-hash");
+        Assert.True(await Tick());
+        Assert.Equal(1, feedAdmissions);
+        Assert.Equal("0.2.901", journal.InstallRequest!.ExpectedPlan!.Version);
+        Assert.Equal("0.2.900", journal.InstallRequest.LocalSourceVersion);
     }
 
     [Fact]

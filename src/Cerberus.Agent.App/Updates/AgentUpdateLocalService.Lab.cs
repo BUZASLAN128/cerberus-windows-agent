@@ -11,6 +11,14 @@ internal static partial class AgentUpdateLocalService
         return lifecycle.Generation == generation && AllowsAutomatic(lifecycle) && !Quarantined();
     }
 
+    internal static async Task<bool> RunLabTickAfterBootstrapAsync(AgentUpdateLabRuntime.Scope? scope,
+        Func<AgentUpdateLabRuntime.Scope, bool> committed, Func<CancellationToken, Task> tick, CancellationToken ct)
+    {
+        if (scope is not null && !committed(scope)) return false;
+        await tick(ct).ConfigureAwait(false);
+        return true;
+    }
+
     /// <summary>A compiled, identity-bound operator campaign uses the normal durable request/scheduler path.</summary>
     private static async Task RunLabCampaignTickAsync(CancellationToken ct)
     {

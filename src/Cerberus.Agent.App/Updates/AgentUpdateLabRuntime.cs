@@ -38,6 +38,8 @@ internal static class AgentUpdateLabRuntime
     {
         var scope = Resolve();
         if (scope is null) return;
+        if (!AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(scope.Policy, scope.Context))
+            throw new InvalidOperationException("Development launch waits for bootstrap MSI commit.");
         RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion());
     }
 

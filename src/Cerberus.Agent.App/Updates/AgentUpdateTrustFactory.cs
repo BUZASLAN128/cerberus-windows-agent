@@ -33,6 +33,8 @@ internal static class AgentUpdateTrustFactory
         var lab = AgentUpdateLabRuntime.Resolve();
         if (lab is not null)
         {
+            if (!AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(lab.Policy, lab.Context))
+                throw new InvalidOperationException("Development update admission waits for bootstrap MSI commit.");
             var keys = ResolveUpdateManifestPublicKeys(AgentUpdateDefaults.ManifestPublicKeysB64, null, null, null, null, log);
             if (keys.Count != 1) throw new InvalidOperationException("Development campaign requires one embedded manifest key.");
             return new(keys, "dev", [lab.Target.ArtifactPrefix], WindowsDeviceInfo.GetAgentVersion(),

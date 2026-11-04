@@ -192,6 +192,25 @@ internal static class AgentUpdateLabRuntimeAdmission
             throw new InvalidOperationException("Bootstrap is already committed, pending, or belongs to another target.");
     }
 
+    internal static bool HasCommittedBootstrap(AgentUpdateLabPolicy policy, AgentStateDeliveryContext identity)
+    {
+        var root = Root(policy);
+        using var held = Lock(root);
+        return IsBootstrapCommitted(AgentUpdateDurableFile.Read<BootstrapLedger>(BootstrapPath(root), root), policy, identity, PolicyHash());
+    }
+
+    internal static bool IsBootstrapCommitted(BootstrapLedger? ledger, AgentUpdateLabPolicy policy,
+        AgentStateDeliveryContext identity, string policyHash)
+    {
+        if (ledger is null) return false;
+        if (ledger.CampaignId != policy.CampaignId || ledger.PolicySha256 != policyHash ||
+            ledger.Identity.AgentId != identity.AgentId || ledger.Identity.TenantId != identity.TenantId ||
+            ledger.Identity.KeyFingerprint != identity.KeyFingerprint || ledger.Identity.Product != identity.Product ||
+            ledger.State is not ("pending" or "committed" or "rolled_back"))
+            throw new InvalidOperationException("Bootstrap campaign/device binding changed.");
+        return ledger.State == "committed";
+    }
+
     private static void RequireBootstrapTransaction(BootstrapLedger ledger, AgentUpdateLabPolicy policy,
         AgentStateDeliveryContext identity, string transactionId, string policyHash)
     {
