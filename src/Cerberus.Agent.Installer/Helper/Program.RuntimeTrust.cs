@@ -15,11 +15,13 @@ internal static partial class Program
             .SingleOrDefault(attribute => attribute.Key == key)?.Value ?? "";
         var pins = Metadata("AgentUpdateAllowedSignerKeyIdentity");
         var channel = Metadata("AgentReleaseChannel");
+        var allowLabRuntime = Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.AllowRuntime(runtime,
+            _labProduct, _labVersion, _labTransaction);
         foreach (var name in RuntimeExecutables)
         {
             var path = Path.Combine(runtime, name);
             AgentUpdateSecurity.ValidateInstalledServiceSource(path, runtime);
-            AgentUpdateAuthenticode.Verify(path, channel, pins, allowUnsignedDevBuild: false);
+            AgentUpdateAuthenticode.Verify(path, channel, pins, allowUnsignedDevBuild: allowLabRuntime);
         }
     }
 

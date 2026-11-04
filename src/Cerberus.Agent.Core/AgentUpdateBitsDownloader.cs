@@ -8,7 +8,7 @@ namespace Cerberus.Agent.Core;
 /// Service. The service is intentionally the only production download path for MSI
 /// payloads; an unavailable BITS service is a hard failure.
 /// </summary>
-public sealed class AgentUpdateBitsDownloader
+public sealed partial class AgentUpdateBitsDownloader
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
     private const string JobPrefix = "Cerberus.Update.v2:";
@@ -21,7 +21,8 @@ public sealed class AgentUpdateBitsDownloader
         Uri source,
         string destination,
         long expectedBytes,
-        CancellationToken ct)
+        CancellationToken ct,
+        AgentUpdateBitsTlsPolicy? testTrust = null)
     {
         if (!OperatingSystem.IsWindows())
             throw new InvalidOperationException("Windows BITS is unavailable.");
@@ -51,6 +52,7 @@ public sealed class AgentUpdateBitsDownloader
         IBackgroundCopyJob? job = null;
         Guid jobId = default;
         var completed = false;
+        AgentUpdateBitsCertificateValidation? certificateValidation = null;
         try
         {
             manager = (IBackgroundCopyManager)new BackgroundCopyManager();
@@ -63,7 +65,8 @@ public sealed class AgentUpdateBitsDownloader
             // a crash before this write leaves an identifiable suspended orphan.
             AgentUpdateDurableFile.Write(Path.Combine(attemptDirectory, ReceiptFileName), attemptDirectory, new JobReceipt(jobId, attemptId));
             AgentProxySettings.ApplyBits(job.SetProxySettings, proxy);
-            AllowCompiledBackendRoot(job);
+            if (testTrust is null) AllowCompiledBackendRoot(job);
+            else certificateValidation = ConfigureCampaignTls(job, testTrust, source, jobId, attemptId, attemptDirectory);
             Check(job.AddFile(source.AbsoluteUri, fullDestination), "BITS file registration failed.");
             ct.ThrowIfCancellationRequested();
             Check(job.Resume(), "BITS job could not be resumed.");
@@ -72,6 +75,9 @@ public sealed class AgentUpdateBitsDownloader
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
+                testTrust?.RequireSource(source);
+                if (certificateValidation?.Rejected == true)
+                    throw new InvalidOperationException("BITS development TLS certificate was rejected.");
                 if (DateTimeOffset.UtcNow >= deadline)
                     throw new InvalidOperationException("BITS update download timed out.");
 
@@ -82,6 +88,8 @@ public sealed class AgentUpdateBitsDownloader
                 switch (state)
                 {
                     case BackgroundCopyJobState.Transferred:
+                        if (certificateValidation is not null && !certificateValidation.Verified)
+                            throw new InvalidOperationException("BITS completed without development TLS validation evidence.");
                         Check(job.Complete(), "BITS job could not be completed.");
                         VerifyDownloadedFile(fullDestination, expectedBytes);
                         completed = true;
@@ -123,6 +131,7 @@ public sealed class AgentUpdateBitsDownloader
                 Marshal.ReleaseComObject(job);
             if (manager is not null)
                 Marshal.ReleaseComObject(manager);
+            GC.KeepAlive(certificateValidation);
         }
     }
 

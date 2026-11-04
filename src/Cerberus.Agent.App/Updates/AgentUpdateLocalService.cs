@@ -255,6 +255,7 @@ internal static partial class AgentUpdateLocalService
         await RunScheduledAsync(ct, timer.WaitForNextTickAsync, async token =>
         {
             await ReconcileOwnedAsync(token).ConfigureAwait(false);
+            await RunLabCampaignTickAsync(token).ConfigureAwait(false);
             var lifecycle = await LoadLifecycleAsync(token).ConfigureAwait(false);
             await RunScheduledTickAsync(Journal, lifecycle, Quarantined, PendingStateDelivery,
                 async required => (await CheckAndStageOwnedAsync(automatic: true, required, token,

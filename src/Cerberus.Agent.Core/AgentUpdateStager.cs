@@ -100,6 +100,15 @@ public sealed class AgentUpdateStager
             AgentUpdateManifestValidator.Digest(manifest));
     }
 
+    /// <summary>Inspect the authenticated release before a scoped service policy admits an install request.</summary>
+    public async Task<AgentUpdateExpectedPlan> GetTrustedReleaseAsync(AgentUpdateSignal signal, CancellationToken ct)
+    {
+        if (_trust.RequireSystemAuthority && !AgentUpdateSecurity.IsLocalSystem())
+            throw new InvalidOperationException("Only the installed agent service may inspect updates.");
+        var (manifest, _) = await LoadAndValidateManifestAsync(signal, ct).ConfigureAwait(false);
+        return AgentUpdateExpectedPlan.FromManifest(manifest);
+    }
+
     public async Task<AgentUpdatePlan?> StageAsync(HeartbeatResponse response, CancellationToken ct)
         => await StageAsync(FromHeartbeat(response), ct).ConfigureAwait(false);
 
@@ -256,6 +265,7 @@ public sealed class AgentUpdateStager
         if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(_stagingRoot) > 0)
             throw new InvalidOperationException("Legacy update manifest fallback is disabled after v2 trust was accepted.");
         ValidateSignerIdentity(manifest);
+        _trust.RequireTestCampaignVersion(manifest.Version);
         if (signal.ExpectedPlan is { } expected && !expected.Matches(AgentUpdateExpectedPlan.FromManifest(manifest)))
             throw new AgentUpdatePlanMismatchException();
         if (manifest.IsV2)
@@ -323,7 +333,7 @@ public sealed class AgentUpdateStager
                     new Uri(manifest.ArtifactUrl, UriKind.Absolute),
                     artifactPath,
                     expectedBytes,
-                    ct)
+                    ct, _trust.TestCampaignBitsTrust)
                 .ConfigureAwait(false);
             return;
         }

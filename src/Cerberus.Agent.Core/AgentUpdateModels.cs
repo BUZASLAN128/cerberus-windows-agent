@@ -15,7 +15,16 @@ public sealed record AgentUpdateTrust(
     bool AllowUnsignedDevBuild = false,
     bool RequireManifestV2 = false,
     bool RequireBitsDownloader = false,
-    bool RequireSystemAuthority = false);
+    bool RequireSystemAuthority = false,
+    IReadOnlyList<string>? TestCampaignVersions = null,
+    AgentUpdateBitsTlsPolicy? TestCampaignBitsTrust = null)
+{
+    public void RequireTestCampaignVersion(string version)
+    {
+        if (TestCampaignVersions is not null && !TestCampaignVersions.Contains(version, StringComparer.Ordinal))
+            throw new InvalidOperationException("Update release is outside the authorized development campaign.");
+    }
+}
 
 public sealed record AgentUpdateSignal(
     bool Required,

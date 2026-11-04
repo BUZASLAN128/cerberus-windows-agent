@@ -30,6 +30,17 @@ internal static class AgentUpdateTrustFactory
 
     internal static AgentUpdateTrust BuildTrust(IAgentLogger? log = null)
     {
+        var lab = AgentUpdateLabRuntime.Resolve();
+        if (lab is not null)
+        {
+            var keys = ResolveUpdateManifestPublicKeys(AgentUpdateDefaults.ManifestPublicKeysB64, null, null, null, null, log);
+            if (keys.Count != 1) throw new InvalidOperationException("Development campaign requires one embedded manifest key.");
+            return new(keys, "dev", [lab.Target.ArtifactPrefix], WindowsDeviceInfo.GetAgentVersion(),
+                ConfiguredManifestUrl: lab.Target.ManifestUrl, AllowedSignerKeyIdentity: "unsigned-dev",
+                AllowUnsignedDevBuild: true, RequireManifestV2: true, RequireBitsDownloader: true,
+                RequireSystemAuthority: true, TestCampaignVersions: lab.Policy.Versions,
+                TestCampaignBitsTrust: new(AgentUpdateDefaults.LabFeedRootB64, lab.Target.ArtifactPrefix, lab.Policy.ExpiresAtUtc));
+        }
         var registryConfig = ReadUpdateTrustConfigFromRegistry();
         var expectedChannel = NormalizeChannel(AgentUpdateDefaults.ReleaseChannel);
         if (!IsSupportedChannel(expectedChannel))

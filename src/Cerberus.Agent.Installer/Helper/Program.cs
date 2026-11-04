@@ -9,13 +9,16 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Cerberus.Agent.Installer.Helper;
 
-/// <summary>MSI transaction actions, extracted from the signed package. No network, credential, RDP or Tailscale operations.</summary>
+/// <summary>MSI transaction actions. Lab admission reads protected local enrollment without exporting it; no network/enrollment/RDP/Tailscale operations.</summary>
 internal static partial class Program
 {
     private const string ServiceName = AgentInstallIdentity.ServiceName;
     // OpenService reports an optional service absence only with this exact SCM code.
     // Access denied and every other SCM error must remain a hard installer failure.
     private const int ErrorServiceDoesNotExist = 1060; // ERROR_SERVICE_DOES_NOT_EXIST
+    private static Guid _labProduct;
+    private static string _labVersion = "";
+    private static string? _labTransaction;
     private sealed record Snapshot(string? ImagePath, uint StartType, uint State, bool DelayedAutoStart, DateTimeOffset CapturedUtc, bool Completed = false)
     {
         // Older transaction records predate the marker and therefore describe a
@@ -27,9 +30,13 @@ internal static partial class Program
     {
         try
         {
-            if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7) || !Guid.TryParse(args[1], out var product))
+            if (!AgentUpdateSecurity.IsLocalSystem() || args.Length is not (6 or 7 or 8) || !Guid.TryParse(args[1], out var product))
                 return 2;
             var operation = args[0];
+            _labProduct = product;
+            _labVersion = args[3];
+            var transactionIndex = operation == "health" ? 7 : 6;
+            _labTransaction = args.Length > transactionIndex ? args[transactionIndex] : null;
             if (operation is not ("bootstrap" or "capture" or "configure" or "stop" or "restore" or "health" or "commit" or "ensure-running" or "validate-runtime" or "validate-proxy"))
                 return 2;
             // The optional seventh argument belongs to health: only "1" requires backend contact; any other value is off.
@@ -45,6 +52,7 @@ internal static partial class Program
                 // Fresh MSI installs have no service yet. Establish authority before the UI can write machine data.
                 // Existing namespaces pass the same provenance gate; bootstrap never repairs or resets them.
                 AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
+                Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Begin(product, args[3], _labTransaction);
                 return 0;
             }
             if (operation == "validate-runtime")
@@ -79,7 +87,8 @@ internal static partial class Program
                 ThrowIfInvalid(serverManager);
                 using var serverService = OpenExistingService(serverManager) ?? throw new Win32Exception(ErrorServiceDoesNotExist);
                 await VerifyHealthAsync(serverService, args[2], args[3], args[4], args[5], diagnosticPath, root,
-                    HealthOptions.Server(args.Length == 7 && args[6] == "1")).ConfigureAwait(false);
+                    HealthOptions.Server(args.Length >= 7 && args[6] == "1")).ConfigureAwait(false);
+                Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Complete(product, args[3], _labTransaction);
                 return 0;
             }
 

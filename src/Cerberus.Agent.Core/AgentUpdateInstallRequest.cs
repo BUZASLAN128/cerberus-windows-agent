@@ -38,16 +38,20 @@ public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long
     DateTimeOffset ExpiresUtc, int Attempts = 0, string? CommandId = null, string? CampaignId = null,
     string? IdempotencyKey = null, AgentUpdateExpectedPlan? ExpectedPlan = null, string? BoundAttemptId = null,
     AgentUpdateExpectedPlan? VerifiedRelease = null, string? TerminalReason = null, DateTimeOffset? TerminalUtc = null,
-    string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null)
+    string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null, string? LocalPolicyId = null)
 {
     [JsonIgnore] public bool IsPending => BoundAttemptId is null && TerminalReason is null;
     [JsonIgnore] public bool IsCorrelated => CommandId is not null;
+    [JsonIgnore] public bool RetainsReceipt => IsCorrelated || LocalPolicyId is not null;
     public bool SameIdentity(AgentUpdateInstallRequest other) => LifecycleGeneration == other.LifecycleGeneration &&
-        CommandId == other.CommandId && CampaignId == other.CampaignId && IdempotencyKey == other.IdempotencyKey && ExpectedPlan == other.ExpectedPlan;
+        CommandId == other.CommandId && CampaignId == other.CampaignId && IdempotencyKey == other.IdempotencyKey &&
+        LocalPolicyId == other.LocalPolicyId && ExpectedPlan == other.ExpectedPlan;
     public bool IsValid() => LifecycleGeneration >= 0 && Attempts is >= 0 and <= 3 &&
-        ((CommandId is null && CampaignId is null && IdempotencyKey is null && ExpectedPlan is null) ||
-         (AgentUpdateExpectedPlan.Bounded(CommandId, 128) && AgentUpdateExpectedPlan.Bounded(CampaignId, 128) &&
-          AgentUpdateExpectedPlan.Bounded(IdempotencyKey, 255))) &&
+        ((LocalPolicyId is null && CommandId is null && CampaignId is null && IdempotencyKey is null && ExpectedPlan is null) ||
+         (LocalPolicyId is null && AgentUpdateExpectedPlan.Bounded(CommandId, 128) && AgentUpdateExpectedPlan.Bounded(CampaignId, 128) &&
+          AgentUpdateExpectedPlan.Bounded(IdempotencyKey, 255)) ||
+         (Guid.TryParseExact(LocalPolicyId, "D", out _) && CommandId is null && CampaignId is null &&
+          IdempotencyKey is null && ExpectedPlan is not null && ExpiresUtc > NotBeforeUtc)) &&
         (ExpectedPlan is null || ExpectedPlan.IsValid()) && (VerifiedRelease is null || VerifiedRelease.IsValid()) &&
         (BoundAttemptId is null || AgentUpdateSecurity.IsSafeAttemptId(BoundAttemptId)) &&
         (TerminalJournalPhase is null || TerminalReason is not null && AgentUpdateJournalStore.KnownPhase(TerminalJournalPhase)) &&

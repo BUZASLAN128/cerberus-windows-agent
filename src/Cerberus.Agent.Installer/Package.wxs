@@ -32,6 +32,7 @@
     <?endif ?>
     <?endif ?>
     <MediaTemplate EmbedCab="yes" />
+    <Property Id="CERBERUS_LAB_TRANSACTION" Secure="yes" />
     <Binary Id="CerberusInstallerHelper" SourceFile="$(var.InstallerHelperPath)" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -156,7 +157,7 @@
     <CustomAction
         Id="BootstrapCerberusMachineNamespace"
         BinaryRef="CerberusInstallerHelper"
-        ExeCommand='bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        ExeCommand='bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />
@@ -183,12 +184,12 @@
     <!-- Upgrade health gate inside the install transaction: a non-zero exit fails msiexec and Windows Installer rolls the new files back
          before RemoveExistingProducts, so the previous product stays installed. CERBERUS_UPDATE_REQUIRE_BACKEND=1 also waits for backend contact. -->
     <CustomAction Id="ValidateServerRuntime" BinaryRef="CerberusInstallerHelper"
-        ExeCommand='validate-runtime "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        ExeCommand='validate-runtime "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction
         Id="CheckServerAgentHealth"
         BinaryRef="CerberusInstallerHelper"
-        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_UPDATE_REQUIRE_BACKEND]"'
+        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_UPDATE_REQUIRE_BACKEND]" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />

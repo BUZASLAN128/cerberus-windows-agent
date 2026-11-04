@@ -1,4 +1,22 @@
 <Project>
+  <ItemGroup Condition="('$(MSBuildProjectName)' == 'Cerberus.Agent.App' or '$(MSBuildProjectName)' == 'Cerberus.Agent.Runtime' or '$(MSBuildProjectName)' == 'Cerberus.Agent.Installer.Helper') and '$(AgentUpdateLabPolicyB64)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabPolicyB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateLabPolicyB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabFeedRootB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateLabFeedRootB64)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'Cerberus.Agent.Installer.Helper' and '$(AgentUpdateLabPolicyB64)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AllowUnsignedDevBuild</_Parameter1><_Parameter2>$(AllowUnsignedDevBuild)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabRuntimeHashesB64</_Parameter1><_Parameter2>$(AgentUpdateLabRuntimeHashesB64)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
   <PropertyGroup>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- Keep supported UI cultures alongside the English/Turkish framework resources. -->
