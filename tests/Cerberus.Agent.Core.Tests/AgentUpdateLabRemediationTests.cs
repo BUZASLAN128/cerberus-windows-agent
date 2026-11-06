@@ -233,6 +233,99 @@ public sealed class AgentUpdateLabRemediationTests
     }
 
     [Fact]
+    public async Task CommittedNewBootstrapHandsOverCompletedOlderCampaignWithoutResettingHistory()
+    {
+        var policy = Policy(); var identity = Identity(); var transaction = Guid.NewGuid().ToString("D");
+        var ledger = new AgentUpdateLabRuntimeAdmission.BootstrapLedger(policy.CampaignId, "policy-hash", identity, transaction, "0.2.1010", "pending");
+        var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], identity);
+        var previousPlan = new AgentUpdateExpectedPlan("0.2.1010", "dev:previous", new('b', 64));
+        var previous = new AgentUpdateInstallRequest(Now.AddHours(-1), 7, Now.AddMinutes(30), Attempts: 2,
+            ExpectedPlan: previousPlan, BoundAttemptId: new('b', 32), VerifiedRelease: previousPlan,
+            TerminalReason: "installed", TerminalUtc: Now.AddMinutes(-10), LocalPolicyId: Guid.NewGuid().ToString("D"),
+            LocalSourceVersion: "0.2.1009");
+        var original = new AgentUpdateJournal { Phase = AgentUpdateStates.Installed, AttemptId = previous.BoundAttemptId,
+            InstallRequest = previous, HealthyInstalledVersion = "0.2.1010", HealthyInstalledSequence = 42, FailedInstallSequence = 41 };
+        var journal = original;
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        var admissions = 0;
+        Task Admit(CancellationToken _)
+        {
+            admissions++;
+            var committed = AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(ledger, policy, identity, "policy-hash");
+            journal = AgentUpdateLocalService.AdmitLabInstallRequest(journal, policy, release, 7, Now, "0.2.900+installed", committed);
+            return Task.CompletedTask;
+        }
+        Task<bool> Tick() => AgentUpdateLocalService.RunLabTickAfterBootstrapAsync(scope,
+            s => AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(ledger, s.Policy, s.Context, "policy-hash"), Admit, default);
+        Assert.False(await Tick());
+        Assert.Same(original, journal);
+        Assert.Equal(0, admissions);
+        ledger = AgentUpdateLabRuntimeAdmission.CommitBootstrap(ledger, policy, identity, transaction, "policy-hash");
+        Assert.True(await Tick());
+        Assert.Equal(policy.CampaignId, journal.InstallRequest!.LocalPolicyId);
+        Assert.Equal("0.2.901", journal.InstallRequest.ExpectedPlan!.Version);
+        Assert.Equal("0.2.900", journal.InstallRequest.LocalSourceVersion);
+        Assert.Equal(policy.ExpiresAtUtc, journal.InstallRequest.ExpiresUtc);
+        Assert.Equal(42, journal.HealthyInstalledSequence);
+        Assert.Equal(41, journal.FailedInstallSequence);
+        Assert.Equal(previous, original.InstallRequest);
+        Assert.Equal(2, original.InstallRequest!.Attempts);
+        var admitted = journal;
+        Assert.True(await Tick());
+        Assert.Same(admitted, journal); // A pending new request is never replaced with a fresh budget/deadline.
+
+        Assert.Same(original, AgentUpdateLocalService.AdmitLabInstallRequest(original, policy, release, 7, Now, "0.2.900"));
+        var pendingOld = original with { InstallRequest = previous with { BoundAttemptId = null, TerminalReason = null, TerminalUtc = null } };
+        Assert.Same(pendingOld, AgentUpdateLocalService.AdmitLabInstallRequest(pendingOld, policy, release, 7, Now, "0.2.900", true));
+        foreach (var reason in new string?[] { null, "attempt_failed", "staging_failed", "expired", "lifecycle_changed" })
+        {
+            var blocked = original with { InstallRequest = previous with { TerminalReason = reason } };
+            Assert.Same(blocked, AgentUpdateLocalService.AdmitLabInstallRequest(blocked, policy, release, 7, Now, "0.2.900", true));
+        }
+        foreach (var phase in new[] { AgentUpdateStates.Failed, AgentUpdateStates.Quarantined, AgentUpdateStates.Blocked })
+        {
+            var blocked = original with { Phase = phase };
+            Assert.Same(blocked, AgentUpdateLocalService.AdmitLabInstallRequest(blocked, policy, release, 7, Now, "0.2.900", true));
+        }
+        Assert.Same(original, AgentUpdateLocalService.AdmitLabInstallRequest(original, policy,
+            release with { Version = "0.2.902" }, 7, Now, "0.2.901", true));
+        Assert.Same(original, AgentUpdateLocalService.AdmitLabInstallRequest(original, policy, release, 7, policy.ExpiresAtUtc, "0.2.900", true));
+        var replay = original with { InstallRequest = previous with { ExpectedPlan = release, VerifiedRelease = release } };
+        Assert.Same(replay, AgentUpdateLocalService.AdmitLabInstallRequest(replay, policy, release, 7, Now, "0.2.900", true));
+        var alreadyCurrent = original with { InstallRequest = previous with { TerminalReason = "current" } };
+        Assert.Equal(policy.CampaignId, AgentUpdateLocalService.AdmitLabInstallRequest(alreadyCurrent, policy,
+            release, 7, Now, "0.2.900", true).InstallRequest!.LocalPolicyId);
+    }
+
+    [Theory]
+    [InlineData("generation")]
+    [InlineData("nonce")]
+    [InlineData("agent")]
+    [InlineData("tenant")]
+    [InlineData("key")]
+    public async Task NewCampaignCannotUseAnotherCommittedBootstrapContext(string changed)
+    {
+        var policy = Policy(); var identity = Identity();
+        var ledger = new AgentUpdateLabRuntimeAdmission.BootstrapLedger(policy.CampaignId, "policy-hash", identity,
+            Guid.NewGuid().ToString("D"), "0.2.1010", "committed");
+        var other = changed switch
+        {
+            "generation" => identity with { Generation = identity.Generation + 1 },
+            "nonce" => identity with { EnrollmentNonce = "another-enrollment" },
+            "agent" => identity with { AgentId = "another-agent" },
+            "tenant" => identity with { TenantId = "another-tenant" },
+            "key" => identity with { KeyFingerprint = "sha256:" + new string('c', 64) },
+            _ => throw new InvalidOperationException()
+        };
+        var called = false;
+        var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], other);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => AgentUpdateLocalService.RunLabTickAfterBootstrapAsync(scope,
+            s => AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(ledger, s.Policy, s.Context, "policy-hash"),
+            _ => { called = true; return Task.CompletedTask; }, default));
+        Assert.False(called);
+    }
+
+    [Fact]
     public void ConsumptionIsScheduledAtMsiCommitAndRollbackPrecedesBootstrap()
     {
         var root = ServerPackageStaticTests.FindRepoRoot();

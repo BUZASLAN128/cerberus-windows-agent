@@ -206,6 +206,7 @@ internal static class AgentUpdateLabRuntimeAdmission
         if (ledger.CampaignId != policy.CampaignId || ledger.PolicySha256 != policyHash ||
             ledger.Identity.AgentId != identity.AgentId || ledger.Identity.TenantId != identity.TenantId ||
             ledger.Identity.KeyFingerprint != identity.KeyFingerprint || ledger.Identity.Product != identity.Product ||
+            ledger.Identity.Generation != identity.Generation || ledger.Identity.EnrollmentNonce != identity.EnrollmentNonce ||
             ledger.State is not ("pending" or "committed" or "rolled_back"))
             throw new InvalidOperationException("Bootstrap campaign/device binding changed.");
         return ledger.State == "committed";

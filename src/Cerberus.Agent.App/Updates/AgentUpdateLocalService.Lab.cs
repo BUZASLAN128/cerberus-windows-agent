@@ -39,20 +39,29 @@ internal static partial class AgentUpdateLocalService
         var latestLifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         if (current.Policy.CampaignId != scope.Policy.CampaignId || current.Context != scope.Context ||
             latestLifecycle.Generation != current.Context.Generation || !AllowsAutomatic(latestLifecycle) || Quarantined()) return;
+        // Attest the current registration again before transferring a completed older campaign receipt.
+        var committedBootstrap = AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(current.Policy, current.Context);
+        if (!committedBootstrap) return;
         Journal.Change(before => AdmitLabInstallRequest(before, current.Policy, release, latestLifecycle.Generation,
-            DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion()));
+            DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion(), committedBootstrap));
     }
 
     internal static AgentUpdateJournal AdmitLabInstallRequest(AgentUpdateJournal before, AgentUpdateLabPolicy policy,
-        AgentUpdateExpectedPlan release, long generation, DateTimeOffset now, string installedVersion)
+        AgentUpdateExpectedPlan release, long generation, DateTimeOffset now, string installedVersion,
+        bool committedCurrentBootstrap = false)
     {
         policy.RequireVersion(release.Version);
         policy.RequireSuccessor(installedVersion, release.Version);
         if (now < policy.NotBeforeUtc || now >= policy.ExpiresAtUtc || !release.IsValid() || generation < 0 ||
             before.HasUnfinishedAttempt || before.MayHaveStartedInstallation || before.InstallRequest is { IsPending: true }) return before;
-        if (before.InstallRequest is { LocalPolicyId: not null } previous &&
-            (previous.LocalPolicyId != policy.CampaignId || previous.ExpectedPlan?.Version == release.Version ||
-             previous.TerminalReason is not ("installed" or "current"))) return before;
+        if (before.InstallRequest is { LocalPolicyId: not null } previous)
+        {
+            if (previous.ExpectedPlan?.Version == release.Version ||
+                previous.TerminalReason is not ("installed" or "current")) return before;
+            if (previous.LocalPolicyId != policy.CampaignId &&
+                (!committedCurrentBootstrap || before.Phase is not (AgentUpdateStates.Installed or AgentUpdateStates.Current) ||
+                 AgentUpdateCampaignTransition.Release(installedVersion) != policy.Versions[0])) return before;
+        }
         var normalDeadline = now + MaxInstallRequestDelay;
         var request = new AgentUpdateInstallRequest(now, generation,
             policy.ExpiresAtUtc < normalDeadline ? policy.ExpiresAtUtc : normalDeadline,
