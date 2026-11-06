@@ -37,4 +37,58 @@ public sealed class ServiceWorkerFailureTests
     [Fact]
     public void MissingFailureStillHasSafeFailFastMessage()
         => Assert.Equal("Cerberus agent worker failed (unknown).", ServiceWorkerFailure.Describe(null));
+
+    [Fact]
+    public async Task SelectedBaseExceptionKeepsAsyncThrowOriginAndCode()
+    {
+        var worker = Task.Run(ThrowAcrossTaskBoundaryAsync);
+        var thrown = await Assert.ThrowsAsync<UnauthorizedAccessException>(() => worker);
+        var selected = worker.Exception!.GetBaseException();
+        Assert.Same(thrown, selected);
+
+        var message = ServiceWorkerFailure.Describe(selected);
+        Assert.Contains("HResult=0x80070005", message);
+        Assert.Contains(nameof(ThrowAcrossTaskBoundaryAsync), message);
+        Assert.Contains("MoveNext", message);
+        Assert.DoesNotContain("SECRET", message);
+        Assert.DoesNotContain("private", message);
+        Assert.DoesNotContain("C:/", message);
+    }
+
+    private static async Task ThrowAcrossTaskBoundaryAsync()
+    {
+        await Task.Yield();
+        var failure = new UnauthorizedAccessException("SECRET-message C:/private token=private-value");
+        failure.Data["private"] = "SECRET-data";
+        throw failure;
+    }
+
+    [Fact]
+    public void UnavailableMethodMetadataKeepsCodeWithoutExceptionContents()
+    {
+        var message = ServiceWorkerFailure.Describe(new UnauthorizedAccessException("SECRET C:/private"));
+        Assert.Equal("Cerberus agent worker failed (UnauthorizedAccessException). HResult=0x80070005", message);
+    }
+
+    [Fact]
+    public void LongDeclaringTypeKeepsThrowMethodWithinOriginBudget()
+    {
+        var failure = Assert.Throws<UnauthorizedAccessException>(
+            LongDeclaringTypeForTestingTheBoundedFailureOriginWithoutDroppingTheThrowMethod
+                .AdditionalLongDeclaringTypeForTestingThatTheOriginCannotExceedItsDeclaredBudget.ThrowForCap);
+        var message = ServiceWorkerFailure.Describe(failure);
+        Assert.True(failure.TargetSite!.DeclaringType!.FullName!.Length > 200);
+        var origin = message[(message.IndexOf("; origin=", StringComparison.Ordinal) + 9)..];
+        Assert.InRange(origin.Length, 1, 200);
+        Assert.EndsWith(".ThrowForCap", origin);
+    }
+
+    private static class LongDeclaringTypeForTestingTheBoundedFailureOriginWithoutDroppingTheThrowMethod
+    {
+        internal static class AdditionalLongDeclaringTypeForTestingThatTheOriginCannotExceedItsDeclaredBudget
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            internal static void ThrowForCap() => throw new UnauthorizedAccessException("SECRET");
+        }
+    }
 }
