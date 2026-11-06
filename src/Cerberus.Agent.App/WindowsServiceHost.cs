@@ -39,8 +39,7 @@ internal sealed class WindowsServiceHost : ServiceBase
                 // lifecycle states keep ServiceMode alive and never reach this
                 // path.
                 var failure = completed.Exception?.GetBaseException();
-                Environment.FailFast(
-                    $"Cerberus agent worker failed ({failure?.GetType().Name ?? "unknown"}).");
+                Environment.FailFast(ServiceWorkerFailure.Describe(failure));
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
