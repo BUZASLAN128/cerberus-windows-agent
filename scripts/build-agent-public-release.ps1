@@ -280,28 +280,6 @@ if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-function Invoke-FirstPartySigning([string[]]$Files) {
-  if ($tokenMode) {
-    $signtool = Find-SignTool
-    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-      -FilePath $Files -AllowedPins $tokenSignerPins
-  }
-  elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-    $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
-    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-      $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
-    }
-    [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-    $signtool = Find-SignTool
-    foreach ($peFile in $Files) {
-      & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
-      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-      & $signtool verify /pa /v $peFile
-      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-    }
-    Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
-  }
-}
 # Sign first-party PE before hashes (service assembly, MSI, zip, SBOM, manifest);
 # Invoke-FirstPartySigning also signs the installer helper below.
 $firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
