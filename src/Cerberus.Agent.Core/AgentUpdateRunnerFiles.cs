@@ -5,6 +5,9 @@ namespace Cerberus.Agent.Core;
 public static class AgentUpdateRunnerFiles
 {
     public const string RunnerDirectoryName = "runner";
+    public const string ExecutionLockFileName = "execution.lock";
+    public static bool OwnsLaunch(AgentUpdateJournal journal, string attemptId, int processId, DateTimeOffset startedUtc)
+        => journal.AttemptId == attemptId && journal.RunnerProcessId == processId && journal.RunnerStartedUtc == startedUtc;
     private sealed record Inventory(IReadOnlyDictionary<string, string> Files, string? SourceDirectory = null);
 
     /// <summary>Freeze the installed runner and its complete executable dependency tree outside the MSI-owned directory.</summary>

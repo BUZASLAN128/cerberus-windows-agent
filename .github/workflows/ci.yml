@@ -16,16 +16,20 @@ on:
 
 jobs:
   build-test-publish:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.302
 
       - name: Restore Projects
         shell: pwsh
@@ -54,20 +58,44 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }
           foreach ($project in $testProjects) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($project.Name)
-            dotnet test $project.FullName -c Release --no-build --logger "trx;LogFileName=$name.trx"
+            dotnet test $project.FullName -c Release --no-build --logger "trx;LogFileName=$name.trx" --results-directory "out/ci-test-results/desktop/$name"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
-      - name: Build MSI and logo setup for CI inspection
+      - name: Test server updater recovery and native storage guards
+        shell: pwsh
+        run: ./scripts/test-agent-update-ci.ps1 -OutputRoot out/ci-test-results/server
+
+      - name: Build desktop MSI and setup for CI inspection
         shell: pwsh
         run: |
-          ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci
+          ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/desktop
+
+      - name: Build server MSI and exercise updater authorization denial
+        shell: pwsh
+        run: |
+          ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/server -BuildProfile server
+
+      - name: Retain test and package evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-agent-ci-evidence-${{ github.sha }}
+          path: |
+            out/ci-test-results/**
+            out/ci/**/ci-package-proof.json
+            out/ci/**/updater-denial.log
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Upload Published Agent
         uses: actions/upload-artifact@v7
         with:
           name: cerberus-windows-agent-win-x64
           path: |
-            out/ci/publish/Cerberus.Agent-dev-0.0.0.msi
-            out/ci/publish/Cerberus.Agent-dev-0.0.0.exe
+            out/ci/desktop/publish/Cerberus.Agent-dev-0.0.0.msi
+            out/ci/desktop/publish/Cerberus.Agent-dev-0.0.0.exe
+            out/ci/server/publish/Cerberus.Agent-dev-0.0.0-server.msi
+            out/ci/server/publish/Cerberus.Agent-dev-0.0.0-server.exe
+          retention-days: 7
           if-no-files-found: error

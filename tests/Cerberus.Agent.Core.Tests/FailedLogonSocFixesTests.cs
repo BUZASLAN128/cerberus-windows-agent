@@ -112,6 +112,7 @@ public sealed class FailedLogonSocFixesTests
                 return (collected, System.Diagnostics.Stopwatch.GetElapsedTime(started));
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
                 .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(elapsed > TimeSpan.FromSeconds(1));
             Assert.True(elapsed < TimeSpan.FromSeconds(5));
             Assert.Equal(FailedLogonSection.Iso(T0.AddMinutes(5)), Window(result, "window_start_utc"));
             Assert.Equal("unavailable", Window(result, "status"));
@@ -130,11 +131,11 @@ public sealed class FailedLogonSocFixesTests
         await guard.WaitAsync();
         try
         {
-            await Task.Run(() =>
+            await Task.Factory.StartNew(() =>
             {
                 FailedLogonSection.KeepPendingIfReported(null);
                 FailedLogonSection.CommitPending();
-            }).WaitAsync(TimeSpan.FromSeconds(1));
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).WaitAsync(TimeSpan.FromSeconds(1));
         }
         finally
         {

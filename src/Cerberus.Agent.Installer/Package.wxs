@@ -32,6 +32,7 @@
     <?endif ?>
     <?endif ?>
     <MediaTemplate EmbedCab="yes" />
+    <Property Id="CERBERUS_LAB_TRANSACTION" Secure="yes" />
     <Binary Id="CerberusInstallerHelper" SourceFile="$(var.InstallerHelperPath)" />
 
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
@@ -156,7 +157,7 @@
     <CustomAction
         Id="BootstrapCerberusMachineNamespace"
         BinaryRef="CerberusInstallerHelper"
-        ExeCommand='bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        ExeCommand='bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />
@@ -183,12 +184,12 @@
     <!-- Upgrade health gate inside the install transaction: a non-zero exit fails msiexec and Windows Installer rolls the new files back
          before RemoveExistingProducts, so the previous product stays installed. CERBERUS_UPDATE_REQUIRE_BACKEND=1 also waits for backend contact. -->
     <CustomAction Id="ValidateServerRuntime" BinaryRef="CerberusInstallerHelper"
-        ExeCommand='validate-runtime "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
+        ExeCommand='validate-runtime "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred" Impersonate="no" Return="check" />
     <CustomAction
         Id="CheckServerAgentHealth"
         BinaryRef="CerberusInstallerHelper"
-        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_UPDATE_REQUIRE_BACKEND]"'
+        ExeCommand='health "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_UPDATE_REQUIRE_BACKEND]" "[CERBERUS_LAB_TRANSACTION]"'
         Execute="deferred"
         Impersonate="no"
         Return="check" />
@@ -200,6 +201,13 @@
         Execute="rollback"
         Impersonate="no"
         Return="ignore" />
+    <!-- Consumption belongs to successful MSI commit, never to the earlier health probe. -->
+    <CustomAction Id="CommitLabCampaignAdmission" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='lab-commit "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
+        Execute="commit" Impersonate="no" Return="check" />
+    <CustomAction Id="RollbackLabCampaignAdmission" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='lab-rollback "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_LAB_TRANSACTION]"'
+        Execute="rollback" Impersonate="no" Return="check" />
     <?else ?>
     <CustomAction
         Id="CaptureCerberusServiceBeforeUpgrade"
@@ -255,6 +263,8 @@
           Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND UILevel &lt; 5 AND NOT CERBERUS_EULA_ACCEPTED = 1" />
       <Custom Action="BootstrapCerberusMachineNamespace" Before="StopServices" Condition="NOT REMOVE" />
       <?if $(var.AgentBuildProfile) = server ?>
+      <Custom Action="RollbackLabCampaignAdmission" Before="BootstrapCerberusMachineNamespace" Condition="NOT REMOVE" />
+      <Custom Action="CommitLabCampaignAdmission" Before="InstallFinalize" Condition="NOT REMOVE" />
       <Custom Action="ValidateServerRuntime" Before="InstallServices" Condition="NOT REMOVE" />
       <Custom Action="ServerEnrollFromInstaller" Before="InstallFinalize" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />
       <Custom Action="ServerEnrollRollback" After="ServerEnrollFromInstaller" Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND CERBERUS_ENROLLMENT_PROOF" />

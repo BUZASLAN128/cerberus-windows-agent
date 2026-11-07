@@ -12,6 +12,8 @@ internal static class AgentUpdateDefaults
     public const string AllowUnsignedDevBuildMetadataName = "AllowUnsignedDevBuild";
 
     public static string ManifestPublicKeysB64 => ReadAssemblyMetadata(ManifestPublicKeysB64MetadataName);
+    public static string LabPolicyB64 => ReadAssemblyMetadata(AgentUpdateLabPolicy.MetadataName);
+    public static string LabFeedRootB64 => ReadAssemblyMetadata("AgentUpdateLabFeedRootB64");
 
     public static string ManifestUrl => ReadAssemblyMetadata(ManifestUrlMetadataName);
 

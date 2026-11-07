@@ -39,6 +39,7 @@ internal static partial class AgentUpdateLocalService
             if (pendingState(lifecycle) || (automatic || AgentBuildProfile.IsServer) && (!AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) ||
                     !lifecycle.QuiescenceComplete || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
+            AgentUpdateLabRuntime.RequireLaunch(active, lifecycle);
             launch(lifecycle);
         }
     }
