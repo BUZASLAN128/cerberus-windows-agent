@@ -1,5 +1,6 @@
 # Runs existing production updater/server tests; never installs an agent or changes privileges.
-param([string]$OutputRoot = 'out/ci-test-results/server', [string]$Configuration = 'Release')
+param([string]$OutputRoot = 'out/ci-test-results/server', [string]$Configuration = 'Release',
+    [string]$DotNetExecutable = 'dotnet.exe', [switch]$UseImplementationReferences)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $out = [IO.Path]::GetFullPath($OutputRoot, $repoRoot)
@@ -21,17 +22,25 @@ try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $proof.elevatedAdministrator = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $proof.elevatedAdministrator) { throw 'Native storage checks require an already elevated runner; this script never self-elevates.' }
+    $dotnet = (Get-Command $DotNetExecutable -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    if ([IO.Path]::GetExtension($dotnet) -ine '.exe') { throw 'Use the native dotnet executable, not a command wrapper.' }
+    $proof.dotNetExecutable = $dotnet
+    $referenceArgs = @()
+    if ($UseImplementationReferences) {
+        $referenceArgs = @('-p:ProduceReferenceAssembly=false', '-p:CompileUsingReferenceAssemblies=false')
+    }
+    $proof.referenceMode = if ($UseImplementationReferences) { 'implementation' } else { 'sdk-default' }
     $selectionPath = Join-Path $repoRoot 'tests/fixtures/agent-update-ci-native-cases.json'
     $selection = Get-Content -LiteralPath $selectionPath -Raw | ConvertFrom-Json
     $anchorsPath = Join-Path $repoRoot 'tests/fixtures/agent-command-test-anchors.b64'
     $anchors = (Get-Content -LiteralPath $anchorsPath -Raw).Trim()
     $proof.selectionSha256 = (Get-FileHash -LiteralPath $selectionPath).Hash
     $proof.publicFixtureAnchorsSha256 = (Get-FileHash -LiteralPath $anchorsPath).Hash
-    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile'
+    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~ServiceWorkerFailureTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile'
     $project = Join-Path $repoRoot 'tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj'
     $proof.filter = $filter
     # Same isolated public-anchor server compilation used by preflight.ps1. No release trust inputs.
-    & dotnet test $project -c $Configuration -p:AgentBuildProfile=server "-p:AgentCommandTrustAnchorsB64=$anchors" `
+    & $dotnet test $project -c $Configuration -p:AgentBuildProfile=server "-p:AgentCommandTrustAnchorsB64=$anchors" @referenceArgs `
         -p:UseSharedCompilation=false -p:IntermediateOutputPath=obj/_int/ci-server/ `
         -p:BaseOutputPath=bin/_testout_ci_server/ --disable-build-servers --filter $filter `
         --logger 'trx;LogFileName=server-updater.trx' --results-directory $out *> (Join-Path $out 'test.log')
@@ -54,9 +63,11 @@ try {
     $adapter = @($rows | Where-Object { $_.testName.Contains('.AgentUpdateLabRemediationTests.') }).Count
     $proof.serverStartupCases = $serverStartup
     $proof.versionAdapterCases = $adapter
+    $diagnostics = @($rows | Where-Object { $_.testName.Contains('.ServiceWorkerFailureTests.') }).Count
+    $proof.workerFailureCases = $diagnostics
     if ($proof.testExitCode -ne 0 -or $proof.total -eq 0 -or $proof.passed -ne $proof.total -or
         $selection.schemaVersion -ne 1 -or @($selection.cases | Sort-Object -Unique).Count -ne 27 -or $nativeRows.Count -ne 27 -or
-        @($nativeRows | Where-Object outcome -ne 'Passed').Count -ne 0 -or $serverStartup -eq 0 -or $adapter -eq 0) {
+        @($nativeRows | Where-Object outcome -ne 'Passed').Count -ne 0 -or $serverStartup -eq 0 -or $adapter -eq 0 -or $diagnostics -eq 0) {
         throw 'Updater/server checks are failed, missing or skipped; preserve evidence and stop.'
     }
     $proof.status = 'completed'

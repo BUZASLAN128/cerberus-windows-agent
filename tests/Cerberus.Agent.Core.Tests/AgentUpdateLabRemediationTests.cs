@@ -233,6 +233,152 @@ public sealed class AgentUpdateLabRemediationTests
     }
 
     [Fact]
+    public async Task CommittedNewBootstrapPreservesForeignFailedReceiptBeforeAdmittingItsSuccessor()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-" + Guid.NewGuid().ToString("N"));
+        var policy = Policy(); var identity = Identity();
+        var ledger = new AgentUpdateLabRuntimeAdmission.BootstrapLedger(policy.CampaignId, "policy-hash", identity,
+            Guid.NewGuid().ToString("D"), "0.2.960", "committed");
+        var store = new AgentUpdateJournalStore(root);
+        store.Change(_ => ClosedForeignFailure());
+        var original = store.Read();
+        string? retainedPath = null;
+        var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], identity);
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Task Admit(CancellationToken _)
+        {
+            Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(store.Read(), policy, "0.2.900", true));
+            store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, release, 7, Now,
+                "0.2.900+installed", true, snapshot => retainedPath = AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot)));
+            return Task.CompletedTask;
+        }
+        Assert.True(await AgentUpdateLocalService.RunLabTickAfterBootstrapAsync(scope,
+            s => AgentUpdateLabRuntimeAdmission.IsBootstrapCommitted(ledger, s.Policy, s.Context, "policy-hash"), Admit, default));
+        var admitted = new AgentUpdateJournalStore(root).Read();
+        Assert.Equal(policy.CampaignId, admitted.InstallRequest!.LocalPolicyId);
+        Assert.Equal("0.2.900", admitted.InstallRequest.LocalSourceVersion);
+        Assert.Equal("0.2.901", admitted.InstallRequest.ExpectedPlan!.Version);
+        Assert.True(admitted.InstallRequest.IsPending);
+        Assert.Equal(original with { Revision = admitted.Revision, InstallRequest = admitted.InstallRequest }, admitted);
+        Assert.Equal(original, AgentUpdateDurableFile.Read<AgentUpdateJournal>(retainedPath!, root));
+        var retainedBytes = File.ReadAllBytes(retainedPath!);
+        var repeated = AgentUpdateLocalService.AdmitLabInstallRequest(admitted, policy, release, 7, Now.AddMinutes(5),
+            "0.2.900", true, _ => throw new InvalidOperationException("A pending request cannot be renewed."));
+        Assert.Same(admitted, repeated);
+        Assert.Equal(retainedBytes, File.ReadAllBytes(retainedPath!));
+    }
+
+    [Fact]
+    public void FailedHandoverRequiresDifferentPolicyCommitAndDurablePreservation()
+    {
+        var policy = Policy(); var failed = ClosedForeignFailure();
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Now, "0.2.900", true));
+        var writes = 0;
+        AgentUpdateJournal Admit(AgentUpdateJournal before, bool committed = true, string installed = "0.2.900") =>
+            AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, release, 7, Now, installed, committed, _ => writes++);
+        Assert.Same(failed, Admit(failed, false));
+        // A successor manifest for another installed release cannot transfer the predecessor.
+        Assert.Throws<InvalidOperationException>(() => Admit(failed, true, "0.2.901"));
+        var samePolicy = failed with { InstallRequest = failed.InstallRequest! with { LocalPolicyId = policy.CampaignId } };
+        Assert.False(AgentUpdateLocalService.CanContinueLabCampaign(samePolicy, policy, "0.2.900", true));
+        Assert.Same(samePolicy, Admit(samePolicy));
+        Assert.Same(samePolicy, Admit(samePolicy));
+        Assert.Equal(0, writes);
+    }
+
+    [Theory]
+    [InlineData("bound")]
+    [InlineData("terminal-attempt")]
+    [InlineData("terminal-phase")]
+    [InlineData("result-attempt")]
+    [InlineData("result-state")]
+    [InlineData("quarantine")]
+    [InlineData("generation")]
+    [InlineData("verified-release")]
+    [InlineData("recovery-required")]
+    public void InconsistentOrUnfinishedFailureCannotBeHandedOver(string changed)
+    {
+        var policy = Policy(); var failed = ClosedForeignFailure(); var request = failed.InstallRequest!;
+        failed = changed switch
+        {
+            "bound" => failed with { InstallRequest = request with { BoundAttemptId = new('b', 32) } },
+            "terminal-attempt" => failed with { InstallRequest = request with { TerminalJournalAttemptId = new('b', 32) } },
+            "terminal-phase" => failed with { InstallRequest = request with { TerminalJournalPhase = AgentUpdateStates.Installed } },
+            "result-attempt" => failed with { InstallerResult = failed.InstallerResult! with { AttemptId = new('b', 32) } },
+            "result-state" => failed with { InstallerResult = failed.InstallerResult! with { State = AgentUpdateStates.Installed } },
+            "quarantine" => failed with { InstallerResult = failed.InstallerResult! with { Quarantined = true } },
+            "generation" => failed with { LifecycleGeneration = 8 },
+            "verified-release" => failed with { InstallRequest = request with { VerifiedRelease = request.VerifiedRelease! with { Version = "0.2.942" } } },
+            "recovery-required" => failed with { Phase = AgentUpdateStates.RecoveryRequired },
+            _ => throw new InvalidOperationException()
+        };
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Assert.False(AgentUpdateLocalService.CanContinueLabCampaign(failed, policy, "0.2.900", true));
+        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Now, "0.2.900", true,
+            _ => throw new InvalidOperationException("Invalid predecessors cannot write receipts.")));
+    }
+
+    [Fact]
+    public void InterruptedHandoverRetainsTheFailureAndCanRetryWithoutReplacingItsReceipt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-crash-" + Guid.NewGuid().ToString("N"));
+        var store = new AgentUpdateJournalStore(root); store.Change(_ => ClosedForeignFailure());
+        var original = store.Read(); var policy = Policy();
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        string? retainedPath = null;
+        Assert.Throws<IOException>(() => store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before,
+            policy, release, 7, Now, "0.2.900", true, snapshot =>
+            {
+                retainedPath = AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot);
+                throw new IOException("Simulated interruption before journal replacement.");
+            })));
+        Assert.Equal(original, new AgentUpdateJournalStore(root).Read());
+        var bytes = File.ReadAllBytes(retainedPath!);
+        store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, release, 7, Now,
+            "0.2.900", true, snapshot => AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot)));
+        Assert.Equal(bytes, File.ReadAllBytes(retainedPath!));
+        Assert.Equal(original, AgentUpdateDurableFile.Read<AgentUpdateJournal>(retainedPath!, root));
+        Assert.Equal(policy.CampaignId, store.Read().InstallRequest!.LocalPolicyId);
+    }
+
+    [Fact]
+    public void ConflictingPreservationFailsClosedWithoutReplacingTheActiveJournal()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-conflict-" + Guid.NewGuid().ToString("N"));
+        var store = new AgentUpdateJournalStore(root); store.Change(_ => ClosedForeignFailure());
+        var original = store.Read(); var path = AgentUpdateLocalService.PreserveClosedLabFailure(root, original);
+        var conflicting = original with { FailedInstallSequence = original.FailedInstallSequence + 1 };
+        AgentUpdateDurableFile.Write(path, root, conflicting);
+        var policy = Policy(); var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Assert.Throws<InvalidOperationException>(() => store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before,
+            policy, release, 7, Now, "0.2.900", true, snapshot => AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot))));
+        Assert.Equal(original, store.Read());
+        Assert.Equal(conflicting, AgentUpdateDurableFile.Read<AgentUpdateJournal>(path, root));
+        File.WriteAllText(path, "not-json");
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root, original));
+        Assert.Equal(original, store.Read());
+    }
+
+    private static AgentUpdateJournal ClosedForeignFailure()
+    {
+        const string attempt = "806f2475f85d416aa1ad7b10bfd9069b";
+        var plan = new AgentUpdateExpectedPlan("0.2.941", "dev:failed", new('b', 64));
+        return new AgentUpdateJournal
+        {
+            Phase = AgentUpdateStates.Failed, AttemptId = attempt, LifecycleGeneration = 7,
+            HealthyInstalledVersion = "0.2.901", HealthyInstalledSequence = 42, FailedInstallSequence = 43,
+            RunnerProcessId = 6812, InstallerProcessId = 3924, RunnerStartedUtc = Now.AddHours(-2),
+            InstallRequest = new AgentUpdateInstallRequest(Now.AddHours(-2), 7, Now.AddHours(1), Attempts: 1,
+                ExpectedPlan: plan, BoundAttemptId: attempt, VerifiedRelease: plan, TerminalReason: "attempt_failed",
+                TerminalUtc: Now.AddHours(-1), TerminalJournalPhase: AgentUpdateStates.Failed, TerminalJournalAttemptId: attempt,
+                LocalPolicyId: "d317377e-5553-43cf-9404-bfcb0a236733", LocalSourceVersion: "0.2.940"),
+            InstallerResult = new AgentUpdateInstallerResult(AgentUpdateInstallerResult.CurrentSchemaVersion, "failure-result",
+                AgentUpdateStates.Failed, Now.AddHours(-1).ToString("O"), 1603, false, "msi_failed", null, null, attempt)
+        };
+    }
+
+    [Fact]
     public async Task CommittedNewBootstrapHandsOverCompletedOlderCampaignWithoutResettingHistory()
     {
         var policy = Policy(); var identity = Identity(); var transaction = Guid.NewGuid().ToString("D");
