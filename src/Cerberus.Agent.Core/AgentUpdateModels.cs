@@ -15,7 +15,22 @@ public sealed record AgentUpdateTrust(
     bool AllowUnsignedDevBuild = false,
     bool RequireManifestV2 = false,
     bool RequireBitsDownloader = false,
-    bool RequireSystemAuthority = false);
+    bool RequireSystemAuthority = false,
+    IReadOnlyList<string>? TestCampaignVersions = null,
+    AgentUpdateBitsTlsPolicy? TestCampaignBitsTrust = null)
+{
+    public void RequireTestCampaignVersion(string version)
+    {
+        if (TestCampaignVersions is null) return;
+        if (version == AgentUpdateCampaignTransition.Release(CurrentVersion) && TestCampaignVersions.Contains(version)) return;
+        RequireTestCampaignInstallVersion(version);
+    }
+
+    public void RequireTestCampaignInstallVersion(string version)
+    {
+        if (TestCampaignVersions is not null) AgentUpdateCampaignTransition.RequireNext(TestCampaignVersions, CurrentVersion, version);
+    }
+}
 
 public sealed record AgentUpdateSignal(
     bool Required,
@@ -45,7 +60,8 @@ public sealed record AgentUpdatePlan(
     bool Required = false,
     bool RollbackAllowed = false,
     int RetryCount = 0,
-    string? ManifestDigest = null);
+    string? ManifestDigest = null,
+    string? LabSourceVersion = null);
 
 /// <summary>Identity of the currently trusted signed manifest, independent of its artifact.</summary>
 public sealed record AgentUpdateManifestIdentity(long Sequence, string ManifestDigest)

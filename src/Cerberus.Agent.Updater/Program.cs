@@ -30,13 +30,24 @@ internal static class Program
         var root = AgentUpdateStager.DefaultStagingRoot;
         var journalStore = new AgentUpdateJournalStore(root);
         var ownsAttempt = false;
+        using var self = Process.GetCurrentProcess();
+        var ownStartedUtc = new DateTimeOffset(self.StartTime.ToUniversalTime());
         try
         {
             var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(root, attemptId);
-            using var executionLock = new FileStream(Path.Combine(attemptDirectory, "execution.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            using var executionLock = new FileStream(Path.Combine(attemptDirectory, AgentUpdateRunnerFiles.ExecutionLockFileName), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             var active = journalStore.Read();
             if (active.AttemptId != attemptId || active.Phase != "launch_requested")
                 throw new InvalidOperationException("Update attempt is not authorized for installation.");
+            if (AgentUpdateDefaults.LabPolicyB64.Length > 0)
+            {
+                using (AgentUpdateLaunchFence.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    active = journalStore.Read();
+                    if (active.Phase != "launch_requested" || !AgentUpdateRunnerFiles.OwnsLaunch(active, attemptId, self.Id, ownStartedUtc))
+                        throw new InvalidOperationException("Update runner no longer owns this launch.");
+                }
+            }
             ownsAttempt = true;
             var runnerDirectory = Path.Combine(attemptDirectory, AgentUpdateRunnerFiles.RunnerDirectoryName);
             if (!string.Equals(Path.GetFullPath(AppContext.BaseDirectory).TrimEnd(Path.DirectorySeparatorChar), runnerDirectory, StringComparison.OrdinalIgnoreCase))
@@ -45,6 +56,9 @@ internal static class Program
             plan = LoadAndValidateAttempt(attemptId, attemptDirectory, log);
             var trust = AgentUpdateTrustFactory.BuildTrust();
             var manifest = LoadAndValidateManifest(plan, attemptDirectory, trust);
+            trust.RequireTestCampaignInstallVersion(manifest.Version);
+            if (trust.TestCampaignVersions is not null && plan.LabSourceVersion != AgentUpdateCampaignTransition.Release(trust.CurrentVersion))
+                throw new InvalidOperationException("Development attempt installed predecessor changed.");
             ValidateAttemptArtifact(plan, manifest, attemptDirectory, root, trust);
             ValidateCanonicalServiceLayout();
 
@@ -64,7 +78,7 @@ internal static class Program
             var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
                 ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"),
                     journalStore.Read().InstallerStartedUtc, plan.Version, log.Write) : null;
-            journalStore.ChangeAttempt(attemptId, before => before with
+            journalStore.ChangeAttempt(attemptId, before => !MayWriteRunnerResult(before, attemptId, self.Id, ownStartedUtc) ? before : before with
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
@@ -86,7 +100,7 @@ internal static class Program
             };
             try
             {
-                if (ownsAttempt) journalStore.ChangeAttempt(attemptId, before => before.Phase is AgentUpdateStates.Blocked or AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Quarantined
+                if (ownsAttempt) journalStore.ChangeAttempt(attemptId, before => !MayWriteRunnerResult(before, attemptId, self.Id, ownStartedUtc) || before.Phase is AgentUpdateStates.Blocked or AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Quarantined
                     ? before : before with
                 {
                     Phase = before.MayHaveStartedInstallation ? AgentUpdateStates.RecoveryRequired : AgentUpdateStates.Failed,
@@ -108,6 +122,9 @@ internal static class Program
         attemptId = args[1];
         return true;
     }
+
+    private static bool MayWriteRunnerResult(AgentUpdateJournal before, string attemptId, int processId, DateTimeOffset startedUtc)
+        => AgentUpdateDefaults.LabPolicyB64.Length == 0 || AgentUpdateRunnerFiles.OwnsLaunch(before, attemptId, processId, startedUtc);
 
     private static AgentUpdatePlan LoadAndValidateAttempt(string attemptId, string attemptDirectory, UpdaterLog log)
     {
@@ -233,11 +250,24 @@ internal static class Program
             var journalStore = new AgentUpdateJournalStore(AgentUpdateStager.DefaultStagingRoot);
             var active = journalStore.Read();
             var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(CancellationToken.None).GetAwaiter().GetResult();
+            using var self = Process.GetCurrentProcess();
+            if (!MayWriteRunnerResult(active, plan.AttemptId!, self.Id, new DateTimeOffset(self.StartTime.ToUniversalTime())))
+                throw new InvalidOperationException("Update runner no longer owns the installer launch.");
             if (active.AttemptId != plan.AttemptId || active.Phase != "launch_requested" ||
                 lifecycle.Generation != active.LifecycleGeneration ||
                 (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
                 throw new InvalidOperationException("Update attempt authorization changed.");
             // Only an automatic run that started from a fully active agent must prove backend contact before the install commits.
+            AgentUpdateLabRuntime.RequireLaunch(active, lifecycle);
+            AgentUpdateLabFaults.InterruptUpdaterOnce(active, plan, lifecycle, self.Id,
+                new DateTimeOffset(self.StartTime.ToUniversalTime()), log.Write);
+            if (active.InstallRequest?.LocalPolicyId is not null)
+            {
+                var transaction = Guid.NewGuid().ToString("D");
+                var lab = AgentUpdateLabRuntime.Resolve() ?? throw new InvalidOperationException("Development launch scope is missing.");
+                AgentUpdateLabRuntimeAdmission.AdmitLaunch(lab.Policy, lab.Context, plan, active.InstallRequest, transaction);
+                psi.ArgumentList.Add("CERBERUS_LAB_TRANSACTION=" + transaction);
+            }
             if (AgentUpdateRollbackPolicy.RequiresBackendContact(active.Automatic, lifecycle.State))
                 psi.ArgumentList.Add("CERBERUS_UPDATE_REQUIRE_BACKEND=1");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with

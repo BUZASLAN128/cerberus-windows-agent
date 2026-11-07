@@ -199,8 +199,9 @@ public sealed class AgentUpdateRollbackPolicyTests
         Assert.Contains("Execute=\"deferred\"", health);
         Assert.Contains("Impersonate=\"no\"", health);
         Assert.Contains("Return=\"check\"", health);
-        Assert.Matches("ExeCommand='health [^']*\"\\[CERBERUS_UPDATE_REQUIRE_BACKEND\\]\"'", health);
-        Assert.Equal(7, Regex.Matches(Regex.Match(health, "ExeCommand='([^']*)'").Groups[1].Value, "\"[^\"]*\"").Count + 1);
+        Assert.Matches("ExeCommand='health [^']*\"\\[CERBERUS_UPDATE_REQUIRE_BACKEND\\]\" \"\\[CERBERUS_LAB_TRANSACTION\\]\"'", health);
+        Assert.Equal(8, Regex.Matches(Regex.Match(health, "ExeCommand='([^']*)'").Groups[1].Value, "\"[^\"]*\"").Count + 1);
+        Assert.Matches(@"<Property Id=""CERBERUS_LAB_TRANSACTION"" Secure=""yes"" />", package);
 
         var rollback = CustomActionElement(package, "EnsureServerAgentRunningOnRollback");
         Assert.Contains("Execute=\"rollback\"", rollback);

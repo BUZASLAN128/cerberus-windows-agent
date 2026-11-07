@@ -126,7 +126,7 @@ try {
   . (Join-Path $PSScriptRoot "test-release-signing-token.ps1")
   . (Join-Path $PSScriptRoot "test-release-signing-anchors.ps1")
   Check "hash and timestamp flags match the PFX path" {
-    $text = Get-Content -Raw -LiteralPath $mainScript
+    $text = (Get-Command Invoke-FirstPartySigning -CommandType Function).ScriptBlock.ToString()
     $text -match 'sign /fd SHA256 /td SHA256 /tr \$TimestampUrl /f \$certPath /p \$certPassword \$peFile' -and
       ((Get-SignToolTokenSignArguments -Thumbprint $thumbprint -TimestampUrl '$TimestampUrl' -FilePath 'F')[0..6] -join " ") -ceq 'sign /fd SHA256 /td SHA256 /tr $TimestampUrl'
   }

@@ -22,6 +22,8 @@ param(
   [switch]$SkipTests,
   [switch]$AllowUnsignedDevBuild,
   [switch]$AllowEphemeralManifestKey,
+  [string]$UpdateLabPolicyFile = "",
+  [string]$UpdateLabFeedRootFile = "",
 
   # Pfx: WINDOWS_SIGNING_CERT_BASE64 + AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM (default, CI path).
   # Token: certificates selected by thumbprint from CurrentUser\My (private keys stay on the token),
@@ -58,6 +60,9 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 . (Join-Path $PSScriptRoot "release-profile-lib.ps1")
 . (Join-Path $PSScriptRoot "release-bundle-lib.ps1")
 . (Join-Path $PSScriptRoot "release-runtime-publish-lib.ps1")
+. (Join-Path $PSScriptRoot "release-lab-lib.ps1")
+$labBuild = Read-ReleaseLabPolicy -PolicyFile $UpdateLabPolicyFile -FeedRootFile $UpdateLabFeedRootFile `
+  -Version $Version -Channel $Channel -BuildProfile $BuildProfile -SigningMode $SigningMode -AllowUnsigned ([bool]$AllowUnsignedDevBuild)
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -73,8 +78,9 @@ $signingPlan = Assert-ReleaseSigningInputs `
 $tokenMode = ($signingPlan.Mode -eq "Token")
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$outputRootPath = Join-Path $repoRoot $OutputRoot
+$outputRootPath = [IO.Path]::GetFullPath($OutputRoot, $repoRoot)
 $publishDir = Join-Path $outputRootPath "publish"
+if ($null -ne $labBuild -and (Test-Path -LiteralPath $outputRootPath)) { throw 'Lab candidates require a fresh output directory; preserve existing artifacts.' }
 $releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel $BackendTrustAnchorsFile $SecondaryBackendUrl $SecondaryCommandTrustAnchorsFile
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
@@ -118,6 +124,9 @@ else {
   if ([string]::IsNullOrWhiteSpace($DefaultSsoScope)) { $DefaultSsoScope = "openid profile email groups" }
   if ($DefaultOAuthRedirectPort -le 0) { $DefaultOAuthRedirectPort = 19823 }
 }
+if ($null -ne $labBuild -and ($DefaultBackendUrl -cne $labBuild.Policy.backendUrl -or $DefaultSsoBaseUrl -cne $labBuild.Policy.ssoBaseUrl)) {
+  throw 'Lab routing must exactly match the approved enrolled backend and SSO configuration in its policy.'
+}
 foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
   $uri = $null
   if (-not [Uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or
@@ -125,7 +134,9 @@ foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
     throw "Build routing requires absolute backend/SSO URLs without credentials, query or fragment."
   }
   if ($Channel -eq "dev") {
-    if (-not $uri.IsLoopback -or $uri.Scheme -notin @("http", "https")) {
+    if ($null -ne $labBuild) {
+      if ($uri.IsLoopback -or $uri.Scheme -ne 'https') { throw 'Lab candidates retain the enrolled non-loopback HTTPS backend/SSO routing.' }
+    } elseif (-not $uri.IsLoopback -or $uri.Scheme -notin @("http", "https")) {
       throw "Dev builds require loopback backend and SSO endpoints."
     }
   } elseif ($uri.IsLoopback -or $uri.Scheme -ne "https") {
@@ -226,10 +237,10 @@ if (-not $SkipTests) {
 }
 
 Write-Step "Publishing split agent runtime"
-Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj"
-Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj"
-Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj"
-if ($BuildProfile -ne "server") { Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" }
+Publish-AgentProject "src/Cerberus.Agent.App/Cerberus.Agent.App.csproj" -LabBuild $labBuild
+Publish-AgentProject "src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" -LabBuild $labBuild
+Publish-AgentProject "src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" -LabBuild $labBuild
+if ($BuildProfile -ne "server") { Publish-AgentProject "src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" -LabBuild $labBuild }
 
 $versionWithoutPrefix = if ($Version.StartsWith("v")) { $Version.Substring(1) } else { $Version }
 if ($versionWithoutPrefix -notmatch "^(\d+\.\d+\.\d+)") {
@@ -269,28 +280,6 @@ if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-function Invoke-FirstPartySigning([string[]]$Files) {
-  if ($tokenMode) {
-    $signtool = Find-SignTool
-    Invoke-TokenFileSigning -SigntoolPath $signtool -Thumbprint $SigningCertThumbprint -TimestampUrl $TimestampUrl `
-      -FilePath $Files -AllowedPins $tokenSignerPins
-  }
-  elseif (-not [string]::IsNullOrWhiteSpace($certBase64)) {
-    $certPath = Join-Path $env:RUNNER_TEMP "cerberus-agent-signing.pfx"
-    if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-      $certPath = Join-Path $outputRootPath "cerberus-agent-signing.pfx"
-    }
-    [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($certBase64))
-    $signtool = Find-SignTool
-    foreach ($peFile in $Files) {
-      & $signtool sign /fd SHA256 /td SHA256 /tr $TimestampUrl /f $certPath /p $certPassword $peFile
-      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-      & $signtool verify /pa /v $peFile
-      if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or verification failed." }
-    }
-    Remove-Item -LiteralPath $certPath -Force -ErrorAction SilentlyContinue
-  }
-}
 # Sign first-party PE before hashes (service assembly, MSI, zip, SBOM, manifest);
 # Invoke-FirstPartySigning also signs the installer helper below.
 $firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
@@ -306,10 +295,28 @@ if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
 }
 Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
+$helperLabArgs = @()
+if ($null -ne $labBuild) {
+  $runtimeHashes = [ordered]@{}
+  foreach ($file in @(Get-FirstPartyPeFiles $runtimePublishDir)) {
+    $relative = [IO.Path]::GetRelativePath($runtimePublishDir, $file).Replace('\', '/')
+    if ($runtimeHashes.Contains($relative)) { throw 'Duplicate runtime payload path.' }
+    $runtimeHashes[$relative] = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+  $runtimeHashesB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($runtimeHashes | ConvertTo-Json -Compress)))
+  $helperLabArgs = @("-p:AgentUpdateLabPolicyB64=$($labBuild.PolicyB64)", "-p:AgentUpdateLabFeedRootB64=$($labBuild.RootB64)",
+    "-p:AgentUpdateLabRuntimeHashesB64=$runtimeHashesB64", '-p:AllowUnsignedDevBuild=true')
+}
 dotnet publish (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj") `
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true `
-  -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) -o $installerHelperOutput
+  -p:Version=$Version "-p:AgentReleaseChannel=$Channel" "-p:AgentUpdateAllowedSignerKeyIdentity=$signerPinsForBuild" @($releaseProfile.MsBuildArgs) @helperLabArgs -o $installerHelperOutput
 if ($LASTEXITCODE -ne 0) { throw "Installer helper publish failed." }
+if ($null -ne $labBuild) {
+  # The helper is compressed; retain compiler metadata evidence without relaxing the runtime bundle reader.
+  $metadataEvidence = Join-Path $outputRootPath 'lab-build-evidence'
+  $null = New-Item -ItemType Directory -Path $metadataEvidence
+  Copy-Item -LiteralPath (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") -Destination (Join-Path $metadataEvidence 'installer-helper-compiler.dll')
+}
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
