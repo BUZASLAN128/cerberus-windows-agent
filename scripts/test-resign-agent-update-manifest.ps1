@@ -67,7 +67,8 @@ try {
   }
   function Invoke-Resign([string]$In, [hashtable]$Extra = @{}) {
     $out = Join-Path $work ("out-" + [guid]::NewGuid().ToString("N").Substring(0, 6) + ".json")
-    $args = @{ ManifestPath = $In; PublicKeyFile = $keyA; OutputPath = $out; SigningCertificate = $certA; CoreAssembly = $CoreDll }
+    $args = @{ ManifestPath = $In; PublicKeyFile = $keyA; OutputPath = $out; SigningCertificate = $certA; CoreAssembly = $CoreDll
+      AllowFailedAgentsToRetry = $true }
     foreach ($k in $Extra.Keys) { $args[$k] = $Extra[$k] }
     $null = & $resign @args 6>$null
     return $out
@@ -119,6 +120,9 @@ try {
   }
   Check "refused: input signed by another key" {
     Test-NoOutput { Invoke-Resign (New-Input "otherkey" @{} $certB) } "does not verify"
+  }
+  Check "refused: retry by failed agents not acknowledged" {
+    Test-NoOutput { Invoke-Resign $source @{ AllowFailedAgentsToRetry = $false } } "AllowFailedAgentsToRetry"
   }
   Check "refused: explicit sequence equal to the input" { Test-NoOutput { Invoke-Resign $source @{ Sequence = $oldM.sequence } } "must be higher" }
   Check "refused: explicit sequence lower than the input" { Test-NoOutput { Invoke-Resign $source @{ Sequence = $oldM.sequence - 1 } } "must be higher" }

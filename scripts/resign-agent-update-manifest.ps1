@@ -1,6 +1,7 @@
 # Refreshes the expiry of a published signed v2 update manifest without rebuilding the release.
 # The new manifest keeps version, channel, artifact URL, sha256, length and every other field; only sequence,
-# released_at_utc, expires_at_utc and the signature change. Same version with a higher sequence is not reinstalled by agents.
+# released_at_utc, expires_at_utc and the signature change. Agents that installed this version do not reinstall it;
+# agents whose install of it failed (FailedInstallSequence pin) retry it, so -AllowFailedAgentsToRetry is required.
 # The input signature is verified against the pinned public key first, and the new signature is verified again
 # (RSA and the agent's own validator) before anything is written. Signing goes through the existing certificate path
 # (CurrentUser\My, hardware token: Windows asks for the PIN/touch); this script never reads or logs a PIN or key material.
@@ -17,6 +18,8 @@ param(
   [string[]]$ArtifactPrefixes = @(),
   # Explicit sequence; must be strictly higher than the input's. Default: max(now in Unix ms, input + 1).
   [long]$Sequence = 0,
+  # Acknowledges that agents whose install of this version failed will try it again.
+  [switch]$AllowFailedAgentsToRetry,
   [string]$CoreAssembly = ""
 )
 $ErrorActionPreference = "Stop"
@@ -32,6 +35,9 @@ if ([IO.Path]::GetFullPath($OutputPath) -ceq [IO.Path]::GetFullPath($ManifestPat
 }
 if ($null -eq $SigningCertificate -and [string]::IsNullOrWhiteSpace($SigningCertThumbprint)) {
   throw "Pass -SigningCertThumbprint (certificate in CurrentUser\My)."
+}
+if (-not $AllowFailedAgentsToRetry) {
+  throw "A higher sequence makes agents whose install of this version failed and rolled back install it again. Check failed installs of this version first, then pass -AllowFailedAgentsToRetry."
 }
 
 # Read every value as the exact string in the file (no date coercion) and require exactly the v2 field set,
