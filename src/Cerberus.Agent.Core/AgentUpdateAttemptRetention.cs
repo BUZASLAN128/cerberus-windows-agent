@@ -41,8 +41,9 @@ public static class AgentUpdateAttemptRetention
                     pruned++;
             return pruned;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception)
         {
+            // Pruning is housekeeping; it must never fail the update tick.
             return 0;
         }
     }
@@ -56,21 +57,27 @@ public static class AgentUpdateAttemptRetention
             if (IsLink(directory))
                 return false;
             var artifact = Path.Combine(directory, AgentUpdateSecurity.ArtifactFileName);
-            if (File.Exists(artifact) && !IsLink(artifact))
+            var hasArtifact = File.Exists(artifact) && !IsLink(artifact);
+            var runner = Path.Combine(directory, AgentUpdateRunnerFiles.RunnerDirectoryName);
+            var inventory = Path.Combine(runner, RunnerInventoryFileName);
+            var runnerFiles = Directory.Exists(runner) && !IsLink(runner)
+                ? Directory.EnumerateFiles(runner, "*", NoLinks)
+                    .Where(file => !string.Equals(file, inventory, StringComparison.OrdinalIgnoreCase)).ToList()
+                : [];
+            // An already pruned attempt costs no trust validation on later ticks.
+            if (!hasArtifact && runnerFiles.Count == 0)
+                return false;
+            if (hasArtifact)
             {
                 AgentUpdateSecurity.ValidateTrustedPath(artifact, directory, allowMissing: false);
                 File.Delete(artifact);
                 removed = true;
             }
-            var runner = Path.Combine(directory, AgentUpdateRunnerFiles.RunnerDirectoryName);
-            if (!Directory.Exists(runner) || IsLink(runner))
+            if (runnerFiles.Count == 0)
                 return removed;
             AgentUpdateSecurity.ValidateTrustedPath(runner, directory, allowMissing: false);
-            var inventory = Path.Combine(runner, RunnerInventoryFileName);
-            foreach (var file in Directory.EnumerateFiles(runner, "*", NoLinks).ToList())
+            foreach (var file in runnerFiles)
             {
-                if (string.Equals(file, inventory, StringComparison.OrdinalIgnoreCase))
-                    continue;
                 File.Delete(file);
                 removed = true;
             }
@@ -78,7 +85,7 @@ public static class AgentUpdateAttemptRetention
                 if (!Directory.EnumerateFileSystemEntries(child).Any())
                     Directory.Delete(child);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception)
         {
             // Keep whatever is left; the next tick retries.
         }

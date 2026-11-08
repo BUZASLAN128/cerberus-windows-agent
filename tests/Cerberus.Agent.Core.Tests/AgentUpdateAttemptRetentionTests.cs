@@ -51,6 +51,10 @@ public sealed class AgentUpdateAttemptRetentionTests
     }
 
     [Fact]
+    public void PrunePayloads_NeverThrowsIntoTheUpdateTick()
+        => Assert.Equal(0, AgentUpdateAttemptRetention.PrunePayloads("", new AgentUpdateJournal()));
+
+    [Fact]
     public void PrunePayloads_NeverFollowsALinkOutOfTheRunnerCopy()
     {
         if (!OperatingSystem.IsWindows())
