@@ -1,6 +1,6 @@
 # Cerberus Windows Agent
 
-Windows bilgisayarlarını ve sunucularını Cerberus'a bağlayan ajan. Cihazı kaydeder, durumunu ve envanterini bildirir, yetkili komutları uygular ve kendi güncellemesini yönetir. Cerberus ve Bilnex entegrasyonları aynı ajan ve güncelleme yolunu kullanır.
+Windows bilgisayarlarını ve sunucularını Cerberus'a bağlayan ajan. Cihazı kaydeder, durumunu ve envanterini bildirir, yetkili komutları uygular ve kendi güncellemesini yönetir.
 
 [![CI](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/BUZASLAN128/cerberus-windows-agent)](https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest)
@@ -47,7 +47,7 @@ Profil **derleme sırasında** seçilir. Backend politikası veya sonradan deği
 | Paket adı eki | Ek yok | `-server` |
 | Veri dizini | `%ProgramData%\CerberusAgent` | `%ProgramData%\CerberusServerAgent` |
 
-Kurulum dizini Desktop için `%ProgramFiles%\Cerberus\Windows Agent`, Server için `%ProgramFiles%\Cerberus\Server Agent`; çalıştırılabilir dosyalar bu dizinlerin `app` altındadır.
+Kurulum dizini Desktop için `C:\Program Files\Cerberus\Windows Agent`, Server için `C:\Program Files\Cerberus\Server Agent`; çalıştırılabilir dosyalar bu dizinlerin `app` altındadır (`app/Cerberus.Agent.exe`, `app/Cerberus.Agent.Service.exe`).
 
 ## Otomatik güncelleme nasıl çalışır?
 
