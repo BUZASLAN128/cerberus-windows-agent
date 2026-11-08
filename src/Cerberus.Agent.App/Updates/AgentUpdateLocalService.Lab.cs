@@ -109,12 +109,20 @@ internal static partial class AgentUpdateLocalService
         var path = Path.Combine(root, "retired-lab-" + before.InstallRequest!.LocalPolicyId + "-" + before.AttemptId + ".json");
         var retained = AgentUpdateDurableFile.Read<AgentUpdateJournal>(path, root);
         if (retained is null) AgentUpdateDurableFile.Write(path, root, before);
-        else if (retained with { Revision = before.Revision, NextCheckUtc = before.NextCheckUtc } != before)
+        else if (!SameClosedLabFailure(retained, before))
             throw new InvalidOperationException("Development predecessor receipt conflicts with protected history.");
         var verified = AgentUpdateDurableFile.Read<AgentUpdateJournal>(path, root)
             ?? throw new InvalidOperationException("Development predecessor receipt was not retained.");
-        if (verified with { Revision = before.Revision, NextCheckUtc = before.NextCheckUtc } != before)
+        if (!SameClosedLabFailure(verified, before))
             throw new InvalidOperationException("Development predecessor receipt verification failed.");
         return path;
     }
+
+    // Scheduling and the diagnostic failure cause are not part of the retained installer evidence.
+    private static bool SameClosedLabFailure(AgentUpdateJournal retained, AgentUpdateJournal before)
+        => retained with
+        {
+            Revision = before.Revision, NextCheckUtc = before.NextCheckUtc, FailureCode = before.FailureCode,
+            FailureAttemptId = before.FailureAttemptId, FailureInstallerResultId = before.FailureInstallerResultId,
+        } == before;
 }

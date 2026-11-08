@@ -124,6 +124,38 @@ function Assert-NoUnsignedDevBuild {
   }
 }
 
+function Assert-NoLabCampaignMetadata {
+  param(
+    [Parameter(Mandatory = $true)][string]$RuntimeDir,
+    # Further compiler outputs that are not part of the runtime directory (for example the installer helper assembly).
+    [string[]]$ExtraAssemblies = @()
+  )
+  # A non-lab build must not carry lab-campaign routing in any published binary. MSBuild turns environment variables into
+  # properties, so a stray AgentUpdateLabPolicyB64 would otherwise be compiled in silently. A key counts even when its value is empty.
+  $labKeys = @('AgentUpdateLabPolicyB64', 'AgentUpdateLabFeedRootB64', 'AgentUpdateLabRuntimeHashesB64')
+  $check = {
+    param($Metadata, [string]$Label)
+    foreach ($key in $labKeys) {
+      if ($Metadata.ContainsKey($key)) { throw "$Label carries lab-campaign metadata '$key'; a non-lab release must not." }
+    }
+  }
+  foreach ($name in 'Cerberus.Agent.dll', 'Cerberus.Agent.Runtime.dll') {
+    & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir $name)) $name
+  }
+  Import-AgentBundleReader
+  foreach ($hostName in 'Cerberus.Agent.exe', 'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe') {
+    $hostPath = Join-Path $RuntimeDir $hostName
+    if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf) -or -not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { continue }
+    $entry = [IO.Path]::GetFileNameWithoutExtension($hostName) + '.dll'
+    & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir $entry) -BundlePath $hostPath) "Bundle $hostName ($entry)"
+    & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath $hostPath) "Bundle $hostName (Cerberus.Agent.Runtime.dll)"
+  }
+  foreach ($assembly in $ExtraAssemblies) {
+    if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) { throw "Assembly to check for lab metadata was not found: $assembly" }
+    & $check (Read-AssemblyMetadataValues $assembly) ([IO.Path]::GetFileName($assembly))
+  }
+}
+
 function Get-BuiltReleaseTrust {
   param([Parameter(Mandatory = $true)][string]$RuntimeDir)
   # The update path reads Cerberus.Agent.Runtime.dll, the app reads Cerberus.Agent.dll: both must carry identical trust values.

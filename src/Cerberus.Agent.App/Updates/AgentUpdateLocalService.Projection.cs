@@ -42,13 +42,20 @@ internal static partial class AgentUpdateLocalService
                 state is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot ? "pending" :
                 state == AgentUpdateStates.RecoveryRequired ? "unhealthy" : "unknown",
             RollbackState = state == AgentUpdateStates.RecoveryRequired ? "unavailable" : "none",
-            LastErrorCode = active.InstallerResult?.ErrorCode,
+            LastErrorCode = ProjectedErrorCode(active, state),
             LastErrorMessage = null,
         };
         next = ProjectInstallRequest(active, plan, next);
         if (next with { LastTransitionUtc = old.LastTransitionUtc } != old)
             await Projection.WriteAsync(next, ct).ConfigureAwait(false);
     }
+
+    /// <summary>A recorded failure cause wins only while its attempt and installer result are still the current ones.</summary>
+    internal static string? ProjectedErrorCode(AgentUpdateJournal active, string state)
+        => state is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired && active.FailureCode is not null &&
+            active.FailureAttemptId == active.AttemptId && active.FailureInstallerResultId == active.InstallerResult?.ResultId
+            ? active.FailureCode
+            : active.InstallerResult?.ErrorCode;
 
     internal static AgentUpdateJournal CompleteInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, DateTimeOffset now)
     {

@@ -127,6 +127,7 @@ internal static partial class AgentUpdateLocalService
         AgentInstallerHealthPhase? rollbackPhase = null)
     {
         if (before.Phase != AgentUpdateStates.RecoveryRequired) return before;
+        before = before with { FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null };
         if (healthy && plan is not null)
             return before with
             {

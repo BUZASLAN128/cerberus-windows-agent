@@ -1,6 +1,6 @@
 # Cerberus Windows Agent
 
-Windows bilgisayarlarını ve sunucularını Cerberus'a bağlayan ajan. Cihazı kaydeder, durumunu ve envanterini bildirir, yetkili komutları uygular ve kendi güncellemesini yönetir. Cerberus ve Bilnex entegrasyonları aynı ajan ve güncelleme yolunu kullanır.
+Windows bilgisayarlarını ve sunucularını Cerberus'a bağlayan ajan. Cihazı kaydeder, durumunu ve envanterini bildirir, yetkili komutları uygular ve kendi güncellemesini yönetir.
 
 [![CI](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/BUZASLAN128/cerberus-windows-agent/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/BUZASLAN128/cerberus-windows-agent)](https://github.com/BUZASLAN128/cerberus-windows-agent/releases/latest)
@@ -47,7 +47,7 @@ Profil **derleme sırasında** seçilir. Backend politikası veya sonradan deği
 | Paket adı eki | Ek yok | `-server` |
 | Veri dizini | `%ProgramData%\CerberusAgent` | `%ProgramData%\CerberusServerAgent` |
 
-Kurulum dizini Desktop için `%ProgramFiles%\Cerberus\Windows Agent`, Server için `%ProgramFiles%\Cerberus\Server Agent`; çalıştırılabilir dosyalar bu dizinlerin `app` altındadır.
+Kurulum dizini Desktop için `C:\Program Files\Cerberus\Windows Agent`, Server için `C:\Program Files\Cerberus\Server Agent`; çalıştırılabilir dosyalar bu dizinlerin `app` altındadır (`app/Cerberus.Agent.exe`, `app/Cerberus.Agent.Service.exe`).
 
 ## Otomatik güncelleme nasıl çalışır?
 
@@ -278,6 +278,19 @@ Eski `CERBERUS_CASDOOR_ENDPOINT`, `CERBERUS_CASDOOR_CLIENT_ID`, `CERBERUS_CASDOO
 | `-SigningMode Pfx\|Token` | MSI/binary yayın imzalama yöntemi; manifest için ayrı CNG/token veya external-signature girdileri desteklenir |
 
 MSBuild adları kendiliğinden ortam değişkeni değildir. Normal update güveni `AgentUpdateTrustFactory` tarafından gömülü metadata ve izin verilen kurulum ayarlarından oluşturulur. Manifest public-key/URL geliştirme ortamı override'ları yalnız `dev` kanalındadır; `AllowUnsignedDevBuild` de yalnız bu kanalla birlikte anlamlıdır. Süreli test kampanyası normal kurulum ayarı olarak kullanılmaz.
+
+Lab olmayan her yayın derlemesi, imzalamadan önce çıktılarda `AgentUpdateLab*` metadata'sı arar ve bulursa durur (`Assert-NoLabCampaignMetadata`).
+
+#### Manifest süresini yenileme (yeniden derleme yok)
+
+Yayınlanmış v2 manifest 30 gün geçerlidir. Süreyi uzatmak için aynı manifest yeniden imzalanır; sürüm, kanal, MSI adresi, sha256 ve uzunluk değişmez, `sequence` yükselir, `released_at_utc` şimdi olur, `expires_at_utc` 30 gün sonrasına gider. Bu sürümü kurmuş ajanlar yeniden kurmaz. Bu sürümün kurulumu başarısız olup geri dönen ajanlar daha yüksek `sequence` ile aynı MSI'ı yeniden dener; betik bu yüzden `-AllowFailedAgentsToRetry` ister. Önce bu sürümün başarısız kurulumlarına bakın; geri alınması gereken bir sürüm yeniden imzalanmaz.
+
+```powershell
+pwsh scripts/resign-agent-update-manifest.ps1 -ManifestPath <yayındaki>.update-manifest.v2.json -PublicKeyFile <gömülü-manifest-anahtarı>.pem `
+  -OutputPath <yeni>.update-manifest.v2.json -SigningCertThumbprint <token sertifikası> -AllowFailedAgentsToRetry
+```
+
+Girdi imzası önce sabit public anahtarla doğrulanır; sertifika bu anahtara uymuyorsa token'a imza istenmez. Yeni imza RSA ve ajanın kendi doğrulayıcısıyla kontrol edilir, aksi halde dosya yazılmaz. Betik tek dosya yazar; operatör onu hem sürümlü hem `Cerberus.Agent.Bundle-<kanal>-latest*.update-manifest.v2.json` varlıklarının üzerine kopyalar. Yayındaki `*.release-gate.json` ilk imzanın `manifest_sequence` ve `manifest_expires_at_utc` değerlerini taşımaya devam eder. Test: `scripts/test-resign-agent-update-manifest.ps1`.
 
 Snapshot sınırları `Directory.Build.props` içindedir: Desktop `60/86400/60`, Server `300/3600/3600` saniye (alt/üst/varsayılan). Poll sınırları `1–300` saniyedir. Backend'in istediği süreler derlenmiş sınırlar içinde uygulanır; bunlar rastgele registry anahtarı eklenerek değiştirilecek ayarlar değildir.
 
