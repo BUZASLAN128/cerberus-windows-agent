@@ -360,7 +360,7 @@ public sealed class AgentUpdateLabRemediationTests
         Assert.Equal(original, store.Read());
     }
 
-    private static AgentUpdateJournal ClosedForeignFailure()
+    internal static AgentUpdateJournal ClosedForeignFailure()
     {
         const string attempt = "806f2475f85d416aa1ad7b10bfd9069b";
         var plan = new AgentUpdateExpectedPlan("0.2.941", "dev:failed", new('b', 64));

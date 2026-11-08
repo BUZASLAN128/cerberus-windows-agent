@@ -12,27 +12,26 @@ public sealed class AgentUpdateFailureCodeTests
             AgentUpdateErrorCodes.Classify(new InvalidOperationException("Update manifest has expired.")));
         Assert.Equal(AgentUpdateErrorCodes.ManifestInvalid,
             AgentUpdateErrorCodes.Classify(new InvalidOperationException("Update manifest is invalid.")));
+        Assert.Equal(AgentUpdateErrorCodes.ManifestInvalid,
+            AgentUpdateErrorCodes.Classify(new InvalidOperationException("Update manifest expiry is invalid.")));
     }
 
     [Fact]
     public void ProjectedErrorCode_NeverOutlivesItsAttemptOrInstallerResult()
     {
-        var installFailed = new AgentUpdateJournal
+        var bound = new AgentUpdateJournal
         {
             AttemptId = "attempt-a",
             Phase = AgentUpdateStates.Failed,
             InstallerResult = Result("result-1", AgentUpdateErrorCodes.MsiFailed),
+            FailureCode = AgentUpdateErrorCodes.StagingFailed,
+            FailureAttemptId = "attempt-a",
+            FailureInstallerResultId = "result-1",
         };
-        Assert.Equal(AgentUpdateErrorCodes.MsiFailed,
-            AgentUpdateLocalService.ProjectedErrorCode(installFailed, AgentUpdateStates.Failed));
+        Assert.Equal(AgentUpdateErrorCodes.StagingFailed,
+            AgentUpdateLocalService.ProjectedErrorCode(bound, AgentUpdateStates.Failed));
 
-        var checkFailed = AgentUpdateLocalService.TransitionFailure(installFailed, AgentUpdateErrorCodes.ManifestExpired);
-        Assert.Equal(AgentUpdateStates.Failed, checkFailed.Phase);
-        Assert.Same(installFailed.InstallerResult, checkFailed.InstallerResult);
-        Assert.Equal(AgentUpdateErrorCodes.ManifestExpired,
-            AgentUpdateLocalService.ProjectedErrorCode(checkFailed, AgentUpdateStates.Failed));
-
-        var newAttemptFailed = checkFailed with
+        var newAttemptFailed = bound with
         {
             AttemptId = "attempt-b",
             InstallerResult = Result("result-2", AgentUpdateErrorCodes.MsiFailed),
@@ -40,9 +39,89 @@ public sealed class AgentUpdateFailureCodeTests
         Assert.Equal(AgentUpdateErrorCodes.MsiFailed,
             AgentUpdateLocalService.ProjectedErrorCode(newAttemptFailed, AgentUpdateStates.Failed));
 
-        var sameAttemptNewResult = checkFailed with { InstallerResult = Result("result-3", AgentUpdateErrorCodes.InstallerBusy) };
+        var sameAttemptNewResult = bound with { InstallerResult = Result("result-3", AgentUpdateErrorCodes.InstallerBusy) };
         Assert.Equal(AgentUpdateErrorCodes.InstallerBusy,
             AgentUpdateLocalService.ProjectedErrorCode(sameAttemptNewResult, AgentUpdateStates.Failed));
+    }
+
+    [Fact]
+    public void TransitionFailure_NeverRewritesInstallerEvidence()
+    {
+        var installFailed = new AgentUpdateJournal
+        {
+            AttemptId = "attempt-a",
+            Phase = AgentUpdateStates.Failed,
+            InstallerResult = Result("result-1", AgentUpdateErrorCodes.MsiFailed),
+        };
+        var after = AgentUpdateLocalService.TransitionFailure(installFailed, AgentUpdateErrorCodes.ManifestExpired);
+        Assert.Equal(installFailed, after);
+        Assert.Equal(AgentUpdateErrorCodes.MsiFailed, AgentUpdateLocalService.ProjectedErrorCode(after, AgentUpdateStates.Failed));
+    }
+
+    [Fact]
+    public void TransitionFailure_RecordsADownloadFailureOnce()
+    {
+        var moved = AgentUpdateLocalService.TransitionFailure(
+            new AgentUpdateJournal { AttemptId = "attempt-a", Phase = AgentUpdateStates.Downloading }, AgentUpdateErrorCodes.DownloadFailed);
+        Assert.Equal(AgentUpdateErrorCodes.DownloadFailed, AgentUpdateLocalService.ProjectedErrorCode(moved, AgentUpdateStates.Failed));
+
+        // The stager writes Failed before the service reports the same exception.
+        var stagerFailed = AgentUpdateLocalService.TransitionFailure(
+            new AgentUpdateJournal { AttemptId = "attempt-a", Phase = AgentUpdateStates.Failed }, AgentUpdateErrorCodes.HashMismatch);
+        Assert.Equal(AgentUpdateErrorCodes.HashMismatch, AgentUpdateLocalService.ProjectedErrorCode(stagerFailed, AgentUpdateStates.Failed));
+
+        var reportedAgain = AgentUpdateLocalService.TransitionFailure(stagerFailed, AgentUpdateErrorCodes.StagingFailed);
+        Assert.Equal(stagerFailed, reportedAgain);
+
+        var staleCause = stagerFailed with { AttemptId = "attempt-b" };
+        Assert.Equal(AgentUpdateErrorCodes.DownloadFailed, AgentUpdateLocalService.TransitionFailure(
+            staleCause, AgentUpdateErrorCodes.DownloadFailed).FailureCode);
+        Assert.Equal("attempt-b", AgentUpdateLocalService.TransitionFailure(staleCause, AgentUpdateErrorCodes.DownloadFailed).FailureAttemptId);
+    }
+
+    [Fact]
+    public void CloseRecovery_ProjectsRecoveryTimeoutOverAnEarlierCause()
+    {
+        var recovering = new AgentUpdateJournal
+        {
+            AttemptId = "attempt-a",
+            Phase = AgentUpdateStates.RecoveryRequired,
+            InstallerResult = Result("result-1", AgentUpdateErrorCodes.MsiFailed),
+        };
+        var tickFailed = AgentUpdateLocalService.TransitionFailure(recovering, AgentUpdateErrorCodes.ManifestUnavailable);
+        Assert.Equal(recovering, tickFailed);
+        var launchFailed = AgentUpdateLocalService.TransitionFailure(
+            new AgentUpdateJournal { AttemptId = "attempt-a", Phase = "launch_requested" }, AgentUpdateErrorCodes.StagingFailed);
+
+        foreach (var before in new[] { tickFailed, launchFailed, recovering with
+                 {
+                     FailureCode = AgentUpdateErrorCodes.StagingFailed, FailureAttemptId = "attempt-a", FailureInstallerResultId = "result-1",
+                 } })
+        {
+            var closed = AgentUpdateLocalService.CloseRecovery(before, plan: null, healthy: false, DateTimeOffset.UtcNow);
+            Assert.Equal(AgentUpdateStates.Failed, closed.Phase);
+            Assert.Null(closed.FailureCode);
+            Assert.Equal(AgentUpdateErrorCodes.RecoveryTimeout, AgentUpdateLocalService.ProjectedErrorCode(closed, closed.Phase));
+        }
+    }
+
+    [Fact]
+    public void ClosedLabFailureReceipt_SurvivesAReportedFailure()
+    {
+        var root = NewRoot();
+        var closed = AgentUpdateLabRemediationTests.ClosedForeignFailure();
+        var path = AgentUpdateLocalService.PreserveClosedLabFailure(root, closed);
+
+        Assert.Equal(closed, AgentUpdateLocalService.TransitionFailure(closed, AgentUpdateErrorCodes.ManifestExpired));
+        var withCause = closed with
+        {
+            FailureCode = AgentUpdateErrorCodes.ManifestExpired,
+            FailureAttemptId = closed.AttemptId,
+            FailureInstallerResultId = closed.InstallerResult!.ResultId,
+        };
+        Assert.Equal(path, AgentUpdateLocalService.PreserveClosedLabFailure(root, withCause));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root,
+            closed with { FailedInstallSequence = closed.FailedInstallSequence + 1 }));
     }
 
     [Fact]

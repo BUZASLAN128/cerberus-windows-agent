@@ -111,11 +111,17 @@ internal static partial class AgentUpdateLocalService
             AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined
             ? before : before with { Phase = AgentUpdateStates.Failed, RequiredPolicyGeneration = null };
 
-    /// <summary>Records the classified cause only when the result is a failed phase; installer evidence is never rewritten.</summary>
+    /// <summary>
+    /// Records the classified cause only for the failure this call reports: a move into Failed/RecoveryRequired,
+    /// or an attempt the stager already failed with no installer result and no cause yet. Never overwrites.
+    /// </summary>
     internal static AgentUpdateJournal TransitionFailure(AgentUpdateJournal before, string failureCode)
     {
         var after = TransitionFailure(before);
-        return after.Phase is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired
+        var moved = after.Phase != before.Phase && after.Phase is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired;
+        var stagerFailed = before.Phase == AgentUpdateStates.Failed && before.InstallerResult is null &&
+            (before.FailureCode is null || before.FailureAttemptId != before.AttemptId || before.FailureInstallerResultId is not null);
+        return moved || stagerFailed
             ? after with
             {
                 FailureCode = failureCode,
@@ -389,6 +395,9 @@ internal static partial class AgentUpdateLocalService
         {
             AttemptId = null,
             InstallerResult = null,
+            FailureCode = null,
+            FailureAttemptId = null,
+            FailureInstallerResultId = null,
             Phase = AgentUpdateStates.Checking,
             RequiredInstallAttemptId = null,
             InstallRequestAuthorityExpiresUtc = null,
@@ -439,6 +448,9 @@ internal static partial class AgentUpdateLocalService
             RequiredInstallAttemptId = null,
             InstallRequestAuthorityExpiresUtc = null,
             InstallerResult = null,
+            FailureCode = null,
+            FailureAttemptId = null,
+            FailureInstallerResultId = null,
             Automatic = automatic,
             LifecycleGeneration = lifecycleGeneration,
             Required = required,
