@@ -279,6 +279,19 @@ Eski `CERBERUS_CASDOOR_ENDPOINT`, `CERBERUS_CASDOOR_CLIENT_ID`, `CERBERUS_CASDOO
 
 MSBuild adları kendiliğinden ortam değişkeni değildir. Normal update güveni `AgentUpdateTrustFactory` tarafından gömülü metadata ve izin verilen kurulum ayarlarından oluşturulur. Manifest public-key/URL geliştirme ortamı override'ları yalnız `dev` kanalındadır; `AllowUnsignedDevBuild` de yalnız bu kanalla birlikte anlamlıdır. Süreli test kampanyası normal kurulum ayarı olarak kullanılmaz.
 
+Lab olmayan her yayın derlemesi, imzalamadan önce çıktılarda `AgentUpdateLab*` metadata'sı arar ve bulursa durur (`Assert-NoLabCampaignMetadata`).
+
+#### Manifest süresini yenileme (yeniden derleme yok)
+
+Yayınlanmış v2 manifest 30 gün geçerlidir. Süreyi uzatmak için aynı manifest yeniden imzalanır; sürüm, kanal, MSI adresi, sha256 ve uzunluk değişmez, `sequence` yükselir, `released_at_utc` şimdi olur, `expires_at_utc` 30 gün sonrasına gider. Aynı sürüm daha yüksek `sequence` ile yeniden kurulmaz.
+
+```powershell
+pwsh scripts/resign-agent-update-manifest.ps1 -ManifestPath <yayındaki>.update-manifest.v2.json -PublicKeyFile <gömülü-manifest-anahtarı>.pem `
+  -OutputPath <yeni>.update-manifest.v2.json -SigningCertThumbprint <token sertifikası>
+```
+
+Girdi imzası önce sabit public anahtarla doğrulanır; sertifika bu anahtara uymuyorsa token'a imza istenmez. Yeni imza RSA ve ajanın kendi doğrulayıcısıyla kontrol edilir, aksi halde dosya yazılmaz. Çıktı hem sürümlü hem `Cerberus.Agent.Bundle-<kanal>-latest*.update-manifest.v2.json` varlıklarına kopyalanır. Test: `scripts/test-resign-agent-update-manifest.ps1`.
+
 Snapshot sınırları `Directory.Build.props` içindedir: Desktop `60/86400/60`, Server `300/3600/3600` saniye (alt/üst/varsayılan). Poll sınırları `1–300` saniyedir. Backend'in istediği süreler derlenmiş sınırlar içinde uygulanır; bunlar rastgele registry anahtarı eklenerek değiştirilecek ayarlar değildir.
 
 ### Dosyalar, loglar ve destek CLI'ı
