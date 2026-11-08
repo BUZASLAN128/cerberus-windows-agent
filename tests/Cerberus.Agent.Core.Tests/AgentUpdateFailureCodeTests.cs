@@ -80,6 +80,26 @@ public sealed class AgentUpdateFailureCodeTests
     }
 
     [Fact]
+    public void IntentionalCancellation_RestoresTheEarlierCause()
+    {
+        var failed = AgentUpdateLocalService.TransitionFailure(
+            new AgentUpdateJournal { AttemptId = "attempt-a", Phase = AgentUpdateStates.Failed }, AgentUpdateErrorCodes.DownloadFailed);
+        var now = DateTimeOffset.UtcNow;
+        foreach (var started in new[]
+                 {
+                     AgentUpdateLocalService.TransitionCheckStart(failed, automatic: true, required: false, lifecycleGeneration: 0, now),
+                     AgentUpdateLocalService.TransitionStageStart(failed, automatic: true, required: false, lifecycleGeneration: 0, now),
+                 })
+        {
+            Assert.Null(started.FailureCode);
+            var restored = AgentUpdateLocalService.TransitionIntentionalCancellation(started, failed, now);
+            Assert.Equal(AgentUpdateStates.Failed, restored.Phase);
+            Assert.Equal(AgentUpdateErrorCodes.DownloadFailed, AgentUpdateLocalService.ProjectedErrorCode(restored, restored.Phase));
+            Assert.Equal(restored, AgentUpdateLocalService.TransitionFailure(restored, AgentUpdateErrorCodes.StagingFailed));
+        }
+    }
+
+    [Fact]
     public void CloseRecovery_ProjectsRecoveryTimeoutOverAnEarlierCause()
     {
         var recovering = new AgentUpdateJournal
