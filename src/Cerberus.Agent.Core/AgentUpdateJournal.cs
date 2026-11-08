@@ -87,6 +87,9 @@ public sealed class AgentUpdateJournalStore
             (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
             (value.FailureCode is not null && !AgentUpdateErrorCodes.IsCode(value.FailureCode)) ||
             (value.FailureAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureAttemptId)) ||
+            // Result ids are generated GUIDs; the failure cause binds to one by exact match.
+            (value.FailureInstallerResultId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureInstallerResultId)) ||
+            (value.InstallerResult is { } installerResult && !AgentUpdateSecurity.IsSafeAttemptId(installerResult.ResultId)) ||
             value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))

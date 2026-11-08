@@ -210,6 +210,16 @@ public sealed class AgentUpdateFailureCodeTests
 
         AgentUpdateDurableFile.Write(path, root, new AgentUpdateJournal { Phase = AgentUpdateStates.Failed, FailureAttemptId = "..\\x" });
         Assert.Throws<InvalidOperationException>(() => new AgentUpdateJournalStore(root).Read());
+
+        AgentUpdateDurableFile.Write(path, root, new AgentUpdateJournal { Phase = AgentUpdateStates.Failed, FailureInstallerResultId = "..\\unsafe" });
+        Assert.Throws<InvalidOperationException>(() => new AgentUpdateJournalStore(root).Read());
+
+        AgentUpdateDurableFile.Write(path, root, new AgentUpdateJournal
+        {
+            Phase = AgentUpdateStates.Failed,
+            InstallerResult = Result("..\\unsafe", AgentUpdateErrorCodes.MsiFailed),
+        });
+        Assert.Throws<InvalidOperationException>(() => new AgentUpdateJournalStore(root).Read());
     }
 
     private static AgentUpdateInstallerResult Result(string id, string code)
