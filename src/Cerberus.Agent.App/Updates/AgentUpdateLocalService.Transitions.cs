@@ -111,6 +111,20 @@ internal static partial class AgentUpdateLocalService
             AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdateStates.Quarantined
             ? before : before with { Phase = AgentUpdateStates.Failed, RequiredPolicyGeneration = null };
 
+    /// <summary>Records the classified cause only when the result is a failed phase; installer evidence is never rewritten.</summary>
+    internal static AgentUpdateJournal TransitionFailure(AgentUpdateJournal before, string failureCode)
+    {
+        var after = TransitionFailure(before);
+        return after.Phase is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired
+            ? after with
+            {
+                FailureCode = failureCode,
+                FailureAttemptId = after.AttemptId,
+                FailureInstallerResultId = after.InstallerResult?.ResultId,
+            }
+            : after;
+    }
+
     /// <summary>
     /// Retires a pre-install attempt whose manifest identity no longer matches,
     /// making a fresh trusted stage eligible. Installer/recovery evidence is
@@ -398,6 +412,9 @@ internal static partial class AgentUpdateLocalService
         {
             AttemptId = null,
             InstallerResult = null,
+            FailureCode = null,
+            FailureAttemptId = null,
+            FailureInstallerResultId = null,
             Phase = available ? AgentUpdateStates.Available : AgentUpdateStates.Current,
             RequiredInstallAttemptId = null,
             InstallRequestAuthorityExpiresUtc = null,

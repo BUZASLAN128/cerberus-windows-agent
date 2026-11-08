@@ -371,7 +371,8 @@ internal static partial class AgentUpdateLocalService
     {
         try
         {
-            journal.Change(TransitionFailure);
+            var code = AgentUpdateErrorCodes.Classify(error);
+            journal.Change(before => TransitionFailure(before, code));
             await project().ConfigureAwait(false);
         }
         catch (Exception) { /* A corrupt/unwritable journal stays unavailable; never create replacement success state. */ }

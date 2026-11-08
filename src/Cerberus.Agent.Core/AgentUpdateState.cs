@@ -39,6 +39,7 @@ public static class AgentUpdateErrorCodes
     public const string NotConfigured = "not_configured";
     public const string ManifestUnavailable = "manifest_unavailable";
     public const string ManifestInvalid = "manifest_invalid";
+    public const string ManifestExpired = "manifest_expired";
     public const string SignatureInvalid = "signature_invalid";
     public const string ChannelMismatch = "channel_mismatch";
     public const string ArtifactUrlDenied = "artifact_url_denied";
@@ -73,10 +74,17 @@ public static class AgentUpdateErrorCodes
             return DownloadFailed;
         if (ex.Message.Contains("unavailable", StringComparison.OrdinalIgnoreCase))
             return ManifestUnavailable;
+        if (ex.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase) &&
+            ex.Message.Contains("expired", StringComparison.OrdinalIgnoreCase))
+            return ManifestExpired;
         if (ex.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase))
             return ManifestInvalid;
         return Unknown;
     }
+
+    /// <summary>Shape check for a persisted code: lowercase snake case, bounded.</summary>
+    public static bool IsCode(string value)
+        => value.Length is > 0 and <= 64 && value.All(c => c is (>= 'a' and <= 'z') or '_');
 }
 
 public sealed record AgentUpdateState(

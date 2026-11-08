@@ -51,6 +51,10 @@ public sealed record AgentUpdateJournal
     /// <summary>Manifest sequence whose installer run failed (msi_failed, incl. a health rollback in a phase AgentUpdateRollbackPolicy.NextFailedInstallSequence pins). Automatic staging skips it and older ones.</summary>
     public long FailedInstallSequence { get; init; }
     public AgentUpdateInstallRequest? InstallRequest { get; init; }
+    /// <summary>Classified cause of the last service-reported failure, valid only while the attempt and installer result it was recorded with are unchanged.</summary>
+    public string? FailureCode { get; init; }
+    public string? FailureAttemptId { get; init; }
+    public string? FailureInstallerResultId { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
@@ -81,6 +85,8 @@ public sealed class AgentUpdateJournalStore
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
             (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
+            (value.FailureCode is not null && !AgentUpdateErrorCodes.IsCode(value.FailureCode)) ||
+            (value.FailureAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureAttemptId)) ||
             value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
             !ValidReconciliationSnapshot(value.ReconciliationSnapshot))
