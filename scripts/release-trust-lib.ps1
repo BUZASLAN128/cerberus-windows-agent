@@ -148,7 +148,10 @@ function Assert-NoLabCampaignMetadata {
     if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf) -or -not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { continue }
     $entry = [IO.Path]::GetFileNameWithoutExtension($hostName) + '.dll'
     & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir $entry) -BundlePath $hostPath) "Bundle $hostName ($entry)"
-    & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath $hostPath) "Bundle $hostName (Cerberus.Agent.Runtime.dll)"
+    # Only the service and updater bundles embed the runtime assembly (as in Get-BuiltReleaseTrust); the app bundle does not.
+    if ($hostName -cne 'Cerberus.Agent.exe') {
+      & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath $hostPath) "Bundle $hostName (Cerberus.Agent.Runtime.dll)"
+    }
   }
   foreach ($assembly in $ExtraAssemblies) {
     if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) { throw "Assembly to check for lab metadata was not found: $assembly" }
