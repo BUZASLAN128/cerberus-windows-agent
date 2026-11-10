@@ -23,6 +23,13 @@ Check 'failed step is listed first' { (Get-Status @('src/A.cs') -Outcomes @{ tes
 Check 'publish-guard FAIL does not hide a failed build job' {
   (Get-Status @('AGENTS.md') -Outcomes @{ tests = 'success'; updateTests = 'success'; packages = 'success'; releaseGate = 'skipped'; publishGuard = 'failure' } -JobResult 'failure') -match '\| Diğer CI adımları \| FAIL \|' }
 Check 'update keyword in a folder name requires 10+10' { (Get-Status @('src/Cerberus.Agent.Core/Updates/Foo.cs')) -match 'NOT RUN \(gerekli' }
+# Fail closed: paths outside the short non-agent list count, including release inputs outside src/ and scripts/.
+foreach ($f in 'docs/legal/PRIVACY-NOTICE.md', 'tests/fixtures/agent-command-test-anchors.b64', 'Cerberus.WindowsAgent.slnx',
+               'Directory.Packages.props', '.github/workflows/release.yml', '.editorconfig') {
+  Check "$f is an agent change" { (Get-Status @($f)) -match 'Ajan tamam: hayır' }
+}
+Check 'a file moved from src/ to tests/ counts by its old path' { (Get-Status @('tests/Moved.cs', 'src/Cerberus.Agent.Core/Moved.cs')) -match 'Ajan tamam: hayır' }
+Check 'a 3000-file listing counts as an update change' { (Get-Status @(1..3000 | ForEach-Object { "docs/f$_.md" })) -match 'NOT RUN \(gerekli' }
 
 $guard = Join-Path $PSScriptRoot 'test-no-release-on-push.ps1'
 $dir = Join-Path ([IO.Path]::GetTempPath()) "ready-guard-$PID"
@@ -32,7 +39,8 @@ function Test-Guard([string]$Yaml, [hashtable]$State = @{}) {
   Set-Content -LiteralPath (Join-Path $dir 'w.yml') -Value $Yaml
   try { & $guard -WorkflowDir $dir -WorkflowState $State *> $null; return 'pass' } catch { return 'fail' }
 }
-$job = "jobs:`n  p:`n    runs-on: ubuntu-latest`n    steps:`n"
+# Read-only token in the shared job header, so these fixtures exercise the release-command patterns.
+$job = "permissions:`n  contents: read`njobs:`n  p:`n    runs-on: ubuntu-latest`n    steps:`n"
 Check 'block push + gh release create fails' { (Test-Guard "on:`n  push:`n    branches: [dev]`n$job      - run: gh release create v1") -eq 'fail' }
 Check 'inline on: push + release-action fails' { (Test-Guard "on: push`n$job      - uses: ncipollo/release-action@v1") -eq 'fail' }
 Check 'on: [push, pull_request] + create-release fails' { (Test-Guard "on: [push, pull_request]`n$job      - uses: actions/create-release@v1") -eq 'fail' }
@@ -42,6 +50,16 @@ Check 'gh api with -X after the path fails' { (Test-Guard "on: push`n$job      -
 Check 'disabled publishing workflow passes' { (Test-Guard "on:`n  push:`n$job      - run: gh release create v1" @{ '.github/workflows/w.yml' = 'disabled_manually' }) -eq 'pass' }
 Check 'push: true input is not a trigger' { (Test-Guard "on: pull_request`n$job      - uses: docker/build-push-action@v6`n        with:`n          push: true`n      - run: gh release create v1") -eq 'pass' }
 Check 'reading releases is not publishing' { (Test-Guard "on:`n  push:`n$job      - run: gh api repos/o/r/releases/latest") -eq 'pass' }
+Check 'read-only push workflow passes' { (Test-Guard "on: push`n$job      - run: echo hi") -eq 'pass' }
+Check 'push workflow without a permissions block fails' { (Test-Guard "on: push`njobs:`n  p:`n    runs-on: x`n    steps:`n      - run: echo hi") -eq 'fail' }
+Check 'job-level contents: write fails' { (Test-Guard "on: push`npermissions: {}`njobs:`n  p:`n    permissions:`n      contents: write`n    runs-on: x`n    steps:`n      - run: echo hi") -eq 'fail' }
+Check 'an unknown state such as deleted is not disabled' { (Test-Guard "on: push`n$job      - run: gh release create v1" @{ '.github/workflows/w.yml' = 'deleted' }) -eq 'fail' }
+Check 'workflow_run trigger fails' { (Test-Guard "on:`n  workflow_run:`n    workflows: [windows-agent-ci]`n$job      - run: gh release create v1") -eq 'fail' }
+Check 'quoted on with a flow map and github-script fails' { (Test-Guard "`"on`": {push: {branches: [dev]}}`n$job      - uses: actions/github-script@v7`n        with:`n          script: github.rest.repos.createRelease({})") -eq 'fail' }
+Check 'gh api releases with -f fails' { (Test-Guard "on: push`n$job      - run: gh api repos/o/r/releases -f tag_name=v1") -eq 'fail' }
+Check 'multi-line gh api fails' { (Test-Guard "on: push`n$job      - run: |`n          gh api repos/o/r/releases \`n            -X POST") -eq 'fail' }
+Check 'reusable workflow call on push fails' { (Test-Guard "on: push`npermissions:`n  contents: read`njobs:`n  r:`n    uses: ./.github/workflows/release.yml") -eq 'fail' }
+Check 'push outside the on block is not a trigger' { (Test-Guard "on: pull_request`n$job      - run: gh release create v1`n        with:`n          modes:`n            - push") -eq 'pass' }
 Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($failures.Count) { throw "CI ready-check fixtures failed: $($failures -join '; ')" }

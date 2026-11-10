@@ -19,15 +19,18 @@ if (-not $DryRun) {
   if ($live -ne $HeadSha) { Write-Host "PR head is $live, this run checked $HeadSha; status not written."; return }
 }
 if ($null -eq $ChangedFiles) {
-  $ChangedFiles = @(gh api "repos/$Repository/pulls/$PullRequest/files" --paginate --jq '.[].filename')
+  # A rename lists both paths, so a file moved out of src/ still counts by its old path.
+  $ChangedFiles = @(gh api "repos/$Repository/pulls/$PullRequest/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)')
   if ($LASTEXITCODE -ne 0) { throw 'Could not list the changed files.' }
 }
-# Fail closed: everything that builds or ships the agent counts, except tests and these CI check scripts.
-$harness = '^tests/|^scripts/test-|^scripts/ci-ready-status\.ps1$'
-$agentChange = @($ChangedFiles | Where-Object {
-  $_ -notmatch $harness -and ($_ -match '^(src|scripts)/|^Directory\.Build\.(props|targets)$|^global\.json$|^\.github/workflows/auto-publish') })
+# Fail closed: every changed path is an agent change except root docs, docs/ and tests/, and the CI checks themselves.
+# docs/legal (embedded in the agent) and the command-anchor fixtures (an input of the release denylist) do count.
+$nonAgent = '^(AGENTS|README|CONTRIBUTING|CODE_OF_CONDUCT|SECURITY|SUPPORT)\.md$|^docs/(?!legal/)|^tests/(?!fixtures/agent-command-)|^scripts/test-|^scripts/ci-ready-status\.ps1$|^\.github/workflows/ci\.yml$'
+$agentChange = @($ChangedFiles | Where-Object { $_ -notmatch $nonAgent })
 $updateChange = @($agentChange | Where-Object {
-  $_ -match '^src/Cerberus\.Agent\.(Updater|Installer|Service)/|^src/.*(Update|Version|Channel|Installer|ServiceImage|Manifest|Trust)|^scripts/|^Directory\.Build\.props$|^\.github/workflows/' })
+  $_ -match '^src/Cerberus\.Agent\.(Updater|Installer|Service)/|^src/.*(Update|Version|Channel|Installer|ServiceImage|Manifest|Trust)|^scripts/|^Directory\.(Build|Packages)\.props$|^global\.json$|^nuget\.config$|^\.github/workflows/' })
+# The files API lists at most 3000 files; a listing that long may hide agent and update changes.
+if ($ChangedFiles.Count -ge 3000) { $agentChange += '(3000+ files)'; $updateChange += '(3000+ files)' }
 
 $ci = [ordered]@{
   'Build ve testler'                  = Get-Mark $Outcomes.tests

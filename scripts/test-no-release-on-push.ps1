@@ -1,18 +1,24 @@
 # Work rule 13 (AGENTS.md): no workflow may publish a GitHub release from a branch push.
-# Fails when a workflow that is active, or not yet known to GitHub (new in this branch), has a push trigger and a
-# release-publishing step. Disabled workflows are reported, not failed. -WorkflowState skips the API (tests).
+# A workflow fails the guard when it can run after a push (push or workflow_run in its 'on' block, or no 'on' block this
+# script can read) and can publish: no top-level permissions (the repository's default token writes), contents: write or
+# write-all, a release command or action, or a reusable-workflow call. Only workflows GitHub lists as disabled pass.
+# Not detected: a script the workflow calls that publishes with its own personal token. -WorkflowState skips the API (tests).
 param([string]$Repository = $env:GITHUB_REPOSITORY, [string]$WorkflowDir = '', [hashtable]$WorkflowState = $null)
 $ErrorActionPreference = 'Stop'
 if (-not $WorkflowDir) { $WorkflowDir = Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows' }
+$disabled = 'disabled_manually', 'disabled_inactivity', 'disabled_fork'
 
 function Test-WorkflowPublishesOnPush([string]$Text) {
-  # Block form "  push:" (no value or a {flow map}), list item "  - push", or inline "on: push" / "on: [push, ...]".
-  $onPush = $Text -match '(?m)^\s+push:\s*(\{.*)?(#.*)?$' -or $Text -match '(?m)^\s+-\s*push\s*(#.*)?$' -or
-    $Text -match '(?m)^"?on"?:\s*(push\b|\[[^\]]*\bpush\b)'
-  $apiWrite = '(-X|--method)[ =]?(POST|PATCH)\b'
-  $publishes = $Text -match 'gh release (create|upload|edit)|ncipollo/release-action|actions/create-release|softprops/action-gh-release' -or
-    $Text -match "gh api\b[^\r\n]*($apiWrite[^\r\n]*/releases|/releases\b[^\r\n]*$apiWrite)"
-  return ($onPush -and $publishes)
+  $Text = $Text -replace '[`\\]\r?\n\s*', ' '   # join shell continuation lines
+  # The 'on' block runs to the next top-level key; any push or workflow_run inside it counts, in any YAML form.
+  $on = [regex]::Match($Text, '(?ms)^["'']?on["'']?\s*:(.*?)(?=^[^\s#]|\z)')
+  $onPush = -not $on.Success -or $on.Groups[1].Value -match '\b(push|workflow_run)\b'
+  $write = '(-X\s*|--method[ =])(POST|PATCH|PUT|DELETE)\b'
+  $canPublish = $Text -notmatch '(?m)^permissions\s*:' -or $Text -match 'contents\s*:\s*write\b|\bwrite-all\b' -or
+    $Text -match 'gh release (create|upload|edit|delete)|ncipollo/release-action|actions/create-release|softprops/action-gh-release|\b(createRelease|updateRelease|uploadReleaseAsset)\b|uses:\s*\S*\.github/workflows/' -or
+    $Text -match "gh api\b[^\r\n]*($write[^\r\n]*/releases\b|/releases\b[^\r\n]*\s($write|-[fF]\s|--(raw-)?field\b|--input\b))" -or
+    $Text -match 'curl\b[^\r\n]*/releases\b'
+  return ($onPush -and $canPublish)
 }
 
 $state = $WorkflowState
@@ -27,8 +33,8 @@ $bad = [Collections.Generic.List[string]]::new()
 foreach ($file in Get-ChildItem -LiteralPath $WorkflowDir -File | Where-Object { $_.Extension -in '.yml', '.yaml' }) {
   $rel = ".github/workflows/$($file.Name)"
   if (-not (Test-WorkflowPublishesOnPush (Get-Content -LiteralPath $file.FullName -Raw))) { continue }
-  if ($state.ContainsKey($rel) -and $state[$rel] -ne 'active') { Write-Host "$rel publishes on push but is $($state[$rel])."; continue }
+  if ($state.ContainsKey($rel) -and $state[$rel] -in $disabled) { Write-Host "$rel can publish on push but is $($state[$rel])."; continue }
   $bad.Add($rel)
 }
-if ($bad.Count) { throw "Active workflows publish a release on push: $($bad -join ', ')" }
-Write-Host 'No active workflow publishes a release on push.'
+if ($bad.Count) { throw "Workflows that are not disabled can publish a release on push: $($bad -join ', ')" }
+Write-Host 'No workflow that can run on push and publish a release is enabled.'
