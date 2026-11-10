@@ -18,7 +18,8 @@ two days the owner read "merged and signed" as "agent OK" while the 10+10
 self-update acceptance had not started. These rules keep "done" and the
 reported status honest. Order: code -> official unsigned build -> VM106 smoke
 -> final reviews and signing -> 10+10 on the frozen candidate -> normal return
-and feed continuity -> publication with the owner's approval.
+and feed continuity -> publication with the owner's approval. Checklist form:
+[`docs/AGENT_WORK_CHECKLIST.md`](docs/AGENT_WORK_CHECKLIST.md).
 
 1. Finished means built unsigned. When agent code, packaging or release
    tooling work is finished, build that exact head through the official
