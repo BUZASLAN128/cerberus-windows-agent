@@ -59,6 +59,12 @@ Check 'quoted on with a flow map and github-script fails' { (Test-Guard "`"on`":
 Check 'gh api releases with -f fails' { (Test-Guard "on: push`n$job      - run: gh api repos/o/r/releases -f tag_name=v1") -eq 'fail' }
 Check 'multi-line gh api fails' { (Test-Guard "on: push`n$job      - run: |`n          gh api repos/o/r/releases \`n            -X POST") -eq 'fail' }
 Check 'reusable workflow call on push fails' { (Test-Guard "on: push`npermissions:`n  contents: read`njobs:`n  r:`n    uses: ./.github/workflows/release.yml") -eq 'fail' }
+Check 'column-0 trigger list fails' { (Test-Guard "on:`n- push`n- pull_request`n$job      - run: gh release create v1") -eq 'fail' }
+Check 'blank line before a trigger list fails' { (Test-Guard "on:`n`n- push`n$job      - run: gh release create v1") -eq 'fail' }
+Check 'flow list continued at column 0 fails' { (Test-Guard "on: [`npull_request,`npush`n]`n$job      - run: gh release create v1") -eq 'fail' }
+Check 'column-0 list without push passes' { (Test-Guard "on:`n- pull_request`n$job      - run: gh release create v1") -eq 'pass' }
+Check 'quoted contents: write fails' { (Test-Guard "on: push`npermissions:`n  `"contents`": `"write`"`njobs:`n  p:`n    runs-on: x`n    steps:`n      - run: ./scripts/publish.ps1") -eq 'fail' }
+Check 'gh api -X=POST fails' { (Test-Guard "on: push`n$job      - run: gh api -X=POST repos/o/r/releases") -eq 'fail' }
 Check 'push outside the on block is not a trigger' { (Test-Guard "on: pull_request`n$job      - run: gh release create v1`n        with:`n          modes:`n            - push") -eq 'pass' }
 Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
 
