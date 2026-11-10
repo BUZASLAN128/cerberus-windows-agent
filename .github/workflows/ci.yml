@@ -82,23 +82,15 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/desktop
+          # The server build overwrites the helper build output; keep this profile's copy for the release gate.
+          Copy-Item -LiteralPath src/Cerberus.Agent.Installer/Helper/bin/Release/net10.0-windows/win-x64/Cerberus.Agent.Installer.Helper.dll -Destination out/ci/desktop/gate-helper.dll
 
       - name: Build server MSI and exercise updater authorization denial
         id: pkg_server
         shell: pwsh
         run: |
           ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/server -BuildProfile server
-
-      # The same lab-metadata gate the official release build runs on a non-lab build (#94/#95).
-      - name: Release gate on the unsigned non-lab bundles
-        id: release_gate
-        shell: pwsh
-        run: |
-          . ./scripts/release-trust-lib.ps1
-          $helper = 'src/Cerberus.Agent.Installer/Helper/bin/Release/net10.0-windows/win-x64/Cerberus.Agent.Installer.Helper.dll'
-          foreach ($buildProfile in 'desktop', 'server') {
-            Assert-NoLabCampaignMetadata "out/ci/$buildProfile/publish/runtime" -ExtraAssemblies @($helper)
-          }
+          Copy-Item -LiteralPath src/Cerberus.Agent.Installer/Helper/bin/Release/net10.0-windows/win-x64/Cerberus.Agent.Installer.Helper.dll -Destination out/ci/server/gate-helper.dll
 
       - name: Retain test and package evidence
         if: always()
@@ -124,15 +116,29 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # The same lab-metadata gate the official release build runs on a non-lab build (#94/#95).
+      - name: Release gate on the unsigned non-lab bundles
+        id: release_gate
+        shell: pwsh
+        run: |
+          . ./scripts/release-trust-lib.ps1
+          foreach ($buildProfile in 'desktop', 'server') {
+            Assert-NoLabCampaignMetadata "out/ci/$buildProfile/publish/runtime" -ExtraAssemblies @("out/ci/$buildProfile/gate-helper.dll")
+          }
+
   # One PR comment with the AGENTS.md Work Rules stage table for this head; CI cannot run the VM, signing,
   # 10+10, return/feed or publication stages, so they stay NOT RUN there.
   ready-status:
     needs: build-test-publish
     if: >-
-      always() && github.event_name == 'pull_request' && !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+      !cancelled() && github.event_name == 'pull_request' && !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: ready-status-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       actions: read
@@ -142,6 +148,10 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+
+      - name: Check the ready-status and publish-guard rules on fixtures
+        shell: pwsh
+        run: ./scripts/test-ci-ready-checks.ps1
 
       - name: No release on dev pushes
         id: publish_guard
@@ -157,6 +167,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BUILD_SHA: ${{ github.sha }}
+          JOB_RESULT: ${{ needs.build-test-publish.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TESTS: ${{ needs.build-test-publish.outputs.tests }}
           UPDATE_TESTS: ${{ needs.build-test-publish.outputs.updateTests }}
@@ -165,10 +177,11 @@ jobs:
           PUBLISH_GUARD: ${{ steps.publish_guard.outcome }}
         run: |
           ./scripts/ci-ready-status.ps1 -Repository $env:GITHUB_REPOSITORY -PullRequest $env:PR -HeadSha $env:HEAD_SHA `
-            -RunUrl $env:RUN_URL -Outcomes @{ tests = $env:TESTS; updateTests = $env:UPDATE_TESTS; packages = $env:PACKAGES
+            -BuildSha $env:BUILD_SHA -RunUrl $env:RUN_URL -JobResult $env:JOB_RESULT `
+            -Outcomes @{ tests = $env:TESTS; updateTests = $env:UPDATE_TESTS; packages = $env:PACKAGES
               releaseGate = $env:RELEASE_GATE; publishGuard = $env:PUBLISH_GUARD }
 
-      - name: Fail when a workflow publishes on push
+      - name: Fail when the publish guard failed
         if: steps.publish_guard.outcome == 'failure'
         shell: pwsh
-        run: throw 'An active workflow publishes a release on push (see the publish guard step).'
+        run: throw 'The publish guard failed; its step log says whether a workflow publishes on push or the check could not run.'

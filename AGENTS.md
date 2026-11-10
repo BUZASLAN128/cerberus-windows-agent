@@ -13,26 +13,30 @@ mock-complete.
 
 ## Work Rules
 
-Owner decision 2026-11-10, merged from separate lists by Claude and Codex. For
-two days the owner read "merged and signed" as "agent OK" while the 10+10
-self-update acceptance had not started. These rules keep "done" and the
-reported status honest. Order: code -> official unsigned build -> VM106 smoke
--> final reviews and signing -> 10+10 on the frozen candidate -> normal return
-and feed continuity -> publication with the owner's approval. Marking a PR
-ready, and every later push while it is ready, runs `windows-agent-ci`:
-tests, unsigned desktop/server MSI and setup as run artifacts, the release gate
-and the publish guard. It then posts the stage table as one PR comment; the
-VM, signing, 10+10, return and publication rows stay NOT RUN until those
-stages are done on real machines.
+Owner decision 2026-11-10. For two days the owner read "merged and signed" as
+"agent OK" while the 10+10 self-update acceptance had not started. These rules
+keep "done" and the reported status honest. Order: code -> official unsigned
+build -> VM106 smoke -> final reviews and signing -> 10+10 on the frozen
+candidate -> normal return and feed continuity -> publication with the owner's
+approval.
+
+Marking a PR ready, and every later push while it is ready, runs
+`windows-agent-ci`: tests, updater recovery tests, unsigned CI inspection
+MSI and setup for both profiles as run artifacts, the release gate and the
+publish guard. It then posts the stage table as one PR comment. The official
+unsigned build, VM, signing, 10+10, return and publication rows stay NOT RUN
+there; they are done and reported outside CI.
 
 1. Finished means built unsigned. When agent code, packaging or release
    tooling work is finished, build that exact head through the official
    non-lab pipeline, helper, MSI and setup, for every affected profile (both
    for shared code):
-   `scripts/build-agent-public-release.ps1 -Channel dev -AllowUnsignedDevBuild`
-   (check its current parameters). Lab or support builds do not count. (#94's
-   release gate blocked every non-lab server build; it surfaced only at the
-   0.2.1014 release build, fixed in #95.)
+   `scripts/build-agent-public-release.ps1 -Version <x> -Channel dev
+   -AllowUnsignedDevBuild` (server: `-BuildProfile server
+   -AgentCommandTrustAnchorsFile <file>`; check the current parameters). Lab,
+   support and CI inspection packages do not count. (#94's release gate
+   blocked every non-lab server build; it surfaced only at the 0.2.1014
+   release build, fixed in #95.)
 2. Smoke it on VM106 the same day, never first on the owner PC. Install it as
    an upgrade over the deployed version and check the installer exit code, the
    installed and running service version, enrollment kept, a fresh heartbeat,
