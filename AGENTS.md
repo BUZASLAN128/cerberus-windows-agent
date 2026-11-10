@@ -11,6 +11,56 @@ commands, managed-user behavior, update/uninstall flows, and related tests.
 Applied Guardrail: public Windows agent - real-path acceptance is never
 mock-complete.
 
+## Work Rules
+
+Owner decision 2026-11-10, written by Claude and Codex. For two days the owner
+read "merged and signed" as "agent OK", while the 10+10 self-update acceptance
+had not started. These rules keep "done" and the reported status honest.
+
+1. Finished means built and checked unsigned. When a piece of agent work is
+   finished, build an unsigned dev MSI from that exact head
+   (`scripts/build-agent-public-release.ps1 -Channel dev -AllowUnsignedDevBuild`,
+   the touched profile, both for shared code; check its current parameters)
+   and install it the same day on the test VM as an upgrade over the version
+   deployed there: service running, enrolled identity kept, heartbeat on the
+   backend, one panel command ACKed, and for update code one update plus its
+   failure recovery. Record head, MSI hash and results. (#94's release gate
+   blocked every non-lab server build; it surfaced only at the 0.2.1014
+   release build, fixed in #95.)
+2. Sign only what passed. The signing session uses a candidate whose unsigned
+   check passed on the same head; never sign to find out whether a build works.
+   A signed build agents refuse burns a manifest sequence (0.2.1008, 257 MB MSI
+   over the 200 MiB download cap).
+3. Test the field path. Upgrade from the version actually installed in the
+   field, not only fresh installs (1009+ single-file MSIs failed with 1603 on
+   every older install). Before calling a feed ready, fetch the published
+   manifest's own `artifact_url` from an off-LAN agent (1009-1011 pointed at
+   an internal address).
+4. Status line on every report. Each agent status to the owner starts with:
+   merged (head) / unsigned check (date, target) / signed (MSI hash) / 10+10
+   self-update (count per target) / published (channel). Say "agent OK" only
+   when every required stage is done; otherwise name the missing stage. A
+   merge, a valid signature or a running service is not acceptance.
+5. Own evidence only. A test passed only when the target's own receipts and
+   logs show it, never from another session's transcript or one observation
+   (VM106 10/10 claim taken from another transcript; wakeup "works" from one
+   ping).
+6. Product and harness apart. Report test-harness or campaign work separately
+   from product changes: "agent unchanged since <head>; test setup in review".
+7. Green CI is not a build. Build steps must fail on errors, and the release
+   gate must run on a non-lab build before merge (#80 reached dev not
+   compiling because CI ignored exit codes).
+8. No release on dev pushes. Before merging, confirm no workflow publishes or
+   moves dev-latest on a dev push (auto-publish-exe.yml published
+   v0.2.154-dev.154).
+9. Leave real machines clean. Unit tests never write to real ProgramData paths
+   (a planted `ui-context.json` broke the 1005 install with 1722). Remote/QGA
+   helpers use unique Verb-Noun names, checked for alias collisions (a helper
+   named `Rd` deleted VM106 receipts).
+10. A failure shows its cause. Every failed update or install state carries an
+    error code in the agent status (#94: an expired manifest showed as failed
+    with no code).
+
 ## Ask First
 
 Ask first before adding NuGet/system dependencies, changing service
