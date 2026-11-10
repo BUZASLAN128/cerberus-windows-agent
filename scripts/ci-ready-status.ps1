@@ -27,7 +27,7 @@ $harness = '^tests/|^scripts/test-|^scripts/ci-ready-status\.ps1$'
 $agentChange = @($ChangedFiles | Where-Object {
   $_ -notmatch $harness -and ($_ -match '^(src|scripts)/|^Directory\.Build\.(props|targets)$|^global\.json$|^\.github/workflows/auto-publish') })
 $updateChange = @($agentChange | Where-Object {
-  $_ -match '^src/Cerberus\.Agent\.(Updater|Installer|Service)/|^src/.*(Update|Version|Channel|Installer|ServiceImage|Manifest|Trust)[^/]*$|^scripts/|^Directory\.Build\.props$|^\.github/workflows/' })
+  $_ -match '^src/Cerberus\.Agent\.(Updater|Installer|Service)/|^src/.*(Update|Version|Channel|Installer|ServiceImage|Manifest|Trust)|^scripts/|^Directory\.Build\.props$|^\.github/workflows/' })
 
 $ci = [ordered]@{
   'Build ve testler'                  = Get-Mark $Outcomes.tests
@@ -36,7 +36,9 @@ $ci = [ordered]@{
   'Release gate (lab metadata yok)'   = Get-Mark $Outcomes.releaseGate
   "Dev push'unda yayın yok"           = Get-Mark $Outcomes.publishGuard
 }
-if ($JobResult -notin 'success', 'skipped' -and $ci.Values -notcontains 'FAIL') { $ci['Diğer CI adımları'] = 'FAIL' }
+# The build job failed on a step without its own row (the publish guard runs in another job).
+$buildRows = @($Outcomes.tests, $Outcomes.updateTests, $Outcomes.packages, $Outcomes.releaseGate)
+if ($JobResult -notin 'success', 'skipped' -and $buildRows -notcontains 'failure') { $ci['Diğer CI adımları'] = 'FAIL' }
 $buildNote = if ($BuildSha -and $BuildSha -ne $HeadSha) { " (CI birleştirme commit'i ``$BuildSha``)" } else { '' }
 $lines = @('## Ajan hazırlık durumu', "Head ``$HeadSha``$buildNote · [CI çalışması ve paketler]($RunUrl)", '', '| Aşama | Durum |', '|---|---|')
 foreach ($k in $ci.Keys) { $lines += "| $k | $($ci[$k]) |" }

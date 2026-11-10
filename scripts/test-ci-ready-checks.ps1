@@ -20,6 +20,9 @@ Check 'other source change may need 10+10' { (Get-Status @('src/Cerberus.Agent.A
 Check 'agent change always lists the official unsigned build' { (Get-Status @('src/Cerberus.Agent.App/MainWindow.cs')) -match 'Eksik: resmi imzasız build' }
 Check 'failed job without a FAIL row is shown' { (Get-Status @('AGENTS.md') -JobResult 'failure') -match '\| Diğer CI adımları \| FAIL \|' }
 Check 'failed step is listed first' { (Get-Status @('src/A.cs') -Outcomes @{ tests = 'failure' }) -match 'Eksik: Build ve testler' }
+Check 'publish-guard FAIL does not hide a failed build job' {
+  (Get-Status @('AGENTS.md') -Outcomes @{ tests = 'success'; updateTests = 'success'; packages = 'success'; releaseGate = 'skipped'; publishGuard = 'failure' } -JobResult 'failure') -match '\| Diğer CI adımları \| FAIL \|' }
+Check 'update keyword in a folder name requires 10+10' { (Get-Status @('src/Cerberus.Agent.Core/Updates/Foo.cs')) -match 'NOT RUN \(gerekli' }
 
 $guard = Join-Path $PSScriptRoot 'test-no-release-on-push.ps1'
 $dir = Join-Path ([IO.Path]::GetTempPath()) "ready-guard-$PID"
@@ -33,6 +36,9 @@ $job = "jobs:`n  p:`n    runs-on: ubuntu-latest`n    steps:`n"
 Check 'block push + gh release create fails' { (Test-Guard "on:`n  push:`n    branches: [dev]`n$job      - run: gh release create v1") -eq 'fail' }
 Check 'inline on: push + release-action fails' { (Test-Guard "on: push`n$job      - uses: ncipollo/release-action@v1") -eq 'fail' }
 Check 'on: [push, pull_request] + create-release fails' { (Test-Guard "on: [push, pull_request]`n$job      - uses: actions/create-release@v1") -eq 'fail' }
+Check 'flow-map push trigger fails' { (Test-Guard "on:`n  pull_request:`n  push: {branches: [dev]}`n$job      - run: gh release upload v1 a.zip") -eq 'fail' }
+Check 'list push trigger fails' { (Test-Guard "on:`n  - push`n$job      - uses: softprops/action-gh-release@v2") -eq 'fail' }
+Check 'gh api with -X after the path fails' { (Test-Guard "on: push`n$job      - run: gh api repos/o/r/releases -X POST -f tag_name=v1") -eq 'fail' }
 Check 'disabled publishing workflow passes' { (Test-Guard "on:`n  push:`n$job      - run: gh release create v1" @{ '.github/workflows/w.yml' = 'disabled_manually' }) -eq 'pass' }
 Check 'push: true input is not a trigger' { (Test-Guard "on: pull_request`n$job      - uses: docker/build-push-action@v6`n        with:`n          push: true`n      - run: gh release create v1") -eq 'pass' }
 Check 'reading releases is not publishing' { (Test-Guard "on:`n  push:`n$job      - run: gh api repos/o/r/releases/latest") -eq 'pass' }

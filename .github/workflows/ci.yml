@@ -150,6 +150,8 @@ jobs:
           persist-credentials: false
 
       - name: Check the ready-status and publish-guard rules on fixtures
+        id: fixtures
+        continue-on-error: true
         shell: pwsh
         run: ./scripts/test-ci-ready-checks.ps1
 
@@ -181,7 +183,7 @@ jobs:
             -Outcomes @{ tests = $env:TESTS; updateTests = $env:UPDATE_TESTS; packages = $env:PACKAGES
               releaseGate = $env:RELEASE_GATE; publishGuard = $env:PUBLISH_GUARD }
 
-      - name: Fail when the publish guard failed
-        if: steps.publish_guard.outcome == 'failure'
+      - name: Fail when a ready check failed
+        if: steps.fixtures.outcome == 'failure' || steps.publish_guard.outcome == 'failure'
         shell: pwsh
-        run: throw 'The publish guard failed; its step log says whether a workflow publishes on push or the check could not run.'
+        run: throw 'A ready check failed; the fixture or publish-guard step log has the cause.'

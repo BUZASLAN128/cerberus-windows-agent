@@ -6,9 +6,12 @@ $ErrorActionPreference = 'Stop'
 if (-not $WorkflowDir) { $WorkflowDir = Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows' }
 
 function Test-WorkflowPublishesOnPush([string]$Text) {
-  # Block form "  push:" (no value), or inline "on: push" / "on: [push, ...]".
-  $onPush = $Text -match '(?m)^\s+push:\s*(#.*)?$' -or $Text -match '(?m)^"?on"?:\s*(push\b|\[[^\]]*\bpush\b)'
-  $publishes = $Text -match 'gh release (create|upload|edit)|ncipollo/release-action|actions/create-release|softprops/action-gh-release|gh api (-X|--method) (POST|PATCH)\b[^\r\n]*/releases'
+  # Block form "  push:" (no value or a {flow map}), list item "  - push", or inline "on: push" / "on: [push, ...]".
+  $onPush = $Text -match '(?m)^\s+push:\s*(\{.*)?(#.*)?$' -or $Text -match '(?m)^\s+-\s*push\s*(#.*)?$' -or
+    $Text -match '(?m)^"?on"?:\s*(push\b|\[[^\]]*\bpush\b)'
+  $apiWrite = '(-X|--method)[ =]?(POST|PATCH)\b'
+  $publishes = $Text -match 'gh release (create|upload|edit)|ncipollo/release-action|actions/create-release|softprops/action-gh-release' -or
+    $Text -match "gh api\b[^\r\n]*($apiWrite[^\r\n]*/releases|/releases\b[^\r\n]*$apiWrite)"
   return ($onPush -and $publishes)
 }
 
