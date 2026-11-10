@@ -18,7 +18,7 @@ internal sealed record SecurityLogResult(
 }
 
 /// <summary>Window status of the group-change feed and the <c>changes</c> object built from it (null when unavailable).</summary>
-internal sealed record AdminChangeReport(string Status, object? Changes);
+internal sealed record AdminChangeReport(string Status, object? Changes, IReadOnlyList<AdminGroupChange>? Evidence = null);
 
 /// <summary>Builders for the consume-once fields derived from the Security scan and for <c>local_admins</c>.</summary>
 internal static class SecurityLogFields
@@ -106,7 +106,16 @@ internal static class SecurityLogFields
                     time_utc = FailedLogonSection.Iso(c.TimeUtc),
                 })
                 .ToArray(),
-        });
+        }, AttributionEvidence(changes));
+
+    private static IReadOnlyList<AdminGroupChange> AttributionEvidence(IReadOnlyList<AdminGroupChange> changes)
+    {
+        // UTC is not an event sequence. Do not infer order if this window lacks unique native record IDs.
+        if (changes.Any(c => c.RecordId is null or <= 0)
+            || changes.Select(c => c.RecordId).Distinct().Count() != changes.Count)
+            return Array.Empty<AdminGroupChange>();
+        return changes.OrderByDescending(c => c.RecordId).Take(MaxChanges).ToArray();
+    }
 
     internal static object LogCleared(string status, DateTimeOffset? lastClearedUtc)
         => new { status, last_cleared_utc = lastClearedUtc is { } t ? FailedLogonSection.Iso(t) : null };
@@ -128,10 +137,36 @@ internal static class SecurityLogFields
             status,
             count = members?.Total ?? 0,
             members = (members?.Members ?? Array.Empty<LocalAdminMember>())
-                .Select(m => new { name = m.Name, sid = m.Sid, kind = m.Kind })
+                .Select(m => Member(m, changes))
                 .ToArray(),
             truncated = members?.Truncated ?? false,
             changes = changes.Changes ?? new { count = 0, truncated = false, items = Array.Empty<object>() },
         };
+    }
+
+    private static object Member(LocalAdminMember member, AdminChangeReport changes)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["name"] = member.Name, ["sid"] = member.Sid, ["kind"] = member.Kind,
+        };
+        if (changes.Status != "ok" || changes.Evidence is null)
+            return result;
+        var matched = changes.Evidence
+            .Where(c => string.Equals(c.MemberSid, member.Sid, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(c.GroupSid, SecurityLogEventParser.AdministratorsSid, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.RecordId).ToArray();
+        if (matched.Length == 0)
+            return result;
+        var latest = matched[0];
+        // A removal, ambiguous record order, or another admin group is not evidence of this addition.
+        if (latest.Action != "added" || latest.EventId is not (4732 or 4728)
+            || latest.RecordId is null or <= 0 || matched.Skip(1).Any(c => c.RecordId == latest.RecordId))
+            return result;
+        if (latest.AddedBy is not null)
+            result["added_by"] = latest.AddedBy;
+        result["added_at_utc"] = FailedLogonSection.Iso(latest.TimeUtc);
+        result["addition_source"] = "security_event:" + latest.EventId;
+        return result;
     }
 }

@@ -153,7 +153,7 @@ internal static partial class AgentUpdateLocalService
         {
             change(before => Replace(before, request, Finish(request, request.LifecycleGeneration != lifecycleGeneration
                 ? "lifecycle_changed" : !allowed ? "automatic_updates_disabled" : "expired")));
-            log.Info($"Install request {request.CommandId ?? "legacy"} dropped: " + (request.LifecycleGeneration != lifecycleGeneration ? "lifecycle changed."
+            log.Info($"Install request {InstallRequestLabel(request)} dropped: " + (request.LifecycleGeneration != lifecycleGeneration ? "lifecycle changed."
                 : !allowed ? "automatic updates are not allowed." : "expired."));
             return false;
         }
@@ -173,21 +173,21 @@ internal static partial class AgentUpdateLocalService
             retry ??= Finish(request with { Attempts = Math.Min(MaxInstallRequestAttempts, request.Attempts + 1) }, terminal ?? "staging_failed");
             change(before => Replace(before, request, retry));
             log.Warn(retry is null || retry.TerminalReason is not null
-                ? $"Install request {request.CommandId ?? "legacy"} staging failed; no tries left."
-                : $"Install request {request.CommandId ?? "legacy"} staging failed; next try at {retry.NotBeforeUtc:O}.");
+                ? $"Install request {InstallRequestLabel(request)} staging failed; no tries left."
+                : $"Install request {InstallRequestLabel(request)} staging failed; next try at {retry.NotBeforeUtc:O}.");
             throw;
         }
 
         var after = change(before => !MatchesPending(before.InstallRequest, request) ? before
-            : request.IsCorrelated && (before.InstallRequest!.VerifiedRelease is not { } verified ||
+            : request.RetainsReceipt && (before.InstallRequest!.VerifiedRelease is not { } verified ||
                 request.ExpectedPlan is { } expected && !expected.Matches(verified) ||
                 staged && (before.AttemptId is null || before.LifecycleGeneration != lifecycleGeneration))
                 ? before with { InstallRequest = AnchorTerminal(before, Finish(before.InstallRequest!, "release_unavailable")) }
-            : staged ? TransitionInstallRequested(before with { InstallRequest = request.IsCorrelated
+            : staged ? TransitionInstallRequested(before with { InstallRequest = request.RetainsReceipt
                     ? before.InstallRequest! with { BoundAttemptId = before.AttemptId }
                     : null }, lifecycleGeneration, DateTimeOffset.UtcNow)
                 : before with { InstallRequest = AnchorTerminal(before, Finish(before.InstallRequest!, "current")) });
-        log.Info($"Install request {request.CommandId ?? "legacy"} handled: update state {after.Phase}.");
+        log.Info($"Install request {InstallRequestLabel(request)} handled: update state {after.Phase}.");
         return true;
     }
 
@@ -268,7 +268,10 @@ internal static partial class AgentUpdateLocalService
            current.NotBeforeUtc == expected.NotBeforeUtc && current.ExpiresUtc == expected.ExpiresUtc;
 
     private static AgentUpdateInstallRequest? Finish(AgentUpdateInstallRequest request, string reason)
-        => request.IsCorrelated ? request with { TerminalReason = reason, TerminalUtc = DateTimeOffset.UtcNow } : null;
+        => request.RetainsReceipt ? request with { TerminalReason = reason, TerminalUtc = DateTimeOffset.UtcNow } : null;
+
+    private static string InstallRequestLabel(AgentUpdateInstallRequest request)
+        => request.CommandId ?? (request.LocalPolicyId is { } policy ? "compiled-lab:" + policy : "legacy");
 
     private sealed class InstallReleaseUnavailableException() : InvalidOperationException("Requested update release is not available for installation.");
 }

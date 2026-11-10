@@ -47,7 +47,7 @@ internal static partial class AgentUpdateLocalService
         lock (CancellationGate) { _networkOperation = cancellation; }
         try
         {
-            using var http = new HttpClient(BackendTrust.Apply(new HttpClientHandler { MaxAutomaticRedirections = 5 }))
+            using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler())
             {
                 Timeout = TimeSpan.FromSeconds(30),
             };
@@ -283,7 +283,10 @@ internal static partial class AgentUpdateLocalService
         if (active.Phase is "launch_requested" or "install_may_have_started" or AgentUpdateStates.Installing)
         {
             if (!IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc))
-                Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
+            {
+                if (active.Phase != "launch_requested" || !await ReconcileUnstartedLabRunnerAsync(active, ct).ConfigureAwait(false))
+                    Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
+            }
         }
         else if (active.Phase == AgentUpdateStates.RetryableBusy && active.NextRetryUtc is null)
         {

@@ -103,6 +103,8 @@ public sealed class AgentReleaseWorkflowContractTests
         Assert.Contains("$latestAssetBase.update-manifest.v2.json", latestStep);
 
         var versionedAssets = ExtractArtifactBlock(workflow, "Create GitHub release");
+        Assert.Contains(".msi${{ steps.bundle.outputs.setup_asset_suffix }}", versionedAssets);
+        Assert.DoesNotContain("${{ steps.release.outputs.setup_base }}.exe", versionedAssets);
         Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.json", versionedAssets);
         Assert.Contains("${{ steps.release.outputs.asset_base }}.update-manifest.v2.json", versionedAssets);
         Assert.Contains("Cerberus.Agent.Bundle-${{ steps.release.outputs.channel }}-latest.update-manifest.v2.json", versionedAssets);
@@ -114,8 +116,9 @@ public sealed class AgentReleaseWorkflowContractTests
         // guarded by the workflow condition above and is intentionally not
         // simulated with a fabricated successful process result.
         foreach (var channel in new[] { "dev", "preview" })
+        foreach (var setupSigned in new[] { false, true })
         {
-            var result = RunLatestReleaseBlock(channel);
+            var result = RunLatestReleaseBlock(channel, setupSigned);
             Assert.True(
                 result.ExitCode == 0,
                 result.StandardError + result.StandardOutput);
@@ -137,6 +140,8 @@ public sealed class AgentReleaseWorkflowContractTests
             Assert.Contains($"out/public-release/publish/{versionedAssetBase}.update-manifest.json", create);
             Assert.Contains($"out/public-release/publish/{versionedAssetBase}.update-manifest.v2.json", create);
             Assert.Contains($"out/public-release/publish/{latestInstallerBase}.msi", create);
+            Assert.Equal(setupSigned, create.Contains($"out/public-release/publish/{versionedInstallerBase}.exe"));
+            Assert.Equal(setupSigned, create.Contains($"out/public-release/publish/{latestInstallerBase}.exe"));
             Assert.Contains($"out/public-release/publish/{latestAssetBase}.update-manifest.json", create);
             Assert.Contains($"out/public-release/publish/{latestAssetBase}.update-manifest.v2.json", create);
             Assert.Contains("--latest=false", create);
@@ -234,7 +239,30 @@ public sealed class AgentReleaseWorkflowContractTests
         }
     }
 
-    private static ProcessResult RunLatestReleaseBlock(string channel)
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PublicSetupAsset_UsesOnlyBooleanSignedGate(bool signed)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-public-setup", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var gate = Path.Combine(root, "gate.json");
+            var setup = Path.Combine(root, "fixture.exe");
+            File.WriteAllText(gate, "{\"setup\":{\"authenticode_signature_present\":" + (signed ? "true" : "false") + "}}");
+            File.WriteAllText(setup, "opaque fixture; asset-selection test, no executable/signature claim");
+            var lib = Path.Combine(FindRepoRoot(), "scripts", "release-bundle-lib.ps1").Replace("'", "''");
+            var expected = signed ? setup : "";
+            var run = ServerPackageStaticTests.RunPwsh($". '{lib}'; $asset=Get-AgentPublicSetupAsset '{gate}' '{setup}'; " +
+                $"if([string]$asset -cne '{expected}'){{throw 'Wrong public setup selection'}}");
+            Assert.True(run.ExitCode == 0, run.Output);
+            if (!signed) Assert.Contains("public EXE upload skipped", run.Output);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static ProcessResult RunLatestReleaseBlock(string channel, bool setupSigned)
     {
         var repoRoot = FindRepoRoot();
         var workflow = File.ReadAllText(Path.Combine(repoRoot, ".github", "workflows", "auto-publish-exe.yml"));
@@ -276,6 +304,7 @@ public sealed class AgentReleaseWorkflowContractTests
             startInfo.Environment["CERBERUS_RELEASE_SETUP_BASE"] = $"Cerberus.Agent-{channel}-1.2.3";
             startInfo.Environment["CERBERUS_RELEASE_ASSET_BASE"] = $"Cerberus.Agent.Bundle-{channel}-1.2.3";
             startInfo.Environment["CERBERUS_WORKFLOW_SHA"] = new string('a', 40);
+            startInfo.Environment["CERBERUS_SETUP_SIGNED"] = setupSigned ? "true" : "false";
             using var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not start pwsh for release alias contract test.");
             var standardOutput = process.StandardOutput.ReadToEndAsync();

@@ -111,12 +111,14 @@ function Copy-ChannelLatestAliases(
   [string]$Gate,
   [string]$MsiHash,
   [string]$ZipHash,
-  [string]$BuildProfile = "desktop"
+  [string]$BuildProfile = "desktop",
+  [string]$Setup = ''
 ) {
   $suffix = if ($BuildProfile -eq "server") { "-server" } else { "" }
   $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest$suffix"
   $aliasInstallerBase = "Cerberus.Agent-$Channel-latest$suffix"
   Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasInstallerBase.msi") -Force
+  if ($Setup) { Copy-Item -LiteralPath $Setup -Destination (Join-Path $PublishDir "$aliasInstallerBase.exe") -Force }
   Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
   Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
   Copy-Item -LiteralPath $Provenance -Destination (Join-Path $PublishDir "$aliasAssetBase.provenance.json") -Force
@@ -124,10 +126,12 @@ function Copy-ChannelLatestAliases(
     Copy-Item -LiteralPath $Manifest -Destination (Join-Path $PublishDir "$aliasAssetBase.update-manifest.json") -Force
   }
   Copy-Item -LiteralPath $Gate -Destination (Join-Path $PublishDir "$aliasAssetBase.release-gate.json") -Force
-  @(
+  $hashLines = @(
     "$ZipHash  $aliasAssetBase.zip",
     "$MsiHash  $aliasInstallerBase.msi"
-  ) | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
+  )
+  if ($Setup) { $hashLines += "$((Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant())  $aliasInstallerBase.exe" }
+  $hashLines | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
 }
 
 function Publish-ReleaseOutputs(
@@ -143,6 +147,8 @@ function Publish-ReleaseOutputs(
 ) {
   $suffix = if ($BuildProfile -eq "server") { "-server" } else { "" }
   $msi = Join-Path $PublishDir "$InstallerBase.msi"
+  $setup = Join-Path $PublishDir "$InstallerBase.exe"
+  if (-not (Test-Path -LiteralPath $setup)) { throw 'Manual-download setup wrapper is missing.' }
   $zip = Join-Path $PublishDir "$AssetBase.zip"
   $sbom = Join-Path $PublishDir "$AssetBase.sbom.json"
   $provenance = Join-Path $PublishDir "$AssetBase.provenance.json"
@@ -190,6 +196,15 @@ function Publish-ReleaseOutputs(
     tenant_signing_key_present = $false
   }
   if ($BuildProfile -eq "server") { $gate.installer.Remove("uninstall_binary") }
+  $gate['setup'] = [ordered]@{
+    name = "$InstallerBase.exe"
+    checksum_sha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+    authenticode_signature_present = $Signed
+    payload_kind = 'msi'
+    payload_sha256 = $msiHash
+    consent_ui = 'embedded_msi'
+    updater_artifact = $false
+  }
   $gatePath = Join-Path $PublishDir "$AssetBase.release-gate.json"
   $gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $gatePath -Encoding utf8
 
@@ -204,6 +219,7 @@ function Publish-ReleaseOutputs(
     -Gate $gatePath `
     -MsiHash $msiHash `
     -ZipHash $zipHash `
+    -Setup $setup `
     -BuildProfile $BuildProfile
 }
 
@@ -217,7 +233,9 @@ function Complete-ExternalManifestSigning(
   [string]$PublicKeyPath,
   # Test seam only: build-agent-public-release.ps1 never passes it, so the real path always uses Assert-ReleaseFileSigned.
   [scriptblock]$FileSignatureCheck = $null,
-  [string]$BuildProfile = "desktop"
+  [string]$BuildProfile = "desktop",
+  # Test seam for opaque fixture bytes; the release entrypoint never passes it.
+  [scriptblock]$SetupPayloadCheck = $null
 ) {
   Write-Step "Verifying detached manifest signature"
   if (-not (Test-Path -LiteralPath $PublicKeyPath -PathType Leaf)) {
@@ -258,7 +276,8 @@ function Complete-ExternalManifestSigning(
   foreach ($name in (Get-ReleaseRuntimeExecutableNames $BuildProfile)) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir $name) -PathType Leaf)) { throw "Expected signed file was not found: $(Join-Path $runtimeDir $name)" }
   }
-  $signedFiles = @(Get-FirstPartyPeFiles $runtimeDir) + @($msi)
+  $setup = Join-Path $PublishDir "$InstallerBase.exe"
+  $signedFiles = @(Get-FirstPartyPeFiles $runtimeDir) + @($msi, $setup)
   $verified = 0
   foreach ($file in $signedFiles) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Expected signed file was not found: $file" }
@@ -266,6 +285,8 @@ function Complete-ExternalManifestSigning(
     $verified++
   }
   $signed = ($verified -eq $signedFiles.Count)
+  if ($null -ne $SetupPayloadCheck) { & $SetupPayloadCheck $msi $setup }
+  else { Assert-AgentSetupPayload -MsiPath $msi -SetupPath $setup -WorkDirectory (Join-Path $PublishDir 'setup-verification') }
 
   # Publish-ReleaseOutputs reads these; a missing one would otherwise fail after the manifest and aliases were written.
   foreach ($suffix in "$AssetBase.zip", "$AssetBase.sbom.json", "$AssetBase.provenance.json") {

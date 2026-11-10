@@ -335,7 +335,7 @@ public sealed class AgentUxStaticTests
         Assert.Contains("Get-ManifestPublicKeyPem $manifestPrivateKey", releaseScript);
         Assert.Contains("$UpdateManifestPublicKeyB64 = $manifestPublicKeyB64", releaseScript);
         Assert.Contains("$AgentUpdateManifestPublicKeysB64 = $manifestPublicKeyB64", releaseScript);
-        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", releaseScript);
+        Assert.Contains("-p:AgentUpdateManifestPublicKeysB64=$AgentUpdateManifestPublicKeysB64", File.ReadAllText(Path.Combine(repoRoot, "scripts", "release-runtime-publish-lib.ps1")));
         Assert.Contains("-p:UpdateManifestPublicKeyB64=$UpdateManifestPublicKeyB64", releaseScript);
     }
 

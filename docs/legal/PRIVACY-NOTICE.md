@@ -1,20 +1,25 @@
 # Cerberus Windows Agent Privacy Notice
 
-Document version: `agent-privacy-2026-06-02.v2`
+Document version: `agent-privacy-2026-11-03.v3`
 
 This notice describes the data categories the Cerberus Windows Agent may process during installation, registration, service operation, support, and uninstall.
 
 This document is a product/legal draft and should be reviewed by counsel before public production distribution.
 
+On Desktop, for both primary and Secondary products, new security logon details, local administrator membership and addition-actor fields require administrator acceptance of this v3 notice in the machine scope, bound to this document's content digest. Explicit acceptance during a fresh MSI install can record it; after an upgrade that retains older consent, an administrator can run the installed agent with `--service --accept-eula` from an elevated terminal to record machine consent without starting another worker. Tray acceptance records user consent and does not enable these machine-wide categories. Until machine v3 consent exists, those categories are unavailable while the preexisting data, heartbeat and commands continue; live and buffered snapshots omit these categories before transmission and update the affected section hash. This gate does not change the Server build's existing security collection or headless behavior; automatic upgrades do not create new consent.
+
 ## 1. Data Categories
 
-Depending on configuration, the agent may process:
+Depending on configuration, both Desktop and Server profiles may process:
 
 - device registration identifiers;
 - tenant or workspace identifiers;
 - device fingerprint and machine metadata needed to recognize the enrolled machine;
 - agent version, build channel, build identifier, and capability status;
 - service health, heartbeat time, and connectivity status;
+- logon events, including user name, domain, source IP address, and workstation name;
+- current local administrator membership, including enumeration of member names and SIDs; telemetry includes at most 100 members and, when supported by matching Security log events, addition time, source event, and the account recorded as adding the member;
+- administrator membership change events, including member name and SID, group SID, action, and event time;
 - local managed account status, excluding passwords;
 - command result status for authorized operations;
 - remote desktop readiness status;
@@ -52,7 +57,7 @@ The agent processes data to:
 
 Local agent credentials are stored using Windows DPAPI. User-scope registration can be promoted to machine-scope service credentials during service installation. The legal consent record is not a secret and is stored as a local JSON record so the installer can verify acceptance.
 
-Backend retention and export behavior should be governed by the customer's Cerberus deployment agreement and environment policy.
+Retention periods for telemetry received by the backend are set by the backend, not by the agent. Backend retention and export behavior should be governed by the customer's Cerberus deployment agreement and environment policy.
 
 ## 5. Sharing
 

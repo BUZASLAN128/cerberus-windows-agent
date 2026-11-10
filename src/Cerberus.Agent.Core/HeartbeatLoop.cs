@@ -32,6 +32,9 @@ public sealed partial class HeartbeatLoop
     private readonly bool _legacyAsyncSupported;
     private readonly Func<bool> _legacyAsyncReady;
     private readonly AgentSignedStateStore? _signedState;
+    private readonly bool _supportsUpdateInstall;
+    private readonly TimeProvider _time;
+    private readonly Func<double> _retryJitter;
 
     public HeartbeatLoop(
         AgentApiClient api,
@@ -65,9 +68,14 @@ public sealed partial class HeartbeatLoop
         bool signedCommandsOnly = false,
         bool legacyAsyncSupported = false,
         Func<bool>? legacyAsyncReady = null,
-        AgentSignedStateStore? signedState = null)
+        AgentSignedStateStore? signedState = null,
+        bool supportsUpdateInstall = false,
+        TimeProvider? timeProvider = null,
+        Func<double>? retryJitter = null)
     {
         _timing = timingPolicy ?? AgentTimingPolicy.Current;
+        _time = timeProvider ?? TimeProvider.System;
+        _retryJitter = retryJitter ?? Random.Shared.NextDouble;
         _api = api;
         _dispatcher = dispatcher;
         _minDelayOnError = minDelayOnError <= TimeSpan.Zero
@@ -90,6 +98,7 @@ public sealed partial class HeartbeatLoop
         _buildChannel = _metadata.BuildChannel;
         _responseHandler = responseHandler;
         _telemetryProvider = telemetryProvider;
+        if (telemetryProvider is not null) _api.SetSnapshotPrivacyRedacted(telemetryProvider.SnapshotPrivacyRedacted);
         _telemetryBuffer = telemetryBuffer;
         _log = log ?? NullAgentLogger.Instance;
         _commandProcessor = commandProcessor ?? new LegacyHeartbeatCommandProcessor(
@@ -114,6 +123,8 @@ public sealed partial class HeartbeatLoop
         _legacyAsyncSupported = legacyAsyncSupported;
         _legacyAsyncReady = legacyAsyncReady ?? (() => true);
         _signedState = signedState;
+        _supportsUpdateInstall = AgentBuildProfile.IsServer && supportsUpdateInstall &&
+            dispatcher.HandlerTypes.Contains(EnvelopeTypes.AgentUpdateRequest);
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -151,6 +162,8 @@ public sealed partial class HeartbeatLoop
                 if (_signedCommandsOnly) supported = supported.Append(CommandEnvelope.SignedOnlyCapability);
                 var legacyAsyncAvailable = !controlRecovery && _legacyAsyncSupported && _legacyAsyncReady();
                 if (legacyAsyncAvailable) supported = supported.Append(LegacyAsyncCommandProcessor.Capability);
+                IReadOnlyList<string> capabilities = _dispatcher.HandlerTypes;
+                if (_supportsUpdateInstall) capabilities = capabilities.Append("agent.update.install.v1").ToArray();
                 var hbReq = new Dictionary<string, object?>
                 {
                     ["status"] = degraded || recoveringState ? "degraded" : "connected",
@@ -162,7 +175,7 @@ public sealed partial class HeartbeatLoop
                     ["tailscale"] = tailscale,
                     ["ad"] = controlRecovery || _adStatusProvider is null ? null : await _adStatusProvider(ct),
                     ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
-                    ["capabilities"] = _dispatcher.HandlerTypes,
+                    ["capabilities"] = capabilities,
                     ["signed_state_reset"] = recoveringState,
                     ["signed_state_floor"] = recoveringState ? _signedState!.RecoveryFloor : 0,
                     ["signed_state_recovery_rejections"] = _commandProcessor is EnvelopeCommandProcessor envelopes &&
@@ -187,7 +200,7 @@ public sealed partial class HeartbeatLoop
                         // No unsigned update, manifest, lease, telemetry or business command during recovery.
                         // Let the signed processor reject ordinary envelopes visibly; it still runs only state recovery.
                         await _commandProcessor.ProcessAsync(hb.PendingCommands, ct).ConfigureAwait(false);
-                        await Task.Delay(TimeSpan.FromSeconds(Math.Max(30, _timing.Bounds.PollFloor)), ct).ConfigureAwait(false);
+                        await Task.Delay(_timing.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(30, _timing.Bounds.PollFloor))), _time, ct).ConfigureAwait(false);
                         continue;
                     }
                 }
@@ -217,7 +230,7 @@ public sealed partial class HeartbeatLoop
                         $"Agent version blocked by server policy: version={_agentVersion}, reason={hb.VersionPolicy?.Reason ?? "unknown"}");
                     _commandProcessor.SignalOutbox();
                     var blockedDelay =_timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 300), 0.20), 300);
-                    await Task.Delay(TimeSpan.FromSeconds(blockedDelay), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(blockedDelay), _time, ct);
                     _wakeupSignal?.Clear();
                     continue;
                 }
@@ -250,6 +263,7 @@ public sealed partial class HeartbeatLoop
                 {
                     try
                     {
+                        _telemetryProvider!.ConfigureSnapshot(TelemetryHeartbeat(hb));
                         snapshotRefreshRequired = snapshotTrigger.IsSnapshotRefreshRequired();
                     }
                     catch (Exception ex)
@@ -281,7 +295,7 @@ public sealed partial class HeartbeatLoop
                         await _wakeupClient.StopAsync(ct).ConfigureAwait(false);
                     _commandProcessor.SignalOutbox();
                     var controlDelay = _timing.PollDelaySeconds(ApplyJitter(Math.Max(hb.NextPollSeconds, 60), 0.20), 60);
-                    await Task.Delay(TimeSpan.FromSeconds(controlDelay), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(controlDelay), _time, ct);
                     _wakeupSignal?.Clear();
                     continue;
                 }
@@ -295,13 +309,16 @@ public sealed partial class HeartbeatLoop
 
                 var delay = _timing.PollDelaySeconds(ApplyJitter(hb.NextPollSeconds, 0.20));
                 if (_wakeupSignal is null)
-                    await Task.Delay(TimeSpan.FromSeconds(delay), ct);
+                    await Task.Delay(TimeSpan.FromSeconds(delay), _time, ct);
                 else
                 {
-                    // Even an early or repeated hint cannot bypass the profile's poll floor.
-                    var floor = Math.Min(delay, _timing.Bounds.PollFloor);
-                    await Task.Delay(TimeSpan.FromSeconds(floor), ct).ConfigureAwait(false);
-                    await _wakeupSignal.WaitAsync(TimeSpan.FromSeconds(delay - floor), ct).ConfigureAwait(false);
+                    // Hints share a five-second minimum from the last poll, independently of
+                    // profile bounds. An earlier ordinary polling deadline still wins.
+                    var pollDelay = TimeSpan.FromSeconds(delay);
+                    var remaining = TimeSpan.FromSeconds(5) - System.Diagnostics.Stopwatch.GetElapsedTime(heartbeatStarted);
+                    var floor = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining < pollDelay ? remaining : pollDelay;
+                    await Task.Delay(floor, _time, ct).ConfigureAwait(false);
+                    await _wakeupSignal.WaitAsync(pollDelay - floor, ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

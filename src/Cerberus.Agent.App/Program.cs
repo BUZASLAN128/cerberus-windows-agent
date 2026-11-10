@@ -39,10 +39,13 @@ internal static class Program
 
         if (parsed.AcceptEula)
         {
-            var scope = (parsed.InstallService || parsed.Service) && Elevation.IsAdministrator()
-                ? LegalConsentScope.Machine
-                : LegalConsentScope.User;
-            AgentLegalConsent.Accept(scope, "cli");
+            var scope = ResolveAcceptanceScope(parsed, Elevation.IsAdministrator());
+            if (scope is null)
+            {
+                Console.Error.WriteLine("Machine legal consent requires administrator privileges.");
+                return 2;
+            }
+            AgentLegalConsent.Accept(scope.Value, "cli");
             Console.WriteLine($"Accepted {AgentLegalConsent.CurrentConsentSummary}.");
 
             if (IsAcceptEulaOnly(parsed))
@@ -217,7 +220,12 @@ internal static class Program
         return RunUi(ParseStartupSignal(parsed));
     }
 
-    private static bool IsAcceptEulaOnly(AgentArgs args)
+    internal static LegalConsentScope? ResolveAcceptanceScope(AgentArgs args, bool isAdministrator)
+        => args.Service || args.InstallService
+            ? isAdministrator ? LegalConsentScope.Machine : null
+            : LegalConsentScope.User;
+
+    internal static bool IsAcceptEulaOnly(AgentArgs args)
         => args.AcceptEula &&
            !args.Register &&
            !args.Setup &&
@@ -238,7 +246,6 @@ internal static class Program
            !args.UnregisterDevice &&
            !args.StartService &&
            !args.StopService &&
-           !args.Service &&
            !args.EnrollHeadless &&
            !args.EnrollRollback &&
            !args.ShowFingerprint &&

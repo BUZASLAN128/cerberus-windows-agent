@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <?if $(var.AgentBuildProfile) = server ?>
+  <?define BundleUpgradeCode = "{C09D5A99-8DB5-4B74-9561-EB2058117556}" ?>
+  <?else ?>
+  <?define BundleUpgradeCode = "{BE2233BB-4DED-4CB3-8EF7-621E15236168}" ?>
+  <?endif ?>
+  <Bundle Name="$(var.SetupProductName)"
+          Manufacturer="$(var.SetupManufacturer)"
+          Version="$(var.SetupVersion)"
+          UpgradeCode="$(var.BundleUpgradeCode)"
+          IconSourceFile="$(var.SetupIcon)">
+    <BootstrapperApplication>
+      <bal:WixInternalUIBootstrapperApplication />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="AgentMsi" SourceFile="$(var.SetupMsiPath)"
+                  Compressed="yes" Visible="yes" Vital="yes"
+                  bal:DisplayInternalUICondition="1" />
+    </Chain>
+  </Bundle>
+</Wix>

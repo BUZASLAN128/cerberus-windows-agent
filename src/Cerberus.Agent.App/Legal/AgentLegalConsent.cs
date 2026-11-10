@@ -23,13 +23,15 @@ internal sealed record AgentLegalConsentRecord(
     DateTimeOffset AcceptedAtUtc,
     string AcceptedByWindowsUser,
     string AcceptedMachineName,
-    string AcceptedVia);
+    string AcceptedVia,
+    string? PrivacyNoticeSha256 = null);
 
 internal static class AgentLegalConsent
 {
     public const string ProductName = AgentInstallIdentity.ConsentProductName;
     public const string EulaVersion = "agent-eula-2026-06-02.v2";
-    public const string PrivacyNoticeVersion = "agent-privacy-2026-06-02.v2";
+    public const string PrivacyNoticeVersion = "agent-privacy-2026-11-03.v3";
+    public static string PrivacyNoticeSha256 => AgentPrivacyDocument.Sha256;
     public const string SecurityDisclosureVersion = "agent-security-2026-05-23.v1";
 
     private const string SchemaVersion = "cerberus-agent-legal-consent.v1";
@@ -69,6 +71,23 @@ internal static class AgentLegalConsent
 
     public static bool HasCurrentInstallConsent()
         => HasCurrentConsent(LegalConsentScope.Machine) || HasCurrentConsent(LegalConsentScope.User);
+
+    public static bool HasCurrentMachinePrivacyConsent()
+    {
+        if (!IsTrustedOrMissingMachineFile(GetPath(LegalConsentScope.Machine, baseDir: null)))
+            return false;
+        return (TryLoadCurrent(LegalConsentScope.Machine, null, out var record) && IsCurrentMachinePrivacyRecord(record))
+            || MsiMachineConsent.TryReadCurrent(MsiConsentRegistryPath, IsCurrentMachineMsiConsent);
+    }
+
+    internal static bool IsCurrentMachinePrivacyRecord(AgentLegalConsentRecord? record)
+        => IsCurrentRecord(record) && string.Equals(record!.AcceptedVia, "cli", StringComparison.Ordinal);
+
+    internal static bool IsCurrentRecord(AgentLegalConsentRecord? record)
+        => record is not null && record.SchemaVersion == SchemaVersion && record.Product == ProductName
+           && record.EulaVersion == EulaVersion && record.PrivacyNoticeVersion == PrivacyNoticeVersion
+           && string.Equals(record.PrivacyNoticeSha256, PrivacyNoticeSha256, StringComparison.OrdinalIgnoreCase)
+           && record.SecurityDisclosureVersion == SecurityDisclosureVersion;
 
     public static AgentLegalConsentRecord Accept(LegalConsentScope scope, string acceptedVia)
         => Accept(scope, acceptedVia, baseDir: null);
@@ -143,12 +162,7 @@ internal static class AgentLegalConsent
                 File.ReadAllText(path),
                 JsonOptions);
 
-            if (loaded is null ||
-                !string.Equals(loaded.SchemaVersion, SchemaVersion, StringComparison.Ordinal) ||
-                !string.Equals(loaded.Product, ProductName, StringComparison.Ordinal) ||
-                !string.Equals(loaded.EulaVersion, EulaVersion, StringComparison.Ordinal) ||
-                !string.Equals(loaded.PrivacyNoticeVersion, PrivacyNoticeVersion, StringComparison.Ordinal) ||
-                !string.Equals(loaded.SecurityDisclosureVersion, SecurityDisclosureVersion, StringComparison.Ordinal))
+            if (!IsCurrentRecord(loaded))
             {
                 return false;
             }
@@ -183,6 +197,7 @@ internal static class AgentLegalConsent
                 ["product"] = key.GetValue("product")?.ToString(),
                 ["eulaVersion"] = key.GetValue("eulaVersion")?.ToString(),
                 ["privacyNoticeVersion"] = key.GetValue("privacyNoticeVersion")?.ToString(),
+                ["privacyNoticeSha256"] = key.GetValue("privacyNoticeSha256")?.ToString(),
                 ["securityDisclosureVersion"] = key.GetValue("securityDisclosureVersion")?.ToString(),
                 ["acceptedVia"] = key.GetValue("acceptedVia")?.ToString(),
             };
@@ -224,6 +239,7 @@ internal static class AgentLegalConsent
            string.Equals(GetValue(values, "product"), ProductName, StringComparison.Ordinal) &&
            string.Equals(GetValue(values, "eulaVersion"), EulaVersion, StringComparison.Ordinal) &&
            string.Equals(GetValue(values, "privacyNoticeVersion"), PrivacyNoticeVersion, StringComparison.Ordinal) &&
+           string.Equals(GetValue(values, "privacyNoticeSha256"), PrivacyNoticeSha256, StringComparison.OrdinalIgnoreCase) &&
            string.Equals(GetValue(values, "securityDisclosureVersion"), SecurityDisclosureVersion, StringComparison.Ordinal);
 
     private static string? GetValue(IReadOnlyDictionary<string, string?> values, string key)
@@ -247,7 +263,8 @@ internal static class AgentLegalConsent
             acceptedAtUtc,
             acceptedByWindowsUser,
             acceptedMachineName,
-            acceptedVia);
+            acceptedVia,
+            PrivacyNoticeSha256);
 
         var contents = JsonSerializer.Serialize(record, JsonOptions);
         if (scope == LegalConsentScope.Machine)

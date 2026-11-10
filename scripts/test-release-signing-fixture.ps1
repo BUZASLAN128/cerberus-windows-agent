@@ -98,6 +98,8 @@ function New-FinalizeFixture {
   Set-Content -LiteralPath (Join-Path $runtime "Microsoft.Extensions.Fixture.dll") -Value "fixture third party"
   $msi = Join-Path $PublishDir "Cerberus.Agent-stable-9.9.9.msi"
   Set-Content -LiteralPath $msi -Value "fixture msi bytes"
+  $setup = Join-Path $PublishDir "Cerberus.Agent-stable-9.9.9.exe"
+  Set-Content -LiteralPath $setup -Value "fixture setup bytes"
   foreach ($file in @("Cerberus.Agent.Bundle-stable-9.9.9.zip", "Cerberus.Agent.Bundle-stable-9.9.9.sbom.json", "Cerberus.Agent.Bundle-stable-9.9.9.provenance.json")) {
     Set-Content -LiteralPath (Join-Path $PublishDir $file) -Value "fixture $file"
   }
@@ -110,5 +112,5 @@ function New-FinalizeFixture {
     $length.ToString(), $identity) -join "`n"
   Write-PendingExternalManifest -PublishDir $PublishDir -AssetBase "Cerberus.Agent.Bundle-stable-9.9.9" -Canonical $canonical `
     -KeyListB64 $KeyListB64 -ArtifactPrefixes @($Prefix) -SignerPins (@($SignerPin) + @($ExtraPins)) 6>$null
-  return [pscustomobject]@{ Publish = $PublishDir; Msi = $msi; Canonical = $canonical }
+  return [pscustomobject]@{ Publish = $PublishDir; Msi = $msi; Setup = $setup; Canonical = $canonical }
 }

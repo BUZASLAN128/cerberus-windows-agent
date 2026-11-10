@@ -6,13 +6,12 @@ namespace Cerberus.Agent.App.Control;
 /// Server-profile step of the service loop: backend address migration, then the dormant-state
 /// probe. Each runs at most once per <see cref="AttemptInterval"/> in this process, counted from
 /// before the attempt, so a durable write that keeps failing cannot turn the 2 s loop into a
-/// probe or credential-read loop. The interval is below the policy's shortest jittered delay
-/// (15 min x 0.75), so the durable schedule stays the binding limit while writes succeed. Both
+/// probe or credential-read loop. Both retry schedules obey the shared contact ceiling. Both
 /// limits reset when the lifecycle generation changes.
 /// </summary>
 internal sealed class DormantRecoverySupervisor
 {
-    internal static readonly TimeSpan AttemptInterval = TimeSpan.FromMinutes(10);
+    internal static readonly TimeSpan AttemptInterval = AgentTimingPolicy.Current.ClampContactDelay(AgentDormantRecoveryPolicy.InitialDelay * 0.5);
 
     private readonly IAgentLifecycleStateStore _lifecycle;
     private readonly AgentLifecycleController _controller;
@@ -27,6 +26,9 @@ internal sealed class DormantRecoverySupervisor
     private bool _scheduleWritten;
     private DateTimeOffset _nextProbeUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _nextMigrateUtc = DateTimeOffset.MinValue;
+    private readonly TimeProvider _time;
+    private long? _probeStartedAt;
+    private long? _migrateStartedAt;
 
     internal DormantRecoverySupervisor(
         IAgentLifecycleStateStore lifecycle,
@@ -36,16 +38,18 @@ internal sealed class DormantRecoverySupervisor
         IAgentLogger log,
         AgentDormantRecoveryPolicy? policy = null,
         Func<IAgentLifecycleStateStore, CancellationToken, Task<bool>>? probe = null,
-        Func<DateTimeOffset>? clock = null)
+        Func<DateTimeOffset>? clock = null,
+        TimeProvider? time = null)
     {
         _lifecycle = lifecycle;
         _controller = controller;
         _secrets = secrets;
         _manualGate = manualGate;
         _log = log;
-        _policy = policy ?? new AgentDormantRecoveryPolicy();
+        _time = time ?? TimeProvider.System;
+        _clock = clock ?? (() => _time.GetUtcNow());
+        _policy = policy ?? new AgentDormantRecoveryPolicy(_clock, time: _time);
         _probe = probe ?? DormantStateRecovery.HeartbeatProbeAsync;
-        _clock = clock ?? (() => DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -59,14 +63,16 @@ internal sealed class DormantRecoverySupervisor
             _generation = snapshot.Generation;
             _nextProbeUtc = DateTimeOffset.MinValue;
             _nextMigrateUtc = DateTimeOffset.MinValue;
+            _probeStartedAt = null;
+            _migrateStartedAt = null;
         }
         snapshot = WithOwnSchedule(snapshot);
         var now = _clock();
 #if CERBERUS_SERVER_PROFILE
         await LogReenrollmentRequiredAsync(snapshot, awaitingAdoption, now, ct).ConfigureAwait(false);
 #endif
-        var migrate = now >= _nextMigrateUtc && DormantStateRecovery.CanMigrate(snapshot, awaitingAdoption);
-        if (!migrate && !(now >= _nextProbeUtc && ProbeOrScheduleDue(snapshot, awaitingAdoption)))
+        var migrate = RetryDue(now, _nextMigrateUtc, _migrateStartedAt) && DormantStateRecovery.CanMigrate(snapshot, awaitingAdoption);
+        if (!migrate && !(RetryDue(now, _nextProbeUtc, _probeStartedAt) && ProbeOrScheduleDue(snapshot, awaitingAdoption)))
             return snapshot;
 
         // Retry, enrollment-adopt and unregister hold the same gate; when one is running, wait
@@ -78,12 +84,14 @@ internal sealed class DormantRecoverySupervisor
             if (migrate)
             {
                 _nextMigrateUtc = now + AttemptInterval;
+                _migrateStartedAt = _time.GetTimestamp();
                 snapshot = await DormantStateRecovery.TryMigrateBackendAsync(_lifecycle, _secrets, snapshot,
                     awaitingAdoption, _log, ct).ConfigureAwait(false);
             }
-            if (now >= _nextProbeUtc && ProbeOrScheduleDue(snapshot, awaitingAdoption))
+            if (RetryDue(now, _nextProbeUtc, _probeStartedAt) && ProbeOrScheduleDue(snapshot, awaitingAdoption))
             {
                 _nextProbeUtc = now + AttemptInterval;
+                _probeStartedAt = _time.GetTimestamp();
                 var before = snapshot;
                 snapshot = await DormantStateRecovery.RunAsync(_lifecycle, _controller, _policy, _probe,
                     snapshot, awaitingAdoption, _log, ct).ConfigureAwait(false);
@@ -148,4 +156,7 @@ internal sealed class DormantRecoverySupervisor
     private bool ProbeOrScheduleDue(AgentLifecycleSnapshot snapshot, bool awaitingAdoption)
         => !awaitingAdoption && AgentDormantRecoveryPolicy.IsRecoverable(snapshot) &&
             (AgentDormantRecoveryPolicy.NeedsSchedule(snapshot) || _policy.IsDue(snapshot));
+
+    private bool RetryDue(DateTimeOffset now, DateTimeOffset deadline, long? started)
+        => now >= deadline || (started is { } timestamp && _time.GetElapsedTime(timestamp) >= AttemptInterval);
 }

@@ -7,12 +7,13 @@ if ($parseErrors.Count -gt 0) { throw ($parseErrors -join "`n") }
 # Evaluate only the real routing statements; signing, deletion, publishing and installation never run.
 $routing = $ast.EndBlock.Statements | Where-Object {
   $_.Extent.Text.StartsWith('if ($Channel -eq "dev")') -or
+  $_.Extent.Text.StartsWith('if ($null -ne $labBuild -and ($DefaultBackendUrl') -or
   $_.Extent.Text.StartsWith('foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl))')
 }
-if ($routing.Count -ne 2) { throw "Expected build routing and validation statements." }
+if ($routing.Count -ne 3) { throw "Expected build routing, lab binding and validation statements." }
 $resolve = [scriptblock]::Create(($routing.Extent.Text -join "`n"))
 
-function Assert-Routing([string]$Channel, [string]$Backend = "", [string]$Sso = "", [string]$Client = "", [bool]$Reject = $false) {
+function Assert-Routing([string]$Channel, [string]$Backend = "", [string]$Sso = "", [string]$Client = "", [bool]$Reject = $false, [object]$LabBuild = $null) {
   $DefaultBackendUrl = $Backend
   $DefaultSsoBaseUrl = $Sso
   $DefaultSsoClientId = $Client
@@ -23,7 +24,7 @@ function Assert-Routing([string]$Channel, [string]$Backend = "", [string]$Sso = 
     throw
   }
   if ($Reject) { throw "Expected routing rejection for $Channel." }
-  if ($Channel -eq "dev" -and ($DefaultBackendUrl -ne "http://127.0.0.1:8000" -or
+  if ($Channel -eq "dev" -and $null -eq $LabBuild -and ($DefaultBackendUrl -ne "http://127.0.0.1:8000" -or
       $DefaultSsoBaseUrl -ne "http://localhost:18000" -or $DefaultSsoClientId -ne "610f03b77494869da4ef")) {
     throw "Ambient production settings contaminated dev defaults."
   }
@@ -49,7 +50,11 @@ try {
   Assert-Routing stable -Reject $true
   Assert-Routing stable -Backend "http://127.0.0.1:8000" -Client "explicit-primary-client" -Reject $true
   Assert-Routing stable -Sso "http://auth.example" -Client "explicit-primary-client" -Reject $true
-  Write-Output "Build routing: 7 support cases passed; no artifact or host mutation."
+  $lab = [pscustomobject]@{Policy=@{backendUrl='https://collector.example';ssoBaseUrl='https://sso.invalid'}}
+  Assert-Routing dev -Backend 'https://collector.example' -Sso 'https://sso.invalid' -Client 'server-profile-none' -LabBuild $lab
+  Assert-Routing dev -Backend 'https://wrong.example' -Sso 'https://sso.invalid' -Client 'server-profile-none' -LabBuild $lab -Reject $true
+  Assert-Routing dev -Backend 'https://collector.example' -Sso 'http://localhost:18000' -Client 'server-profile-none' -LabBuild $lab -Reject $true
+  Write-Output "Build routing: 10 support cases passed; no artifact or host mutation."
 } finally {
   foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
 }

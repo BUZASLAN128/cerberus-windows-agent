@@ -55,9 +55,7 @@ internal static partial class ServiceMode
         Task? schedulerTask = null;
         try
         {
-#if CERBERUS_SERVER_PROFILE
-            WindowsUpdateCache.Shared.Start(log);
-#endif
+            using var telemetryBackground = StartTelemetryBackgroundWork(log);
             await AgentUpdateLocalService.ReconcileOnServiceStartAsync(lifetime.Token).ConfigureAwait(false);
             schedulerTask = AgentUpdateLocalService.RunScheduledAsync(lifetime.Token);
             while (!ct.IsCancellationRequested)
@@ -244,7 +242,8 @@ internal static partial class ServiceMode
         var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce,
             expectedGeneration: persistedLifecycle.Generation);
         var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce,
-            expectedGeneration: persistedLifecycle.Generation);
+            expectedGeneration: persistedLifecycle.Generation,
+            outgoingPolicy: new AgentOutboundPrivacyPolicy(Legal.SecurityTelemetryConsent.IsAllowed).Prepare);
         var agentVersion = WindowsDeviceInfo.GetAgentVersion();
         var buildId = WindowsDeviceInfo.GetBuildId();
         var buildChannel = WindowsDeviceInfo.GetBuildChannel();
@@ -355,7 +354,9 @@ internal static partial class ServiceMode
             signedCommandMode: (AgentBuildProfile.IsServer || secondary) && EnvelopeWiring.HasCommandTrust(loadedSecrets.Identity.Product, log),
             signedCommandsOnly: AgentBuildProfile.IsServer || secondary,
             legacyAsyncSupported: legacyAsync is not null, legacyAsyncReady: () => legacyAsync?.CanAdvertise == true,
-            signedState: signedState);
+            signedState: signedState,
+            supportsUpdateInstall: AgentUpdateRequestCommandHandler.SupportsMode("install") &&
+                handlers.OfType<AgentUpdateRequestCommandHandler>().Any());
 
 #if CERBERUS_SERVER_PROFILE
         var diagnosticSchedulerTask = Task.CompletedTask;

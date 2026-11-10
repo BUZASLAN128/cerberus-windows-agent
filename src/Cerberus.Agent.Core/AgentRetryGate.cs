@@ -19,9 +19,11 @@ internal sealed class AgentRetryGate(TimeProvider time)
     {
         lock (_gate)
         {
-            var seconds = Math.Min(300, Math.Pow(2, Math.Min(++_failures, 8)) + Random.Shared.NextDouble());
+            var seconds = AgentTimingPolicy.Current.JitterContactRetry(
+                TimeSpan.FromSeconds(Math.Pow(2, Math.Min(++_failures, 10))), Random.Shared.NextDouble()).TotalSeconds;
             if (exception is AgentHttpException { RetryAfter: { } retryAfter })
-                seconds = Math.Max(seconds, retryAfter.TotalSeconds);
+                seconds = Math.Max(seconds, AgentTimingPolicy.Current.JitterContactRetry(retryAfter, Random.Shared.NextDouble()).TotalSeconds);
+            seconds = AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(seconds)).TotalSeconds;
             var candidate = time.GetTimestamp() + (long)(seconds * time.TimestampFrequency);
             _notBefore = Math.Max(_notBefore, candidate);
         }

@@ -33,7 +33,8 @@
       UpdateManifestUrl=$(UpdateManifestUrl);
       UpdateManifestPublicKeyB64=$(UpdateManifestPublicKeyB64);
       EulaVersion=agent-eula-2026-06-02.v2;
-      PrivacyNoticeVersion=agent-privacy-2026-06-02.v2;
+      PrivacyNoticeVersion=agent-privacy-2026-11-03.v3;
+      PrivacyNoticeSha256=75671E8FBFA77B676834BF9957121819EA8F211F2EF7363FFC0753A0CC84B16B;
       SecurityDisclosureVersion=agent-security-2026-05-23.v1
     </DefineConstants>
   </PropertyGroup>

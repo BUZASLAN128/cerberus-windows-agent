@@ -273,7 +273,7 @@ public sealed class HeadlessEnrollment
             }
             var delay = retryAfter ?? DefaultDelays[Math.Min(attempt - 1, DefaultDelays.Length - 1)];
             _log.Warn($"Headless enrollment attempt {attempt} failed ({transientCode}); retrying.");
-            await Task.Delay(delay, _time, ct).ConfigureAwait(false);
+            await Task.Delay(AgentTimingPolicy.Current.ClampContactDelay(delay), _time, ct).ConfigureAwait(false);
         }
     }
 

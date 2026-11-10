@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -9,22 +10,30 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class HeartbeatLoopTests
 {
     [Fact]
-    public async Task HeartbeatAdvertisesRegisteredUpdateCommandWhileWakeupIsUnavailable()
+    public async Task HeartbeatAdvertisesInstallOnlyForSupportingUpdateHandlerWhileWakeupIsUnavailable()
     {
         var wire = new ProductLoopHandler();
         using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
         var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
-        var dispatcher = new CommandDispatcher(new[] { new FakeCommandHandler(EnvelopeTypes.AgentUpdateRequest) },
-            new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests",
-                Guid.NewGuid().ToString("N"), "idem.json"), 10, TimeSpan.FromMinutes(5)));
+        var dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));
+        var handler = new AgentUpdateRequestCommandHandler(() => null,
+            new AgentUpdateStateStore(Path.Combine(dir, "state.json"), Path.Combine(dir, "result.json")),
+            NullAgentLogger.Instance, "1.2.3");
+        var dispatcher = new CommandDispatcher(new[] { handler },
+            new IdempotencyCache(Path.Combine(dir, "idem.json"), 10, TimeSpan.FromMinutes(5)));
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromSeconds(1),
-            commandProcessor: new ProductLoopProcessor(stop), supportsEvents: false);
+            commandProcessor: new ProductLoopProcessor(stop), supportsEvents: false,
+            supportsUpdateInstall: AgentUpdateRequestCommandHandler.SupportsMode("install"));
         await loop.RunAsync(stop.Token);
         Assert.Equal("/api/v1/agents/agent-1/heartbeat", Assert.Single(wire.Paths));
         using var body = JsonDocument.Parse(wire.Body);
-        Assert.Equal(EnvelopeTypes.AgentUpdateRequest,
-            Assert.Single(body.RootElement.GetProperty("capabilities").EnumerateArray()).GetString());
+        var capabilities = body.RootElement.GetProperty("capabilities").EnumerateArray().Select(x => x.GetString()).ToArray();
+        var expected = AgentBuildProfile.IsServer
+            ? new[] { EnvelopeTypes.AgentUpdateRequest, "agent.update.install.v1" }
+            : new[] { EnvelopeTypes.AgentUpdateRequest };
+        Assert.Equal(expected, capabilities);
+        Assert.Equal(EnvelopeTypes.AgentUpdateRequest, Assert.Single(dispatcher.HandlerTypes));
     }
 
     [Fact]
@@ -143,32 +152,37 @@ public sealed partial class HeartbeatLoopTests
                 """, Encoding.UTF8, "application/json") };
         }
     }
-    [Fact]
-    public async Task WakeupSchedulesOneHeartbeatAfterProfileFloor()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(30)]
+    public async Task RepeatedWakeupsRespectFiveSecondMinimumIndependentlyOfPollFloor(int pollFloor)
     {
         var handler = new WakeupLoopHandler();
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://backend.test") };
         var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
         var signal = new AgentWakeupSignal();
-        Task Listen(JsonElement _, AgentWakeupSignal s, CancellationToken ct)
+        async Task Listen(JsonElement _, AgentWakeupSignal s, CancellationToken ct)
         {
-            s.Signal();
-            s.Signal();
-            return Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            while (!ct.IsCancellationRequested)
+            {
+                s.Signal();
+                await Task.Delay(10, ct);
+            }
         }
         await using var wakeup = new AgentWakeupClient(api, signal, Listen);
         var dispatcher = new CommandDispatcher(Array.Empty<ICommandHandler>(),
             new IdempotencyCache(Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"), "idem.json"), 10, TimeSpan.FromMinutes(5)));
-        var timing = new AgentTimingPolicy(new AgentTimingBounds(1, 60, 60, 3600, 60));
+        var timing = new AgentTimingPolicy(new AgentTimingBounds(pollFloor, 60, 60, 3600, 60));
         var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromSeconds(1), timingPolicy: timing,
             wakeupSignal: signal, wakeupClient: wakeup);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var run = loop.RunAsync(cts.Token);
-        await handler.SecondHeartbeat.Task.WaitAsync(cts.Token);
+        await handler.ThirdHeartbeat.Task.WaitAsync(cts.Token);
         cts.Cancel();
         await run;
-        Assert.True(handler.SecondElapsed >= TimeSpan.FromMilliseconds(850), $"Wakeup bypassed floor: {handler.SecondElapsed}");
-        Assert.True(handler.SecondElapsed < TimeSpan.FromSeconds(6), $"Wakeup did not shorten idle polling: {handler.SecondElapsed}");
+        Assert.InRange(handler.SecondElapsed, TimeSpan.FromSeconds(4.9), TimeSpan.FromSeconds(8));
+        Assert.InRange(handler.ThirdElapsed - handler.SecondElapsed, TimeSpan.FromSeconds(4.9), TimeSpan.FromSeconds(8));
+        Assert.Equal(3, handler.HeartbeatCount);
         Assert.Contains(AgentWakeupProtocol.Capability, handler.FirstBody);
         Assert.DoesNotContain(CommandEnvelope.Capability, handler.FirstBody);
         Assert.Equal(1, handler.MaxConcurrent);
@@ -192,7 +206,7 @@ public sealed partial class HeartbeatLoopTests
         var timing = new AgentTimingPolicy(new AgentTimingBounds(1, 60, 60, 3600, 60));
         var loop = new HeartbeatLoop(api, dispatcher, TimeSpan.FromSeconds(1), timingPolicy: timing,
             wakeupSignal: signal, wakeupClient: wakeup);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
         var run = loop.RunAsync(cts.Token);
         await handler.SecondHeartbeat.Task.WaitAsync(cts.Token);
         await Task.Delay(200, cts.Token);
@@ -213,7 +227,9 @@ public sealed partial class HeartbeatLoopTests
         public int MaxConcurrent { get; private set; }
         public string FirstBody { get; private set; } = "";
         public TimeSpan SecondElapsed { get; private set; }
+        public TimeSpan ThirdElapsed { get; private set; }
         public TaskCompletionSource SecondHeartbeat { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ThirdHeartbeat { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int HeartbeatCount => Volatile.Read(ref _count);
 
         public WakeupLoopHandler(bool rateLimitSecond = false) => _rateLimitSecond = rateLimitSecond;
@@ -230,6 +246,7 @@ public sealed partial class HeartbeatLoopTests
                 var body = await request.Content!.ReadAsStringAsync(ct);
                 if (count == 1) { FirstBody = body; _clock.Restart(); }
                 if (count == 2) { SecondElapsed = _clock.Elapsed; SecondHeartbeat.TrySetResult(); }
+                if (count == 3) { ThirdElapsed = _clock.Elapsed; ThirdHeartbeat.TrySetResult(); }
                 if (count == 2 && _rateLimitSecond)
                 {
                     var limited = new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent("{}") };

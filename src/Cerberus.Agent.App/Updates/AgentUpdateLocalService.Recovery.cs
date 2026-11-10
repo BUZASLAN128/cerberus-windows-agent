@@ -39,6 +39,7 @@ internal static partial class AgentUpdateLocalService
             if (pendingState(lifecycle) || (automatic || AgentBuildProfile.IsServer) && (!AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) ||
                     !lifecycle.QuiescenceComplete || active.LifecycleGeneration != lifecycle.Generation))
                 throw new InvalidOperationException("Automatic update authorization changed.");
+            AgentUpdateLabRuntime.RequireLaunch(active, lifecycle);
             launch(lifecycle);
         }
     }
@@ -126,6 +127,7 @@ internal static partial class AgentUpdateLocalService
         AgentInstallerHealthPhase? rollbackPhase = null)
     {
         if (before.Phase != AgentUpdateStates.RecoveryRequired) return before;
+        before = before with { FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null };
         if (healthy && plan is not null)
             return before with
             {

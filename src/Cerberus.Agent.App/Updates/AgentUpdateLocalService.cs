@@ -255,6 +255,11 @@ internal static partial class AgentUpdateLocalService
         await RunScheduledAsync(ct, timer.WaitForNextTickAsync, async token =>
         {
             await ReconcileOwnedAsync(token).ConfigureAwait(false);
+            AgentUpdateAttemptRetention.PrunePayloads(Root, Journal.Read());
+            // The first normal update must not race the bootstrap MSI's own health/commit transaction.
+            if (!await RunLabTickAfterBootstrapAsync(AgentUpdateLabRuntime.Resolve(),
+                lab => AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(lab.Policy, lab.Context),
+                RunLabCampaignTickAsync, token).ConfigureAwait(false)) return;
             var lifecycle = await LoadLifecycleAsync(token).ConfigureAwait(false);
             await RunScheduledTickAsync(Journal, lifecycle, Quarantined, PendingStateDelivery,
                 async required => (await CheckAndStageOwnedAsync(automatic: true, required, token,
@@ -367,7 +372,8 @@ internal static partial class AgentUpdateLocalService
     {
         try
         {
-            journal.Change(TransitionFailure);
+            var code = AgentUpdateErrorCodes.Classify(error);
+            journal.Change(before => TransitionFailure(before, code));
             await project().ConfigureAwait(false);
         }
         catch (Exception) { /* A corrupt/unwritable journal stays unavailable; never create replacement success state. */ }

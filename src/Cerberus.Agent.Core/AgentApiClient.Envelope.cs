@@ -4,7 +4,7 @@ namespace Cerberus.Agent.Core;
 
 /// <summary>
 /// Ack and result calls for signed command envelopes. The body is sent exactly as
-/// given: the caller stores these bytes and re-sends them unchanged.
+/// given locally for replay evidence; the common signed-body policy rechecks current consent before transport.
 /// </summary>
 public sealed partial class AgentApiClient
 {
@@ -14,7 +14,7 @@ public sealed partial class AgentApiClient
     public Task SubmitEnvelopeAckAsync(string agentId, string commandId, byte[] body, CancellationToken ct)
         => PostEnvelopeBytesAsync("ack", "Command acknowledgement", agentId, commandId, body, ct);
 
-    /// <summary>POST /api/v1/agents/{agent_id}/commands/{id}/result with the exact stored body bytes.</summary>
+    /// <summary>POST /api/v1/agents/{agent_id}/commands/{id}/result through the current outbound policy.</summary>
     public Task SubmitEnvelopeResultAsync(string agentId, string commandId, byte[] body, CancellationToken ct)
         => PostEnvelopeBytesAsync("result", "Command result", agentId, commandId, body, ct);
 

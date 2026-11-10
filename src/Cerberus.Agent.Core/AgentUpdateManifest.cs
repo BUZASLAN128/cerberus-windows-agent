@@ -163,8 +163,9 @@ public static class AgentUpdateManifestValidator
         {
             if (manifest.Sequence <= 0)
                 throw new InvalidOperationException("Update manifest sequence is invalid.");
-            if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt) ||
-                expiresAt <= DateTimeOffset.UtcNow)
+            if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt))
+                throw new InvalidOperationException("Update manifest expiry is invalid.");
+            if (expiresAt <= DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("Update manifest has expired.");
             if (expiresAt - releasedAt > MaxV2ValidityWindow)
                 throw new InvalidOperationException("Update manifest validity window is too long.");

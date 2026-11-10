@@ -54,10 +54,11 @@ public sealed class ServerBuildProfileTests
 #if CERBERUS_SERVER_PROFILE
     // ---- Server profile only ------------------------------------------------------------
 
-    private static readonly string[] ServerSections =
+    private static readonly string[] PrimarySections =
         {
             "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
             "sessions", "hardware", "services", "listening_ports", "updates", "software", "processes",
+            "tailscale", "rdp", "capabilities",
         };
 
     [Theory]
@@ -65,14 +66,13 @@ public sealed class ServerBuildProfileTests
     [InlineData("")]
     [InlineData("tailscale,rdp,capabilities")]
     [InlineData("nonexistent")]
-    public void Item2_Telemetry_ProfileSendsOnlyListedSections_IgnoringEnvAllowlist(string? configured)
+    public void Item2_Telemetry_PrimaryUsesCommonCatalogAndHonorsEnvAllowlist(string? configured)
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault(configured).Select(s => s.SectionName).ToArray();
 
-        Assert.Equal(ServerSections.OrderBy(n => n), names.OrderBy(n => n));
-        Assert.DoesNotContain("tailscale", names);
-        Assert.DoesNotContain("rdp", names);
-        Assert.DoesNotContain("capabilities", names);
+        var expected = configured == "tailscale,rdp,capabilities"
+            ? new[] { "tailscale", "rdp", "capabilities" } : PrimarySections;
+        Assert.Equal(expected.OrderBy(n => n), names.OrderBy(n => n));
     }
 
     [Fact]

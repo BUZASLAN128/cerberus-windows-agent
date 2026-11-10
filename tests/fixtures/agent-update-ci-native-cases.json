@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    "Cerberus.Agent.Core.Tests.AgentUpdateLaunchGateTests.PrepareUpdaterRunner_CopiesRunnerOutsideInstallDirectory",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickPlanMismatchPreservesExistingAttemptPolicyAndRetry(phase: \"retryable_busy\")",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickPlanMismatchPreservesExistingAttemptPolicyAndRetry(phase: \"awaiting_consent\")",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickReplacementCannotInheritExpiredRequestAuthority(mismatch: False, independentPolicy: False)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickReplacementCannotInheritExpiredRequestAuthority(mismatch: False, independentPolicy: True)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickReplacementCannotInheritExpiredRequestAuthority(mismatch: True, independentPolicy: False)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickStillReportsStageAndInstallerFailures(installer: False)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickStillReportsStageAndInstallerFailures(installer: True)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.ChunkedExactLengthStagesAndReusesWithoutAnotherDiskReservation",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.ReusedArtifactMustStillMatchSignedLengthAndHash",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.DiskFailurePreventsArtifactRequest(probeFailure: False)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealSchedulerTickDoesNotLaunchExpiredBoundRequestAfterQuarantine",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.DiskFailurePreventsArtifactRequest(probeFailure: True)",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.HeaderMismatchIsRejectedBeforeReadingOrCreatingArtifact",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.ChunkedOverflowStopsAfterFirstExtraByteAndRemovesPartial",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.ShortEofIsRejectedAndPartialIsRemoved",
+    "Cerberus.Agent.Core.Tests.AgentUpdateInstallRequestBoundaryTests.RealJournalNewStagePlanMismatchRemainsPublishedAfterRecovery",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.EqualLengthStillRequiresSignedChecksum",
+    "Cerberus.Agent.Core.Tests.AgentUpdateTransferTests.LegacyManifestCanBeCheckedButCannotStartAnUnboundedDownload",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStagerTests.StageAsync_PreservesExistingArtifactWhenReplacementDownloadFailsHash",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStagerTests.StageAsync_ClassifiesArtifactHttpFailureAsDownloadFailed",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStagerTests.StageAsync_ReusesAlreadyVerifiedArtifactWithoutDownloadingAgain",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStagerTests.StageAsync_DownloadsAndWritesVerifiedPlan",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"signed_recovery\")",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"revoke\")",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"corrupt_replay\")",
+    "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"missing_replay\")"
+  ]
+}

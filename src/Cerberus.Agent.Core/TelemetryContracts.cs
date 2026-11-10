@@ -28,11 +28,11 @@ public static class AgentTelemetryLimits
 {
     public const int MaxJsonBytes = 64 * 1024;
     public const int MaxDiagnosticBundleBytes = 256 * 1024;
-#if CERBERUS_SERVER_PROFILE
     public const int MaxSnapshotBytes = 262144;
-#else
-    public const int MaxSnapshotBytes = MaxJsonBytes;
-#endif
+    // Older collectors do not advertise a snapshot budget. Retain their profile defaults.
+    public static int DefaultSnapshotBytes => AgentBuildProfile.IsServer ? MaxSnapshotBytes : MaxJsonBytes;
+    public static int SnapshotBytesFor(int? advertised)
+        => advertised is > 0 ? Math.Min(MaxSnapshotBytes, advertised.Value) : DefaultSnapshotBytes;
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
@@ -45,6 +45,13 @@ public static class AgentTelemetryLimits
     public static void ThrowIfTooLarge(object body, int maxBytes = MaxJsonBytes)
     {
         var bytes = EstimateJsonBytes(body);
+        if (bytes > maxBytes)
+            throw new InvalidOperationException($"Agent telemetry payload too large: {bytes} bytes.");
+    }
+
+    internal static void ThrowIfJsonTooLarge(string json, int maxBytes = MaxJsonBytes)
+    {
+        var bytes = Encoding.UTF8.GetByteCount(json);
         if (bytes > maxBytes)
             throw new InvalidOperationException($"Agent telemetry payload too large: {bytes} bytes.");
     }
@@ -123,7 +130,7 @@ public sealed record AgentDiagnosticBundleAckResponse(
 
 public static class AgentSnapshotFactory
 {
-    private static readonly HashSet<string> AllowedSections = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> CoreSections = new(StringComparer.Ordinal)
     {
         "identity",
         "os",
@@ -138,10 +145,28 @@ public static class AgentSnapshotFactory
         "capabilities",
     };
 
-#if CERBERUS_SERVER_PROFILE
-    // The server fact sections come from the one list collect_facts validates against.
+    private static readonly HashSet<string> AllowedSections = new(CoreSections, StringComparer.Ordinal);
+    // Both periodic profiles can carry the bounded fact sections.
     static AgentSnapshotFactory() => AllowedSections.UnionWith(EnvelopeTypes.ServerFactSections);
-#endif
+
+    public static IReadOnlySet<string> SnapshotSectionsFor(IReadOnlyList<string>? advertised, bool signedFacts = false)
+    {
+        var local = signedFacts ? EnvelopeTypes.ServerFactSections : AllowedSections;
+        var fallback = signedFacts || AgentBuildProfile.IsServer ? EnvelopeTypes.ServerFactSections : CoreSections;
+        return (advertised is null ? fallback : advertised.AsEnumerable())
+            .Where(local.Contains).ToHashSet(StringComparer.Ordinal);
+    }
+
+    public static AgentSnapshotRequest ForSections(AgentSnapshotRequest request, IReadOnlySet<string> accepted)
+    {
+        var sections = request.Sections.Where(pair => accepted.Contains(pair.Key))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        return request with
+        {
+            Sections = sections,
+            SectionHashes = sections.ToDictionary(pair => pair.Key, pair => HashSection(pair.Value), StringComparer.Ordinal),
+        };
+    }
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
@@ -149,7 +174,8 @@ public static class AgentSnapshotFactory
         AgentBuildMetadata metadata,
         DateTimeOffset collectedAtUtc,
         IReadOnlyDictionary<string, object?> sections,
-        bool signedFacts = false)
+        bool signedFacts = false,
+        int? maxBytes = null)
     {
         foreach (var section in sections.Keys)
         {
@@ -157,15 +183,24 @@ public static class AgentSnapshotFactory
                 throw new InvalidOperationException($"Unknown agent snapshot section: {section}");
         }
 
-        var request = Build(metadata, collectedAtUtc, sections);
-        while ((AgentBuildProfile.IsServer || signedFacts) && AgentTelemetryLimits.EstimateJsonBytes(request) > AgentTelemetryLimits.MaxSnapshotBytes
-               && ServerSnapshotFit.TryHalve(sections, out var smaller))
+        return Fit(Build(metadata, collectedAtUtc, sections), maxBytes ?? AgentTelemetryLimits.MaxSnapshotBytes);
+    }
+
+    public static AgentSnapshotRequest Fit(AgentSnapshotRequest request, int maxBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxBytes);
+        maxBytes = Math.Min(maxBytes, AgentTelemetryLimits.MaxSnapshotBytes);
+        while (AgentTelemetryLimits.EstimateJsonBytes(request) > maxBytes
+               && ServerSnapshotFit.TryHalve(request.Sections, out var smaller))
         {
-            sections = smaller;
-            request = Build(metadata, collectedAtUtc, sections);
+            request = request with
+            {
+                Sections = smaller,
+                SectionHashes = smaller.ToDictionary(pair => pair.Key, pair => HashSection(pair.Value), StringComparer.Ordinal),
+            };
         }
 
-        AgentTelemetryLimits.ThrowIfTooLarge(request, AgentTelemetryLimits.MaxSnapshotBytes);
+        AgentTelemetryLimits.ThrowIfTooLarge(request, maxBytes);
         return request;
     }
 

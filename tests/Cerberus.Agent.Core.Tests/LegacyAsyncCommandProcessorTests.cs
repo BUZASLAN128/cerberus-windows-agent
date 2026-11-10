@@ -133,12 +133,14 @@ public sealed partial class LegacyAsyncCommandProcessorTests
             handler.Type, now, now + 300, EnvelopeRecordStates.Reserved, null, null, false);
         Assert.Equal(ReplayReserveOutcome.Reserved, store.TryReserve(record));
         h.Backend.Respond = (_, _) => Task.FromResult(HttpStatusCode.TooManyRequests);
-        h.Backend.RetryAfter = "60";
+        h.Backend.RetryAfter = "3600";
         await using var processor = new LegacyAsyncCommandProcessor(h.Api, dispatcher,
             new LegacyHeartbeatCommandProcessor(h.Api, dispatcher, TimeSpan.FromSeconds(5), 1),
             store, _ => Task.FromResult(h.AgentId), h.Log, h.Time);
         await Wait.UntilAsync(() => h.Log.Lines.Any(line => line.Contains("result retained")), "rate limit recorded");
-        Assert.Equal(h.Time.GetTimestamp() + 60 * h.Time.TimestampFrequency, processor.OutboxNotBefore);
+        Assert.InRange(processor.OutboxNotBefore - h.Time.GetTimestamp(),
+            (long)(AgentTimingPolicy.Current.Bounds.PollCeiling * 0.75 * h.Time.TimestampFrequency),
+            AgentTimingPolicy.Current.Bounds.PollCeiling * h.Time.TimestampFrequency);
         Assert.False(store.Find(h.AgentId, "11111111-1111-4111-8111-111111111111")!.ResultSubmitted);
     }
 

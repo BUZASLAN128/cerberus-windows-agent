@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <EmbeddedResource Include="..\..\docs\legal\PRIVACY-NOTICE.md" LogicalName="Cerberus.Agent.PrivacyNotice" />
     <ProjectReference Include="..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
     <ProjectReference Include="..\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
     <ProjectReference Include="..\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />

@@ -1,4 +1,22 @@
 <Project>
+  <ItemGroup Condition="('$(MSBuildProjectName)' == 'Cerberus.Agent.App' or '$(MSBuildProjectName)' == 'Cerberus.Agent.Runtime' or '$(MSBuildProjectName)' == 'Cerberus.Agent.Installer.Helper') and '$(AgentUpdateLabPolicyB64)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabPolicyB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateLabPolicyB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabFeedRootB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateLabFeedRootB64)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'Cerberus.Agent.Installer.Helper' and '$(AgentUpdateLabPolicyB64)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AllowUnsignedDevBuild</_Parameter1><_Parameter2>$(AllowUnsignedDevBuild)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateLabRuntimeHashesB64</_Parameter1><_Parameter2>$(AgentUpdateLabRuntimeHashesB64)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
   <PropertyGroup>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <!-- Keep supported UI cultures alongside the English/Turkish framework resources. -->
@@ -7,17 +25,17 @@
     <DefineConstants Condition="'$(AgentBuildProfile)' == 'server'">$(DefineConstants);CERBERUS_SERVER_PROFILE</DefineConstants>
   </PropertyGroup>
 
-  <!-- Timing metadata (seconds), per profile. Override with -p:. Read only from Cerberus.Agent.Core assembly metadata. -->
-  <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
-    <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">30</AgentPollFloorSeconds>
+  <!-- Common poll bounds; snapshot metadata remains per profile. Override with -p:. -->
+  <PropertyGroup>
+    <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">1</AgentPollFloorSeconds>
     <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">300</AgentPollCeilingSeconds>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AgentBuildProfile)' == 'server'">
     <AgentSnapshotFloorSeconds Condition="'$(AgentSnapshotFloorSeconds)' == ''">300</AgentSnapshotFloorSeconds>
     <AgentSnapshotCeilingSeconds Condition="'$(AgentSnapshotCeilingSeconds)' == ''">3600</AgentSnapshotCeilingSeconds>
     <AgentSnapshotDefaultSeconds Condition="'$(AgentSnapshotDefaultSeconds)' == ''">3600</AgentSnapshotDefaultSeconds>
   </PropertyGroup>
   <PropertyGroup Condition="'$(AgentBuildProfile)' != 'server'">
-    <AgentPollFloorSeconds Condition="'$(AgentPollFloorSeconds)' == ''">1</AgentPollFloorSeconds>
-    <AgentPollCeilingSeconds Condition="'$(AgentPollCeilingSeconds)' == ''">3600</AgentPollCeilingSeconds>
     <AgentSnapshotFloorSeconds Condition="'$(AgentSnapshotFloorSeconds)' == ''">60</AgentSnapshotFloorSeconds>
     <AgentSnapshotCeilingSeconds Condition="'$(AgentSnapshotCeilingSeconds)' == ''">86400</AgentSnapshotCeilingSeconds>
     <AgentSnapshotDefaultSeconds Condition="'$(AgentSnapshotDefaultSeconds)' == ''">60</AgentSnapshotDefaultSeconds>
