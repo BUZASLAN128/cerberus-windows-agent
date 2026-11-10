@@ -9,6 +9,8 @@ on:
       - dev
       - develop
   pull_request:
+    # ready_for_review: marking a draft ready runs the whole check (drafts are skipped below).
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - dev
       - develop
@@ -19,6 +21,11 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: windows-latest
     timeout-minutes: 45
+    outputs:
+      tests: ${{ (steps.restore.outcome == 'failure' || steps.build.outcome == 'failure' || steps.tests.outcome == 'failure') && 'failure' || steps.tests.outcome }}
+      updateTests: ${{ steps.update_tests.outcome }}
+      packages: ${{ (steps.pkg_desktop.outcome == 'failure' || steps.pkg_server.outcome == 'failure') && 'failure' || steps.pkg_server.outcome }}
+      releaseGate: ${{ steps.release_gate.outcome }}
 
     steps:
       - name: Checkout
@@ -32,6 +39,7 @@ jobs:
           dotnet-version: 10.0.302
 
       - name: Restore Projects
+        id: restore
         shell: pwsh
         run: |
           $projects = Get-ChildItem src,tests -Recurse -Filter *.csproj |
@@ -42,6 +50,7 @@ jobs:
           }
 
       - name: Build Projects
+        id: build
         shell: pwsh
         run: |
           $projects = Get-ChildItem src,tests -Recurse -Filter *.csproj |
@@ -52,6 +61,7 @@ jobs:
           }
 
       - name: Run Tests
+        id: tests
         shell: pwsh
         run: |
           $testProjects = Get-ChildItem tests -Recurse -Filter *.csproj |
@@ -63,18 +73,24 @@ jobs:
           }
 
       - name: Test server updater recovery and native storage guards
+        id: update_tests
         shell: pwsh
         run: ./scripts/test-agent-update-ci.ps1 -OutputRoot out/ci-test-results/server
 
       - name: Build desktop MSI and setup for CI inspection
+        id: pkg_desktop
         shell: pwsh
         run: |
           ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/desktop
+          # The server build overwrites the helper build output; keep this profile's copy for the release gate.
+          Copy-Item -LiteralPath src/Cerberus.Agent.Installer/Helper/bin/Release/net10.0-windows/win-x64/Cerberus.Agent.Installer.Helper.dll -Destination out/ci/desktop/gate-helper.dll
 
       - name: Build server MSI and exercise updater authorization denial
+        id: pkg_server
         shell: pwsh
         run: |
           ./scripts/build-agent-ci-packages.ps1 -OutputRoot out/ci/server -BuildProfile server
+          Copy-Item -LiteralPath src/Cerberus.Agent.Installer/Helper/bin/Release/net10.0-windows/win-x64/Cerberus.Agent.Installer.Helper.dll -Destination out/ci/server/gate-helper.dll
 
       - name: Retain test and package evidence
         if: always()
@@ -99,3 +115,75 @@ jobs:
             out/ci/server/publish/Cerberus.Agent-dev-0.0.0-server.exe
           retention-days: 7
           if-no-files-found: error
+
+      # The same lab-metadata gate the official release build runs on a non-lab build (#94/#95).
+      - name: Release gate on the unsigned non-lab bundles
+        id: release_gate
+        shell: pwsh
+        run: |
+          . ./scripts/release-trust-lib.ps1
+          foreach ($buildProfile in 'desktop', 'server') {
+            Assert-NoLabCampaignMetadata "out/ci/$buildProfile/publish/runtime" -ExtraAssemblies @("out/ci/$buildProfile/gate-helper.dll")
+          }
+
+  # One PR comment with the AGENTS.md Work Rules stage table for this head; CI cannot run the VM, signing,
+  # 10+10, return/feed or publication stages, so they stay NOT RUN there.
+  ready-status:
+    needs: build-test-publish
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' && !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: ready-status-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the ready-status and publish-guard rules on fixtures
+        id: fixtures
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/test-ci-ready-checks.ps1
+
+      - name: No release on dev pushes
+        id: publish_guard
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/test-no-release-on-push.ps1
+
+      - name: Post the stage table
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BUILD_SHA: ${{ github.sha }}
+          JOB_RESULT: ${{ needs.build-test-publish.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TESTS: ${{ needs.build-test-publish.outputs.tests }}
+          UPDATE_TESTS: ${{ needs.build-test-publish.outputs.updateTests }}
+          PACKAGES: ${{ needs.build-test-publish.outputs.packages }}
+          RELEASE_GATE: ${{ needs.build-test-publish.outputs.releaseGate }}
+          PUBLISH_GUARD: ${{ steps.publish_guard.outcome }}
+        run: |
+          ./scripts/ci-ready-status.ps1 -Repository $env:GITHUB_REPOSITORY -PullRequest $env:PR -HeadSha $env:HEAD_SHA `
+            -BuildSha $env:BUILD_SHA -RunUrl $env:RUN_URL -JobResult $env:JOB_RESULT `
+            -Outcomes @{ tests = $env:TESTS; updateTests = $env:UPDATE_TESTS; packages = $env:PACKAGES
+              releaseGate = $env:RELEASE_GATE; publishGuard = $env:PUBLISH_GUARD }
+
+      - name: Fail when a ready check failed
+        if: steps.fixtures.outcome == 'failure' || steps.publish_guard.outcome == 'failure'
+        shell: pwsh
+        run: throw 'A ready check failed; the fixture or publish-guard step log has the cause.'
