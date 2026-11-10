@@ -22,8 +22,8 @@ and feed continuity -> publication with the owner's approval.
 
 1. Finished means built unsigned. When agent code, packaging or release
    tooling work is finished, build that exact head through the official
-   non-lab pipeline, helper, MSI and setup, for every affected profile (Bilnex
-   uses server; both for shared code):
+   non-lab pipeline, helper, MSI and setup, for every affected profile (both
+   for shared code):
    `scripts/build-agent-public-release.ps1 -Channel dev -AllowUnsignedDevBuild`
    (check its current parameters). Lab or support builds do not count. (#94's
    release gate blocked every non-lab server build; it surfaced only at the
