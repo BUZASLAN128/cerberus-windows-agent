@@ -56,6 +56,54 @@ public sealed class AgentUpdateBitsTlsPolicyTests
     private static AgentUpdateBitsTlsPolicy Policy(X509Certificate2 root)
         => new(Convert.ToBase64String(root.RawData), "https://127.0.0.1:8443/updates/devtest/", DateTimeOffset.UtcNow.AddHours(1));
 
+    [Fact]
+    public void CallbackUsesPeerIntermediatesWithoutTrustingPeerRoots()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var root = Root(key);
+        using var issuerKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest("CN=Unit intermediate", issuerKey, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign, true));
+        using var issued = request.Create(root, DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddMinutes(90), RandomNumberGenerator.GetBytes(16));
+        using var issuer = issued.CopyWithPrivateKey(issuerKey);
+        using var publicRoot = X509CertificateLoader.LoadCertificate(root.RawData);
+        var store = new X509Certificate2Collection(new X509Certificate2[] { issued, publicRoot })
+            .Export(X509ContentType.SerializedStore)!;
+        using var leaf = Leaf(issuer, "127.0.0.1");
+        using var wrongSan = Leaf(issuer, "127.0.0.2");
+        using var wrongKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var wrongRoot = Root(wrongKey);
+        Assert.Equal(0, InvokeCallback(Policy(root), leaf, store));
+        Assert.True(InvokeCallback(Policy(wrongRoot), leaf, store) < 0);
+        Assert.True(InvokeCallback(Policy(root), wrongSan, store) < 0);
+        Assert.True(InvokeCallback(Policy(root), leaf, [1, 2, 3]) < 0);
+        Assert.True(InvokeCallback(Policy(root), leaf, store, 1024 * 1024 + 1) < 0);
+    }
+
+    private static int InvokeCallback(AgentUpdateBitsTlsPolicy policy, X509Certificate2 leaf,
+        byte[] store, uint? declaredLength = null)
+    {
+        var leafBytes = leaf.RawData;
+        var leafPointer = Marshal.AllocHGlobal(leafBytes.Length);
+        var storePointer = Marshal.AllocHGlobal(store.Length);
+        try
+        {
+            Marshal.Copy(leafBytes, 0, leafPointer, leafBytes.Length);
+            Marshal.Copy(store, 0, storePointer, store.Length);
+            var proofs = new List<string>();
+            var callback = new AgentUpdateBitsCertificateValidation(policy, Source, proofs.Add);
+            int result = callback.ValidateServerCertificate(0, 0, (uint)leafBytes.Length, leafPointer,
+                1, declaredLength ?? (uint)store.Length, storePointer);
+            Assert.Equal(result == 0, callback.Verified);
+            Assert.Equal(result != 0, callback.Rejected);
+            Assert.Equal(result == 0 ? 1 : 0, proofs.Count);
+            return result;
+        }
+        finally { Marshal.FreeHGlobal(storePointer); Marshal.FreeHGlobal(leafPointer); }
+    }
+
     private static X509Certificate2 Root(ECDsa key)
     {
         var request = new CertificateRequest("CN=Unit campaign root", key, HashAlgorithmName.SHA256);
