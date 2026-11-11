@@ -31,7 +31,8 @@ internal static class BackendTrust
         return handler;
     }
 
-    public static bool Validate(X509Certificate2? certificate, X509Chain? presented, SslPolicyErrors errors, X509Certificate2Collection anchors)
+    public static bool Validate(X509Certificate2? certificate, X509Chain? presented, SslPolicyErrors errors,
+        X509Certificate2Collection anchors, X509Certificate2Collection? intermediates = null)
     {
         if (errors == SslPolicyErrors.None)
             return true;
@@ -53,6 +54,8 @@ internal static class BackendTrust
             if (presented is not null)
                 foreach (var element in presented.ChainElements)
                     chain.ChainPolicy.ExtraStore.Add(element.Certificate);
+            if (intermediates is not null)
+                chain.ChainPolicy.ExtraStore.AddRange(intermediates);
             return chain.Build(certificate);
         }
         catch (CryptographicException)

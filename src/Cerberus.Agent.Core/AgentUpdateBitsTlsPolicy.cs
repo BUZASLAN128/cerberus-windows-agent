@@ -2,6 +2,7 @@ using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.Win32.SafeHandles;
 
 namespace Cerberus.Agent.Core;
 
@@ -16,7 +17,8 @@ public sealed record AgentUpdateBitsTlsPolicy(string RootCertificateBase64, stri
             throw new InvalidOperationException("Development BITS TLS authority expired or URL changed.");
     }
 
-    internal bool ValidateCertificate(Uri source, X509Certificate2? certificate, X509Chain? presented = null)
+    internal bool ValidateCertificate(Uri source, X509Certificate2? certificate, X509Chain? presented = null,
+        X509Certificate2Collection? intermediates = null)
     {
         RequireSource(source);
         if (certificate is null || !certificate.MatchesHostname(source.IdnHost, allowWildcards: false, allowCommonName: false))
@@ -25,7 +27,7 @@ public sealed record AgentUpdateBitsTlsPolicy(string RootCertificateBase64, stri
         if (!root.Extensions.OfType<X509BasicConstraintsExtension>().Any(c => c.CertificateAuthority)) return false;
         // Always build to the selected root, including when the OS already trusts another root.
         return BackendTrust.Validate(certificate, presented, SslPolicyErrors.RemoteCertificateChainErrors,
-            new X509Certificate2Collection(root));
+            new X509Certificate2Collection(root), intermediates);
     }
 }
 
@@ -63,9 +65,18 @@ public sealed class AgentUpdateBitsCertificateValidation : IAgentUpdateBitsCerti
             var bytes = new byte[checked((int)certLength)];
             Marshal.Copy(certData, bytes, 0, bytes.Length);
             using var certificate = X509CertificateLoader.LoadCertificate(bytes);
-            // This collector presents a leaf issued directly by the selected root; no OS-store/AIA fallback.
-            if (!_policy.ValidateCertificate(_source, certificate))
-                throw new InvalidOperationException("BITS certificate is outside the selected development trust.");
+            var intermediates = ReadCertificateStore(certStoreLength, certStoreData);
+            try
+            {
+                // BITS supplies the peer chain as a serialized memory store. Its certificates
+                // are chain-building inputs only; the compiled policy remains the sole trust anchor.
+                if (!_policy.ValidateCertificate(_source, certificate, intermediates: intermediates))
+                    throw new InvalidOperationException("BITS certificate is outside the selected development trust.");
+            }
+            finally
+            {
+                foreach (var intermediate in intermediates) intermediate.Dispose();
+            }
             _recordProof(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
             Volatile.Write(ref _verified, 1);
             return 0;
@@ -77,6 +88,52 @@ public sealed class AgentUpdateBitsCertificateValidation : IAgentUpdateBitsCerti
             return unchecked((int)0x800B0004); // TRUST_E_SUBJECT_NOT_TRUSTED, fail closed before the HTTP request.
         }
     }
+
+    private static X509Certificate2Collection ReadCertificateStore(uint length, IntPtr data)
+    {
+        if (length == 0) return new(); // Preserve direct leaf-to-root campaign feeds.
+        if (length > 1024 * 1024 || data == IntPtr.Zero)
+            throw new InvalidOperationException("BITS certificate store is invalid.");
+        if (!OperatingSystem.IsWindows())
+            throw new InvalidOperationException("BITS certificate stores require Windows.");
+        var blob = new CertificateBlob { Length = length, Data = data };
+        // CERT_STORE_PROV_SERIALIZED, CERT_STORE_READONLY_FLAG. This opens only an
+        // in-memory store; it never imports a certificate into a Windows store.
+        using var handle = CertOpenStore(new IntPtr(6), 0, IntPtr.Zero, 0x8000, ref blob);
+        if (handle.IsInvalid) throw new CryptographicException(Marshal.GetLastWin32Error());
+        using var store = new X509Store(handle.DangerousGetHandle());
+        var certificates = store.Certificates;
+        try
+        {
+            if (certificates.Count > 32 || certificates.Any(certificate => certificate.HasPrivateKey))
+                throw new InvalidOperationException("BITS certificate store is outside the bounded public chain.");
+            return certificates;
+        }
+        catch
+        {
+            foreach (var certificate in certificates) certificate.Dispose();
+            throw;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CertificateBlob { public uint Length; public IntPtr Data; }
+
+    private sealed class CertificateStoreHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private CertificateStoreHandle() : base(true) { }
+        protected override bool ReleaseHandle() => CertCloseStore(handle, 0);
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern CertificateStoreHandle CertOpenStore(IntPtr provider, uint encoding, IntPtr cryptProvider,
+        uint flags, ref CertificateBlob data);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CertCloseStore(IntPtr store, uint flags);
 }
 
 public sealed partial class AgentUpdateBitsDownloader
