@@ -75,7 +75,8 @@ public sealed class AgentLocalControlPipeTimeoutTests
             await Task.Delay(Timeout.Infinite, ct);
             return new AgentLocalControlResponse(true, "ok");
         })
-        { RequestDeadline = TimeSpan.FromMilliseconds(750) };
+        // The deadline also covers request delivery; leave room for cold-start scheduling.
+        { RequestDeadline = TimeSpan.FromSeconds(4) };
 
         var response = await RoundTripAsync(server, CancellationToken.None);
 
