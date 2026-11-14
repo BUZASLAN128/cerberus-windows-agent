@@ -37,6 +37,13 @@ internal static partial class Program
             _labProduct = product;
             _labVersion = args[3];
             _labTransaction = invocation.LabTransaction;
+            if (operation is "enroll" or "enroll-rollback")
+            {
+                var start = AgentInstallerAppLaunch.Prepare(args[2], invocation.EnrollmentProof, operation == "enroll-rollback");
+                using var child = Process.Start(start) ?? throw new InvalidOperationException("Installer enrollment process did not start.");
+                await child.WaitForExitAsync().ConfigureAwait(false);
+                return child.ExitCode;
+            }
             if (operation == "validate-proxy")
             {
                 _ = AgentProxySettings.Parse(args[2]);
