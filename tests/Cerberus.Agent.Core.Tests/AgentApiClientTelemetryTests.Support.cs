@@ -129,7 +129,7 @@ public sealed partial class AgentApiClientTelemetryTests
 
                 // HttpClient's timeout and the caller's deadline are separate timers with no guaranteed order;
                 // wait out any skew so the deadline has fired before the headers are returned.
-                await Task.Delay(TimeSpan.FromMilliseconds(500), CancellationToken.None);
+                await Task.Delay(TimeSpan.FromSeconds(2), CancellationToken.None);
             }
 
             return new HttpResponseMessage(_statusCode) { Content = _content };
