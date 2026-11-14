@@ -121,8 +121,11 @@ public sealed partial class ServerPackageStaticTests
         Assert.Equal("no", (string)action.Attribute("Impersonate")!);
         Assert.Equal("yes", (string)action.Attribute("HideTarget")!);
         Assert.Equal("check", (string)action.Attribute("Return")!);
+        Assert.Equal("CerberusInstallerHelper", (string?)action.Attribute("BinaryRef"));
+        Assert.Null(action.Attribute("Directory"));
         var command = (string)action.Attribute("ExeCommand")!;
-        Assert.Contains("--enroll-headless --proof-from-installer \"[CERBERUS_ENROLLMENT_PROOF]\" --install-service", command);
+        Assert.StartsWith("enroll \"[ProductCode]\" \"[APPFOLDER].\" ", command);
+        Assert.EndsWith("\"[CERBERUS_ENROLLMENT_PROOF]\"", command);
 
         var step = doc.Descendants(Wix + "Custom").Single(c => (string?)c.Attribute("Action") == "ServerEnrollFromInstaller");
         Assert.Equal("InstallFinalize", (string)step.Attribute("Before")!);

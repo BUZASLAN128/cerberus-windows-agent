@@ -48,7 +48,10 @@ public sealed class ServerPackageSetupTests
         Assert.Equal("no", (string?)rollback.Attribute("Impersonate"));
         Assert.Equal("ignore", (string?)rollback.Attribute("Return"));
         Assert.Equal("yes", (string?)rollback.Attribute("HideTarget"));
-        Assert.Equal("\"[APPFOLDER]Cerberus.Agent.exe\" --enroll-rollback", (string?)rollback.Attribute("ExeCommand"));
+        Assert.Equal("CerberusInstallerHelper", (string?)rollback.Attribute("BinaryRef"));
+        Assert.Null(rollback.Attribute("Directory"));
+        Assert.StartsWith("enroll-rollback \"[ProductCode]\" \"[APPFOLDER].\" ", (string?)rollback.Attribute("ExeCommand"));
+        Assert.DoesNotContain("CERBERUS_ENROLLMENT_PROOF", (string?)rollback.Attribute("ExeCommand"));
 
         var sequence = doc.Descendants(Wix + "Custom").ToArray();
         var enroll = sequence.Single(c => (string?)c.Attribute("Action") == "ServerEnrollFromInstaller");
