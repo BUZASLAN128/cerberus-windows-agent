@@ -14,7 +14,7 @@ public sealed class AgentInstallerInvocationTests
         var path = Path.Combine(ServerPackageStaticTests.FindRepoRoot(), "src", "Cerberus.Agent.Installer", "Package.wxs");
         var package = XDocument.Load(path);
         XNamespace wix = "http://wixtoolset.org/schemas/v4/wxs";
-        var operations = new HashSet<string>(["bootstrap", "validate-runtime", "health", "capture", "configure", "stop", "restore", "commit", "ensure-running", "validate-proxy", "lab-commit", "lab-rollback"]);
+        var operations = new HashSet<string>(["bootstrap", "validate-runtime", "health", "capture", "configure", "stop", "restore", "commit", "ensure-running", "validate-proxy", "lab-commit", "lab-rollback", "enroll", "enroll-rollback"]);
         var tested = 0;
         foreach (var action in package.Descendants(wix + "CustomAction"))
         {
@@ -23,7 +23,8 @@ public sealed class AgentInstallerInvocationTests
             if (!operations.Contains(operation)) continue;
             command = command.Replace("[ProductCode]", "{7AFD2CB7-7F39-450B-8631-F1B1FC38F83B}")
                 .Replace("[APPFOLDER]", @"C:\Program Files\Cerberus\Server Agent\app\")
-                .Replace("[CERBERUS_LAB_TRANSACTION]", transaction).Replace("[CERBERUS_UPDATE_REQUIRE_BACKEND]", "1");
+                .Replace("[CERBERUS_LAB_TRANSACTION]", transaction).Replace("[CERBERUS_UPDATE_REQUIRE_BACKEND]", "1")
+                .Replace("[CERBERUS_ENROLLMENT_PROOF]", "test-proof");
             command = Regex.Replace(command, @"\$\(var\.ReleaseVersion\)", "0.2.900");
             command = Regex.Replace(command, @"\$\(var\.[^)]+\)", new string('a', 64));
             var argv = WindowsArgv("helper.exe " + command).Skip(1).ToArray();
@@ -32,9 +33,29 @@ public sealed class AgentInstallerInvocationTests
             if (operation is "bootstrap" or "validate-runtime" or "lab-commit" or "lab-rollback" || operation == "health" && argv.Length == 8)
                 Assert.Equal(transaction, parsed.LabTransaction);
             if (operation == "health" && argv.Length >= 7) Assert.True(parsed.RequireBackendContact);
+            if (operation is "enroll" or "enroll-rollback") Assert.Null(parsed.LabTransaction);
+            if (operation == "enroll") Assert.Equal("test-proof", parsed.EnrollmentProof);
             tested++;
         }
         Assert.True(tested >= 8);
+    }
+
+    [Fact]
+    public void EnrollmentProofIsNotATransactionAndIsNotPrinted()
+    {
+        string[] prefix = ["enroll", Guid.NewGuid().ToString("D"), "runtime", "0.2.900", "exe-hash", "assembly-hash"];
+        Assert.False(AgentInstallerInvocation.TryParse(prefix, out _));
+        Assert.False(AgentInstallerInvocation.TryParse([..prefix, ""], out _));
+        Assert.False(AgentInstallerInvocation.TryParse([..prefix, "proof", "extra"], out _));
+        Assert.True(AgentInstallerInvocation.TryParse([..prefix, "secret-proof"], out var enrolled));
+        Assert.Equal("secret-proof", enrolled!.EnrollmentProof);
+        Assert.Null(enrolled.LabTransaction);
+        Assert.DoesNotContain("secret-proof", enrolled.ToString());
+        prefix[0] = "enroll-rollback";
+        Assert.True(AgentInstallerInvocation.TryParse(prefix, out var rollback));
+        Assert.Null(rollback!.EnrollmentProof);
+        Assert.Null(rollback.LabTransaction);
+        Assert.False(AgentInstallerInvocation.TryParse([..prefix, "proof"], out _));
     }
 
     [Fact]

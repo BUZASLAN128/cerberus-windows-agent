@@ -166,8 +166,8 @@
          Return=check: a non-zero exit fails the install and Windows Installer rolls it back. Upgrades never enroll. -->
     <CustomAction
         Id="ServerEnrollFromInstaller"
-        Directory="APPFOLDER"
-        ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --enroll-headless --proof-from-installer "[CERBERUS_ENROLLMENT_PROOF]" --install-service'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='enroll "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)" "[CERBERUS_ENROLLMENT_PROOF]"'
         Execute="deferred"
         Impersonate="no"
         HideTarget="yes"
@@ -175,8 +175,8 @@
     <!-- Scheduled after the enroll action, so the rollback script holds it only when the enroll succeeded in this install. Always exits 0. -->
     <CustomAction
         Id="ServerEnrollRollback"
-        Directory="APPFOLDER"
-        ExeCommand='"[APPFOLDER]Cerberus.Agent.exe" --enroll-rollback'
+        BinaryRef="CerberusInstallerHelper"
+        ExeCommand='enroll-rollback "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "$(var.ServiceExeSha256)" "$(var.ServiceAssemblySha256)"'
         Execute="rollback"
         Impersonate="no"
         HideTarget="yes"
