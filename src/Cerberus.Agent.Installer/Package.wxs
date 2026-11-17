@@ -334,7 +334,7 @@
               FirstFailureActionType="restart"
               SecondFailureActionType="restart"
               ThirdFailureActionType="restart"
-              RestartServiceDelayInSeconds="60"
+              RestartServiceDelayInSeconds="$(var.ServiceRestartDelaySeconds)"
               ResetPeriodInDays="1" />
         </ServiceInstall>
       </Component>

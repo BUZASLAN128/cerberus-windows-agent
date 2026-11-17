@@ -57,6 +57,7 @@ try{
       -UpdateManifestUrl $lab.Policy.targets[0].manifestUrl `
       -UpdateAllowedArtifactPrefixes (($lab.Policy.targets|ForEach-Object artifactPrefix|Sort-Object -Unique)-join ',') `
       -UpdateLabPolicyFile $frozenPolicy -UpdateLabFeedRootFile $frozenRoot -AllowUnsignedDevBuild `
+      -ServiceRestartDelaySeconds $lab.ServiceRestartDelaySeconds `
       -SkipTests:$skipVariantTests -OutputRoot $versionOutput
     $publish=Join-Path $versionOutput 'publish'
     $name="Cerberus.Agent-dev-$version-server.msi"

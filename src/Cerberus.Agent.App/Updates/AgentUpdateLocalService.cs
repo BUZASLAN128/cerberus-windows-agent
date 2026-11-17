@@ -251,7 +251,7 @@ internal static partial class AgentUpdateLocalService
     public static async Task RunScheduledAsync(CancellationToken ct)
     {
         RequireService();
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        using var timer = new PeriodicTimer(GetScheduledInterval(AgentUpdateLabRuntime.Resolve()));
         await RunScheduledAsync(ct, timer.WaitForNextTickAsync, async token =>
         {
             await ReconcileOwnedAsync(token).ConfigureAwait(false);
@@ -268,6 +268,9 @@ internal static partial class AgentUpdateLocalService
                 () => CheckAndStageOwnedAsync(automatic: true, required: false, token), token).ConfigureAwait(false);
         }, ReportFailureAsync).ConfigureAwait(false);
     }
+
+    internal static TimeSpan GetScheduledInterval(AgentUpdateLabRuntime.Scope? scope)
+        => TimeSpan.FromSeconds(scope?.Policy.TickSeconds ?? 60);
 
     internal static async Task RunScheduledAsync(CancellationToken ct, Func<CancellationToken, ValueTask<bool>> nextTick,
         Func<CancellationToken, Task> iteration, Func<Exception, Task> reportFailure)

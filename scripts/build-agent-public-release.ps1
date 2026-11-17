@@ -24,6 +24,7 @@ param(
   [switch]$AllowEphemeralManifestKey,
   [string]$UpdateLabPolicyFile = "",
   [string]$UpdateLabFeedRootFile = "",
+  [ValidateRange(5, 60)][int]$ServiceRestartDelaySeconds = 60,
 
   # Pfx: WINDOWS_SIGNING_CERT_BASE64 + AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM (default, CI path).
   # Token: certificates selected by thumbprint from CurrentUser\My (private keys stay on the token),
@@ -63,6 +64,14 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 . (Join-Path $PSScriptRoot "release-lab-lib.ps1")
 $labBuild = Read-ReleaseLabPolicy -PolicyFile $UpdateLabPolicyFile -FeedRootFile $UpdateLabFeedRootFile `
   -Version $Version -Channel $Channel -BuildProfile $BuildProfile -SigningMode $SigningMode -AllowUnsigned ([bool]$AllowUnsignedDevBuild)
+if ($null -ne $labBuild) {
+  if ($PSBoundParameters.ContainsKey('ServiceRestartDelaySeconds') -and $ServiceRestartDelaySeconds -ne $labBuild.ServiceRestartDelaySeconds) {
+    throw 'Service restart delay must match the compiled lab policy.'
+  }
+  $ServiceRestartDelaySeconds = $labBuild.ServiceRestartDelaySeconds
+} elseif ($ServiceRestartDelaySeconds -ne 60) {
+  throw 'A non-lab release requires a 60-second service restart delay.'
+}
 $signingPlan = Assert-ReleaseSigningInputs `
   -Mode $SigningMode `
   -SigningCertThumbprint $SigningCertThumbprint `
@@ -277,7 +286,7 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 }
 
 if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
-if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir }
+if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir -ServiceRestartDelaySeconds $ServiceRestartDelaySeconds }
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
@@ -318,7 +327,7 @@ if ($null -ne $labBuild) {
   $null = New-Item -ItemType Directory -Path $metadataEvidence
   Copy-Item -LiteralPath (Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") -Destination (Join-Path $metadataEvidence 'installer-helper-compiler.dll')
 }
-if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir -ExtraAssemblies @(Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") }
+if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir -ServiceRestartDelaySeconds $ServiceRestartDelaySeconds -ExtraAssemblies @(Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
 # Built after the payload pass and packed into the MSI: sign and gate it here.
 if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
@@ -335,6 +344,7 @@ dotnet build $installerProject `
   -p:MsiProductVersion=$msiProductVersion `
   -p:Channel=$Channel `
   -p:AgentPublishDir=$runtimePublishDir `
+  -p:ServiceRestartDelaySeconds=$ServiceRestartDelaySeconds `
   -p:InstallerHelperPath=$installerHelperPath `
   -p:ServiceExeSha256=$serviceExeSha256 `
   -p:ServiceAssemblySha256=$serviceAssemblySha256 `

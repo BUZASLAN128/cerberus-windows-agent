@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Cerberus.Agent.App;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 
@@ -15,6 +17,71 @@ public sealed class AgentUpdateLabPolicyTests
     [Fact]
     public void AbsentPolicyPreservesNormalBuildBehavior()
         => Assert.Null(AgentUpdateLabPolicy.Parse("", "preview", false, true));
+
+    [Fact]
+    public void ExistingV1PolicyWithoutTimingKeepsSixtySecondDefaults()
+    {
+        var json = JsonNode.Parse(JsonSerializer.Serialize(Valid(), new JsonSerializerOptions(JsonSerializerDefaults.Web)))!.AsObject();
+        json.Remove("tickSeconds");
+        json.Remove("serviceRestartDelaySeconds");
+        var policy = AgentUpdateLabPolicy.Parse(EncodeJson(json.ToJsonString()), "dev", true, true)!;
+        Assert.Equal(60, policy.TickSeconds);
+        Assert.Equal(60, policy.ServiceRestartDelaySeconds);
+    }
+
+    [Theory]
+    [InlineData(4, false)]
+    [InlineData(5, true)]
+    [InlineData(60, true)]
+    [InlineData(61, false)]
+    public void TimingBoundsAreValidatedIndependently(int seconds, bool allowed)
+    {
+        foreach (var policy in new[] { Valid() with { TickSeconds = seconds }, Valid() with { ServiceRestartDelaySeconds = seconds } })
+        {
+            if (allowed)
+            {
+                var parsed = Parse(policy);
+                Assert.Equal(policy.TickSeconds, parsed.TickSeconds);
+                Assert.Equal(policy.ServiceRestartDelaySeconds, parsed.ServiceRestartDelaySeconds);
+            }
+            else AssertDenied(policy);
+        }
+    }
+
+    [Theory]
+    [InlineData("tickSeconds", "true")]
+    [InlineData("tickSeconds", "\"5\"")]
+    [InlineData("tickSeconds", "5.5")]
+    [InlineData("tickSeconds", "null")]
+    [InlineData("serviceRestartDelaySeconds", "true")]
+    [InlineData("serviceRestartDelaySeconds", "\"5\"")]
+    [InlineData("serviceRestartDelaySeconds", "5.5")]
+    [InlineData("serviceRestartDelaySeconds", "null")]
+    public void TimingRequiresJsonIntegers(string field, string value)
+    {
+        var json = JsonNode.Parse(JsonSerializer.Serialize(Valid(), new JsonSerializerOptions(JsonSerializerDefaults.Web)))!.AsObject();
+        json[field] = JsonNode.Parse(value);
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabPolicy.Parse(EncodeJson(json.ToJsonString()), "dev", true, true));
+    }
+
+    [Fact]
+    public void NoLabScopeKeepsNormalTimerAndRecoveryDelay()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(1), AgentUpdateLocalService.GetScheduledInterval(null));
+        Assert.Equal("restart/60000/restart/60000/restart/60000", ServiceInstaller.GetRecoveryActions(null));
+    }
+
+    [Theory]
+    [InlineData(5, 60)]
+    [InlineData(60, 5)]
+    public void ResolvedLabTimingUsesSecondsForTimerAndMillisecondsForScm(int tickSeconds, int restartSeconds)
+    {
+        var policy = Parse(Valid() with { TickSeconds = tickSeconds, ServiceRestartDelaySeconds = restartSeconds });
+        var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], null!);
+        Assert.Equal(TimeSpan.FromSeconds(tickSeconds), AgentUpdateLocalService.GetScheduledInterval(scope));
+        var milliseconds = restartSeconds * 1000;
+        Assert.Equal($"restart/{milliseconds}/restart/{milliseconds}/restart/{milliseconds}", ServiceInstaller.GetRecoveryActions(policy));
+    }
 
     [Theory]
     [InlineData("preview", true, true)]
