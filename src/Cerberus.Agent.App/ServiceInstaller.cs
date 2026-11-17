@@ -24,6 +24,8 @@ internal static class ServiceInstaller
         var currentExePath = Process.GetCurrentProcess().MainModule?.FileName
                              ?? throw new InvalidOperationException("Could not determine executable path.");
         var exePath = ResolveServiceExecutablePath(currentExePath);
+        var labPolicy = AgentUpdateLabPolicy.Parse(AgentUpdateDefaults.LabPolicyB64, AgentUpdateDefaults.ReleaseChannel,
+            AgentUpdateDefaults.AllowUnsignedDevBuild, AgentBuildProfile.IsServer);
 
         if (ServiceExists())
         {
@@ -42,12 +44,17 @@ internal static class ServiceInstaller
         RunSc($"create \"{ServiceName}\" binPath= \"\\\"{exePath}\\\" --service\" start= auto DisplayName= \"{ServiceDisplayName}\"");
         RunSc($"description \"{ServiceName}\" \"{ServiceDescription}\"");
 
-        // Service recovery: restart on failure 3 times with 60s delay.
-        RunSc($"failure \"{ServiceName}\" reset= 86400 actions= restart/60000/restart/60000/restart/60000");
+        RunSc($"failure \"{ServiceName}\" reset= 86400 actions= {GetRecoveryActions(labPolicy)}");
         RunSc($"failureflag \"{ServiceName}\" 1");
 
         // Start now.
         RunSc($"start \"{ServiceName}\"");
+    }
+
+    internal static string GetRecoveryActions(AgentUpdateLabPolicy? policy)
+    {
+        var delayMilliseconds = (policy?.ServiceRestartDelaySeconds ?? 60) * 1000;
+        return $"restart/{delayMilliseconds}/restart/{delayMilliseconds}/restart/{delayMilliseconds}";
     }
 
     public static void UninstallOrThrow()

@@ -128,8 +128,10 @@ function Assert-NoLabCampaignMetadata {
   param(
     [Parameter(Mandatory = $true)][string]$RuntimeDir,
     # Further compiler outputs that are not part of the runtime directory (for example the installer helper assembly).
-    [string[]]$ExtraAssemblies = @()
+    [string[]]$ExtraAssemblies = @(),
+    [int]$ServiceRestartDelaySeconds = 60
   )
+  if ($ServiceRestartDelaySeconds -ne 60) { throw 'A non-lab release requires a 60-second service restart delay.' }
   # A non-lab build must not carry lab-campaign routing in any published binary. MSBuild turns environment variables into
   # properties, so a stray AgentUpdateLabPolicyB64 would otherwise be compiled in silently. A key counts even when its value is empty.
   $labKeys = @('AgentUpdateLabPolicyB64', 'AgentUpdateLabFeedRootB64', 'AgentUpdateLabRuntimeHashesB64')

@@ -28,6 +28,21 @@ try {
   }
 
   Check "runtime without lab metadata passes" { Assert-NoLabCampaignMetadata (New-RuntimeDir); $true }
+  Check "non-lab release refuses an accelerated SCM delay" {
+    Throws { Assert-NoLabCampaignMetadata (New-RuntimeDir) -ServiceRestartDelaySeconds 5 } "non-lab release requires a 60-second"
+  }
+  Check "lab metadata cannot bypass the public release delay guard" {
+    Throws { Assert-NoLabCampaignMetadata (New-RuntimeDir -RuntimePairs ($trust + $lab)) -ServiceRestartDelaySeconds 5 } "non-lab release requires a 60-second"
+  }
+  Check "release entry refuses non-lab timing before any signing or build" {
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'build-agent-public-release.ps1'),[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'Release entry parse failed.'}
+    $gate=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Extent.Text.Contains("throw 'Service restart delay must match the compiled lab policy.'")})
+    if($gate.Count -ne 1){throw 'Exact release timing gate not found.'}
+    $labBuild=$null;$ServiceRestartDelaySeconds=5
+    Throws {& ([ScriptBlock]::Create($gate[0].Extent.Text))} "non-lab release requires a 60-second"
+  }
   Check "lab policy in Cerberus.Agent.Runtime.dll is refused" {
     Throws { Assert-NoLabCampaignMetadata (New-RuntimeDir -RuntimePairs ($trust + $lab)) } "Cerberus\.Agent\.Runtime\.dll carries lab-campaign metadata 'AgentUpdateLabPolicyB64'"
   }

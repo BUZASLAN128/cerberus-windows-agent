@@ -15,7 +15,9 @@ internal sealed record AgentUpdateLabPolicy(
     AgentUpdateLabTarget[] Targets,
     string[] Versions,
     string BackendUrl,
-    string SsoBaseUrl)
+    string SsoBaseUrl,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int TickSeconds = 60,
+    [property: JsonNumberHandling(JsonNumberHandling.Strict)] int ServiceRestartDelaySeconds = 60)
 {
     internal const string MetadataName = "AgentUpdateLabPolicyB64";
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
@@ -67,7 +69,8 @@ internal sealed record AgentUpdateLabPolicy(
             NotBeforeUtc.Offset != TimeSpan.Zero || ExpiresAtUtc.Offset != TimeSpan.Zero ||
             ExpiresAtUtc <= NotBeforeUtc || ExpiresAtUtc - NotBeforeUtc > TimeSpan.FromHours(48) ||
             Targets is not { Length: 2 } || Versions is not { Length: 11 } ||
-            !ValidBackendUri(BackendUrl) || !ValidBackendUri(SsoBaseUrl)) throw Denied();
+            !ValidBackendUri(BackendUrl) || !ValidBackendUri(SsoBaseUrl) ||
+            TickSeconds is < 5 or > 60 || ServiceRestartDelaySeconds is < 5 or > 60) throw Denied();
         if (Targets.Any(t => t is null)) throw Denied();
         foreach (var target in Targets)
         {

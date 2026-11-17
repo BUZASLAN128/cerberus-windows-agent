@@ -24,6 +24,12 @@ function Read-ReleaseLabPolicy {
       $from.Offset -ne [TimeSpan]::Zero -or $until.Offset -ne [TimeSpan]::Zero -or
       $now -lt $from -or $now -ge $until -or $until -le $from -or $until-$from -gt [TimeSpan]::FromHours(48) -or
       @($p.targets).Count -ne 2 -or @($p.versions).Count -ne 11 -or $p.versions -cnotcontains $Version) { throw 'Lab campaign scope is invalid.' }
+  $timing=@{}
+  foreach($name in @('tickSeconds','serviceRestartDelaySeconds')){
+    $value=if($p.ContainsKey($name)){$p[$name]}else{60}
+    if(($value -isnot [int] -and $value -isnot [long]) -or $value -lt 5 -or $value -gt 60){throw 'Lab timing must be an integer from 5 through 60 seconds.'}
+    $timing[$name]=[int]$value
+  }
   $previous=$null
   foreach($v in $p.versions){
     $parsed=$null
@@ -53,6 +59,6 @@ function Read-ReleaseLabPolicy {
     if($certificate.HasPrivateKey -or $certificate.NotBefore.ToUniversalTime() -gt $now.UtcDateTime -or
        $certificate.NotAfter.ToUniversalTime() -lt $until.UtcDateTime -or
        -not @($certificate.Extensions|Where-Object {$_ -is [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension] -and $_.CertificateAuthority}).Count){throw 'Lab feed root is not a valid public CA for this window.'}
-    return [pscustomobject]@{Policy=$p;PolicyB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json));RootB64=[Convert]::ToBase64String($certificate.RawData)}
+    return [pscustomobject]@{Policy=$p;PolicyB64=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json));RootB64=[Convert]::ToBase64String($certificate.RawData);TickSeconds=$timing.tickSeconds;ServiceRestartDelaySeconds=$timing.serviceRestartDelaySeconds}
   }finally{$certificate.Dispose()}
 }

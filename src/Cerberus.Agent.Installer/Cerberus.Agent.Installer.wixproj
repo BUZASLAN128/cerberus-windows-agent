@@ -16,6 +16,7 @@
     <ProductName Condition="'$(ProductName)' == '' and '$(AgentBuildProfile)' == 'server'">Cerberus Server Agent</ProductName>
     <ProductName Condition="'$(ProductName)' == ''">Cerberus Windows Agent</ProductName>
     <EulaRtf Condition="'$(EulaRtf)' == ''">$(MSBuildThisFileDirectory)Assets\EULA.rtf</EulaRtf>
+    <ServiceRestartDelaySeconds Condition="'$(ServiceRestartDelaySeconds)' == ''">60</ServiceRestartDelaySeconds>
     <OutputName>$(InstallerAssetBase)</OutputName>
     <SuppressIces>ICE91</SuppressIces>
     <SuppressIces Condition="'$(Channel)' == 'dev'">$(SuppressIces);ICE61</SuppressIces>
@@ -25,6 +26,7 @@
       ServiceExeSha256=$(ServiceExeSha256);
       ServiceAssemblySha256=$(ServiceAssemblySha256);
       AgentBuildProfile=$(AgentBuildProfile);
+      ServiceRestartDelaySeconds=$(ServiceRestartDelaySeconds);
       ProductName=$(ProductName);
       EulaRtf=$(EulaRtf);
       ReleaseVersion=$(Version);

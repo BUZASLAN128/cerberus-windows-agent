@@ -24,6 +24,7 @@ try{
   $buildInputs=@{PolicyFile=$policyFile;FeedRootFile=$rootFile;Version='0.2.1012';Channel='dev';BuildProfile='server';SigningMode='Pfx';AllowUnsigned=$true}
   $accepted=Read-ReleaseLabPolicy @buildInputs
   if($accepted.Policy.targets.Count -ne 2 -or -not $accepted.RootB64 -or -not $accepted.PolicyB64){throw 'Valid public lab inputs were rejected.'}
+  if($accepted.TickSeconds -ne 60 -or $accepted.ServiceRestartDelaySeconds -ne 60){throw 'Absent timing changed the production defaults.'}
   function Require-Rejection([hashtable]$InputArgs){
     $rejected=$false
     try{$null=Read-ReleaseLabPolicy @InputArgs}catch{$rejected=$true}
@@ -32,9 +33,22 @@ try{
   foreach($override in @(@{Channel='preview'},@{BuildProfile='desktop'},@{SigningMode='Token'},@{AllowUnsigned=$false},@{Version='0.2.9999'})){
     $bad=$buildInputs.Clone();foreach($name in $override.Keys){$bad[$name]=$override[$name]};Require-Rejection $bad
   }
+  $timingChecks=1
+  foreach($field in @('tickSeconds','serviceRestartDelaySeconds')){
+    foreach($value in @(4,5,60,61,$true,'5',5.5,$null)){
+      $p[$field]=$value
+      $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
+      if(($value -is [int]) -and $value -in @(5,60)){
+        $timed=Read-ReleaseLabPolicy @buildInputs
+        if($timed.$field -ne $value){throw 'Lab timing did not match the validated policy.'}
+      }else{Require-Rejection $buildInputs}
+      $timingChecks++
+    }
+    $p.Remove($field)
+  }
   $p.expiresAtUtc=$now.AddHours(49).ToString('o')
   $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
   Require-Rejection $buildInputs
   if($null -ne (Read-ReleaseLabPolicy -PolicyFile '' -FeedRootFile '' -Version '0.2.1012' -Channel preview -BuildProfile server -SigningMode Pfx -AllowUnsigned $false)){throw 'Normal build without a lab policy was changed.'}
-  [pscustomobject]@{result='PASS';checks=8;level='unit/support';artifactRoot=$ArtifactRoot;certificateStoreChanged=$false;privateKeyPersisted=$false}|ConvertTo-Json
+  [pscustomobject]@{result='PASS';checks=(8+$timingChecks);level='unit/support';artifactRoot=$ArtifactRoot;certificateStoreChanged=$false;privateKeyPersisted=$false}|ConvertTo-Json
 }finally{$certificate.Dispose();$key.Dispose()}
