@@ -199,7 +199,15 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
 
     internal static void WriteRecord<T>(string path, string updatesRoot, T value)
     {
-        AgentUpdateDurableFile.Write(path, updatesRoot, JsonSerializer.SerializeToElement(value, RecordJson));
+        var record = value switch
+        {
+            AgentUpdateLkgHostRecord host => JsonSerializer.SerializeToElement(
+                host with { PlacedUtc = host.PlacedUtc.ToUniversalTime() }, RecordJson),
+            AgentUpdateLkgRecord lkg => JsonSerializer.SerializeToElement(
+                lkg with { PromotedUtc = lkg.PromotedUtc.ToUniversalTime() }, RecordJson),
+            _ => JsonSerializer.SerializeToElement(value, RecordJson),
+        };
+        AgentUpdateDurableFile.Write(path, updatesRoot, record);
     }
 
     private static bool ValidRecord(AgentUpdateLkgRecord lkg)
