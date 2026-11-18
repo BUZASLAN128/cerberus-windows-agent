@@ -17,8 +17,10 @@ public sealed class AgentTokenManager : ITokenManager
     private readonly bool _manualOperation;
     private readonly Func<CancellationToken, Task>? _quiesce;
     private readonly long? _expectedGeneration;
+    private readonly AgentAccessTokenCache? _accessTokenCache;
     private string? _accessToken;
     private DateTimeOffset _accessTokenExpiresAt;
+    private DateTimeOffset _refreshNotBeforeUtc;
     private AgentIdentity? _boundIdentity;
 
     public AgentTokenManager(HttpClient http, ISecretStore secrets)
@@ -34,7 +36,8 @@ public sealed class AgentTokenManager : ITokenManager
         IAgentLifecycleStateStore? lifecycleState = null,
         bool manualOperation = false,
         Func<CancellationToken, Task>? quiesce = null,
-        long? expectedGeneration = null)
+        long? expectedGeneration = null,
+        AgentAccessTokenCache? accessTokenCache = null)
     {
         _http = http;
         _secrets = secrets;
@@ -44,6 +47,7 @@ public sealed class AgentTokenManager : ITokenManager
         _manualOperation = manualOperation;
         _quiesce = quiesce;
         _expectedGeneration = expectedGeneration;
+        _accessTokenCache = accessTokenCache;
     }
 
     public async Task<string> GetAccessTokenAsync(CancellationToken ct)
@@ -52,13 +56,14 @@ public sealed class AgentTokenManager : ITokenManager
         await _lock.WaitAsync(ct);
         try
         {
+            ThrowIfRefreshDeferred();
             if (!string.IsNullOrWhiteSpace(_accessToken) && _accessTokenExpiresAt - _utcNow() > _refreshSafetyMargin)
             {
                 if (_boundIdentity is not null)
                     await EnsureProductAuthorityAsync(ct).ConfigureAwait(false);
                 return _accessToken;
             }
-            return await RefreshAndReturnAccessTokenAsync(ct).ConfigureAwait(false);
+            return await RefreshAndReturnAccessTokenAsync(allowCacheRead: _accessToken is null, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -72,7 +77,10 @@ public sealed class AgentTokenManager : ITokenManager
         await _lock.WaitAsync(ct);
         try
         {
-            _ = await RefreshAndReturnAccessTokenAsync(ct).ConfigureAwait(false);
+            ThrowIfRefreshDeferred();
+            if (_accessTokenCache is not null)
+                await _accessTokenCache.InvalidateAsync(_boundIdentity?.Product, ct).ConfigureAwait(false);
+            _ = await RefreshAndReturnAccessTokenAsync(allowCacheRead: false, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -80,12 +88,52 @@ public sealed class AgentTokenManager : ITokenManager
         }
     }
 
-    private async Task<string> RefreshAndReturnAccessTokenAsync(CancellationToken ct)
+    private void ThrowIfRefreshDeferred()
+    {
+        if (_refreshNotBeforeUtc == default) return;
+        var remaining = _refreshNotBeforeUtc - _utcNow();
+        if (remaining > TimeSpan.Zero)
+            throw new AgentHttpException("Token refresh deferred by the backend rate limit.", new(
+                HttpStatusCode.TooManyRequests, TransportCode: null, DetailCode: null, Status: null, RequestId: null, RetryAfter: remaining));
+        _refreshNotBeforeUtc = default;
+    }
+
+    private async Task<string> RefreshAndReturnAccessTokenAsync(bool allowCacheRead, CancellationToken ct)
+    {
+        try
+        {
+            return await LoadOrRefreshAccessTokenAsync(allowCacheRead, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (_accessTokenCache is not null)
+                await _accessTokenCache.InvalidateAsync(_boundIdentity?.Product, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task<string> LoadOrRefreshAccessTokenAsync(bool allowCacheRead, CancellationToken ct)
     {
         await EnsureNetworkAllowedAsync(ct).ConfigureAwait(false);
         var generation = _lifecycleState is null ? (long?)null : (await _lifecycleState.LoadAsync(ct).ConfigureAwait(false)).Generation;
         var (id, refreshToken, privateKeyPem, backendUrl, tsLogin, tsAuthkey) = await _secrets.LoadAsync(ct);
         CheckProductAuthority(id, backendUrl);
+
+        var key = _accessTokenCache is not null && generation is not null
+            ? AgentKeyFingerprint.TryFromPrivateKeyPem(privateKeyPem) : null;
+        if (allowCacheRead && _accessTokenCache is not null && generation is { } cachedGeneration && key is not null)
+        {
+            var cached = await _accessTokenCache.ReadAsync(id, backendUrl, key, cachedGeneration, _utcNow(), ct).ConfigureAwait(false);
+            if (cached is not null && cached.ExpiresAtUtc - _utcNow() > _refreshSafetyMargin)
+            {
+                var current = await _lifecycleState!.LoadAsync(ct).ConfigureAwait(false);
+                if (current.Generation != cachedGeneration || !AgentLifecycleStates.AllowsAutomaticNetwork(current.State) || !current.QuiescenceComplete)
+                    throw new AgentLifecycleDormantException(current);
+                _accessToken = cached.Token;
+                _accessTokenExpiresAt = cached.ExpiresAtUtc;
+                return _accessToken;
+            }
+        }
 
         var req = new { agent_id = id.AgentId, refresh_token = refreshToken };
         var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(req);
@@ -105,23 +153,24 @@ public sealed class AgentTokenManager : ITokenManager
             deadline.Token).ConfigureAwait(false);
         if (!resp.IsSuccessStatusCode)
         {
+            TimeSpan? refreshDelay = null;
+            if (_accessTokenCache is not null && resp.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                refreshDelay = AgentHttpFailure.ReadRetryAfter(resp, TimeSpan.FromHours(1)) ?? TimeSpan.FromSeconds(60);
+                _refreshNotBeforeUtc = _utcNow() + refreshDelay.Value;
+            }
             var failure = await AgentHttpFailure.CreateAsync(
                 "Token refresh",
                 resp,
                 _http,
                 ct,
                 deadline.Token).ConfigureAwait(false);
+            var failureInfo = failure is AgentHttpException typed
+                ? typed.Failure
+                : new AgentHttpFailureInfo(resp.StatusCode, TransportCode: null, DetailCode: null, Status: null,
+                    RequestId: null, RetryAfter: null);
             if (_lifecycleState is not null)
             {
-                var failureInfo = failure is AgentHttpException typed
-                    ? typed.Failure
-                    : new AgentHttpFailureInfo(
-                        failure.StatusCode ?? resp.StatusCode,
-                        TransportCode: null,
-                        DetailCode: null,
-                        Status: null,
-                        RequestId: null,
-                        RetryAfter: null);
                 await new AgentLifecycleController(_lifecycleState, _secrets, quiesce: _quiesce)
                     .RecordHttpFailureAsync(
                         failureInfo,
@@ -132,6 +181,8 @@ public sealed class AgentTokenManager : ITokenManager
                         authenticatedControlPlane: true)
                     .ConfigureAwait(false);
             }
+            if (refreshDelay is { } delay)
+                throw new AgentHttpException(failure.Message, failureInfo with { RetryAfter = delay });
             throw failure;
         }
 
@@ -172,8 +223,22 @@ public sealed class AgentTokenManager : ITokenManager
                 throw new AgentLifecycleDormantException(await _lifecycleState.LoadAsync(ct).ConfigureAwait(false));
         }
 
+        var now = _utcNow();
         _accessToken = payload.AccessToken;
-        _accessTokenExpiresAt = _utcNow().AddSeconds(Math.Max(1, payload.ExpiresIn));
+        _accessTokenExpiresAt = now.AddSeconds(Math.Max(1, payload.ExpiresIn));
+        if (_accessTokenCache is not null && _lifecycleState is not null && generation is { } activeGeneration && key is not null)
+        {
+            try
+            {
+                await _lifecycleState.ExecuteIfCurrentAsync(activeGeneration,
+                    cancel => _accessTokenCache.WriteAsync(id, backendUrl, key, activeGeneration,
+                        payload.AccessToken, _accessTokenExpiresAt, now, cancel), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A failed optional cache write cannot invalidate a successful refresh.
+            }
+        }
         return payload.AccessToken;
     }
 

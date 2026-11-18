@@ -24,6 +24,7 @@ public static class AgentUpdateRollbackGrant
     internal const string Schema = "agent.update.rollback_grant.v1";
     internal const string FileName = "rollback-grant.json";
     internal const string Descriptor = "O:SYG:SYD:P(A;;FA;;;SY)";
+    private const string LocalSystemSid = "S-1-5-18";
     private const uint GenericReadAndDelete = 0x80010000;
     private const uint OpenExisting = 3;
     private const uint OpenReparsePoint = 0x00200000;
@@ -32,45 +33,59 @@ public static class AgentUpdateRollbackGrant
     [SupportedOSPlatform("windows")]
     public static AgentUpdateRollbackGrantResult Consume(string root, bool serverProfile, Guid productCode, string version,
         string detectedNewerProducts, string attemptId, string originalDatabase)
+        => ConsumeCore(root, serverProfile, productCode, version, detectedNewerProducts, attemptId, originalDatabase,
+            AgentUpdateSecurity.IsLocalSystem, AgentUpdateSecurity.ValidateProtectedPath, LocalSystemSid);
+
+    [SupportedOSPlatform("windows")]
+    internal static AgentUpdateRollbackGrantResult ConsumeCore(string root, bool serverProfile, Guid productCode, string version,
+        string detectedNewerProducts, string attemptId, string originalDatabase, Func<bool> isLocalSystem,
+        Action<string, string, bool> validatePath, string requiredSid)
     {
-        if (!serverProfile || !AgentUpdateSecurity.IsLocalSystem()) return AgentUpdateRollbackGrantResult.Denied("grant_profile");
+        if (!serverProfile || !isLocalSystem()) return AgentUpdateRollbackGrantResult.Denied("grant_profile");
         var store = new AgentUpdateLkgStore(root);
         var grantPath = Path.Combine(store.Root, FileName);
         var reason = "grant_path";
         try
         {
-            AgentUpdateSecurity.ValidateProtectedPath(grantPath, root, allowMissing: false);
+            validatePath(grantPath, root, false);
             using var handle = CreateFile(grantPath, GenericReadAndDelete, 0, IntPtr.Zero, OpenExisting, OpenReparsePoint, IntPtr.Zero);
             if (handle.IsInvalid) return AgentUpdateRollbackGrantResult.Denied(reason);
             using var grantStream = new FileStream(handle, FileAccess.Read);
-            if (!HasRequiredDescriptor(new RawSecurityDescriptor(grantStream.GetAccessControl().GetSecurityDescriptorBinaryForm(), 0)))
+            if (!HasRequiredDescriptor(ReadOpenedGrantDescriptor(grantStream), requiredSid))
                 return AgentUpdateRollbackGrantResult.Denied(reason);
 
             reason = "grant_parse";
             if (grantStream.Length is <= 0 or > 8192) return AgentUpdateRollbackGrantResult.Denied(reason);
             var grant = JsonSerializer.Deserialize<AgentUpdateRollbackGrantRecord>(grantStream, AgentUpdateLkgStore.RecordJson);
             return ValidateAndConsume(grant, productCode, version, detectedNewerProducts, attemptId, DateTimeOffset.UtcNow,
-                AgentUpdateBootIdentity.Read, HashCanonicalMsi, () => AgentUpdateRollbackFloor.Read(root), DeleteOpenedGrant);
-
-            string? HashCanonicalMsi()
-            {
-                if (!string.Equals(originalDatabase, store.MsiPath, StringComparison.OrdinalIgnoreCase))
-                    return null;
-                AgentUpdateSecurity.ValidateProtectedPath(store.MsiPath, root, allowMissing: false);
-                using var msi = new FileStream(store.MsiPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                return Convert.ToHexString(SHA256.HashData(msi));
-            }
-
-            bool DeleteOpenedGrant()
-            {
-                byte delete = 1;
-                return SetFileInformationByHandle(handle, FileDispositionInfo, ref delete, 1);
-            }
+                AgentUpdateBootIdentity.Read, () => HashCanonicalMsi(root, store.MsiPath, originalDatabase, validatePath),
+                () => AgentUpdateRollbackFloor.Read(root), () => DeleteOpenedGrant(handle));
         }
         catch (Exception ex) when (IsStorageFailure(ex))
         {
             return AgentUpdateRollbackGrantResult.Denied(reason);
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static RawSecurityDescriptor ReadOpenedGrantDescriptor(FileStream stream)
+        => new(stream.GetAccessControl().GetSecurityDescriptorBinaryForm(), 0);
+
+    internal static string? HashCanonicalMsi(string root, string canonicalPath, string originalDatabase,
+        Action<string, string, bool> validatePath)
+    {
+        if (!string.Equals(originalDatabase, canonicalPath, StringComparison.Ordinal))
+            return null;
+        validatePath(canonicalPath, root, false);
+        using var msi = new FileStream(canonicalPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return Convert.ToHexString(SHA256.HashData(msi));
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static bool DeleteOpenedGrant(SafeFileHandle handle)
+    {
+        byte delete = 1;
+        return SetFileInformationByHandle(handle, FileDispositionInfo, ref delete, 1);
     }
 
     internal static AgentUpdateRollbackGrantResult ValidateAndConsume(AgentUpdateRollbackGrantRecord? grant,
@@ -130,13 +145,13 @@ public static class AgentUpdateRollbackGrant
             new { result = result.Result, reason_code = result.ReasonCode, utc = now });
 
     [SupportedOSPlatform("windows")]
-    internal static bool HasRequiredDescriptor(RawSecurityDescriptor descriptor)
-        => descriptor.Owner?.Value == "S-1-5-18" &&
+    internal static bool HasRequiredDescriptor(RawSecurityDescriptor descriptor, string requiredSid = LocalSystemSid)
+        => descriptor.Owner?.Value == requiredSid &&
            (descriptor.ControlFlags & (ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected)) ==
                (ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected) &&
            descriptor.DiscretionaryAcl is { Count: 1 } acl && acl[0] is CommonAce ace &&
            ace.AceType == AceType.AccessAllowed && ace.AceFlags == AceFlags.None &&
-           ace.SecurityIdentifier.Value == "S-1-5-18" && ace.AccessMask == 0x1F01FF;
+           ace.SecurityIdentifier.Value == requiredSid && ace.AccessMask == 0x1F01FF;
 
     internal static bool IsStorageFailure(Exception ex)
         => ex is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException or ArgumentException;

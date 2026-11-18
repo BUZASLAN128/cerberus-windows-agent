@@ -61,8 +61,8 @@ public sealed partial class ServerPackageStaticTests
         Assert.DoesNotContain("Windows Agent", directories.Values);
 
         Assert.Equal(
-            new[] { "{0C98AA33-79C6-4E21-AD39-E50C2B895B21}", "{D3741C30-B58B-4F95-940E-F51B5BA80F84}", "{1A8485C8-A5AC-4C0D-94E2-D17390941535}" },
-            Guids(doc, "ServerAgentInstallRegistryComponent", "ServerLegalConsentRegistryComponent", "ServerDataCleanupComponent"));
+            new[] { "{0C98AA33-79C6-4E21-AD39-E50C2B895B21}", "{D3741C30-B58B-4F95-940E-F51B5BA80F84}", "{1A8485C8-A5AC-4C0D-94E2-D17390941535}", "{5E0B6A57-2C1D-4B8E-9A43-7D1F6C2E8B90}" },
+            Guids(doc, "ServerAgentInstallRegistryComponent", "ServerLegalConsentRegistryComponent", "ServerDataCleanupComponent", "ServerDataFolderComponent"));
 
         var keys = doc.Descendants(Wix + "RegistryValue").Select(r => (string)r.Attribute("Key")!).Distinct().ToArray();
         Assert.All(keys, k => Assert.StartsWith(@"Software\Cerberus\ServerAgent", k));

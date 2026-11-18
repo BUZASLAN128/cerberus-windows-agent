@@ -6,7 +6,7 @@ param([string]$CoreDll = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($CoreDll)) {
-  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Core/bin/Release/net10.0/Cerberus.Agent.Core.dll"
+  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Update.Core/bin/Release/net10.0/Cerberus.Agent.Update.Core.dll"
 }
 if (-not (Test-Path -LiteralPath $CoreDll -PathType Leaf)) {
   throw "Build the solution in Release first (agent verifier assembly not found: $CoreDll)."
@@ -17,7 +17,6 @@ $CoreDll = (Resolve-Path -LiteralPath $CoreDll).Path
 . (Join-Path $PSScriptRoot "release-publish-lib.ps1")
 . (Join-Path $PSScriptRoot "release-token-lib.ps1")
 Import-AgentManifestVerifier $CoreDll
-$mainScript = Join-Path $PSScriptRoot "build-agent-public-release.ps1"
 
 $script:failures = 0
 function Check([string]$Name, [scriptblock]$Test) {
@@ -97,9 +96,25 @@ Check "token mode needs exactly one manifest signer (none)" { Throws { Assert-Re
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("release-signing-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work | Out-Null
-$outRoot = "out/test-release-signing-" + [guid]::NewGuid().ToString("N").Substring(0, 8)
-$outRootFull = Join-Path $repoRoot $outRoot
+$fixtureRepo = Join-Path $work 'repo'
+$fixtureScripts = Join-Path $fixtureRepo 'scripts'
+$mainScript = Join-Path $fixtureScripts 'build-agent-public-release.ps1'
+$outRoot = 'out/test-release-signing'
+$outRootFull = Join-Path $fixtureRepo $outRoot
 try {
+  # Run both finalize entry points from an isolated source tree, so real signing guards see the fixture lock.
+  $fixtureCore = Join-Path $fixtureRepo 'src/Cerberus.Agent.Update.Core'
+  $fixtureUpdater = Join-Path $fixtureRepo 'src/Cerberus.Agent.Updater'
+  New-Item -ItemType Directory -Path $fixtureScripts, $fixtureCore, $fixtureUpdater -Force | Out-Null
+  Copy-Item -Path (Join-Path $PSScriptRoot '*.ps1') -Destination $fixtureScripts
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Destination $fixtureRepo
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentUpdaterContract.cs'),
+    (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
+  $version = Get-UpdaterSourceVersion $fixtureRepo
+  Set-Content -LiteralPath (Join-Path $fixtureCore 'updater-contract.lock') -Value "$version $(Get-UpdaterSourceFingerprint $fixtureRepo)" -Encoding utf8
+  . (Join-Path $fixtureScripts 'release-publish-lib.ps1')
+  . (Join-Path $fixtureScripts 'release-token-lib.ps1')
+
   $pemA = Get-RsaPublicKeyPem $certA
   $pemB = Get-RsaPublicKeyPem $certB
   $keyA = Join-Path $work "a.pem"; Set-Content -LiteralPath $keyA -Value $pemA
@@ -210,7 +225,7 @@ try {
   function New-Fixture([string]$Dir = "", [hashtable]$Options = @{}, [string[]]$Keys = @()) {
     if ([string]::IsNullOrWhiteSpace($Dir)) { $Dir = Join-Path $work ("pub-" + [guid]::NewGuid().ToString("N").Substring(0, 8)) }
     $fixtureKeys = if ($Keys.Count -gt 0) { $Keys } else { $keyListB64 }
-    New-FinalizeFixture -PublishDir $Dir -CoreDll $CoreDll -KeyListB64 $fixtureKeys -SignerPin $pin -Prefix $prefix @Options
+    New-FinalizeFixture -PublishDir $Dir -UpdaterVerifierDll $CoreDll -KeyListB64 $fixtureKeys -SignerPin $pin -Prefix $prefix @Options
   }
   function Write-FixtureSignature($Fixture, [string]$Signature = "") {
     if ([string]::IsNullOrEmpty($Signature)) { $Signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Fixture.Canonical -Certificate $certB }
@@ -231,21 +246,24 @@ try {
   $script:checkedPins = @()
   $recordAll = { param($Path, $AllowedPins) $script:checked += $Path; $script:checkedPins += (@($AllowedPins) -join "|") }
   $good = New-Fixture
+  $goodRuntime = Join-Path $good.Publish 'runtime'
+  $expectedRuntime = @('Cerberus.Agent.dll', 'Cerberus.Agent.exe', 'Cerberus.Agent.Runtime.dll',
+    'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Uninstall.exe', 'Cerberus.Agent.Update.Core.dll',
+    'Cerberus.Agent.Updater.dll', 'Cerberus.Agent.Updater.exe', 'tr\Cerberus.Agent.resources.dll')
+  $expectedChecks = $expectedRuntime.Count + 2
   Invoke-Finalize $good $recordAll
   $gate = Get-Content -Raw -LiteralPath (Join-Path $good.Publish $gateName) | ConvertFrom-Json
   Check "finalize with a good detached signature writes the manifest, gate and latest alias" {
     (Test-Path -LiteralPath (Join-Path $good.Publish $manifestName)) -and (Test-Path -LiteralPath (Join-Path $good.Publish $latestName))
   }
   Check "finalize checks every first-party PE (incl. satellite) in ordinal order, skips third-party, and both installers" {
-    $runtimeChecked = @($script:checked | Where-Object { $_ -like "*runtime*" })
-    $sorted = @($runtimeChecked); [Array]::Sort($sorted, [StringComparer]::OrdinalIgnoreCase)
-    $script:checked.Count -eq 10 -and ($script:checked -contains $good.Msi) -and ($script:checked -contains $good.Setup) -and $runtimeChecked.Count -eq 8 -and
-      (@($runtimeChecked | Where-Object { $_ -like "*Fixture.dll" }).Count -eq 0) -and
-      (@($runtimeChecked | Where-Object { $_ -like "*resources.dll" }).Count -eq 1) -and
-      (($runtimeChecked -join "|") -ceq ($sorted -join "|"))
+    $runtimeChecked = @($script:checked | Where-Object { $_ -notin @($good.Msi, $good.Setup) } |
+      ForEach-Object { [IO.Path]::GetRelativePath($goodRuntime, $_) })
+    $script:checked.Count -eq $expectedChecks -and ($script:checked -contains $good.Msi) -and ($script:checked -contains $good.Setup) -and
+      (($runtimeChecked -join '|') -ceq ($expectedRuntime -join '|'))
   }
   Check "finalize hands the embedded signer pins to every signature check" {
-    $script:checkedPins.Count -eq 10 -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq 10)
+    $script:checkedPins.Count -eq $expectedChecks -and (@($script:checkedPins | Where-Object { $_ -ceq $pin }).Count -eq $expectedChecks)
   }
   Check "payload gate rejects an unsigned first-party PE and ignores third-party files" {
     Throws { Assert-FirstPartyPeFilesSigned (Join-Path $good.Publish "runtime") } "Unsigned first-party file\(s\).*Cerberus\.Agent\.dll" 
@@ -362,9 +380,10 @@ try {
   $twoPinError = $null
   try { Invoke-Finalize (New-Fixture -Options @{ ExtraPins = @($pinB) }) $recordAll } catch { $twoPinError = $_.Exception.Message }
   Check "finalize with two embedded signer pins is accepted" { if ($twoPinError) { throw $twoPinError }; $true }
-  Check "finalize hands both embedded signer pins to each of the ten signature checks" {
+  Check "finalize hands both embedded signer pins to every signature check" {
     $want = (@($pin, $pinB) | Sort-Object) -join "|"
-    $script:checkedPins.Count -eq 10 -and (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq 10)
+    $script:checkedPins.Count -eq $expectedChecks -and
+      (@($script:checkedPins | Where-Object { ((($_ -split '\|') | Sort-Object) -join "|") -ceq $want }).Count -eq $expectedChecks)
   }
   # Expected key that differs from an embedded key only in base64 letter case (still a valid RSA public key)
   $lines = $pemB.Trim() -split "\r?\n"

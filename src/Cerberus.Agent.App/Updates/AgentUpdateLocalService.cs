@@ -135,19 +135,29 @@ internal static partial class AgentUpdateLocalService
             await OperationGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                await ApplyAsync(request.AttemptId!, automatic: false, ct).ConfigureAwait(false);
-                return await StatusAsync("apply_admitted", ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                await ReportFailureAsync(ex).ConfigureAwait(false);
-                throw;
+                return await RespondToApplyAsync(async () =>
+                {
+                    await ApplyAsync(request.AttemptId!, automatic: false, ct).ConfigureAwait(false);
+                    return await StatusAsync("apply_admitted", ct).ConfigureAwait(false);
+                }, ReportFailureAsync).ConfigureAwait(false);
             }
             finally { OperationGate.Release(); }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return new(false, AgentUpdateErrorCodes.Classify(ex));
+        }
+    }
+
+    internal static async Task<AgentLocalControlResponse> RespondToApplyAsync(
+        Func<Task<AgentLocalControlResponse>> apply, Func<Exception, Task> reportFailure)
+    {
+        try { return await apply().ConfigureAwait(false); }
+        catch (UpdateRetryNotDueException) { return new(false, "retry_not_due"); }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await reportFailure(ex).ConfigureAwait(false);
+            throw;
         }
     }
 
@@ -201,6 +211,7 @@ internal static partial class AgentUpdateLocalService
     {
         try
         {
+            if (HoldsPreInstallRetry(Journal.Read(), DateTimeOffset.UtcNow)) return;
             await CheckAndStageOwnedAsync(
                 automatic: true,
                 required,
@@ -282,6 +293,7 @@ internal static partial class AgentUpdateLocalService
             catch (IntentionalUpdateCancellationException) when (!ct.IsCancellationRequested) { }
             catch (AgentUpdateReconciliationDeferredException) when (!ct.IsCancellationRequested) { }
             catch (AgentUpdatePlanMismatchException) when (!ct.IsCancellationRequested) { }
+            catch (UpdateRetryNotDueException) when (!ct.IsCancellationRequested) { }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { await reportFailure(ex).ConfigureAwait(false); }
             finally { OperationGate.Release(); }
@@ -293,6 +305,7 @@ internal static partial class AgentUpdateLocalService
         Func<bool, Task<bool>> stageRequest, Func<string, Task> apply, Func<Task> check, CancellationToken ct)
     {
         var active = ReadInstallAuthority(journal);
+        if (HoldsPreInstallRetry(active, DateTimeOffset.UtcNow)) return;
         if (await HoldOrRunInstallRequestAsync(active, lifecycle, quarantined, pendingState, journal.Change, stageRequest,
             _requestLog, ct).ConfigureAwait(false)) return;
         active = journal.Read();
@@ -319,8 +332,7 @@ internal static partial class AgentUpdateLocalService
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         if (PendingStateDelivery(lifecycle) || (automatic || AgentBuildProfile.IsServer) && (!AllowsAutomatic(lifecycle) || active.LifecycleGeneration != lifecycle.Generation))
             throw new InvalidOperationException("Automatic update authorization changed.");
-        if (active.RetryCount >= 3 || (active.NextRetryUtc is not null && active.NextRetryUtc > DateTimeOffset.UtcNow))
-            throw new InvalidOperationException("Update installer retry is not admitted.");
+        RequireInstallerRetryDue(active, DateTimeOffset.UtcNow);
         HoldExpiredInstallRequest(active, automatic, ct);
         var plan = ReadPlan(active) ?? throw new InvalidOperationException("Update plan is missing.");
         var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(Root, attemptId);
@@ -373,7 +385,8 @@ internal static partial class AgentUpdateLocalService
         try
         {
             var code = AgentUpdateErrorCodes.Classify(error);
-            journal.Change(before => TransitionFailure(before, code));
+            var now = DateTimeOffset.UtcNow;
+            journal.Change(before => ApplyPreInstallBackoff(before, TransitionFailure(before, code), code, now));
             await project().ConfigureAwait(false);
         }
         catch (Exception) { /* A corrupt/unwritable journal stays unavailable; never create replacement success state. */ }
