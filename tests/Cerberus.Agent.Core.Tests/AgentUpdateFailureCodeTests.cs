@@ -40,13 +40,10 @@ public sealed class AgentUpdateFailureCodeTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    [Theory]
-    [InlineData(1618)]
-    [InlineData(-1)]
-    public void BusyRetryExhaustion_PreservesExistingInstallerCause(int exitCode)
+    [Fact]
+    public void CountedBusyRetryExhaustion_PreservesExistingInstallerCause()
     {
-        var result = exitCode == 1618 ? AgentUpdateInstallerResult.FromMsiExitCode(exitCode, null, null)
-            : AgentUpdateInstallerResult.Failure(new InvalidOperationException("fixture"));
+        var result = AgentUpdateInstallerResult.Failure(new InvalidOperationException("fixture"));
         var before = new AgentUpdateJournal { AttemptId = "attempt-a", Phase = AgentUpdateStates.RetryableBusy,
             RetryCount = 2, InstallerResult = result };
         var after = AgentUpdateLocalService.TransitionBusyRetry(before, DateTimeOffset.UtcNow);

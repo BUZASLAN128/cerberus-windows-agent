@@ -70,6 +70,12 @@ internal static partial class AgentUpdateLocalService
                 FailureInstallerResultId = operationStart.FailureInstallerResultId,
                 RetryCount = operationStart.RetryCount,
                 NextRetryUtc = operationStart.NextRetryUtc,
+                BusySinceUtc = operationStart.BusySinceUtc,
+                InstallerBusyCount = operationStart.InstallerBusyCount,
+                PreInstallFailureCount = operationStart.PreInstallFailureCount,
+                PreInstallRetryNotBeforeUtc = operationStart.PreInstallRetryNotBeforeUtc,
+                AlertCode = operationStart.AlertCode,
+                AlertAttemptId = operationStart.AlertAttemptId,
                 ApplyNotBeforeUtc = operationStart.ApplyNotBeforeUtc,
                 RunnerProcessId = operationStart.RunnerProcessId,
                 RunnerStartedUtc = operationStart.RunnerStartedUtc,
@@ -87,6 +93,10 @@ internal static partial class AgentUpdateLocalService
             InstallerResult = null,
             RetryCount = 0,
             NextRetryUtc = null,
+            BusySinceUtc = null,
+            InstallerBusyCount = 0,
+            AlertCode = null,
+            AlertAttemptId = null,
             ApplyNotBeforeUtc = null,
             RunnerProcessId = null,
             RunnerStartedUtc = null,
@@ -110,6 +120,8 @@ internal static partial class AgentUpdateLocalService
 
     internal static AgentUpdateJournal TransitionBusyRetry(AgentUpdateJournal before, DateTimeOffset now)
     {
+        if (IsMsiInstallerBusy(before) && (before.NextRetryUtc is null || InstallerBusyTimeoutDue(before, now)))
+            return TransitionInstallerBusy(before, now);
         if (before.Phase != AgentUpdateStates.RetryableBusy || before.NextRetryUtc is not null) return before;
         var next = before with
         {
@@ -418,6 +430,10 @@ internal static partial class AgentUpdateLocalService
                 before, required, lifecycleGeneration, requiredPolicyGeneration),
             RetryCount = 0,
             NextRetryUtc = null,
+            BusySinceUtc = null,
+            InstallerBusyCount = 0,
+            AlertCode = null,
+            AlertAttemptId = null,
             ApplyNotBeforeUtc = null,
             RunnerProcessId = null,
             RunnerStartedUtc = null,
@@ -449,5 +465,7 @@ internal static partial class AgentUpdateLocalService
             ApplyNotBeforeUtc = plan is null || !required ? null : now.Add(AgentUpdateJournalStore.Offset(
                 before.ScheduleSeed + ":rollout:" + plan.Channel + ":" + plan.Sequence, TimeSpan.FromHours(24))),
             NextCheckUtc = now.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
+            PreInstallFailureCount = 0,
+            PreInstallRetryNotBeforeUtc = null,
         };
 }
