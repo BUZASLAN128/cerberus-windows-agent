@@ -122,6 +122,15 @@ public sealed record AgentUpdateState(
 {
     public const string CurrentSchemaVersion = "agent.update.state.v1";
 
+    [JsonPropertyName("blocked_sequence"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? BlockedSequence { get; init; }
+
+    [JsonPropertyName("lkg_version"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LkgVersion { get; init; }
+
+    [JsonPropertyName("watch_outcome"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WatchOutcome { get; init; }
+
     public static AgentUpdateState NotChecked(string? currentVersion = null)
         => new(
             CurrentSchemaVersion,
@@ -217,6 +226,10 @@ public sealed record AgentUpdateState(
             ["health_state"] = HealthState,
             ["rollback_state"] = RollbackState,
             ["quarantined"] = Quarantined ? true : null,
+            ["blocked_sequence"] = BlockedSequence is > 0 ? BlockedSequence : null,
+            ["lkg_version"] = LkgVersion is { Length: <= 50 } && AgentUpdateManifestValidator.IsReleaseVersion(LkgVersion)
+                ? LkgVersion : null,
+            ["watch_outcome"] = AgentUpdateWatchOutcomes.IsKnown(WatchOutcome) ? WatchOutcome : null,
         };
         foreach (var key in payload.Where(item => item.Value is null).Select(item => item.Key).ToArray())
             payload.Remove(key);
