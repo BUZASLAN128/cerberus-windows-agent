@@ -16,6 +16,13 @@ function Read-ReleaseLabPolicy {
   $json=[IO.File]::ReadAllText((Resolve-Path -LiteralPath $PolicyFile).Path)
   if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 12288) { throw 'Lab policy exceeds the runtime size limit.' }
   $p=$json|ConvertFrom-Json -AsHashtable -DateKind String
+  $watchMembers=@($p.Keys | Where-Object { $_ -ieq 'watchMinutesOverride' })
+  if ($watchMembers.Count -gt 0 -and
+      ($watchMembers.Count -ne 1 -or $watchMembers[0] -cne 'watchMinutesOverride' -or
+       ($p.watchMinutesOverride -isnot [int] -and $p.watchMinutesOverride -isnot [long]) -or
+       $p.watchMinutesOverride -lt 5 -or $p.watchMinutesOverride -gt 30)) {
+    throw 'Use one watchMinutesOverride member with an integer from 5 to 30.'
+  }
   $from=[DateTimeOffset]::Parse($p.notBeforeUtc,[Globalization.CultureInfo]::InvariantCulture)
   $until=[DateTimeOffset]::Parse($p.expiresAtUtc,[Globalization.CultureInfo]::InvariantCulture)
   $now=[DateTimeOffset]::UtcNow

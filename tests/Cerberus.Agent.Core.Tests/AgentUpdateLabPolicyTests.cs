@@ -74,7 +74,7 @@ public sealed class AgentUpdateLabPolicyTests
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabPolicy.Parse("not-base64", "dev", true, true));
     }
 
-    private static AgentUpdateLabPolicy Valid() => new("agent.update.lab.v1", "f4c2ca30-78df-4b86-95d7-9381eebefbe3", Start,
+    internal static AgentUpdateLabPolicy Valid() => new("agent.update.lab.v1", "f4c2ca30-78df-4b86-95d7-9381eebefbe3", Start,
         Start.AddHours(24),
         [new("pc", "tenant", PcKey, Feed + "pc/latest.json", Feed, "0.2.1011"), new("vm", "tenant", VmKey, Feed + "vm106/latest.json", Feed, "0.2.1011")],
         Enumerable.Range(1012, 11).Select(v => $"0.2.{v}").ToArray(), "https://collector.example.invalid", "https://sso.invalid");
@@ -115,12 +115,16 @@ public sealed class AgentUpdateLabPolicyTests
     }
 
     [Fact]
-    public void EveryCountedTransitionHasOneSelectedLocalFaultAndBootstrapHasNone()
+    public void WatchOverrideIsOptionalAndRequiresAtLeastFiveMinutes()
     {
         var policy = Valid();
-        Assert.False(AgentUpdateLabFaults.UsesServiceInterruption(policy, policy.Versions[0]));
-        for (var index = 1; index <= 10; index++)
-            Assert.Equal(index != 8, AgentUpdateLabFaults.UsesServiceInterruption(policy, policy.Versions[index]));
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var omitted = JsonSerializer.Serialize(policy, options).Replace(",\"watchMinutesOverride\":null", "", StringComparison.Ordinal);
+        Assert.Null(AgentUpdateLabPolicy.Parse(EncodeJson(omitted), "dev", true, true)!.WatchMinutesOverride);
+        Assert.Null(Parse(policy).WatchMinutesOverride);
+        AssertDenied(policy with { WatchMinutesOverride = 4 });
+        Assert.Equal(5, Parse(policy with { WatchMinutesOverride = 5 }).WatchMinutesOverride);
+        Assert.Equal(31, Parse(policy with { WatchMinutesOverride = 31 }).WatchMinutesOverride);
     }
 
     [Fact]

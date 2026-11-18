@@ -148,12 +148,20 @@ rollback retain their normal path.
 OPS advances only the isolated files on the existing WAN collector path after
 both targets complete the preceding version and recovery, with zero human
 recovery. No collector faults, new listener, firewall, proxy or network changes.
-Transitions 1–7, 9 and 10 exit the service after a durable staging start;
-transition 8 exits the updater after artifact verification and before installer
-handoff. Each version
-has its own protected once receipt. Receipts prove arming only; prove process
-exit/SCM restart, resumed update, backend report receipt and ordinary retry from
-runtime evidence. Do not advance after failed recovery or count the bootstrap.
+
+| Counted transition | Lab fault | Receipt |
+| --- | --- | --- |
+| 1, 10 | Service exits after durable staging starts and before download | `service-pre-download-exit` |
+| 2, 7 | Installer contention before handoff | `updater-msi-busy-1618` |
+| 3, 9 | Token-route HTTP 429 after commit with `Retry-After: 120` | `token-route-429` |
+| 4, 8 | Updater exits after artifact verification and before installer handoff | `updater-pre-installer-exit` |
+| 5 | Service crashes during the post-commit watch and the host rolls back to v4 | `service-post-commit-crash` |
+| 6 | Feed serves a truncated artifact, then restores the full artifact after a stage failure | `feed-truncated-artifact` in the feed ledger |
+
+The v4→v5 hop counts after automatic rollback leaves v4 healthy. Hop 6 then
+runs v4→v6. Match each protected fault receipt or feed ledger entry to actual
+fault and recovery evidence from that target. Stop advancement after a failed
+recovery and record bootstrap separately.
 
 The lab-only BITS callback validates the actual connection leaf against the
 selected collector root and SAN before the HTTP request, with OS name/date/usage
@@ -180,13 +188,20 @@ plan and MSI launch grant retain the predecessor captured before files change;
 the incoming helper's own version is never used as the installed predecessor.
 Desktop service-install and normal preview/stable signature checks stay intact.
 
-Before freezing versions, reserve eleven increasing lab versions below the
-existing signed return MSI's version. The incoming dev bootstrap permits that
-one preparatory downgrade; its ten counted transitions must then increase.
-Initialize the test feed/controller at the first counted successor, not the
-bootstrap version: a manual bootstrap need not create an updater installed/hash
-record. Its committed ledger gates the agent; the first counted transition then
-supplies the ordinary local proof and backend state required for feed progression.
+Reserve increasing versions above the installed versions and the 1018–1020
+spike block. Use this order for each target: installed version, timer bootstrap
+T0, timer hop T1, counted bootstrap L0, counted targets L1–L10, signed return R.
+Each policy binds its starting installed version through `bootstrapSourceVersion`.
+The separate uncounted timer campaign omits `watchMinutesOverride` and advances
+only to T1, observing the full 30-minute watch. The counted policy starts from T1
+and sets `watchMinutesOverride` to 5. Use a separate campaign GUID and host state
+for each campaign.
+
+Initialize each test feed at the first updater-driven successor. The MSI
+bootstrap's committed ledger gates that first hop, which supplies the updater
+and backend evidence for subsequent feed progression. The owner signs R at
+0.2.1050 if that exceeds all lab and installed versions. Otherwise, use the
+next multiple of 10 above the lab block and installed versions.
 Return through the same server MSI major-upgrade path, preserving enrollment,
 protected state and sequence floors. Do not uninstall/re-enroll or clear replay.
 The historic signed manifest can remain below the campaign sequence floor:

@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory)][string]$FeedRootFile,
   [Parameter(Mandatory)][string]$AgentCommandTrustAnchorsFile,
   [Parameter(Mandatory)][string]$BackendTrustAnchorsFile,
+  [Parameter(Mandatory)][ValidateSet(5,30)][int]$WatchMinutes,
   [string]$DefaultSsoClientId='server-profile-none',
   [string]$OutputRoot='out/test-campaign',
   [switch]$SkipTests
@@ -20,9 +21,40 @@ if([string]::Equals($env:GITHUB_ACTIONS,'true',[StringComparison]::OrdinalIgnore
 . (Join-Path $PSScriptRoot 'release-signing-lib.ps1')
 . (Join-Path $PSScriptRoot 'release-trust-lib.ps1')
 . (Join-Path $PSScriptRoot 'release-publish-lib.ps1')
+
+function Write-TruncatedCampaignArtifact([string]$Source, [long]$FullLength, [string]$TargetRoot, [string]$Name) {
+  $length=$FullLength -shr 1
+  if($length -le 0){throw 'Campaign MSI is too short to truncate.'}
+  $directory=Join-Path $TargetRoot 'truncated'
+  $null=New-Item -ItemType Directory -Path $directory
+  $path=Join-Path $directory $Name
+  $inputStream=[IO.File]::OpenRead($Source)
+  try{
+    if($inputStream.Length -ne $FullLength){throw 'Campaign MSI changed length before truncation.'}
+    $outputStream=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try{
+      $buffer=[byte[]]::new(64KB)
+      for($remaining=$length;$remaining -gt 0;$remaining-=$count){
+        $count=[int][Math]::Min([long]$buffer.Length,$remaining)
+        $inputStream.ReadExactly($buffer,0,$count)
+        $outputStream.Write($buffer,0,$count)
+      }
+    }finally{$outputStream.Dispose()}
+  }finally{$inputStream.Dispose()}
+  [pscustomobject]@{path=$path;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant();length=$length}
+}
+
 $policy=Get-Content -LiteralPath $PolicyFile -Raw|ConvertFrom-Json -DateKind String
 $lab=Read-ReleaseLabPolicy -PolicyFile $PolicyFile -FeedRootFile $FeedRootFile -Version $policy.versions[0] `
   -Channel dev -BuildProfile server -SigningMode Pfx -AllowUnsigned $true
+if(($WatchMinutes -eq 5 -and $lab.Policy.watchMinutesOverride -ne 5) -or
+   ($WatchMinutes -eq 30 -and $lab.Policy.Contains('watchMinutesOverride'))){throw 'Use watchMinutesOverride 5 for a 5-minute campaign and omit the member for a 30-minute campaign.'}
+$labSourceFingerprint=Get-UpdaterSourceFingerprint $repoRoot
+$faultSchedule=[ordered]@{
+  '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='updater-pre-installer-exit';
+  '5'='service-post-commit-crash';'6'='feed-truncated-artifact';'7'='updater-msi-busy-1618';'8'='updater-pre-installer-exit';
+  '9'='token-route-429';'10'='service-pre-download-exit'
+}
 $output=[IO.Path]::GetFullPath($OutputRoot,$repoRoot)
 $allowedRoot=[IO.Path]::GetFullPath((Join-Path $repoRoot 'out'))+[IO.Path]::DirectorySeparatorChar
 if(-not $output.StartsWith($allowedRoot,[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)){throw 'Use a fresh output directory inside this worktree/out; existing artifacts are preserved.'}
@@ -73,16 +105,27 @@ try{
     foreach($hostName in @('Cerberus.Agent.exe','Cerberus.Agent.Service.exe','Cerberus.Agent.Updater.exe')){
       $hostPath=Join-Path $runtime $hostName
       if(-not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)){throw 'Server campaign hosts must retain the verified single-file layout.'}
+      if($hostName -ceq 'Cerberus.Agent.exe'){
+        Assert-ServerAgentBundleEntryKinds $hostPath
+      }else{
+        Assert-UpdaterBundleHasNoNativeEntries $hostPath
+      }
       $hostAssembly=if($hostName -ceq 'Cerberus.Agent.exe'){'Cerberus.Agent.dll'}else{'Cerberus.Agent.Runtime.dll'}
       $metadata=Read-AssemblyMetadataValues (Join-Path $runtime $hostAssembly) -BundlePath $hostPath
       if($metadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $metadata['AgentUpdateLabFeedRootB64'] -cne $lab.RootB64 -or
          $metadata['AgentUpdateManifestPublicKeysB64'] -cne [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKey.Trim()))){throw 'A host embedded different campaign trust.'}
     }
+    $updaterPath=Join-Path $runtime 'Cerberus.Agent.Updater.exe'
+    # The host loop reads Runtime.dll from the updater. Read Update.Core from the same bundle.
+    $contractMetadata=Read-AssemblyMetadataValues (Join-Path $runtime 'Cerberus.Agent.Update.Core.dll') -BundlePath $updaterPath
+    $contractVersion=ConvertTo-UpdaterContractVersion ([string]$contractMetadata['AgentUpdaterContractVersion']) 'Lab updater contract version'
+    $updaterSha256=(Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $helperCompiler=Join-Path $versionOutput 'lab-build-evidence/installer-helper-compiler.dll'
     $helperMetadata=Read-AssemblyMetadataValues $helperCompiler
     if($helperMetadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $helperMetadata['AllowUnsignedDevBuild'] -cne 'true' -or
        $helperMetadata['AgentUpdateAllowedSignerKeyIdentity'] -cne 'unsigned-dev'){throw 'Installer helper did not retain protected lab admission metadata.'}
     $expectedHashes=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($helperMetadata['AgentUpdateLabRuntimeHashesB64']))|ConvertFrom-Json -AsHashtable
+    if($expectedHashes['Cerberus.Agent.Updater.exe'] -cne $updaterSha256){throw 'Lab updater hash differs from the installer helper admission metadata.'}
     $payloadFiles=@(Get-FirstPartyPeFiles $runtime)
     if($expectedHashes.Count -ne $payloadFiles.Count){throw 'Installer helper payload hash coverage differs from the built runtime.'}
     foreach($file in $payloadFiles){
@@ -91,6 +134,8 @@ try{
     }
     $sourceManifest=Join-Path $publish "Cerberus.Agent.Bundle-dev-$version-server.update-manifest.v2.json"
     $original=Get-Content -LiteralPath $sourceManifest -Raw|ConvertFrom-Json -AsHashtable -DateKind String
+    if($original.Keys -icontains 'min_rollback_version'){throw 'Campaign manifests must retain the 14-field signature payload.'}
+    $fault=$faultSchedule[[string]$variantIndex]
     $targetIndex=0
     $manifests=@(foreach($target in $lab.Policy.targets){
       $copy=[ordered]@{};foreach($field in $original.Keys){$copy[$field]=$original[$field]}
@@ -109,16 +154,20 @@ try{
       $null=New-Item -ItemType Directory -Path $targetRoot
       $manifest=Join-Path $targetRoot 'Cerberus.Agent.Bundle-dev-latest-server.update-manifest.v2.json'
       $copy|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $manifest -Encoding utf8
-      [pscustomobject]@{agentId=$target.agentId;manifestUrl=$target.manifestUrl;path=$manifest;sha256=(Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant();artifactUrl=$copy.artifact_url}
+      $targetRow=[ordered]@{agentId=$target.agentId;manifestUrl=$target.manifestUrl;path=$manifest;sha256=(Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant();artifactUrl=$copy.artifact_url}
+      if($fault -ceq 'feed-truncated-artifact'){$targetRow.truncated=Write-TruncatedCampaignArtifact $msi $msiLength $targetRoot $name}
+      [pscustomobject]$targetRow
     })
+    # noNativeEntries records the headless updater admission check.
     $rows.Add([pscustomobject]@{version=$version;source=$ExpectedHead;msi=$msi;sha256=$msiHash;bytes=$msiLength;bootstrap=($version -ceq $lab.Policy.versions[0]);manifests=$manifests;
+      fault=$fault;updaterSha256=$updaterSha256;noNativeEntries=$true;contractVersion=$contractVersion;labSourceFingerprint=$labSourceFingerprint;
       helperMetadataEvidence='compiler PE support; compressed helper runtime not executed';helperCompiler=$helperCompiler;
       helperCompilerSha256=(Get-FileHash -LiteralPath $helperCompiler).Hash.ToLowerInvariant();
       publishedHelperSha256=(Get-FileHash -LiteralPath (Join-Path $versionOutput 'installer-helper/Cerberus.Agent.Installer.Helper.exe')).Hash.ToLowerInvariant()})
     $variantIndex++
   }
   [pscustomobject]@{source=$ExpectedHead;campaignId=$lab.Policy.campaignId;policySha256=$policyHash.ToLowerInvariant();
-    feedRootSha256=$rootHash.ToLowerInvariant();artifacts=$rows.ToArray();
+    feedRootSha256=$rootHash.ToLowerInvariant();watchMinutes=$WatchMinutes;faultSchedule=$faultSchedule;artifacts=$rows.ToArray();
     signedPayload=$false;manifestSignature='RSA3072/PKCS1-SHA256; one ephemeral campaign key';initialTestsSkipped=[bool]$SkipTests;
     laterVariantTests='reuse unchanged frozen functional candidate';uploaded=$false;installed=$false;acceptanceTransitions=0}|
     ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $output 'campaign-artifacts.json') -Encoding utf8
