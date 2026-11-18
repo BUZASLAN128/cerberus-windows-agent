@@ -41,6 +41,9 @@ foreach ($profile in @('server','desktop')) {
     $grantSequence = @(Query $db 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3)
     $grantScheduled = @($grantSequence | Where-Object { $_[0] -eq 'RequireRollbackGrant' })
     $removalGuard = @($grantSequence | Where-Object { $_[0] -eq 'BlockNewServerDowngradeWithRemoval' })
+    $watchActions = @(Query $db 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4 | Where-Object {
+        $_[0] -in @('BlockServerInstallWithoutRollback', 'LkgBootstrap', 'ReregisterWatchTask', 'UnregisterWatchTask')
+    })
     if ($profile -eq 'server') {
         $version = @(Query $db "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductVersion'" 1)[0][0]
         $major = @($upgradeRows | Where-Object { $_[4] -eq 'WIX_UPGRADE_DETECTED' })
@@ -69,10 +72,35 @@ foreach ($profile in @('server','desktop')) {
         $beforeGuard = @($customActions | Where-Object { ([int]$_[1] -band 0x400) -and
             $actionOrder.ContainsKey($_[0]) -and $actionOrder[$_[0]] -lt $guard })
         if ($beforeGuard.Count -ne 0) { throw 'The rollback grant must be the first in-script server custom action' }
+        $uninstall = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+        $watchActionSpec = @(
+            @{ Action = 'BlockServerInstallWithoutRollback'; Type = 19; Condition = 'NOT REMOVE AND RollbackDisabled'; Before = 'InstallInitialize' }
+            @{ Action = 'LkgBootstrap'; Type = 0x0E42; Condition = 'NOT REMOVE'; After = 'CommitLabCampaignAdmission'; Before = 'InstallFinalize'; Command = 'lkg-bootstrap' }
+            @{ Action = 'ReregisterWatchTask'; Type = 0x0D42; Condition = $uninstall; After = 'InstallInitialize'; Before = 'UnregisterWatchTask'; Command = 'reregister-watch-task' }
+            @{ Action = 'UnregisterWatchTask'; Type = 0x0C02; Condition = $uninstall; After = 'InstallInitialize'; Before = 'RemoveFiles'; Command = 'unregister-watch-task' }
+        )
+        foreach ($spec in $watchActionSpec) {
+            $authored = @($watchActions | Where-Object { $_[0] -ceq $spec.Action })
+            $scheduled = @($grantSequence | Where-Object { $_[0] -ceq $spec.Action })
+            if ($authored.Count -ne 1 -or $scheduled.Count -ne 1 -or [int]$authored[0][1] -ne $spec.Type -or
+                $scheduled[0][1] -cne $spec.Condition -or
+                ($spec.After -and (-not $actionOrder.ContainsKey($spec.After) -or $actionOrder[$spec.Action] -le $actionOrder[$spec.After])) -or
+                -not $actionOrder.ContainsKey($spec.Before) -or $actionOrder[$spec.Action] -ge $actionOrder[$spec.Before] -or
+                ($spec.Command -and ($authored[0][2] -cne 'CerberusInstallerHelper' -or
+                    -not $authored[0][3].StartsWith($spec.Command + ' ', [StringComparison]::Ordinal)))) {
+                throw "Bad server watch custom action: $($spec.Action)"
+            }
+            Write-Output ('SERVER WATCH ACTION ' + ($scheduled[0] -join ' | ') + ' | Type=' + $authored[0][1])
+        }
+        $scm = @(Query $db 'SELECT `ServiceName`, `FirstFailureActionType`, `SecondFailureActionType`, `ThirdFailureActionType`, `ProgramCommandLine` FROM `Wix4ServiceConfig` WHERE `ServiceName` = ''CerberusServerAgent''' 5)
+        $command = '"[CommonAppDataFolder]CerberusServerAgent\Privileged\Updates\lkg\Cerberus.Agent.Updater.exe" --scm-failure'
+        if ($scm.Count -ne 1 -or ($scm[0][1..3] -join '/') -cne 'restart/restart/runCommand' -or
+            $scm[0][4] -cne $command) { throw 'Bad server SCM watch recovery configuration' }
+        Write-Output ('SERVER WATCH SCM ' + ($scm[0] -join ' | '))
         Write-Output ('SERVER UPGRADE ' + ($major[0] -join ' | '))
         Write-Output ('SERVER DETECT ' + ($rollbackRows[0] -join ' | '))
         Write-Output ('SERVER ROLLBACK ' + ($grantScheduled[0] -join ' | '))
-    } elseif ($rollbackRows.Count -or $grantActions.Count -or $grantScheduled.Count -or $removalGuard.Count -or
+    } elseif ($rollbackRows.Count -or $grantActions.Count -or $grantScheduled.Count -or $removalGuard.Count -or $watchActions.Count -or
         'CERBERUS_NEWER_DETECTED' -in $secure -or 'CERBERUS_ROLLBACK_ATTEMPT' -in $secure) {
         throw 'Desktop MSI contains server rollback authoring'
     }
