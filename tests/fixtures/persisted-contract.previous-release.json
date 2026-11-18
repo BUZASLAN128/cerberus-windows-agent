@@ -1,0 +1,57 @@
+{
+  "readable_by_previous_release": {
+    "schemas": [
+      "agent.ad-scope-policy.v1",
+      "agent.ad-user.command.v1",
+      "agent.ad-user.result.v1",
+      "agent.command-envelope.v1",
+      "agent.commands.signed-only.v1",
+      "agent.credential-publication.v1",
+      "agent.diagnostic_bundle.v1",
+      "agent.enroll.v1",
+      "agent.enrollment-promotion.v1",
+      "agent.events.v1",
+      "agent.facts.v1",
+      "agent.heartbeat.v1",
+      "agent.installer.health-diagnostic.v1",
+      "agent.legacy-async.v1",
+      "agent.local-control.v1",
+      "agent.ping.v1",
+      "agent.probe-result.v1",
+      "agent.self-deactivate.v1",
+      "agent.snapshot.v1",
+      "agent.state_result.v1",
+      "agent.update.install.v1",
+      "agent.update.installer_result.v1",
+      "agent.update.journal.v1",
+      "agent.update.lab.v1",
+      "agent.update.manifest.v1",
+      "agent.update.manifest.v2",
+      "agent.update.plan.v2",
+      "agent.update.request.v1",
+      "agent.update.sequence.v1",
+      "agent.update.sequence.v2",
+      "agent.update.state.v1",
+      "agent.update.status.v2",
+      "agent.wakeup.v1",
+      "cerberus.agent-state-seq.v1",
+      "cerberus.agent-state.v1",
+      "cerberus.agent.diagnostic_scheduler.v1",
+      "cerberus.command-envelopes.v1",
+      "cerberus.legacy-replay-enrollment.v1",
+      "cerberus.offline_telemetry_buffer.v1",
+      "cerberus.tailscale-debug-export.v1"
+    ],
+    "journal_phases": [
+      "available", "awaiting_consent", "blocked", "checking", "current", "downloading", "failed",
+      "health_pending", "install_may_have_started", "installed", "installing", "launch_requested", "not_checked",
+      "pending_reboot", "quarantined", "recovery_required", "retryable_busy", "staged"
+    ]
+  },
+  "read_only_additions": {
+    "agent.update.lkg.v1": "Server LKG metadata is isolated from records read by previously shipped agents.",
+    "agent.update.lkg_host.v1": "Only the LKG store reads this protected host record.",
+    "agent.update.rollback_floor.v1": "The server rollback path uses a separate protected floor file.",
+    "agent.update.rollback_grant.v1": "Only the server MSI rollback admission path reads this protected grant file."
+  }
+}
