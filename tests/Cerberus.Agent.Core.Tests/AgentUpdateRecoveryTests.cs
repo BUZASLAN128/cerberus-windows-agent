@@ -165,7 +165,7 @@ public sealed class AgentUpdateRecoveryTests
     [Fact]
     public void CloseRecovery_HealthyPlanBecomesInstalledWithPlanEvidence()
     {
-        var closed = AgentUpdateLocalService.CloseRecovery(Recovery(Recorded), Plan, healthy: true, Recorded);
+        var closed = AgentUpdateLocalService.CloseRecovery(Recovery(Recorded), Plan, healthy: true, Recorded, serverProfile: false);
         Assert.Equal(AgentUpdateStates.Installed, closed.Phase);
         Assert.Equal(77, closed.HealthyInstalledSequence);
         Assert.Equal("9.9.9", closed.HealthyInstalledVersion);

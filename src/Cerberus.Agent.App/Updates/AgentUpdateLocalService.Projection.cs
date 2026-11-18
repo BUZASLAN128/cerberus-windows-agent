@@ -13,18 +13,60 @@ internal static partial class AgentUpdateLocalService
     private static async Task ProjectAsync(CancellationToken ct)
     {
         var active = Journal.Read();
-        var old = await Projection.ReadAsync(WindowsDeviceInfo.GetAgentVersion(), ct).ConfigureAwait(false);
-        var plan = ReadPlan(active);
+        var currentVersion = WindowsDeviceInfo.GetAgentVersion();
+        var old = await Projection.ReadAsync(currentVersion, ct).ConfigureAwait(false);
+        var plan = ReadProjectionPlan(active);
         var completed = CompleteInstallRequest(active, plan, DateTimeOffset.UtcNow);
         if (completed.InstallRequest != active.InstallRequest)
         {
             var expected = active.InstallRequest;
             active = Journal.Change(before => before.InstallRequest == expected && before.AttemptId == active.AttemptId
                 ? before with { InstallRequest = completed.InstallRequest } : before);
-            plan = ReadPlan(active);
+            plan = ReadProjectionPlan(active);
         }
-        var state = active.Phase is "launch_requested" or "install_may_have_started" ? AgentUpdateStates.Installing : active.Phase;
-        var next = old.Transition(state, WindowsDeviceInfo.GetAgentVersion(), targetVersion: plan?.Version,
+        var next = ProjectJournalState(old, active, plan, currentVersion, AgentBuildProfile.IsServer ? Root : null);
+        next = ProjectInstallRequest(active, plan, next);
+        if (next with { LastTransitionUtc = old.LastTransitionUtc } != old)
+            await Projection.WriteAsync(next, ct).ConfigureAwait(false);
+    }
+
+    private static AgentUpdatePlan? ReadProjectionPlan(AgentUpdateJournal active)
+    {
+        try { return ReadPlan(active); }
+        catch (Exception ex) when ((ex is FileNotFoundException or DirectoryNotFoundException) &&
+            (active.Phase is AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack ||
+             active.AttemptId is not null && active.WatchAttemptId == active.AttemptId))
+        {
+            return null;
+        }
+    }
+
+    internal static AgentUpdateState ProjectJournalState(AgentUpdateState old, AgentUpdateJournal active, AgentUpdatePlan? plan,
+        string currentVersion, string? watchRoot)
+    {
+        var state = active.Phase switch
+        {
+            AgentUpdateWatchJournal.CommittedWatch => AgentUpdateStates.HealthPending,
+            "launch_requested" or "install_may_have_started" or AgentUpdateWatchJournal.RollingBack => AgentUpdateStates.Installing,
+            _ => active.Phase,
+        };
+        string? lkgVersion = null;
+        string? watchOutcome = null;
+        if (watchRoot is not null)
+        {
+            try { lkgVersion = new AgentUpdateLkgStore(watchRoot).ReadHost()?.LkgVersion; }
+            catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex)) { }
+
+            try
+            {
+                var watch = AgentUpdateWatchStore.Read(watchRoot);
+                if (watch is not null && watch.AttemptId == active.AttemptId)
+                    watchOutcome = watch.Outcome;
+            }
+            catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex)) { }
+        }
+
+        return old.Transition(state, currentVersion, targetVersion: plan?.Version,
             channel: plan?.Channel, attemptId: active.AttemptId, sequence: plan?.Sequence,
             msiExitCode: active.InstallerResult?.MsiExitCode, retryCount: active.RetryCount,
             requiresReboot: state == AgentUpdateStates.PendingReboot) with
@@ -38,30 +80,51 @@ internal static partial class AgentUpdateLocalService
             CommandId = null,
             Policy = active.Required ? "required" : "recommended",
             RetryAfterUtc = active.NextRetryUtc?.ToString("O"),
-            HealthState = state == AgentUpdateStates.Installed ? "healthy" :
-                state is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot ? "pending" :
-                state == AgentUpdateStates.RecoveryRequired ? "unhealthy" : "unknown",
-            RollbackState = state == AgentUpdateStates.RecoveryRequired ? "unavailable" : "none",
+            HealthState = active.Phase == AgentUpdateWatchJournal.RollingBack ? "unhealthy" : state switch
+            {
+                AgentUpdateStates.Installed => BoundWatchOutcomeCode(active, state) == AgentUpdateWatchJournal.PostCommitUnhealthy
+                    ? "unhealthy" : "healthy",
+                AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot => "pending",
+                AgentUpdateStates.RecoveryRequired => "unhealthy",
+                _ => "unknown",
+            },
+            RollbackState = active.Phase switch
+            {
+                AgentUpdateWatchJournal.RollingBack => "in_progress",
+                AgentUpdateStates.RecoveryRequired => "unavailable",
+                AgentUpdateStates.Failed when BoundFailureCode(active, state) == AgentUpdateWatchJournal.PostCommitRollback => "completed",
+                AgentUpdateStates.Failed when BoundFailureCode(active, state) == AgentUpdateWatchJournal.RollbackFailed => "failed",
+                _ => "none",
+            },
             LastErrorCode = ProjectedErrorCode(active, state),
             LastErrorMessage = null,
+            BlockedSequence = active.FailedInstallSequence > 0 ? active.FailedInstallSequence : null,
+            LkgVersion = lkgVersion,
+            WatchOutcome = watchOutcome,
         };
-        next = ProjectInstallRequest(active, plan, next);
-        if (next with { LastTransitionUtc = old.LastTransitionUtc } != old)
-            await Projection.WriteAsync(next, ct).ConfigureAwait(false);
     }
 
     /// <summary>A recorded failure cause wins only while its attempt and installer result are still the current ones.</summary>
     internal static string? ProjectedErrorCode(AgentUpdateJournal active, string state)
     {
-        if (state is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired && active.FailureCode is not null &&
-            active.FailureAttemptId == active.AttemptId && active.FailureInstallerResultId == active.InstallerResult?.ResultId)
-            return active.FailureCode;
-        if (active.AttemptId is not null && active.AlertCode is not null && active.AlertAttemptId == active.AttemptId &&
+        if (BoundFailureCode(active, state) is { } failure) return failure;
+        var alertAttempt = active.Phase == AgentUpdateWatchJournal.RollingBack ? active.RollbackAttemptId : active.AttemptId;
+        if (alertAttempt is not null && active.AlertCode is not null && active.AlertAttemptId == alertAttempt &&
             state is AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase or
-                AgentUpdateStates.Installing or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.PendingReboot)
+                AgentUpdateStates.Installing or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.PendingReboot or
+                AgentUpdateWatchJournal.RollingBack)
             return active.AlertCode;
-        return active.InstallerResult?.ErrorCode;
+        return BoundWatchOutcomeCode(active, state) ?? active.InstallerResult?.ErrorCode;
     }
+
+    private static string? BoundFailureCode(AgentUpdateJournal active, string state)
+        => state is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired &&
+            active.FailureAttemptId == active.AttemptId && active.FailureInstallerResultId == active.InstallerResult?.ResultId
+            ? active.FailureCode : null;
+
+    private static string? BoundWatchOutcomeCode(AgentUpdateJournal active, string state)
+        => state == AgentUpdateStates.Installed && active.AttemptId is not null && active.WatchOutcomeAttemptId == active.AttemptId
+            ? active.WatchOutcomeCode : null;
 
     internal static AgentUpdateJournal CompleteInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, DateTimeOffset now)
     {
