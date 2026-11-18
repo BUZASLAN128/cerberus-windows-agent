@@ -337,7 +337,7 @@ internal static partial class AgentUpdateLocalService
             AgentUpdateRunnerFiles.ValidateForLaunch(runtimeDirectory, attemptDirectory);
             Journal.ChangeAttempt(attemptId, before => TransitionLaunchRequested(before, launchLifecycle.Generation, automatic, ct));
             var start = new ProcessStartInfo(runner) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(runner)! };
-            start.ArgumentList.Add("--attempt");
+            start.ArgumentList.Add(AgentUpdaterContract.AttemptArgument);
             start.ArgumentList.Add(attemptId);
             using var process = Process.Start(start) ?? throw new InvalidOperationException("Update runner launch failed.");
             Journal.ChangeAttempt(attemptId, before => before with

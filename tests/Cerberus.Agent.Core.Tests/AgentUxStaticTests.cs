@@ -311,6 +311,8 @@ public sealed class AgentUxStaticTests
         var appProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
         var runtimeProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Runtime", "Cerberus.Agent.Runtime.csproj"));
         var trustFactory = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Updates", "AgentUpdateTrustFactory.cs"));
+        var trustBuilder = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Update.Core", "AgentUpdateTrustBuilder.cs"));
+        var updaterProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Updater", "Cerberus.Agent.Updater.csproj"));
 
         Assert.Contains("AgentUpdateManifestPublicKeysB64", appProject);
         Assert.Contains("AgentUpdateManifestUrl", appProject);
@@ -319,10 +321,13 @@ public sealed class AgentUxStaticTests
         Assert.Contains("AgentUpdateManifestUrl", runtimeProject);
         Assert.Contains("AgentUpdateAllowedArtifactPrefixes", runtimeProject);
         Assert.Contains(@"Updates\**\*.cs", runtimeProject);
+        Assert.Contains("AgentUpdateManifestPublicKeysB64", updaterProject);
+        Assert.Contains("AgentUpdateManifestUrl", updaterProject);
+        Assert.Contains("AgentUpdateAllowedArtifactPrefixes", updaterProject);
         Assert.Contains("AgentUpdateDefaults.ManifestPublicKeysB64", trustFactory);
         Assert.Contains("AgentUpdateDefaults.ManifestUrl", trustFactory);
         Assert.Contains("AgentUpdateDefaults.AllowedArtifactPrefixes", trustFactory);
-        Assert.Contains("AllowChannelDowngrade: false", trustFactory);
+        Assert.Contains("AllowChannelDowngrade: false", trustBuilder);
         Assert.Contains("RequireManifestV2: true", trustFactory);
     }
 
@@ -363,14 +368,14 @@ public sealed class AgentUxStaticTests
         var deviceInfo = File.ReadAllText(Path.Combine(
             repoRoot,
             "src",
-            "Cerberus.Agent.App",
-            "WindowsDeviceInfo.cs"));
+            "Cerberus.Agent.Update.Core",
+            "AgentProductVersion.cs"));
 
         Assert.Contains("AssemblyInformationalVersionAttribute", deviceInfo);
         Assert.Contains("info.Split('+', 2, StringSplitOptions.TrimEntries)[0].Trim()", deviceInfo);
-        Assert.True(
-            deviceInfo.IndexOf("GetInformationalVersion()", StringComparison.Ordinal) <
-            deviceInfo.IndexOf("GetName().Version", StringComparison.Ordinal));
+        var informationalVersion = deviceInfo.IndexOf("GetInformationalVersion(fallback)", StringComparison.Ordinal);
+        Assert.True(informationalVersion >= 0 &&
+            informationalVersion < deviceInfo.IndexOf("GetName().Version", StringComparison.Ordinal));
     }
 
     [Fact]

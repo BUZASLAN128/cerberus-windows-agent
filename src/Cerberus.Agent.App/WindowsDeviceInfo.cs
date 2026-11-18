@@ -1,3 +1,4 @@
+using Cerberus.Agent.Core;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32;
@@ -7,28 +8,13 @@ namespace Cerberus.Agent.App;
 
 internal static class WindowsDeviceInfo
 {
-    public static string GetAgentVersion()
-    {
-        try
-        {
-            var info = GetInformationalVersion();
-            if (!string.IsNullOrWhiteSpace(info))
-                return info;
-
-            var v = GetProductAssembly().GetName().Version;
-            return v?.ToString() ?? "0.0.0";
-        }
-        catch
-        {
-            return "0.0.0";
-        }
-    }
+    public static string GetAgentVersion() => AgentProductVersion.Get(typeof(WindowsDeviceInfo).Assembly);
 
     public static string GetBuildId()
     {
         try
         {
-            var info = GetInformationalVersion();
+            var info = AgentProductVersion.GetInformationalVersion(typeof(WindowsDeviceInfo).Assembly);
             return string.IsNullOrWhiteSpace(info) ? GetAgentVersion() : info;
         }
         catch
@@ -70,15 +56,4 @@ internal static class WindowsDeviceInfo
 
     private static Assembly GetProductAssembly()
         => Assembly.GetEntryAssembly() ?? typeof(WindowsDeviceInfo).Assembly;
-
-    private static string GetInformationalVersion()
-    {
-        var info = GetProductAssembly()
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-            ?.InformationalVersion;
-        if (string.IsNullOrWhiteSpace(info))
-            return "";
-
-        return info.Split('+', 2, StringSplitOptions.TrimEntries)[0].Trim();
-    }
 }

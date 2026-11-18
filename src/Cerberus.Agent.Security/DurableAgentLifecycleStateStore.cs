@@ -1,7 +1,6 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Security;
@@ -13,8 +12,6 @@ namespace Cerberus.Agent.Security;
 /// </summary>
 public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 {
-    private const string SchemaVersion = "cerberus-agent-lifecycle.v1";
-    private const int MaxStateFileBytes = 16 * 1024;
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -33,12 +30,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     public string Path => _path;
 
-    public static string GetDefaultPath()
-        => System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            AgentInstallIdentity.DataDirName,
-            "Privileged",
-            "lifecycle-state.json");
+    public static string GetDefaultPath() => AgentLifecycleFile.DefaultPath;
 
     /// <summary>
     /// Materializes the initial lifecycle record before service readiness. A
@@ -75,31 +67,12 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
             try
             {
-                if (new FileInfo(_path).Length > MaxStateFileBytes)
-                    return CorruptState();
+                if (new FileInfo(_path).Length > AgentLifecycleFile.MaxStateFileBytes)
+                    return AgentLifecycleFile.Corrupt();
                 var raw = await File.ReadAllTextAsync(_path, ct).ConfigureAwait(false);
-                var payload = JsonSerializer.Deserialize<LifecyclePayload>(raw, JsonOpts);
-                if (payload is null || payload.Generation < 0 || payload.Revision < 0 || !string.Equals(payload.SchemaVersion, SchemaVersion, StringComparison.Ordinal))
-                    return CorruptState();
-
-                if (!Enum.TryParse<AgentLifecycleState>(payload.State, ignoreCase: true, out var state) ||
-                    !Enum.IsDefined(state))
-                    return CorruptState();
-
-                return AgentLifecycleStatePolicy.Normalize(new AgentLifecycleSnapshot(
-                    state,
-                    payload.ReasonCode,
-                    payload.LastRequestId,
-                    payload.NextAttemptUtc,
-                    payload.GenericAuthFailureCount,
-                    payload.UpdatedAtUtc)
-                {
-                    Generation = payload.Generation,
-                    Revision = payload.Revision,
-                    QuiescenceComplete = payload.QuiescenceComplete ?? AgentLifecycleStates.AllowsAutomaticNetwork(state),
-                    TransientFailureCount = payload.TransientFailureCount,
-                    LastEnrollmentNonce = payload.LastEnrollmentNonce,
-                });
+                return AgentLifecycleFile.TryParse(raw, out var snapshot)
+                    ? AgentLifecycleStatePolicy.Normalize(snapshot)
+                    : snapshot;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -109,7 +82,7 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             {
                 // Corrupt or tampered state must fail closed rather than
                 // silently restoring automatic network activity.
-                return CorruptState();
+                return AgentLifecycleFile.Corrupt();
             }
         }
         finally
@@ -162,8 +135,8 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     private async Task<AgentLifecycleSnapshot> WriteLockedAsync(AgentLifecycleSnapshot normalized, CancellationToken ct)
     {
-        var payload = new LifecyclePayload(
-            SchemaVersion,
+        var payload = new AgentLifecyclePayload(
+            AgentLifecycleFile.SchemaVersion,
             normalized.State.ToString(),
             normalized.ReasonCode,
             normalized.LastRequestId,
@@ -252,15 +225,6 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
         return true;
     }
 
-    private static AgentLifecycleSnapshot CorruptState()
-        => new(
-            State: AgentLifecycleState.BlockedConfig,
-            ReasonCode: "lifecycle_state_invalid",
-            LastRequestId: null,
-            NextAttemptUtc: null,
-            GenericAuthFailureCount: 0,
-            UpdatedAtUtc: DateTimeOffset.UtcNow) { QuiescenceComplete = false };
-
     private void EnsureProtectedPath()
     {
         var directory = System.IO.Path.GetDirectoryName(_path);
@@ -273,15 +237,12 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             {
                 // Existing bytes are authority only when their original owner
                 // and ACL are trusted; never sanitize a preseeded record first.
-                AgentUpdateSecurity.ValidateProtectedPath(directory, directory, allowMissing: true);
-                AgentUpdateSecurity.ValidateProtectedPath(_path, directory, allowMissing: true);
+                AgentLifecycleFile.ValidateProductionPath(_path);
                 if (!Directory.Exists(directory))
                 {
                     if (!AgentUpdateSecurity.IsLocalSystem()) throw ProtectionFailure();
                     AgentUpdateSecurity.EnsureProtectedRoot(directory);
                 }
-                if (File.Exists(_path))
-                    ValidateLifecycleFile();
                 return;
             }
             if (OperatingSystem.IsWindows())
@@ -305,20 +266,6 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
             // ACL/reparse failures are security failures, not corrupt state.
             // The caller must observe the error and keep the worker stopped.
             throw ProtectionFailure();
-        }
-    }
-
-    private void ValidateLifecycleFile()
-    {
-        var rules = new FileInfo(_path).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier));
-        foreach (FileSystemAccessRule rule in rules)
-        {
-            if (rule.AccessControlType != AccessControlType.Allow) continue;
-            var sid = (SecurityIdentifier)rule.IdentityReference;
-            if (sid.IsWellKnown(WellKnownSidType.LocalSystemSid)) continue;
-            if (!sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) ||
-                (rule.FileSystemRights & ~(FileSystemRights.ReadAndExecute | FileSystemRights.Synchronize)) != 0)
-                throw ProtectionFailure();
         }
     }
 
@@ -409,18 +356,4 @@ public sealed class DurableAgentLifecycleStateStore : IAgentLifecycleStateStore
 
     private static InvalidOperationException ProtectionFailure()
         => new("Cerberus agent lifecycle state protection could not be established.");
-
-    private sealed record LifecyclePayload(
-        [property: JsonPropertyName("schema_version")] string SchemaVersion,
-        [property: JsonPropertyName("state")] string State,
-        [property: JsonPropertyName("reason_code")] string? ReasonCode,
-        [property: JsonPropertyName("last_request_id")] string? LastRequestId,
-        [property: JsonPropertyName("next_attempt_utc")] DateTimeOffset? NextAttemptUtc,
-        [property: JsonPropertyName("generic_auth_failure_count")] int GenericAuthFailureCount,
-        [property: JsonPropertyName("updated_at_utc")] DateTimeOffset UpdatedAtUtc,
-        [property: JsonPropertyName("generation")] long Generation = 0,
-        [property: JsonPropertyName("quiescence_complete")] bool? QuiescenceComplete = null,
-        [property: JsonPropertyName("transient_failure_count")] int TransientFailureCount = 0,
-        [property: JsonPropertyName("revision")] long Revision = 0,
-        [property: JsonPropertyName("last_enrollment_nonce")] string? LastEnrollmentNonce = null);
 }
