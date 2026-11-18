@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -5,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Cerberus.Agent.Core;
+using Microsoft.Win32.SafeHandles;
 
 namespace Cerberus.Agent.Security;
 
@@ -170,6 +173,108 @@ public sealed class AgentAccessTokenCache
             // Clearing active credentials must continue even if the optional cache is unavailable.
         }
     }
+
+    // Called only after the privileged removal path has confirmed the service is stopped.
+    public async Task ClearForStoppedRemovalAsync(Action<Action> runWithRestorePrivilege, CancellationToken ct)
+    {
+        if (!_canonical || AgentUpdateSecurity.IsLocalSystem())
+            return; // SYSTEM clears the cache through the ordinary credential publication path.
+        using var identity = WindowsIdentity.GetCurrent();
+        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+            throw new UnauthorizedAccessException("Removing the machine token cache requires an elevated administrator.");
+        using var access = await AcquireAccessAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        runWithRestorePrivilege(RemoveExactCacheFiles);
+    }
+
+    internal void RemoveExactCacheFiles()
+    {
+        if (!_canonical && (_isolatedAuthority is null || !HasStorageAuthority()))
+            throw new UnauthorizedAccessException("Token cache removal requires canonical or isolated cache storage.");
+
+        var parent = Path.GetDirectoryName(_directory)!;
+        AgentUpdateSecurity.ValidateTrustedPath(parent, parent, allowMissing: true);
+
+        // Hold the directory without delete sharing while validating its ACL and opening its two exact children.
+        using var directory = OpenForRemoval(_directory, ReadControl, allowMissing: true);
+        if (directory.IsInvalid) return;
+        if (!IsNonReparse(directory) || ReadStandardInfo(directory).Directory == 0 ||
+            !HasExpectedAcl(new DirectoryInfo(_directory).GetAccessControl()))
+            throw new UnauthorizedAccessException("The token cache directory has unexpected authority.");
+
+        RemoveExactCacheFile(GetPath(AgentProducts.Cerberus));
+        RemoveExactCacheFile(GetPath(AgentProducts.Secondary));
+    }
+
+    private static void RemoveExactCacheFile(string path)
+    {
+        using var handle = OpenForRemoval(path, DeleteAccess, allowMissing: true);
+        if (handle.IsInvalid) return;
+        if (!IsNonReparse(handle) || ReadStandardInfo(handle) is not { Directory: 0, LinkCount: 1 })
+            throw new InvalidOperationException("The token cache entry is not a regular, single-link file.");
+        byte delete = 1;
+        if (!SetFileInformationByHandle(handle, FileDispositionInfo, ref delete, 1))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    private const uint ReadControl = 0x00020000;
+    private const uint DeleteAccess = 0x00010000;
+    private const uint OpenExisting = 3;
+    private const uint BackupSemantics = 0x02000000;
+    private const uint OpenReparsePoint = 0x00200000;
+    private const uint GetReparsePoint = 0x000900a8;
+    private const int NotAReparsePoint = 4390;
+    private const int FileStandardInfo = 1;
+    private const int FileDispositionInfo = 4;
+
+    private static SafeFileHandle OpenForRemoval(string path, uint access, bool allowMissing = false)
+    {
+        var handle = CreateFileW(path, access, FileShare.Read | FileShare.Write, IntPtr.Zero, OpenExisting,
+            BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+        if (!handle.IsInvalid) return handle;
+        var error = Marshal.GetLastWin32Error();
+        if (allowMissing && error is 2 or 3) return handle;
+        handle.Dispose();
+        throw new Win32Exception(error);
+    }
+
+    private static bool IsNonReparse(SafeFileHandle handle)
+        => !DeviceIoControl(handle, GetReparsePoint, IntPtr.Zero, 0, new byte[16 * 1024], 16 * 1024,
+            out _, IntPtr.Zero) && Marshal.GetLastWin32Error() == NotAReparsePoint;
+
+    private static StandardFileInfo ReadStandardInfo(SafeFileHandle handle)
+    {
+        if (!GetFileInformationByHandleEx(handle, FileStandardInfo, out var info, Marshal.SizeOf<StandardFileInfo>()))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return info;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StandardFileInfo
+    {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint LinkCount;
+        public byte DeletePending;
+        public byte Directory;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(string name, uint access, FileShare share, IntPtr security,
+        uint creation, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out StandardFileInfo info, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int infoClass, ref byte info, int size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, IntPtr input, int inputSize,
+        [Out] byte[] output, int outputSize, out int returned, IntPtr overlapped);
 
     private async Task<IDisposable?> AcquireAccessAsync(CancellationToken ct)
         => _canonical ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;

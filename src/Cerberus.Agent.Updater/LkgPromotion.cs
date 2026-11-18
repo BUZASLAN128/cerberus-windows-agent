@@ -7,7 +7,7 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Updater;
 
-internal sealed class LkgPromotion(
+internal sealed partial class LkgPromotion(
     AgentUpdateLkgStore store,
     AgentUpdateBuildMetadata metadata,
     Func<LkgPromotion.RuntimeIdentity?> readRuntimeIdentity,
@@ -20,7 +20,9 @@ internal sealed class LkgPromotion(
     internal sealed record RuntimeIdentity(string Version, Guid ProductCode, string ServiceExeSha256, string RuntimeRoot);
 
     private const string RetiredPrefix = "retired-";
-    private static readonly string[] RetiredSuffixes = [".msi", ".manifest.json", ".lkg.json", ".exe"];
+    private const string PreviousHostSuffix = ".host.json";
+    private const string FailedHostSuffix = ".failed.exe";
+    private static readonly string[] RetiredSuffixes = [".msi", ".manifest.json", ".lkg.json", PreviousHostSuffix, FailedHostSuffix, ".exe"];
     private readonly IReadOnlyList<string> _manifestKeys = AgentUpdateTrustBuilder.ResolveUpdateManifestPublicKeys(
         metadata.ManifestPublicKeysB64, null, null, null, null);
 
@@ -78,33 +80,36 @@ internal sealed class LkgPromotion(
         if (resume != (promotion is not null)) return false;
 
         var active = readJournal();
-        if (promotion is not null && active.Phase == AgentUpdateStates.Installed && active.AttemptId == promotion.AttemptId &&
-            active.HealthyInstalledVersion == promotion.NewVersion)
+        var activeWatch = watch is not null && plan is not null && active.Phase == AgentUpdateWatchJournal.CommittedWatch &&
+            LkgWatchHostBinding.BindsWatch(active, watch.AttemptId);
+        if (promotion is not null && !activeWatch)
         {
-            if (active.FailureCode == AgentUpdateWatchJournal.LkgPromotionFailed && active.FailureAttemptId == promotion.AttemptId)
+            try
             {
-                var preparedRecord = Path.Combine(store.Root, promotion.StageDir, "lkg.json");
-                Validate(preparedRecord, allowMissing: true);
-                if (!File.Exists(preparedRecord)) Cleanup(promotion, published: false);
-                return false;
+                if (active.Phase == AgentUpdateStates.Installed && active.AttemptId == promotion.AttemptId &&
+                    active.HealthyInstalledVersion == promotion.NewVersion && !IsTerminalFailure(active, promotion.AttemptId) &&
+                    IsPublished(promotion, active.HealthyInstalledSequence))
+                {
+                    Cleanup(promotion);
+                    return true;
+                }
             }
-            if (!IsPublished(promotion, active.HealthyInstalledSequence)) return false;
-            Cleanup(promotion, published: true);
-            return true;
+            catch (Exception ex) when (IsPromotionFailure(ex)) { }
+            return Fail(active, changeJournal, promotion, verifiedPlan: null);
         }
-        if (watch is null || plan is null || active.Phase != AgentUpdateWatchJournal.CommittedWatch ||
-            !LkgWatchHostBinding.BindsWatch(active, watch.AttemptId))
+        if (!activeWatch || watch is null || plan is null)
             return false;
 
-        RequirePassedWatch(watch, plan);
-        if (promotion is not null && !MatchesPlan(promotion, plan)) return false;
         var stage = Path.Combine(store.Root, "stage-" + watch.AttemptId);
         var preparedPath = Path.Combine(stage, "lkg.json");
-        Validate(preparedPath, allowMissing: true);
-        var prepared = promotion is not null && File.Exists(preparedPath);
         var runtimeVerified = false;
+        var committed = false;
         try
         {
+            RequirePassedWatch(watch, plan);
+            if (promotion is not null && !MatchesPlan(promotion, plan)) throw InvalidPromotion();
+            Validate(preparedPath, allowMissing: true);
+            var prepared = promotion is not null && File.Exists(preparedPath);
             var identity = RequireRuntime(watch);
             runtimeVerified = true;
             if (AgentUpdateRollbackFloor.Read(store.UpdatesRoot) is { } floor &&
@@ -127,32 +132,41 @@ internal sealed class LkgPromotion(
             var record = prepared
                 ? ReadPrepared(preparedPath, promotion, plan, identity)
                 : Prepare(stage, preparedPath, promotion, plan, identity);
-            prepared = true;
             log(LkgProbe.PassedLogMarker);
 
-            if (RequireRuntime(watch) != identity) return false;
+            if (RequireRuntime(watch) != identity) throw InvalidPromotion();
             var current = readJournal();
             if (!LkgWatchHostBinding.BindsWatch(current, watch.AttemptId) || current.Phase != active.Phase ||
                 current.LifecycleGeneration != active.LifecycleGeneration || current.WatchRequestedUtc != active.WatchRequestedUtc)
-                return false;
+                return Fail(current, changeJournal, promotion, verifiedPlan: null);
 
             Publish(stage, promotion, record);
             AgentUpdateRollbackFloor.Raise(store.UpdatesRoot, record.Version, "watch_pass", record.ManifestSequence,
                 record.ManifestDigest, record.PromotedUtc);
             if (!Close(changeJournal, active, plan, failureCode: null)) return false;
-            Cleanup(promotion, published: true);
+            committed = true;
+            Cleanup(promotion);
             return true;
         }
-        catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex) || ex is CryptographicException or Win32Exception)
+        catch (Exception ex) when (IsPromotionFailure(ex))
         {
-            LogFailure(log);
-            if (!prepared && runtimeVerified && Close(changeJournal, active, plan, AgentUpdateWatchJournal.LkgPromotionFailed) && promotion is not null)
-                Cleanup(promotion, published: false);
-            return false;
+            if (committed || (!resume && ex is IOException && promotion is not null))
+            {
+                // Resume will revalidate intact prepared bytes after an interrupted write.
+                LogFailure(log);
+                return false;
+            }
+            return Fail(active, changeJournal, promotion, runtimeVerified ? plan : null);
         }
     }
 
     internal static void LogFailure(Action<string> log) => log(AgentUpdateWatchJournal.LkgPromotionFailed);
+
+    private static bool IsPromotionFailure(Exception ex) =>
+        AgentUpdateRollbackGrant.IsStorageFailure(ex) || ex is CryptographicException or Win32Exception;
+
+    private static bool IsTerminalFailure(AgentUpdateJournal active, string attempt) =>
+        active.FailureCode == AgentUpdateWatchJournal.LkgPromotionFailed && active.FailureAttemptId == attempt;
 
     private AgentUpdateLkgRecord Prepare(string stage, string preparedPath, AgentUpdateLkgPromotion promotion,
         AgentUpdatePlan plan, RuntimeIdentity identity)
@@ -258,6 +272,8 @@ internal sealed class LkgPromotion(
             !SameHash(currentUpdater, promotion.NewUpdaterSha256))
             throw InvalidPromotion();
 
+        PreservePreviousHost(promotion);
+
         // Retire metadata before replacing either payload so mixed old/new files cannot be used as an LKG.
         if (!HasPublishedRecord(record)) Retire(store.RecordPath, promotion.AttemptId, ".lkg.json");
         Install(stage, store.MsiPath, promotion.AttemptId, ".msi");
@@ -289,13 +305,22 @@ internal sealed class LkgPromotion(
             AgentUpdateLkgStore.RecordJson);
         var host = store.ReadHost();
         var floor = AgentUpdateRollbackFloor.Read(store.UpdatesRoot);
-        return sequence > 0 && lkg is not null && lkg.Schema == AgentUpdateLkgStore.Schema &&
+        if (!(sequence > 0 && lkg is not null && lkg.Schema == AgentUpdateLkgStore.Schema &&
             lkg.WatchedAttemptId == promotion.AttemptId && lkg.Version == promotion.NewVersion && lkg.ManifestSequence == sequence &&
             SameHash(lkg.ManifestDigest, promotion.ManifestDigest) && SameHash(lkg.MsiSha256, promotion.MsiSha256) &&
             SameHash(lkg.UpdaterSha256, promotion.NewUpdaterSha256) &&
             host is { PlacedBy: "promotion" } && host.AttemptId == promotion.AttemptId && host.LkgVersion == lkg.Version &&
             host.UpdaterVersion == lkg.Version && SameHash(host.UpdaterSha256, lkg.UpdaterSha256) &&
-            floor is not null && AgentVersionComparer.CompareReleaseCore(floor.MinVersion, lkg.Version) is >= 0;
+            floor is not null && AgentVersionComparer.CompareReleaseCore(floor.MinVersion, lkg.Version) is >= 0))
+            return false;
+
+        Validate(store.ManifestPath, allowMissing: false);
+        var manifest = AgentUpdateManifestValidator.VerifyStoredSignature(
+            Encoding.UTF8.GetString(AgentUpdateLkgStore.ReadSmallFile(store.ManifestPath)), _manifestKeys);
+        Validate(store.MsiPath, allowMissing: false);
+        using var msi = File.OpenRead(store.MsiPath);
+        AgentUpdateLkgStore.ValidateRelease(lkg!, manifest, promotion.NewVersion, floor, msi.Length, Hash(msi));
+        return SameHash(HashProtectedFile(store.HostPath), promotion.NewUpdaterSha256);
     }
 
     private void Install(string stage, string destination, string attemptId, string suffix)
@@ -316,19 +341,26 @@ internal sealed class LkgPromotion(
         File.Move(path, retired);
     }
 
-    private void Cleanup(AgentUpdateLkgPromotion promotion, bool published)
+    private void Cleanup(AgentUpdateLkgPromotion promotion)
     {
-        if (published)
-            foreach (var suffix in RetiredSuffixes[..^1])
-            {
-                var path = RetiredPath(promotion.AttemptId, suffix);
-                Validate(path, allowMissing: true);
-                File.Delete(path);
-            }
         DeleteStage(Path.Combine(store.Root, promotion.StageDir));
+        foreach (var destination in new[] { store.HostPath, store.HostRecordPath, store.RecordPath, store.MsiPath,
+            store.ManifestPath, RetiredPath(promotion.AttemptId, PreviousHostSuffix) })
+        {
+            var pending = destination + ".restore.tmp";
+            Validate(pending, allowMissing: true);
+            File.Delete(pending);
+        }
         var marker = Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName);
         Validate(marker, allowMissing: false);
+        if (store.ReadPromotion() != promotion) throw InvalidPromotion();
         File.Delete(marker);
+        foreach (var suffix in RetiredSuffixes[..^2])
+        {
+            var path = RetiredPath(promotion.AttemptId, suffix);
+            Validate(path, allowMissing: true);
+            File.Delete(path);
+        }
     }
 
     private void DeleteStage(string stage)
@@ -363,22 +395,23 @@ internal sealed class LkgPromotion(
     }
 
     private static bool Close(Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeJournal,
-        AgentUpdateJournal active, AgentUpdatePlan plan, string? failureCode)
-        => AgentUpdateJournalPatch.TryApply(changeJournal, active.AttemptId!, AgentUpdateWatchJournal.CommittedWatch,
+        AgentUpdateJournal active, AgentUpdatePlan? plan, string? failureCode)
+        => AgentUpdateJournalPatch.TryApply(changeJournal, active.AttemptId!, active.Phase,
             before => before.LifecycleGeneration != active.LifecycleGeneration || before.WatchRequestedUtc != active.WatchRequestedUtc ||
-                !LkgWatchHostBinding.BindsWatch(before, active.AttemptId!)
+                (before.Phase == AgentUpdateWatchJournal.CommittedWatch && !LkgWatchHostBinding.BindsWatch(before, active.AttemptId!)) ||
+                (failureCode is not null && IsTerminalFailure(before, active.AttemptId!))
                 ? null : before with
             {
                 Phase = AgentUpdateStates.Installed,
-                HealthyInstalledVersion = plan.Version,
-                HealthyInstalledSequence = plan.Sequence,
+                HealthyInstalledVersion = plan?.Version ?? before.HealthyInstalledVersion,
+                HealthyInstalledSequence = plan?.Sequence ?? before.HealthyInstalledSequence,
                 FailureCode = failureCode,
                 FailureAttemptId = failureCode is null ? null : active.AttemptId,
                 FailureInstallerResultId = failureCode is null ? null : before.InstallerResult?.ResultId,
                 WatchOutcomeCode = failureCode,
                 WatchOutcomeAttemptId = failureCode is null ? null : active.AttemptId,
-                AlertCode = null,
-                AlertAttemptId = null,
+                AlertCode = failureCode,
+                AlertAttemptId = failureCode is null ? null : active.AttemptId,
                 InstallerProcessId = null,
                 InstallerStartedUtc = null,
             });

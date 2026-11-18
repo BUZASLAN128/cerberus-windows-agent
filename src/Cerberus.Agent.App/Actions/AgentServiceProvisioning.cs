@@ -122,6 +122,7 @@ internal static class AgentServiceLocalState
         // whose protected attempt marker, receipt and destination all bind them
         // to this update root; any ambiguity fails before state deletion.
         AgentUpdateBitsDownloader.QuiesceForRemoval(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        await AgentAccessTokenCache.Machine.ClearForStoppedRemovalAsync(AgentUpdateStoragePrivilege.Run, ct).ConfigureAwait(false);
         await new DpapiSecretStore(SecretStoreScope.Machine).ClearAsync(ct).ConfigureAwait(false);
 
         var baseDir = DpapiSecretStore.GetDefaultBaseDir(SecretStoreScope.Machine);

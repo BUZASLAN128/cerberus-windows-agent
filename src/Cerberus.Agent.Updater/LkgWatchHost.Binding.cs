@@ -121,12 +121,16 @@ internal static class LkgWatchHostBinding
         journal.AttemptId == attempt && journal.WatchAttemptId == attempt && journal.WatchRequestedUtc is not null;
 
     internal static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string code)
+        => CloseWithoutPromotion(context, watch, code, context.JournalStore.Change);
+
+    internal static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string code,
+        Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change)
     {
         if (context.Journal is not { Phase: AgentUpdateWatchJournal.CommittedWatch } expected || !BindsWatch(expected, watch.AttemptId))
             return;
 
         var installedIsWatched = MatchesVerifiedPlan(context, watch) && LkgWatchHostWindows.ReadInstalledVersion() == watch.WatchedVersion;
-        if (!AgentUpdateJournalPatch.TryApply(context.JournalStore, watch.AttemptId, expected.Phase,
+        if (!AgentUpdateJournalPatch.TryApply(change, watch.AttemptId, expected.Phase,
             before => before.LifecycleGeneration == expected.LifecycleGeneration && before.WatchRequestedUtc == expected.WatchRequestedUtc &&
                 BindsWatch(before, watch.AttemptId)
                 ? WithWatchOutcome(before, code, installedIsWatched ? watch.WatchedVersion : null,

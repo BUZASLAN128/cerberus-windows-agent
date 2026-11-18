@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Cerberus.Agent.Updater.Tests;
 
-public sealed class LkgPromotionTests : IDisposable
+public sealed partial class LkgPromotionTests : IDisposable
 {
     private const string Attempt = "watched-attempt";
     private const string Version = "1.2.1";
@@ -39,8 +39,6 @@ public sealed class LkgPromotionTests : IDisposable
         Directory.CreateDirectory(_store.Root);
         File.WriteAllText(_store.HostPath, "old updater");
         File.WriteAllText(_store.MsiPath, "old MSI");
-        File.WriteAllText(_store.ManifestPath, "old manifest");
-        File.WriteAllText(_store.RecordPath, "old metadata");
         AgentUpdateLkgStore.WriteRecord(_store.HostRecordPath, _store.UpdatesRoot, new AgentUpdateLkgHostRecord(
             AgentUpdateLkgStore.HostSchema, OldVersion, Hash(_store.HostPath), "bootstrap", Now, null, OldVersion));
         AgentUpdateRollbackFloor.Raise(_store.UpdatesRoot, OldVersion, "watch_pass", 40, new string('a', 64), Now);
@@ -60,8 +58,18 @@ public sealed class LkgPromotionTests : IDisposable
         var manifest = new AgentUpdateManifest("msi", Version, "dev", "https://example.invalid/agent.msi", Hash(msi),
             "fixture signer", "2026-05-01T00:00:00Z", "1.0", false, "", AgentUpdateManifest.V2SchemaVersion, 41,
             "2026-05-08T00:00:00Z", new FileInfo(msi).Length, Pin);
-        manifest = manifest with { Signature = Convert.ToBase64String(fixtureKey.SignData(
-            Encoding.UTF8.GetBytes(AgentUpdateManifestValidator.CanonicalPayload(manifest)), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)) };
+        AgentUpdateManifest Sign(AgentUpdateManifest unsigned) => unsigned with { Signature = Convert.ToBase64String(fixtureKey.SignData(
+            Encoding.UTF8.GetBytes(AgentUpdateManifestValidator.CanonicalPayload(unsigned)), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)) };
+        manifest = Sign(manifest);
+        var oldManifest = Sign(manifest with
+        {
+            Version = OldVersion, Sequence = 40, Sha256 = Hash(_store.MsiPath), ArtifactLength = new FileInfo(_store.MsiPath).Length,
+        });
+        File.WriteAllText(_store.ManifestPath, JsonSerializer.Serialize(oldManifest));
+        AgentUpdateLkgStore.WriteRecord(_store.RecordPath, _store.UpdatesRoot,
+            new AgentUpdateLkgRecord(AgentUpdateLkgStore.Schema, OldVersion, Guid.NewGuid(), oldManifest.Sha256,
+                oldManifest.ArtifactLength!.Value, AgentUpdateManifestValidator.Digest(oldManifest), 40, Pin,
+                new string('c', 64), Hash(_store.HostPath), "old-attempt", Now));
         File.WriteAllText(storedManifest, JsonSerializer.Serialize(manifest));
         _metadata = new(Convert.ToBase64String(Encoding.UTF8.GetBytes(fixtureKey.ExportSubjectPublicKeyInfoPem())), "", "", "dev", Pin, false);
         _plan = new("msi", Version, "dev", msi, manifest.Sha256, Now.ToString("O"), "support fixture", AttemptId: Attempt,
@@ -86,7 +94,7 @@ public sealed class LkgPromotionTests : IDisposable
         Assert.False(promotion.Apply(() => _journal, Change, _watch, plan, resume: false));
         Assert.Equal("old updater", File.ReadAllText(_store.HostPath));
         Assert.Equal("old MSI", File.ReadAllText(_store.MsiPath));
-        Assert.Equal("old metadata", File.ReadAllText(_store.RecordPath));
+        Assert.Equal(OldVersion, ReadRecordVersion());
         Assert.Equal(OldVersion, AgentUpdateRollbackFloor.Read(_store.UpdatesRoot)!.MinVersion);
         Assert.Equal(AgentUpdateStates.Installed, _journal.Phase);
         Assert.Equal(AgentUpdateWatchJournal.LkgPromotionFailed, _journal.FailureCode);
@@ -122,16 +130,6 @@ public sealed class LkgPromotionTests : IDisposable
         Assert.Equal(OldVersion, AgentUpdateRollbackFloor.Read(_store.UpdatesRoot)!.MinVersion);
 
         var resumed = Create(probe: (_, _) => throw new InvalidOperationException("Verified staged bytes should resume without a new probe."));
-        var wrongRuntime = Create(runtime: () => _identity with { ProductCode = Guid.NewGuid() });
-        Assert.False(wrongRuntime.Apply(() => _journal, Change, _watch, _plan, resume: true));
-        Assert.NotNull(_store.ReadPromotion());
-
-        var stagedUpdater = Path.Combine(_store.Root, "stage-" + Attempt, AgentUpdateLkgStore.UpdaterFileName);
-        File.WriteAllText(stagedUpdater, "changed stage bytes");
-        Assert.False(resumed.Apply(() => _journal, Change, _watch, _plan, resume: true));
-        Assert.Equal("old updater", File.ReadAllText(_store.HostPath));
-        Assert.NotNull(_store.ReadPromotion());
-        File.WriteAllText(stagedUpdater, "new updater");
         Assert.True(resumed.Apply(() => _journal, Change, _watch, _plan, resume: true));
         Assert.Equal(1, probes);
         Assert.Contains(LkgProbe.PassedLogMarker, _logs);
@@ -205,6 +203,8 @@ public sealed class LkgPromotionTests : IDisposable
             verify ?? ((_, _) => { }), probe ?? ((_, _) => true), _logs.Add);
 
     private AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> patch) => _journal = patch(_journal);
+    private string ReadRecordVersion() => JsonSerializer.Deserialize<AgentUpdateLkgRecord>(
+        File.ReadAllText(_store.RecordPath), AgentUpdateLkgStore.RecordJson)!.Version;
     private static string Hash(string file) => Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(file)));
     public void Dispose() => _temp.Delete(recursive: true);
 }
