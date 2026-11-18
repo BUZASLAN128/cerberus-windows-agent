@@ -37,6 +37,10 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? ApplyNotBeforeUtc { get; init; }
     public int RetryCount { get; init; }
     public DateTimeOffset? NextRetryUtc { get; init; }
+    public DateTimeOffset? BusySinceUtc { get; init; }
+    public int InstallerBusyCount { get; init; }
+    public int PreInstallFailureCount { get; init; }
+    public DateTimeOffset? PreInstallRetryNotBeforeUtc { get; init; }
     /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
     public long? RequiredPolicyGeneration { get; init; }
     /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
@@ -59,6 +63,8 @@ public sealed record AgentUpdateJournal
     public string? FailureCode { get; init; }
     public string? FailureAttemptId { get; init; }
     public string? FailureInstallerResultId { get; init; }
+    public string? AlertCode { get; init; }
+    public string? AlertAttemptId { get; init; }
 
     [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
 
@@ -88,6 +94,7 @@ public sealed class AgentUpdateJournalStore
         if (value.SchemaVersion != AgentUpdaterContract.JournalSchema || value.Revision < 0 ||
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
+            value.InstallerBusyCount is < 0 or > 64 || value.PreInstallFailureCount is < 0 or > 8 ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
             (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
@@ -95,6 +102,8 @@ public sealed class AgentUpdateJournalStore
             (value.FailureAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureAttemptId)) ||
             // Result ids are generated GUIDs; the failure cause binds to one by exact match.
             (value.FailureInstallerResultId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureInstallerResultId)) ||
+            (value.AlertCode is not null && !AgentUpdateErrorCodes.IsCode(value.AlertCode)) ||
+            (value.AlertAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AlertAttemptId)) ||
             (value.InstallerResult is { } installerResult && !AgentUpdateSecurity.IsSafeAttemptId(installerResult.ResultId)) ||
             value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||

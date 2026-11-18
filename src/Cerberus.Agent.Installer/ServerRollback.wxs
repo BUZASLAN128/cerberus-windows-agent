@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?if $(var.AgentBuildProfile) = server ?>
+  <Fragment>
+    <Upgrade Id="{686EF4F7-AC5C-4459-B2B9-540920991AAF}">
+      <UpgradeVersion Minimum="$(var.MsiProductVersion)" IncludeMinimum="no" OnlyDetect="yes" Property="CERBERUS_NEWER_DETECTED" />
+    </Upgrade>
+    <Property Id="CERBERUS_NEWER_DETECTED" Secure="yes" />
+    <Property Id="CERBERUS_ROLLBACK_ATTEMPT" Secure="yes" />
+    <!-- Keep the formatted action template within the MSI CustomAction.Target column width. -->
+    <Property Id="RollbackServiceExeSha256" Value="$(var.ServiceExeSha256)" />
+    <Property Id="RollbackServiceAssemblySha256" Value="$(var.ServiceAssemblySha256)" />
+    <CustomAction Id="BlockNewServerDowngradeWithRemoval" Error="An older Cerberus Server Agent cannot be installed with a feature-removal request." />
+    <CustomAction Id="RequireRollbackGrant" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='require-rollback-grant "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "[RollbackServiceExeSha256]" "[RollbackServiceAssemblySha256]" "[CERBERUS_NEWER_DETECTED]" "[CERBERUS_ROLLBACK_ATTEMPT]" "[OriginalDatabase]"'
+        Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="BlockNewServerDowngradeWithRemoval" Before="InstallInitialize" Condition="CERBERUS_NEWER_DETECTED AND REMOVE AND NOT Installed" />
+      <Custom Action="RequireRollbackGrant" After="InstallInitialize" Condition="CERBERUS_NEWER_DETECTED AND NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Fragment>
+  <?endif ?>
+</Wix>

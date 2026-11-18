@@ -240,7 +240,7 @@ internal static partial class ServiceMode
 
         var signer = new RequestSigner(privateKeyPem);
         var tokens = new AgentTokenManager(http, secrets, lifecycleState: lifecycleState, quiesce: quiesce,
-            expectedGeneration: persistedLifecycle.Generation);
+            expectedGeneration: persistedLifecycle.Generation, accessTokenCache: AgentAccessTokenCache.Machine);
         var api = new AgentApiClient(http, secrets, tokens, signer, lifecycleState, quiesce: quiesce,
             expectedGeneration: persistedLifecycle.Generation,
             outgoingPolicy: new AgentOutboundPrivacyPolicy(Legal.SecurityTelemetryConsent.IsAllowed).Prepare);

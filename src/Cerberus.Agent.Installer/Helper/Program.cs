@@ -30,10 +30,14 @@ internal static partial class Program
     {
         try
         {
+            if (args.Length > 0 && args[0] == "require-rollback-grant")
+                return RequireRollbackGrant(args);
             if (!AgentUpdateSecurity.IsLocalSystem() || !AgentInstallerInvocation.TryParse(args, out var invocation))
                 return 2;
             var product = invocation!.ProductCode;
             var operation = invocation.Operation;
+            if (operation is "lkg-bootstrap" or "unregister-watch-task" or "reregister-watch-task")
+                return 2;
             _labProduct = product;
             _labVersion = args[3];
             _labTransaction = invocation.LabTransaction;
