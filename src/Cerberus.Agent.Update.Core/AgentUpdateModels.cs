@@ -50,7 +50,7 @@ public sealed record AgentUpdatePlan(
     string Sha256,
     string StagedAtUtc,
     string Reason,
-    string SchemaVersion = "agent.update.plan.v2",
+    string SchemaVersion = AgentUpdaterContract.PlanSchema,
     string? AttemptId = null,
     long Sequence = 0,
     string? ExpiresAtUtc = null,

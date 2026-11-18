@@ -6,7 +6,6 @@
     <Nullable>enable</Nullable>
     <AgentCommandTrustAnchorsB64 Condition="'$(AgentCommandTrustAnchorsB64)' == ''"></AgentCommandTrustAnchorsB64>
     <SecondaryCommandTrustAnchorsB64 Condition="'$(SecondaryCommandTrustAnchorsB64)' == ''"></SecondaryCommandTrustAnchorsB64>
-    <BackendTrustAnchors Condition="'$(BackendTrustAnchors)' == ''"></BackendTrustAnchors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -37,10 +36,6 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>SecondaryCommandTrustAnchorsB64</_Parameter1>
       <_Parameter2>$(SecondaryCommandTrustAnchorsB64)</_Parameter2>
-    </AssemblyAttribute>
-    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
-      <_Parameter1>BackendTrustAnchors</_Parameter1>
-      <_Parameter2>$(BackendTrustAnchors)</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 
@@ -75,6 +70,10 @@
            Code="CERBAGENT005"
            Text="The server profile requires AgentCommandTrustAnchorsB64: padded base64 (one line, at least 500 characters) of one base64 RSA SPKI per line; pass -p:AgentCommandTrustAnchorsB64=&lt;value&gt;." />
   </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Cerberus.Agent.Update.Core\Cerberus.Agent.Update.Core.csproj" />
+  </ItemGroup>
 
   <Import Project="AgentCommandAnchors.targets" />
 

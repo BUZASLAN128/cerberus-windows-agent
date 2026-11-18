@@ -83,7 +83,10 @@ public sealed class ServerPackageSetupTests
     {
         var source = File.ReadAllText(Path.Combine(FindRoot(), "src", "Cerberus.Agent.App", "Updates", "AgentUpdateTrustFactory.cs"));
 
+        var builder = File.ReadAllText(Path.Combine(FindRoot(), "src", "Cerberus.Agent.Update.Core", "AgentUpdateTrustBuilder.cs"));
+
         Assert.DoesNotContain("updateAllowedArtifactPrefixes", source);
+        Assert.DoesNotContain("updateAllowedArtifactPrefixes", builder);
     }
 
     private static string FindRoot()

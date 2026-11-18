@@ -4,7 +4,7 @@
 
 function Import-AgentBundleReader {
   if (-not ('Cerberus.Agent.Core.AgentSingleFileBundle' -as [type])) {
-    Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/Cerberus.Agent.Core/AgentSingleFileBundle.cs')))
+    Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/Cerberus.Agent.Update.Core/AgentSingleFileBundle.cs')))
   }
 }
 

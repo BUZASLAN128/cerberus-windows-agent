@@ -261,6 +261,8 @@ public sealed record AgentUpdateInstallerResult(
     [property: JsonPropertyName("retry_after_utc")] string? RetryAfterUtc = null,
     [property: JsonPropertyName("quarantined")] bool Quarantined = false)
 {
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+
     public const string CurrentSchemaVersion = "agent.update.installer_result.v1";
 
     public static AgentUpdateInstallerResult FromMsiExitCode(

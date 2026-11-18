@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Cerberus.Agent.Core;
 
@@ -16,12 +17,15 @@ public sealed record AgentUpdateReconciliationSnapshot(
     DateTimeOffset? ApplyNotBeforeUtc,
     int RetryCount,
     DateTimeOffset? NextRetryUtc,
-    DateTimeOffset? NextCheckUtc);
+    DateTimeOffset? NextCheckUtc)
+{
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+}
 
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
 {
-    public string SchemaVersion { get; init; } = "agent.update.journal.v1";
+    public string SchemaVersion { get; init; } = AgentUpdaterContract.JournalSchema;
     public long Revision { get; init; }
     public string ScheduleSeed { get; init; } = Guid.NewGuid().ToString("N");
     public DateTimeOffset? NextCheckUtc { get; init; }
@@ -56,7 +60,9 @@ public sealed record AgentUpdateJournal
     public string? FailureAttemptId { get; init; }
     public string? FailureInstallerResultId { get; init; }
 
-    public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+
+    public bool MayHaveStartedInstallation => Phase is AgentUpdaterContract.InstallMayHaveStartedPhase or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
 
     public bool HasUnfinishedAttempt => AttemptId is not null && Phase is not
@@ -79,7 +85,7 @@ public sealed class AgentUpdateJournalStore
         var value = AgentUpdateDurableFile.Read<AgentUpdateJournal>(_path, _root);
         if (value is null)
             return new AgentUpdateJournal();
-        if (value.SchemaVersion != "agent.update.journal.v1" || value.Revision < 0 ||
+        if (value.SchemaVersion != AgentUpdaterContract.JournalSchema || value.Revision < 0 ||
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
@@ -108,7 +114,7 @@ public sealed class AgentUpdateJournalStore
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or
-        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or "launch_requested" or "install_may_have_started";
+        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase;
 
     public AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> change)
     {

@@ -71,7 +71,7 @@ public sealed class AgentInstallIdentityTests
         var projects = new[]
         {
             "Cerberus.Agent.Core", "Cerberus.Agent.Security", "Cerberus.Agent.Observability",
-            "Cerberus.Agent.App", "Cerberus.Agent.Updater", "Cerberus.Agent.Installer",
+            "Cerberus.Agent.App", "Cerberus.Agent.Update.Core", "Cerberus.Agent.Updater", "Cerberus.Agent.Installer",
         };
 
         var offenders = new List<string>();

@@ -22,8 +22,8 @@ public sealed class AgentUpdateStateStore
 
     public static AgentUpdateStateStore CreateDefault()
         => new(
-            Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-state.json"),
-            Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-result.json"));
+            Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "update-state.json"),
+            Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "update-result.json"));
 
     public async Task<AgentUpdateState> ReadAsync(string? currentVersion, CancellationToken ct)
         => await ReadPersistedAsync(ct).ConfigureAwait(false) ?? AgentUpdateState.NotChecked(currentVersion);
