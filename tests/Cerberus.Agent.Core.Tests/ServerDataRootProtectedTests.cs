@@ -2,6 +2,7 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Core.Tests;
 
@@ -47,6 +48,38 @@ public sealed class ServerDataRootProtectedTests : IDisposable
 
         Assert.False(ServerDataRoot.EnsureProtected(root));
         Assert.False(ServerDataRoot.EnsureProtected(root));
+    }
+
+    [ElevatedAdministratorFact]
+    public void Elevated_administrator_can_verify_the_system_owned_cache_directory_without_listing_it()
+    {
+        var root = Path.Combine(_root, "data");
+        Assert.True(ServerDataRoot.EnsureProtected(root));
+        var child = new DirectoryInfo(Path.Combine(root, "token-cache"));
+        AgentUpdateStoragePrivilege.Run(() => child.Create(AgentAccessTokenCache.CreateDirectorySecurity()));
+        try
+        {
+            var before = child.GetAccessControl();
+            Assert.Equal(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                before.GetOwner(typeof(SecurityIdentifier)));
+            Assert.True(ServerDataRoot.EnsureProtected(root));
+            Assert.Equal(before.GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access),
+                child.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access));
+            Assert.Throws<UnauthorizedAccessException>(() => child.GetFileSystemInfos());
+        }
+        finally
+        {
+            // The fixture is empty. The parent's DELETE_CHILD right removes it without listing the cache.
+            child.Delete(recursive: false);
+        }
+    }
+
+    private sealed class ElevatedAdministratorFactAttribute : FactAttribute
+    {
+        public ElevatedAdministratorFactAttribute()
+        {
+            if (!CanRun(out _)) Skip = "Requires an already-elevated non-SYSTEM administrator with SeRestorePrivilege for temporary SYSTEM ownership.";
+        }
     }
 
     [Fact]

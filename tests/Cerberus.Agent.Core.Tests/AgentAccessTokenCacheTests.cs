@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Security.AccessControl;
+using System.Security.Principal;
 using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -95,49 +97,67 @@ public sealed class AgentAccessTokenCacheTests : IDisposable
     [InlineData("O:BAD:P(A;;FA;;;SY)", false)]
     [InlineData("O:SYD:P(A;;FA;;;SY)(A;;GR;;;BU)", false)]
     [InlineData("O:SYD:(A;;FA;;;SY)", false)]
-    [InlineData("O:SYD:P(A;OICI;FA;;;SY)", false)]
-    public void DescriptorRequiresSystemOwnerAndOnlyOneExplicitSystemAce(string descriptor, bool accepted)
+    [InlineData("O:SYD:P(A;;FA;;;SY)(A;;RC;;;BA)", false)]
+    public void FileDescriptorRequiresSystemOwnerAndOnlyOneExplicitSystemAce(string descriptor, bool accepted)
+    {
+        var security = new FileSecurity();
+        security.SetSecurityDescriptorSddlForm(descriptor);
+        var cache = new AgentAccessTokenCache(CacheDirectory, production: true);
+        Assert.Equal(accepted, cache.HasExpectedAcl(security));
+    }
+
+    [Theory]
+    [InlineData("O:SYD:P(A;;FA;;;SY)(A;;RC;;;BA)", true)]
+    [InlineData("O:SYD:P(A;;FA;;;SY)", false)]
+    [InlineData("O:BAD:P(A;;FA;;;SY)(A;;RC;;;BA)", false)]
+    [InlineData("O:SYD:P(A;;FA;;;SY)(A;;GR;;;BA)", false)]
+    [InlineData("O:SYD:P(A;OICI;FA;;;SY)(A;;RC;;;BA)", false)]
+    [InlineData("O:SYD:P(A;;FA;;;SY)(A;OICI;RC;;;BA)", false)]
+    [InlineData("O:SYD:P(A;;FA;;;SY)(A;;RC;;;BA)(A;;RC;;;BU)", false)]
+    public void DirectoryDescriptorAllowsAdministratorsReadControlOnly(string descriptor, bool accepted)
     {
         var security = new DirectorySecurity();
         security.SetSecurityDescriptorSddlForm(descriptor);
-        Assert.Equal(accepted, AgentAccessTokenCache.HasSystemOnlyAcl(security));
-    }
-
-    [LocalSystemFact]
-    public async Task Directory_HasNoUsersAce_AndFileIsDpapiProtected()
-    {
-        Directory.CreateDirectory(_root);
         var cache = new AgentAccessTokenCache(CacheDirectory, production: true);
-        await WriteAsync(cache);
+        Assert.Equal(accepted, cache.HasExpectedAcl(security));
+    }
 
-        Assert.True(AgentAccessTokenCache.HasSystemOnlyAcl(new DirectoryInfo(CacheDirectory).GetAccessControl()));
-        Assert.True(AgentAccessTokenCache.HasSystemOnlyAcl(new FileInfo(CachePath).GetAccessControl()));
-        var stored = await File.ReadAllBytesAsync(CachePath);
-        Assert.DoesNotContain(Token, System.Text.Encoding.UTF8.GetString(stored));
-        Assert.Equal(Token, (await cache.ReadAsync(Identity, Backend, KeyFingerprint, 4, Now, default))?.Token);
+    [Fact]
+    public Task IsolatedAuthority_UsesNativeAclsAndMachineDpapi()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        return AssertProtectedRoundTripAsync(new AgentAccessTokenCache(CacheDirectory, identity.User!));
     }
 
     [LocalSystemFact]
+    public Task LocalSystem_UsesProductionDirectoryAndFileAcls()
+        => AssertProtectedRoundTripAsync(new AgentAccessTokenCache(CacheDirectory, production: true));
+
+    [Fact]
     public async Task ForeignAce_Absent()
     {
         Directory.CreateDirectory(_root);
-        var cache = new AgentAccessTokenCache(CacheDirectory, production: true);
+        using var identity = WindowsIdentity.GetCurrent();
+        var owner = identity.User!;
+        var cache = new AgentAccessTokenCache(CacheDirectory, owner);
         await WriteAsync(cache);
         var security = new FileSecurity();
-        security.SetSecurityDescriptorSddlForm("O:SYD:P(A;;FA;;;SY)(A;;GR;;;BU)");
+        security.SetSecurityDescriptorSddlForm($"D:P(A;;FA;;;{owner.Value})(A;;RC;;;BA)", AccessControlSections.Access);
         new FileInfo(CachePath).SetAccessControl(security);
 
         Assert.Null(await cache.ReadAsync(Identity, Backend, KeyFingerprint, 4, Now, default));
         Assert.False(File.Exists(CachePath));
     }
 
-    [LocalSystemFact]
+    [Fact]
     public async Task SquattedDirectoryOrReparsePoint_CacheDisabled_NoWrite()
     {
-        var cache = new AgentAccessTokenCache(CacheDirectory, production: true);
+        using var identity = WindowsIdentity.GetCurrent();
+        var owner = identity.User!;
+        var cache = new AgentAccessTokenCache(CacheDirectory, owner);
         Directory.CreateDirectory(CacheDirectory);
         var security = new DirectorySecurity();
-        security.SetSecurityDescriptorSddlForm("O:SYD:P(A;;FA;;;SY)(A;;GR;;;BU)");
+        security.SetSecurityDescriptorSddlForm($"D:P(A;;FA;;;{owner.Value})(A;;GR;;;BA)", AccessControlSections.Access);
         new DirectoryInfo(CacheDirectory).SetAccessControl(security);
 
         await WriteAsync(cache);
@@ -147,18 +167,39 @@ public sealed class AgentAccessTokenCacheTests : IDisposable
         Assert.False(Directory.Exists(CacheDirectory));
 
         var target = Directory.CreateDirectory(Path.Combine(_root, "other-directory"));
-        var link = Directory.CreateSymbolicLink(CacheDirectory, target.FullName);
+        // A directory junction needs no elevated Windows token or developer-mode setting.
+        using var mklink = Process.Start(new ProcessStartInfo("cmd.exe")
+        {
+            ArgumentList = { "/c", "mklink", "/J", CacheDirectory, target.FullName },
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        })!;
+        await mklink.WaitForExitAsync();
+        Assert.Equal(0, mklink.ExitCode);
         try
         {
-            var fresh = new AgentAccessTokenCache(CacheDirectory, production: true);
+            Assert.True(File.GetAttributes(CacheDirectory).HasFlag(FileAttributes.ReparsePoint));
+            var fresh = new AgentAccessTokenCache(CacheDirectory, owner);
             await WriteAsync(fresh);
             Assert.Empty(target.EnumerateFileSystemInfos());
-            Assert.True(link.Attributes.HasFlag(FileAttributes.ReparsePoint));
+            Assert.True(File.GetAttributes(CacheDirectory).HasFlag(FileAttributes.ReparsePoint));
         }
         finally
         {
             Directory.Delete(CacheDirectory);
         }
+    }
+
+    private async Task AssertProtectedRoundTripAsync(AgentAccessTokenCache cache)
+    {
+        Directory.CreateDirectory(_root);
+        await WriteAsync(cache);
+
+        Assert.True(cache.HasExpectedAcl(new DirectoryInfo(CacheDirectory).GetAccessControl()));
+        Assert.True(cache.HasExpectedAcl(new FileInfo(CachePath).GetAccessControl()));
+        var stored = await File.ReadAllBytesAsync(CachePath);
+        Assert.DoesNotContain(Token, System.Text.Encoding.UTF8.GetString(stored));
+        Assert.Equal(Token, (await cache.ReadAsync(Identity, Backend, KeyFingerprint, 4, Now, default))?.Token);
     }
 
     private static Task WriteAsync(AgentAccessTokenCache cache)
@@ -168,7 +209,7 @@ public sealed class AgentAccessTokenCacheTests : IDisposable
     {
         public LocalSystemFactAttribute()
         {
-            if (!AgentUpdateSecurity.IsLocalSystem()) Skip = "Requires a LocalSystem test process to access the SYSTEM-only cache.";
+            if (!AgentUpdateSecurity.IsLocalSystem()) Skip = "Requires LocalSystem to verify the production ownership and cache I/O path.";
         }
     }
 }

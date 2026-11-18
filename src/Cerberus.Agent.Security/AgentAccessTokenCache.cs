@@ -12,11 +12,11 @@ namespace Cerberus.Agent.Security;
 public sealed class AgentAccessTokenCache
 {
     private const string Schema = "agent.access-token.v1";
-    private const string SystemOnlySddl = "O:SYD:P(A;;FA;;;SY)";
     private const int MaxBytes = 16 * 1024;
     private static readonly byte[] CerberusEntropy = Encoding.ASCII.GetBytes("cerberus-agent-access-token.v1");
     private static readonly byte[] SecondaryEntropy = Encoding.ASCII.GetBytes("secondary-agent-access-token.v1");
     private static readonly SecurityIdentifier SystemSid = new(WellKnownSidType.LocalSystemSid, null);
+    private static readonly SecurityIdentifier AdministratorsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -28,6 +28,7 @@ public sealed class AgentAccessTokenCache
     private readonly string _directory;
     private readonly bool _production;
     private readonly bool _canonical;
+    private readonly SecurityIdentifier? _isolatedAuthority;
     private bool _disabled;
 
     public static AgentAccessTokenCache Machine { get; } = new(
@@ -36,6 +37,18 @@ public sealed class AgentAccessTokenCache
 
     internal AgentAccessTokenCache(string directory, bool production)
         : this(directory, production, canonical: false) { }
+
+    // Exercise native ACLs and machine DPAPI using a disposable directory and the fixture's own user SID.
+    internal AgentAccessTokenCache(string directory, SecurityIdentifier isolatedAuthority)
+        : this(Path.GetFullPath(directory), production: true, canonical: false)
+    {
+        var temp = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+        if (!AgentUpdateSecurity.IsUnderDirectory(_directory, temp) ||
+            string.Equals(Path.TrimEndingDirectorySeparator(_directory), temp, StringComparison.OrdinalIgnoreCase) ||
+            AgentUpdateSecurity.IsUnderDirectory(_directory, DpapiSecretStore.GetDefaultBaseDir(SecretStoreScope.Machine)))
+            throw new ArgumentException("Isolated cache storage requires a temporary child path.", nameof(directory));
+        _isolatedAuthority = isolatedAuthority ?? throw new ArgumentNullException(nameof(isolatedAuthority));
+    }
 
     private AgentAccessTokenCache(string directory, bool production, bool canonical)
         => (_directory, _production, _canonical) = (directory, production, canonical);
@@ -53,7 +66,7 @@ public sealed class AgentAccessTokenCache
             {
                 var attributes = GetAttributes(path);
                 if (attributes is null) return null;
-                if (IsRegularFile(attributes.Value) && (!_production || HasSystemOnlyAcl(new FileInfo(path).GetAccessControl())))
+                if (IsRegularFile(attributes.Value) && (!_production || HasExpectedAcl(new FileInfo(path).GetAccessControl())))
                 {
                     var payload = await ReadPayloadAsync(path, identity.Product, ct).ConfigureAwait(false);
                     if (payload is not null && IsCurrent(payload, identity, backend, key, generation, now))
@@ -182,7 +195,7 @@ public sealed class AgentAccessTokenCache
 
     private bool ValidateDirectory(bool create)
     {
-        if (_disabled || (_production && !AgentUpdateSecurity.IsLocalSystem())) return false;
+        if (_disabled || (_production && !HasStorageAuthority())) return false;
 
         try
         {
@@ -192,11 +205,7 @@ public sealed class AgentAccessTokenCache
             {
                 if (!create) return false;
                 if (_production)
-                {
-                    var security = new DirectorySecurity();
-                    security.SetSecurityDescriptorSddlForm(SystemOnlySddl);
-                    directory.Create(security);
-                }
+                    directory.Create(CreateDirectorySecurity(_isolatedAuthority));
                 else
                 {
                     directory.Create();
@@ -206,7 +215,7 @@ public sealed class AgentAccessTokenCache
 
             if (attributes is { } item && item.HasFlag(FileAttributes.Directory) &&
                 !item.HasFlag(FileAttributes.ReparsePoint) &&
-                (!_production || HasSystemOnlyAcl(directory.GetAccessControl())))
+                (!_production || HasExpectedAcl(directory.GetAccessControl())))
                 return true;
         }
         catch (Exception)
@@ -217,6 +226,23 @@ public sealed class AgentAccessTokenCache
         return false;
     }
 
+    private bool HasStorageAuthority()
+    {
+        if (_isolatedAuthority is null) return AgentUpdateSecurity.IsLocalSystem();
+        using var identity = WindowsIdentity.GetCurrent();
+        return identity.User is { } user && _isolatedAuthority.Equals(user);
+    }
+
+    private static string OwnerOnlySddl(SecurityIdentifier owner) => $"O:{owner.Value}D:P(A;;FA;;;{owner.Value})";
+
+    internal static DirectorySecurity CreateDirectorySecurity(SecurityIdentifier? isolatedAuthority = null)
+    {
+        var security = new DirectorySecurity();
+        // ServerDataRoot inspects direct-child owner and ACL. RC is READ_CONTROL on this directory only.
+        security.SetSecurityDescriptorSddlForm(OwnerOnlySddl(isolatedAuthority ?? SystemSid) + "(A;;RC;;;BA)");
+        return security;
+    }
+
     private FileStream CreateTemporaryFile(string path)
     {
         const FileOptions options = FileOptions.Asynchronous | FileOptions.WriteThrough;
@@ -224,20 +250,33 @@ public sealed class AgentAccessTokenCache
             return new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, options);
 
         var security = new FileSecurity();
-        security.SetSecurityDescriptorSddlForm(SystemOnlySddl);
+        security.SetSecurityDescriptorSddlForm(OwnerOnlySddl(_isolatedAuthority ?? SystemSid));
         return new FileInfo(path).Create(FileMode.CreateNew, FileSystemRights.FullControl, FileShare.None, 4096,
             options, security);
     }
 
-    internal static bool HasSystemOnlyAcl(FileSystemSecurity security)
+    internal bool HasExpectedAcl(FileSystemSecurity security)
     {
+        var authority = _isolatedAuthority ?? SystemSid;
         var descriptor = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);
-        return descriptor.Owner is { } owner && SystemSid.Equals(owner) &&
-            descriptor.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected) &&
-            descriptor.DiscretionaryAcl is { Count: 1 } rules &&
-            rules[0] is CommonAce { AceType: AceType.AccessAllowed, AceFlags: AceFlags.None } allow &&
-            allow.AccessMask == (int)FileSystemRights.FullControl && SystemSid.Equals(allow.SecurityIdentifier);
+        if (descriptor.Owner is not { } owner || !authority.Equals(owner) ||
+            !descriptor.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected) ||
+            descriptor.DiscretionaryAcl is not { } rules)
+            return false;
+
+        if (security is not DirectorySecurity)
+            return rules.Count == 1 && IsExactAllow(rules[0], authority, FileSystemRights.FullControl);
+
+        return rules.Count == 2 &&
+            ((IsExactAllow(rules[0], authority, FileSystemRights.FullControl) &&
+              IsExactAllow(rules[1], AdministratorsSid, FileSystemRights.ReadPermissions)) ||
+             (IsExactAllow(rules[1], authority, FileSystemRights.FullControl) &&
+              IsExactAllow(rules[0], AdministratorsSid, FileSystemRights.ReadPermissions)));
     }
+
+    private static bool IsExactAllow(GenericAce rule, SecurityIdentifier sid, FileSystemRights rights)
+        => rule is CommonAce { AceType: AceType.AccessAllowed, AceFlags: AceFlags.None } allow &&
+            allow.AccessMask == (int)rights && sid.Equals(allow.SecurityIdentifier);
 
     private static bool IsCurrent(CachePayload payload, AgentIdentity identity, string backend, string key,
         long generation, DateTimeOffset now)
