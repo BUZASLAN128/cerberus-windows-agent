@@ -253,7 +253,7 @@ internal static partial class AgentUpdateLocalService
         var preserveAuthority = automatic || AgentBuildProfile.IsServer;
         // Explicit local consent is its own source; an old signed request must not obstruct its later busy retries.
         return before with { Phase = AgentUpdaterContract.LaunchRequestedPhase, LifecycleGeneration = generation, Automatic = automatic,
-            InstallerResult = null, NextRetryUtc = null,
+            InstallerResult = null, NextRetryUtc = null, AlertCode = null, AlertAttemptId = null,
             Required = before.Required && (preserveAuthority || before.RequiredPolicyGeneration is not null),
             RequiredInstallAttemptId = preserveAuthority ? before.RequiredInstallAttemptId : null,
             InstallRequestAuthorityExpiresUtc = preserveAuthority ? before.InstallRequestAuthorityExpiresUtc : null };

@@ -92,6 +92,12 @@ public sealed partial class AgentUpdaterContractTests
             Assert.Equal(busy.AlertCode, recorded.AlertCode);
             Assert.Equal(busy.AlertAttemptId, recorded.AlertAttemptId);
 
+            using var persisted = JsonDocument.Parse(File.ReadAllBytes(path));
+            var busyKeys = new[] { "busySinceUtc", "installerBusyCount", "preInstallFailureCount",
+                "preInstallRetryNotBeforeUtc", "alertCode", "alertAttemptId" };
+            Assert.All(busyKeys, name => Assert.True(persisted.RootElement.TryGetProperty(name, out _),
+                $"Missing Track U journal property {name}."));
+
             var requestSource = ReadSource("Cerberus.Agent.Update.Core", "AgentUpdateInstallRequest.cs");
             var terminalReasonBody = Regex.Match(requestSource, @"TerminalUtc is not null && TerminalReason is(?<body>[^;]+);");
             Assert.True(terminalReasonBody.Success);
