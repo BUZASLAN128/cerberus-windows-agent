@@ -18,6 +18,8 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="..\Cerberus.Agent.Updater.Tests\*.cs" />
+    <Compile Include="..\Cerberus.Agent.Updater.Sampling.Tests\*.cs" />
     <Compile Include="..\..\src\Cerberus.Agent.Installer\Helper\Program.Lkg.cs" Link="InstallerHelper\Program.Lkg.cs" />
   </ItemGroup>
 
@@ -34,6 +36,7 @@
     <ProjectReference Include="..\..\src\Cerberus.Agent.Integrations.Tailscale\Cerberus.Agent.Integrations.Tailscale.csproj" />
     <ProjectReference Include="..\..\src\Cerberus.Agent.Observability\Cerberus.Agent.Observability.csproj" />
     <ProjectReference Include="..\..\src\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
+    <ProjectReference Include="..\..\src\Cerberus.Agent.Updater\Cerberus.Agent.Updater.csproj" />
   </ItemGroup>
 
 </Project>

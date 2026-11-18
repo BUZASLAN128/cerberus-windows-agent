@@ -242,6 +242,7 @@ public sealed class AgentUpdatePostCommitWatchTests
             {
                 Revision = 17, Required = true, RequiredInstallAttemptId = Attempt,
                 InstallRequestAuthorityExpiresUtc = Now.AddMinutes(-1),
+                InstallRequest = new AgentUpdateInstallRequest(DateTimeOffset.UnixEpoch, 0, DateTimeOffset.UnixEpoch.AddMinutes(1)),
             };
             AgentUpdateDurableFile.Write(path, root, before);
             var bytes = await File.ReadAllBytesAsync(path);
@@ -262,6 +263,11 @@ public sealed class AgentUpdatePostCommitWatchTests
             store.ChangeAttempt(Attempt, current => AgentUpdateLocalService.TransitionReconciliationFailure(current, Now, required: true));
             await AssertStable();
             store.Change(current => AgentUpdateLocalService.ExpireInstallRequestAuthority(current, Now));
+            await AssertStable();
+            await AgentUpdateLocalService.RunScheduledTickAsync(store, new AgentLifecycleSnapshot { Generation = before.LifecycleGeneration },
+                () => false, _ => false, _ => throw new InvalidOperationException("The watch owns the attempt."),
+                _ => throw new InvalidOperationException("The watch owns the attempt."),
+                () => throw new InvalidOperationException("The watch owns the attempt."), CancellationToken.None);
             await AssertStable();
 
             var projected = false;

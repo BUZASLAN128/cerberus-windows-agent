@@ -54,6 +54,9 @@
     "agent.update.rollback_floor.v1": "The server rollback path uses a separate protected floor file.",
     "agent.update.rollback_grant.v1": "Only the server MSI rollback admission path reads this protected grant file.",
     "agent.update.probe.v1": "The LKG probe uses an isolated stdout response consumed only by watch hosts.",
-    "agent.update.watch.v1": "The server watch uses a separate protected watch.json file that previously shipped agents do not read."
+    "agent.update.watch.v1": "The server watch uses a separate protected watch.json file that previously shipped agents do not read.",
+    "agent.update.lab.token_refresh.v1": "The lab-only refresh observer writes a protected acceptance receipt that released agents do not read.",
+    "committed_watch": "This unfinished server watch phase is recognized by the current journal reader.",
+    "rolling_back": "This unfinished server rollback phase is recognized by the current journal reader."
   }
 }
