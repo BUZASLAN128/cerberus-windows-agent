@@ -435,7 +435,13 @@ try {
   Check "script: finalize with extra token parameters is refused and names them" {
     $r.ExitCode -ne 0 -and ($r.Text -match "accepts only") -and ($r.Text -match "-SigningCertThumbprint") -and ($r.Text -match "-ExtraSignerPins") -and (Test-NothingPublished $childPublish)
   }
-  $r = Invoke-Release $finalizeArgs
+  $previousActions = $env:GITHUB_ACTIONS
+  try {
+    $env:GITHUB_ACTIONS = $null
+    $r = Invoke-Release $finalizeArgs
+  } finally {
+    $env:GITHUB_ACTIONS = $previousActions
+  }
   Check "script: finalize on an unsigned fixture MSI is refused by the real signature check" {
     # A failure here (for example signtool.exe missing) must show the child's error text, not only the case name.
     if ($r.ExitCode -ne 0 -and ($r.Text -match "Authenticode") -and (Test-NothingPublished $childPublish)) { return $true }

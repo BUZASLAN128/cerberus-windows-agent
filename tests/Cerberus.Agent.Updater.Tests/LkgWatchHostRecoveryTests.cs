@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Text;
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Updater;
@@ -28,36 +30,89 @@ public sealed partial class LkgWatchHostRecoveryTests : IDisposable
     [Fact]
     public void SilentProbeTimesOutAndReleasesHostLock()
     {
+        var pipeName = "cerberus-silent-probe-" + Guid.NewGuid().ToString("N");
+        using var ready = new NamedPipeServerStream(pipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         var script = Path.Combine(_root.FullName, "silent.ps1");
-        var pid = Path.Combine(_root.FullName, "probe.pid");
-        File.WriteAllText(script, "param($PidPath)\n[IO.File]::WriteAllText($PidPath, [string]$PID)\nStart-Sleep -Seconds 12");
+        File.WriteAllText(script, """
+            param($PipeName)
+            $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::Out)
+            try {
+                $pipe.Connect(30000)
+                Start-Sleep -Seconds 30
+            } finally { $pipe.Dispose() }
+            """);
+        Process? child = null;
+        var elapsed = new Stopwatch();
+        var timeout = TimeSpan.FromSeconds(4);
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe"))
         {
             UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true,
-            ArgumentList = { "-NoProfile", "-NonInteractive", "-File", script, pid },
+            StandardOutputEncoding = new ProbeStartupEncoding(ObserveStartup),
+            ArgumentList = { "-NoProfile", "-NonInteractive", "-File", script, pipeName },
         };
         Journal.Change(j => j with { AttemptId = Attempt, Phase = AgentUpdateWatchJournal.CommittedWatch });
-        var sw = Stopwatch.StartNew();
         var ops = Operations() with
         {
             Act = (_, _) =>
             {
                 Assert.Null(LkgWatchHost.TryLock(Store));
-                Assert.False(LkgProbe.Run(start, "probe", "1.2.3", 1, TimeSpan.FromSeconds(4)));
+                Assert.False(LkgProbe.Run(start, "probe", "1.2.3", 1, timeout));
             },
         };
-        Assert.Equal(0, LkgWatchHost.Run(Watch, ops));
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), sw.Elapsed.ToString());
-        using var released = LkgWatchHost.TryLock(Store);
-        Assert.NotNull(released);
-        var childPid = int.Parse(File.ReadAllText(pid), CultureInfo.InvariantCulture);
         try
         {
-            using var child = Process.GetProcessById(childPid);
-            Assert.True(child.WaitForExit(1_000));
+            var result = LkgWatchHost.Run(Watch, ops);
+            Assert.True(child is not null, $"The silent probe did not start (watch host exit {result}).");
+            Assert.Equal(0, result);
+            var duration = elapsed.Elapsed;
+            Assert.True(duration >= timeout - TimeSpan.FromMilliseconds(250) && duration < TimeSpan.FromSeconds(10), duration.ToString());
+            using var released = LkgWatchHost.TryLock(Store);
+            Assert.NotNull(released);
+            Assert.True(child.WaitForExit(1_000), "The timed-out silent probe was still alive.");
         }
-        catch (ArgumentException) { } // No process currently has the fixture PID.
+        finally
+        {
+            using (child)
+            {
+                if (child is not null && !child.HasExited)
+                {
+                    child.Kill();
+                    child.WaitForExit(1_000);
+                }
+            }
+        }
+
+        void ObserveStartup()
+        {
+            using var startup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { ready.WaitForConnectionAsync(startup.Token).GetAwaiter().GetResult(); }
+            catch (OperationCanceledException)
+            {
+                throw new Xunit.Sdk.XunitException("The silent probe did not reach its startup pipe within 30 seconds.");
+            }
+            Assert.True(GetNamedPipeClientProcessId(ready.SafePipeHandle, out var pid),
+                "The startup pipe did not identify the silent probe process.");
+            child = Process.GetProcessById(checked((int)pid));
+            _ = child.SafeHandle;
+            Assert.False(child.HasExited);
+            elapsed.Start();
+        }
     }
+
+    // Process.Start constructs the redirected stdout reader before LkgProbe starts its timeout.
+    private sealed class ProbeStartupEncoding(Action observeStartup) : UTF8Encoding
+    {
+        public override Decoder GetDecoder()
+        {
+            observeStartup();
+            return base.GetDecoder();
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeClientProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint processId);
 
     [Theory]
     [InlineData(false)]
