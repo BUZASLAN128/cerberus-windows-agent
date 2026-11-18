@@ -47,14 +47,18 @@ public sealed class ProtectedStateStoreTests : IDisposable
     public void SignedState_UsersWritableDacl_IsRejectedNotParsedNotMoved()
     {
         SeedState(seq: 9);
+        File.WriteAllText(StatePath, """{"schema":"cerberus.agent-state.v1","state":{"agent_id": """ + JsonSerializer.Serialize(Agent) + """, "state_seq":99,"quarantine_active":false,"registration_state":null}}""");
+        Assert.Equal(99, new AgentSignedStateStore(StatePath).Load(Agent).StateSeq);
         Assert.False(new AgentSignedStateStore(StatePath).IsQuarantined(Agent));
+        ProtectToSystemAndAdministrators(StatePath + AgentStateHighWater.Suffix);
         GrantUsersWrite(StatePath);
 
         var store = new AgentSignedStateStore(StatePath, enforceFileProvenance: true);
 
         Assert.True(store.IsQuarantined(Agent));
         Assert.True(store.IsQuarantined());
-        Assert.Equal(0, store.Load(Agent).StateSeq);
+        // The file holds 99, so the floor value proves the rejected file was not parsed.
+        Assert.Equal(OwnerIsTrusted(StatePath + AgentStateHighWater.Suffix) ? 9 : 0, store.Load(Agent).StateSeq);
         Assert.True(File.Exists(StatePath));
         Assert.Empty(Directory.GetFiles(_dir, "*.corrupt-*"));
     }
@@ -76,14 +80,16 @@ public sealed class ProtectedStateStoreTests : IDisposable
     public void SignedState_RejectedFile_IsReplacedByTheNextSignedWrite()
     {
         SeedState(seq: 9);
+        File.WriteAllText(StatePath, """{"schema":"cerberus.agent-state.v1","state":{"agent_id": """ + JsonSerializer.Serialize(Agent) + """, "state_seq":99,"quarantine_active":false,"registration_state":null}}""");
+        Assert.Equal(99, new AgentSignedStateStore(StatePath).Load(Agent).StateSeq);
         GrantUsersWrite(StatePath);
         var store = new AgentSignedStateStore(StatePath, enforceFileProvenance: true);
         Assert.True(store.IsQuarantined(Agent));
 
-        Assert.True(store.TrySave(new AgentSignedState(Agent, 1, false, null)));
+        Assert.True(store.TrySave(new AgentSignedState(Agent, 10, false, null)));
 
         Assert.False(store.IsQuarantined(Agent));
-        Assert.Equal(1, store.Load(Agent).StateSeq);
+        Assert.Equal(10, store.Load(Agent).StateSeq);
         Assert.False(new AgentSignedStateStore(StatePath).IsQuarantined(Agent));
     }
 
