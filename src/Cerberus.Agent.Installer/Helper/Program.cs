@@ -37,7 +37,7 @@ internal static partial class Program
             var product = invocation!.ProductCode;
             var operation = invocation.Operation;
             if (operation is "lkg-bootstrap" or "unregister-watch-task" or "reregister-watch-task")
-                return 2;
+                return RunLkgAction(invocation, args[2]);
             _labProduct = product;
             _labVersion = args[3];
             _labTransaction = invocation.LabTransaction;
