@@ -145,12 +145,14 @@ internal sealed class LkgPromotion(
         }
         catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex) || ex is CryptographicException or Win32Exception)
         {
-            log($"{AgentUpdateWatchJournal.LkgPromotionFailed} ({ex.GetType().Name})");
+            LogFailure(log);
             if (!prepared && runtimeVerified && Close(changeJournal, active, plan, AgentUpdateWatchJournal.LkgPromotionFailed) && promotion is not null)
                 Cleanup(promotion, published: false);
             return false;
         }
     }
+
+    internal static void LogFailure(Action<string> log) => log(AgentUpdateWatchJournal.LkgPromotionFailed);
 
     private AgentUpdateLkgRecord Prepare(string stage, string preparedPath, AgentUpdateLkgPromotion promotion,
         AgentUpdatePlan plan, RuntimeIdentity identity)
