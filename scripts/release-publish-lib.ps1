@@ -255,6 +255,7 @@ function Complete-ExternalManifestSigning(
 
   # Everything below is measured from the publish directory; nothing is written until every check has passed.
   $runtimeDir = Join-Path $PublishDir "runtime"
+  Assert-FinalUpdaterContract $runtimeDir (Split-Path -Parent $PSScriptRoot)
   $trust = Get-BuiltReleaseTrust $runtimeDir
   $pendingKeys = @($pending.public_keys_b64 | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)).Trim() })
   Assert-EmbeddedTrustMatches -Trust $trust -KeyPems $pendingKeys -SignerPins (ConvertTo-NormalizedSignerPins @($pending.signer_pins)) `
@@ -263,7 +264,7 @@ function Complete-ExternalManifestSigning(
   $expectedKey = Read-ManifestPublicKeyFile $PublicKeyPath
   $manifest = Assert-ManifestAgainstBuild `
     -Canonical $canonical -Signature $signature -ExpectedKeyPem $expectedKey -Trust $trust `
-    -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
+    -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Update.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
   if (-not [string]::Equals([string]$manifest["version"], $Version, [StringComparison]::Ordinal)) { throw "Pending manifest version does not match -Version." }
   Assert-ReleaseArtifactUrl -ArtifactUrl $manifest['artifact_url'] -ArtifactPrefixes $trust.ArtifactPrefixes -RequirePublicDns:$RequirePublicDns
 
