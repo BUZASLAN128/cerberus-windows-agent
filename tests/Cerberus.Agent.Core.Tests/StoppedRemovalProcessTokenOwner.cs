@@ -119,6 +119,57 @@ internal static class StoppedRemovalToken
         });
     }
 
+    internal static void RunAndVerifyBackupOnly(Action readMetadata)
+    {
+        using var ambient = WindowsIdentity.GetCurrent(ifImpersonating: true);
+        Assert.Null(ambient);
+        Assert.True(AlreadyElevatedTc1FactAttribute.IsEligible());
+        using var actor = WindowsIdentity.GetCurrent();
+        var process = Snapshot(actor.AccessToken);
+        Assert.False(process.BackupEnabled);
+
+        // TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES.
+        if (!DuplicateTokenEx(actor.AccessToken, 0x2e, IntPtr.Zero, 2, 2, out var duplicate))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        using (duplicate)
+        {
+            try
+            {
+                if (process.Restore.HasValue) Adjust(duplicate, "SeRestorePrivilege", 0);
+                Adjust(duplicate, "SeBackupPrivilege", 2);
+                WindowsIdentity.RunImpersonated(duplicate, () =>
+                {
+                    using var thread = WindowsIdentity.GetCurrent(ifImpersonating: true);
+                    Assert.NotNull(thread);
+                    Assert.Equal(actor.User, thread.User);
+                    Assert.Equal(TokenImpersonationLevel.Impersonation, thread.ImpersonationLevel);
+                    var scoped = Snapshot(thread.AccessToken);
+                    Assert.True(scoped.BackupEnabled);
+                    Assert.False(scoped.RestoreEnabled);
+                    Assert.Equal(process.Traverse, scoped.Traverse);
+                    Assert.Equal(process, Snapshot(actor.AccessToken));
+                    readMetadata();
+                });
+            }
+            finally
+            {
+                using var remaining = WindowsIdentity.GetCurrent(ifImpersonating: true);
+                Assert.Null(remaining);
+                Assert.Equal(process, Snapshot(actor.AccessToken));
+            }
+        }
+    }
+
+    private static void Adjust(SafeAccessTokenHandle token, string name, uint attributes)
+    {
+        if (!LookupPrivilegeValueW(null, name, out var luid))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        var request = new Privileges { Count = 1, Luid = luid, Attributes = attributes };
+        var adjusted = AdjustTokenPrivileges(token, false, ref request, 0, IntPtr.Zero, IntPtr.Zero);
+        var error = Marshal.GetLastWin32Error();
+        if (!adjusted || error != 0) throw new Win32Exception(error);
+    }
+
     private static uint? Read(SafeAccessTokenHandle token, string name)
     {
         if (!LookupPrivilegeValueW(null, name, out var luid))
@@ -151,6 +202,22 @@ internal static class StoppedRemovalToken
         public int Low;
         public int High;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Privileges
+    {
+        public uint Count;
+        public Luid Luid;
+        public uint Attributes;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool DuplicateTokenEx(SafeAccessTokenHandle source, uint rights, IntPtr attributes,
+        int impersonation, int tokenType, out SafeAccessTokenHandle duplicate);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(SafeAccessTokenHandle token, bool disableAll,
+        ref Privileges state, int length, IntPtr previous, IntPtr required);
 
     [DllImport("advapi32.dll", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool LookupPrivilegeValueW(string? system, string name, out Luid value);

@@ -27,7 +27,7 @@ public sealed class AgentUpdateStoppedRemovalNativeTests(ITestOutputHelper outpu
             var second = tree.File(cache, "secondary-access-token.v1.dpapi", systemOnly);
             var canary = tree.File(cache, "non-cache-canary.txt", systemOnly + "(A;;FR;;;BA)",
                 "disposable non-cache canary"u8.ToArray());
-            using var cacheHold = tree.OpenChecked(cache, StoppedRemovalNativeFile.ReadControl);
+            using var cacheHold = tree.HoldCacheDirectory(cache);
             var before = Observe();
 
             // Bind the exact production validator/child names to Temp. Never call the canonical
@@ -75,7 +75,7 @@ public sealed class AgentUpdateStoppedRemovalNativeTests(ITestOutputHelper outpu
 
             (string Directory, string Canary, string CanaryHash) Observe()
             {
-                using var directory = tree.OpenChecked(cache, StoppedRemovalNativeFile.ReadControl);
+                using var directory = tree.HoldCacheDirectory(cache);
                 using var handle = tree.OpenChecked(canary, 0x80000000 | StoppedRemovalNativeFile.ReadControl);
                 var canarySddl = StoppedRemovalNativeFile.Descriptor(handle);
                 using var stream = new FileStream(handle, FileAccess.Read);

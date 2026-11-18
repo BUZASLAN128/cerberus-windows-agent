@@ -26,6 +26,18 @@ internal static class StoppedRemovalNativeFile
     }
 
     internal static (SafeFileHandle Handle, int Win32) OpenForDisposition(string path, bool directory)
+        => OpenNative(path, Delete | Synchronize, directory);
+
+    internal static SafeFileHandle OpenCacheDirectoryMetadata(string path)
+    {
+        var (handle, error) = OpenNative(path, ReadControl | Synchronize, directory: true);
+        if (error == 0 && !handle.IsInvalid) return handle;
+        handle.Dispose();
+        if (error != 0) throw new Win32Exception(error);
+        throw new InvalidOperationException("The cache directory metadata handle is invalid.");
+    }
+
+    private static (SafeFileHandle Handle, int Win32) OpenNative(string path, uint access, bool directory)
     {
         var ntPath = @"\??\" + path;
         var buffer = Marshal.StringToHGlobalUni(ntPath);
@@ -37,7 +49,7 @@ internal static class StoppedRemovalNativeFile
             Marshal.StructureToPtr(name, nameStorage, false);
             var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(),
                 Name = nameStorage, Attributes = 0x40 }; // OBJ_CASE_INSENSITIVE.
-            var status = NtCreateFile(out var value, Delete | Synchronize, ref attributes, out _, IntPtr.Zero,
+            var status = NtCreateFile(out var value, access, ref attributes, out _, IntPtr.Zero,
                 0, Share, 1, directory ? NtOptions : NtOptions | 0x40, IntPtr.Zero, 0); // FILE_OPEN; non-directory for files.
             var handle = new SafeFileHandle(value, true);
             return (handle, status == 0 ? 0 : RtlNtStatusToDosError(status));

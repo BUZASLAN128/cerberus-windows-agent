@@ -23,10 +23,10 @@ public sealed partial class ServerDataRootProtectedTests
                 Assert.True(ServerDataRoot.EnsureProtected(data.Path));
                 var cache = tree.Directory(data, "token-cache", Tc1RegressionFixture.ProductionCacheSddl());
 
-                using var beforeHandle = tree.OpenChecked(cache, StoppedRemovalNativeFile.ReadControl);
+                using var beforeHandle = tree.HoldCacheDirectory(cache);
                 var before = StoppedRemovalNativeFile.Descriptor(beforeHandle);
                 Assert.True(ServerDataRoot.EnsureProtected(data.Path));
-                using var afterHandle = tree.OpenChecked(cache, StoppedRemovalNativeFile.ReadControl);
+                using var afterHandle = tree.HoldCacheDirectory(cache);
                 Assert.Equal(before, StoppedRemovalNativeFile.Descriptor(afterHandle));
                 Assert.Throws<UnauthorizedAccessException>(() => new DirectoryInfo(cache.Path).GetFileSystemInfos());
                 return Task.CompletedTask;

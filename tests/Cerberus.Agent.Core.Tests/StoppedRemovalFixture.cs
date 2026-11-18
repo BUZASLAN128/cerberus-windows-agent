@@ -122,8 +122,31 @@ internal sealed class StoppedRemovalFixture(Action<string, object> trace)
     }
 
     internal SafeFileHandle OpenChecked(Node node, uint mask)
+        => VerifyOpened(node, StoppedRemovalNativeFile.RequireOpen(node.Path, mask));
+
+    internal SafeFileHandle HoldCacheDirectory(Node node)
     {
-        var handle = StoppedRemovalNativeFile.RequireOpen(node.Path, mask);
+        if (!node.Directory || node.Id is null || node.Removed || !_nodes.Contains(node))
+            throw new InvalidOperationException("Cache custody requires a bound fixture directory.");
+
+        // The admin ACE grants READ_CONTROL only. Use a private backup token for the
+        // synchronous metadata open and checks. Only the pinned handle survives this scope.
+        SafeFileHandle? handle = null;
+        try
+        {
+            StoppedRemovalToken.RunAndVerifyBackupOnly(() =>
+                handle = VerifyOpened(node, StoppedRemovalNativeFile.OpenCacheDirectoryMetadata(node.Path)));
+            return handle!;
+        }
+        catch
+        {
+            handle?.Dispose();
+            throw;
+        }
+    }
+
+    private static SafeFileHandle VerifyOpened(Node node, SafeFileHandle handle)
+    {
         try
         {
             CheckShape(handle, node.Path, node.Directory);
