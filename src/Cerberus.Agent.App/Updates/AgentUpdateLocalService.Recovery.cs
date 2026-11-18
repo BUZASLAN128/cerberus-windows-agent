@@ -129,9 +129,12 @@ internal static partial class AgentUpdateLocalService
         AgentInstallerHealthPhase? rollbackPhase = null, bool? serverProfile = null)
     {
         if (before.Phase != AgentUpdateStates.RecoveryRequired) return before;
-        before = before with { FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null };
         if (healthy && plan is not null)
-            return TransitionHealthyInstall(before, plan, now, serverProfile ?? AgentBuildProfile.IsServer);
+            return TransitionHealthyInstall(before, plan, now, serverProfile ?? AgentBuildProfile.IsServer) with
+            {
+                FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null,
+            };
+        before = before with { FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null };
         var result = before.InstallerResult ?? AgentUpdateInstallerResult.Failure(
             new InvalidOperationException("Update recovery timed out."));
         return before with
@@ -146,7 +149,20 @@ internal static partial class AgentUpdateLocalService
 
     internal static AgentUpdateJournal TransitionHealthyInstall(
         AgentUpdateJournal before, AgentUpdatePlan plan, DateTimeOffset now, bool serverProfile)
-        => serverProfile ? before with
+    {
+        // W1b writes both codes with the current attempt and result before the watch is opened.
+        if (serverProfile && before.AttemptId is { } attempt && plan.AttemptId == attempt &&
+            before.WatchAttemptId != attempt && before.RollbackAttemptId is null &&
+            before.FailureCode == AgentUpdateWatchJournal.RollbackFailed && before.FailureAttemptId == attempt &&
+            before.FailureInstallerResultId == before.InstallerResult?.ResultId &&
+            before.AlertCode == AgentUpdateWatchJournal.RollbackFailed && before.AlertAttemptId == attempt)
+            before = before with
+            {
+                FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null,
+                AlertCode = null, AlertAttemptId = null,
+            };
+
+        return serverProfile ? before with
         {
             Phase = AgentUpdateWatchJournal.CommittedWatch,
             WatchRequestedUtc = now,
@@ -157,4 +173,5 @@ internal static partial class AgentUpdateLocalService
             HealthyInstalledSequence = plan.Sequence,
             HealthyInstalledVersion = plan.Version,
         };
+    }
 }

@@ -175,16 +175,27 @@ public sealed class AgentAccessTokenCache
     }
 
     // Called only after the privileged removal path has confirmed the service is stopped.
-    public async Task ClearForStoppedRemovalAsync(Action<Action> runWithRestorePrivilege, CancellationToken ct)
+    public Task ClearForStoppedRemovalAsync(Action<Action> runWithRestorePrivilege, CancellationToken ct)
+        => ClearForStoppedRemovalAsync(_canonical, AgentUpdateSecurity.IsLocalSystem, IsAdministrator,
+            AcquireAccessAsync, RemoveExactCacheFiles, runWithRestorePrivilege, ct);
+
+    private static bool IsAdministrator()
     {
-        if (!_canonical || AgentUpdateSecurity.IsLocalSystem())
-            return; // SYSTEM clears the cache through the ordinary credential publication path.
         using var identity = WindowsIdentity.GetCurrent();
-        if (!new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    internal static async Task ClearForStoppedRemovalAsync(bool canonical, Func<bool> isSystem, Func<bool> isAdmin,
+        Func<CancellationToken, Task<IDisposable?>> acquireAccess, Action remove, Action<Action> runWithRestorePrivilege,
+        CancellationToken ct)
+    {
+        if (!canonical || isSystem())
+            return; // SYSTEM clears the cache through the ordinary credential publication path.
+        if (!isAdmin())
             throw new UnauthorizedAccessException("Removing the machine token cache requires an elevated administrator.");
-        using var access = await AcquireAccessAsync(ct).ConfigureAwait(false);
+        using var access = await acquireAccess(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        runWithRestorePrivilege(RemoveExactCacheFiles);
+        runWithRestorePrivilege(remove);
     }
 
     internal void RemoveExactCacheFiles()

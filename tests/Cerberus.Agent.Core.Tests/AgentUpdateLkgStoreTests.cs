@@ -122,6 +122,65 @@ public sealed class AgentUpdateLkgStoreTests : IDisposable
         Assert.Equal(promotion, store.ReadPromotion());
     }
 
+    [Theory]
+    [InlineData(null, null, true)]
+    [InlineData(false, 0, true)]
+    [InlineData(true, 3, true)]
+    [InlineData(true, null, false)]
+    [InlineData(null, 1, false)]
+    [InlineData(false, 1, false)]
+    [InlineData(true, -1, false)]
+    [InlineData(true, 4, false)]
+    public void PromotionRetryStateAcceptsLegacyAndRequiresBothBoundFields(bool? pivotStarted, int? retries, bool valid)
+    {
+        var store = CreateStore();
+        var marker = new AgentUpdateLkgPromotion("attempt1", "1.2.1", Hash, Hash, Hash, Hash, "stage-attempt1")
+        {
+            PivotStarted = pivotStarted, RetryCount = retries,
+        };
+        if (valid)
+        {
+            store.WritePromotion(marker);
+            Assert.Equal(marker, store.ReadPromotion());
+        }
+        else
+        {
+            Assert.Throws<InvalidOperationException>(() => store.WritePromotion(marker));
+            AgentUpdateLkgStore.WriteRecord(Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName), store.UpdatesRoot, marker);
+            Assert.Throws<InvalidOperationException>(() => store.ReadPromotion());
+        }
+    }
+
+    [Fact]
+    public void PromotionMarkerReaderRejectsUnfamiliarMembers()
+    {
+        var store = CreateStore();
+        store.WritePromotion(new("attempt1", "1.2.1", Hash, Hash, Hash, Hash, "stage-attempt1")
+        {
+            PivotStarted = false, RetryCount = 0,
+        });
+        var path = Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName);
+        var json = File.ReadAllText(path).TrimEnd();
+        File.WriteAllText(path, json[..^1] + ",\"unfamiliar\":true}");
+        Assert.Throws<JsonException>(() => store.ReadPromotion());
+    }
+
+    [Theory]
+    [InlineData('a', 64, ".json", true)]
+    [InlineData('A', 64, ".json", false)]
+    [InlineData('g', 64, ".json", false)]
+    [InlineData('a', 63, ".json", false)]
+    [InlineData('a', 65, ".json", false)]
+    [InlineData('a', 64, ".json.bak", false)]
+    public void StalePromotionLayoutAcceptsOnlyExactLowercaseDigestNames(char digit, int chars, string extension, bool valid)
+    {
+        var store = CreateStore();
+        var name = "promote.stale-" + new string(digit, chars) + extension;
+        File.WriteAllText(Path.Combine(store.Root, name), "opaque fixture marker");
+        if (valid) store.ValidateStalePromotionLayout();
+        else Assert.Throws<InvalidOperationException>(store.ValidateStalePromotionLayout);
+    }
+
     [Fact]
     public void LkgDescriptorAcceptsTheProtectedRootAndRejectsTheProductRootPermissions()
     {

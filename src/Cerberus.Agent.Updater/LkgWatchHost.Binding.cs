@@ -23,11 +23,11 @@ internal static class LkgWatchHostBinding
             {
                 if (MatchesVerifiedPlan(context, watch))
                     LkgPromotion.Run(context.Store, context.JournalStore, watch, context.Plan!, metadata,
-                        () => ReadPromotionRuntime(context, watch), (path, hash) => AdmitPromotedArtifact(path, watch.WatchedVersion, hash), context.Log);
+                        () => ReadPromotionRuntime(context, watch), AdmitPromotedArtifact, context.Log);
             },
             context => LkgPromotion.Resume(context.Store, context.JournalStore, context.Watch, context.Plan, metadata,
                 () => context.Watch is { } watch && MatchesVerifiedPlan(context, watch) ? ReadPromotionRuntime(context, watch) : null,
-                (path, hash) => context.Plan is { } plan && AdmitPromotedArtifact(path, plan.Version, hash), context.Log),
+                AdmitPromotedArtifact, context.Log),
             LkgPromotion.CleanupRetired,
             (context, watch) => LkgRollback.Run(context, watch, ReadLkg));
     }

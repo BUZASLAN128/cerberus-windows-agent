@@ -9,7 +9,7 @@ using Xunit;
 
 namespace Cerberus.Agent.Updater.Tests;
 
-public sealed class LkgWatchHostRecoveryTests : IDisposable
+public sealed partial class LkgWatchHostRecoveryTests : IDisposable
 {
     private const string Attempt = "forward-attempt";
     private static readonly DateTimeOffset Now = DateTimeOffset.UnixEpoch.AddHours(24);
@@ -75,7 +75,7 @@ public sealed class LkgWatchHostRecoveryTests : IDisposable
             AgentUpdateWatchOutcomes.RollbackPending, []);
         AgentUpdateWatchStore.Write(Store.UpdatesRoot, watch);
         var work = new LkgWatchHostWork([], (_, _) => { }, _ => throw new Xunit.Sdk.XunitException("Sampled a rollback"),
-            (_, _) => { }, (_, _) => { }, _ => { }, _ => { },
+            (_, _) => { }, (_, _) => { }, _ => false, _ => { },
             (context, record) =>
             {
                 Assert.True(LkgRollback.SameAuthority(Journal.Read(), journal, record.AttemptId));
@@ -231,6 +231,7 @@ public sealed class LkgWatchHostRecoveryTests : IDisposable
         () => { }, (_, _) => { }, watch => AgentUpdateWatchStore.Write(Store.UpdatesRoot, watch), Events.Add)
     {
         RecordRestartFailure = active => LkgWatchHost.RecordInterruptedRestart(Journal.Change, active),
+        ReadUptimeMilliseconds = () => (long)TimeSpan.FromHours(1).TotalMilliseconds,
     };
 
     public void Dispose() => _root.Delete(recursive: true);

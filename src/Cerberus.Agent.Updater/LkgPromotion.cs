@@ -13,9 +13,9 @@ internal sealed partial class LkgPromotion(
     Func<LkgPromotion.RuntimeIdentity?> readRuntimeIdentity,
     Action<string, string, bool> validateProtectedPath,
     Action<string, string> validateInstalledSource,
-    Action<string, string> verifyArtifact,
+    Action<string, string, string> verifyArtifact,
     Func<string, string, bool> probe,
-    Action<string> log)
+    Action<string> log, Action<string>? checkpoint = null)
 {
     internal sealed record RuntimeIdentity(string Version, Guid ProductCode, string ServiceExeSha256, string RuntimeRoot);
 
@@ -28,40 +28,47 @@ internal sealed partial class LkgPromotion(
 
     /// <summary>Starts promotion of a persisted passed watch. The caller holds lkg\host.lock.</summary>
     internal static bool Run(AgentUpdateLkgStore store, AgentUpdateJournalStore journal, AgentUpdateWatchRecord watch,
-        AgentUpdatePlan plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
+        AgentUpdatePlan plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, string, bool> isAdmittedLabArtifact,
         Action<string> log)
         => Create(store, metadata, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: false);
 
     /// <summary>Recovers a promotion or finishes cleanup. The caller holds lkg\host.lock.</summary>
     internal static bool Resume(AgentUpdateLkgStore store, AgentUpdateJournalStore journal, AgentUpdateWatchRecord? watch,
-        AgentUpdatePlan? plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
+        AgentUpdatePlan? plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, string, bool> isAdmittedLabArtifact,
         Action<string> log)
-        => Create(store, metadata, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: true);
+    {
+        Create(store, metadata, readRuntimeIdentity, isAdmittedLabArtifact, log)
+            .Apply(journal.Read, journal.Change, watch, plan, resume: true, out var handled);
+        return handled;
+    }
 
     /// <summary>Removes retired files at host start. The caller holds lkg\host.lock.</summary>
     internal static void CleanupRetired(AgentUpdateLkgStore store)
+        => CleanupRetired(store, AgentUpdateSecurity.ValidateProtectedPath);
+
+    internal static void CleanupRetired(AgentUpdateLkgStore store, Action<string, string, bool> validate)
     {
-        AgentUpdateSecurity.ValidateProtectedPath(store.Root, store.UpdatesRoot, allowMissing: false);
-        if (store.ReadPromotion() is not null) return;
+        validate(store.Root, store.UpdatesRoot, false);
+        if (File.Exists(Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName))) return;
         foreach (var path in Directory.EnumerateFiles(store.Root, RetiredPrefix + "*"))
         {
             var name = Path.GetFileName(path);
             if (!RetiredSuffixes.Any(suffix => name.EndsWith(suffix, StringComparison.Ordinal) &&
                     AgentUpdateSecurity.IsSafeAttemptId(name[RetiredPrefix.Length..^suffix.Length])))
                 continue;
-            AgentUpdateSecurity.ValidateProtectedPath(path, store.UpdatesRoot, allowMissing: false);
+            validate(path, store.UpdatesRoot, false);
             File.Delete(path);
         }
     }
 
     private static LkgPromotion Create(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity,
-        Func<string, string, bool> isAdmittedLabArtifact, Action<string> log)
+        Func<string, string, string, bool> isAdmittedLabArtifact, Action<string> log)
     {
         if (!AgentBuildProfile.IsServer || !AgentUpdateSecurity.IsLocalSystem())
             throw new InvalidOperationException("LKG promotion requires the server host running as LocalSystem.");
         return new(store, metadata, readRuntimeIdentity, AgentUpdateSecurity.ValidateProtectedPath,
             AgentUpdateSecurity.ValidateInstalledServiceSource,
-            (path, hash) => VerifyAuthenticode(metadata, path, hash, isAdmittedLabArtifact), LkgProbe.Run, log);
+            (path, version, hash) => VerifyAuthenticode(metadata, path, hash, (candidate, digest) => isAdmittedLabArtifact(candidate, version, digest)), LkgProbe.Run, log);
     }
 
     internal static void VerifyAuthenticode(AgentUpdateBuildMetadata metadata, string path, string hash,
@@ -74,89 +81,104 @@ internal sealed partial class LkgPromotion(
 
     internal bool Apply(Func<AgentUpdateJournal> readJournal, Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeJournal,
         AgentUpdateWatchRecord? watch, AgentUpdatePlan? plan, bool resume)
+        => Apply(readJournal, changeJournal, watch, plan, resume, out _);
+
+    internal bool Apply(Func<AgentUpdateJournal> readJournal, Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeJournal,
+        AgentUpdateWatchRecord? watch, AgentUpdatePlan? plan, bool resume, out bool handled)
     {
+        handled = false;
         Validate(store.Root, allowMissing: false);
-        var promotion = store.ReadPromotion();
-        if (resume != (promotion is not null)) return false;
-
         var active = readJournal();
-        var activeWatch = watch is not null && plan is not null && active.Phase == AgentUpdateWatchJournal.CommittedWatch &&
-            LkgWatchHostBinding.BindsWatch(active, watch.AttemptId);
-        if (promotion is not null && !activeWatch)
+        var marker = ReadMarkerForRecovery(store);
+        var markerPresent = File.Exists(MarkerPath);
+        if (resume)
         {
-            try
+            if (marker is null || !OwnsMarker(active, marker))
             {
-                if (active.Phase == AgentUpdateStates.Installed && active.AttemptId == promotion.AttemptId &&
-                    active.HealthyInstalledVersion == promotion.NewVersion && !IsTerminalFailure(active, promotion.AttemptId) &&
-                    IsPublished(promotion, active.HealthyInstalledSequence))
-                {
-                    Cleanup(promotion);
-                    return true;
-                }
+                if (markerPresent) Alert(changeJournal, active, marker?.AttemptId);
+                return false;
             }
-            catch (Exception ex) when (IsPromotionFailure(ex)) { }
-            return Fail(active, changeJournal, promotion, verifiedPlan: null);
-        }
-        if (!activeWatch || watch is null || plan is null)
-            return false;
 
-        var stage = Path.Combine(store.Root, "stage-" + watch.AttemptId);
-        var preparedPath = Path.Combine(stage, "lkg.json");
+            // A finished journal or an exhausted marker can be cleaned once native bootstrap or
+            // publication has left a coherent, independently verified LKG.
+            if (active.Phase == AgentUpdateStates.Installed || marker.RetryCount == AgentUpdateLkgPromotion.MaxRetries)
+                return FinishRetained(active, changeJournal, watch, plan, marker, out handled);
+        }
+        else if (marker is not null && marker.AttemptId == active.AttemptId)
+        {
+            // A legacy or terminal marker for this same watch is never a new attempt.
+            return false;
+        }
+
+        var eligible = watch is not null && plan is not null && active.Phase == AgentUpdateWatchJournal.CommittedWatch &&
+            LkgWatchHostBinding.BindsWatch(active, watch.AttemptId);
+        if (!resume && !eligible) return false;
+
+        var promotion = resume ? marker : null;
         var runtimeVerified = false;
-        var committed = false;
         try
         {
+            if (!eligible || watch is null || plan is null) throw InvalidPromotion();
             RequirePassedWatch(watch, plan);
             if (promotion is not null && !MatchesPlan(promotion, plan)) throw InvalidPromotion();
-            Validate(preparedPath, allowMissing: true);
-            var prepared = promotion is not null && File.Exists(preparedPath);
+            var stage = Path.Combine(store.Root, "stage-" + watch.AttemptId);
+            var preparedPath = Path.Combine(stage, "lkg.json");
+            var prepared = promotion is not null && Exists(preparedPath);
             var identity = RequireRuntime(watch);
             runtimeVerified = true;
             if (AgentUpdateRollbackFloor.Read(store.UpdatesRoot) is { } floor &&
                 AgentVersionComparer.CompareReleaseCore(plan.Version, floor.MinVersion) is not >= 0)
                 throw InvalidPromotion();
+
             if (promotion is null)
             {
-                if (Directory.Exists(stage)) throw InvalidPromotion();
+                if (Exists(stage)) throw InvalidPromotion();
                 var previousHost = store.ReadHost() ?? throw InvalidPromotion();
                 if (!SameHash(HashProtectedFile(store.HostPath), previousHost.UpdaterSha256)) throw InvalidPromotion();
                 var installedUpdater = Path.Combine(identity.RuntimeRoot, AgentUpdateLkgStore.UpdaterFileName);
                 validateInstalledSource(installedUpdater, identity.RuntimeRoot);
                 using var installed = File.OpenRead(installedUpdater);
                 var next = new AgentUpdateLkgPromotion(watch.AttemptId, plan.Version, plan.Sha256, previousHost.UpdaterSha256,
-                    Hash(installed), plan.ManifestDigest!, Path.GetFileName(stage));
+                    Hash(installed), plan.ManifestDigest!, Path.GetFileName(stage)) { PivotStarted = false, RetryCount = 0 };
+                if (!ArchiveMarker(marker, active, changeJournal)) return false;
                 store.WritePromotion(next);
                 promotion = next;
+                checkpoint?.Invoke("marker");
             }
 
+            if (!prepared && HasCrossedPivot(promotion)) throw InvalidPromotion();
             var record = prepared
                 ? ReadPrepared(preparedPath, promotion, plan, identity)
                 : Prepare(stage, preparedPath, promotion, plan, identity);
+            checkpoint?.Invoke("prepared");
             log(LkgProbe.PassedLogMarker);
 
             if (RequireRuntime(watch) != identity) throw InvalidPromotion();
             var current = readJournal();
             if (!LkgWatchHostBinding.BindsWatch(current, watch.AttemptId) || current.Phase != active.Phase ||
                 current.LifecycleGeneration != active.LifecycleGeneration || current.WatchRequestedUtc != active.WatchRequestedUtc)
-                return Fail(current, changeJournal, promotion, verifiedPlan: null);
+                return false;
 
-            Publish(stage, promotion, record);
+            promotion = Publish(stage, promotion, record);
             AgentUpdateRollbackFloor.Raise(store.UpdatesRoot, record.Version, "watch_pass", record.ManifestSequence,
                 record.ManifestDigest, record.PromotedUtc);
+            checkpoint?.Invoke("floor");
             if (!Close(changeJournal, active, plan, failureCode: null)) return false;
-            committed = true;
+            handled = true;
+            checkpoint?.Invoke("journal");
             Cleanup(promotion);
+            checkpoint?.Invoke("cleanup");
             return true;
         }
         catch (Exception ex) when (IsPromotionFailure(ex))
         {
-            if (committed || (!resume && ex is IOException && promotion is not null))
+            if (handled)
             {
-                // Resume will revalidate intact prepared bytes after an interrupted write.
-                LogFailure(log);
+                if (promotion is not null) handled = RetainAndRetry(readJournal(), changeJournal, promotion, integrityFailed: false);
                 return false;
             }
-            return Fail(active, changeJournal, promotion, runtimeVerified ? plan : null);
+            handled = HandleFailure(active, changeJournal, promotion, runtimeVerified ? plan : null, ex);
+            return false;
         }
     }
 
@@ -198,13 +220,13 @@ internal sealed partial class LkgPromotion(
             AgentUpdateArtifactTransfer.ValidateFileLength(signed, source.Length);
             Copy(source, stagedMsi);
         }
-        using (OpenVerified(stagedMsi, promotion.MsiSha256, signed.ArtifactLength)) { }
+        using (OpenVerified(stagedMsi, promotion.MsiSha256, plan.Version, signed.ArtifactLength)) { }
 
         var installedUpdater = Path.Combine(identity.RuntimeRoot, AgentUpdateLkgStore.UpdaterFileName);
         var stagedUpdater = Path.Combine(stage, AgentUpdateLkgStore.UpdaterFileName);
         validateInstalledSource(installedUpdater, identity.RuntimeRoot);
         using (var source = File.OpenRead(installedUpdater)) Copy(source, stagedUpdater);
-        using (OpenVerified(stagedUpdater, promotion.NewUpdaterSha256))
+        using (OpenVerified(stagedUpdater, promotion.NewUpdaterSha256, plan.Version))
             if (!probe(stagedUpdater, plan.Version)) throw InvalidPromotion();
 
         var record = BuildRecord(promotion, signed, identity, DateTimeOffset.UtcNow);
@@ -217,13 +239,13 @@ internal sealed partial class LkgPromotion(
     {
         var stage = Path.GetDirectoryName(path)!;
         var signed = VerifyManifest(StagedOrCanonical(stage, store.ManifestPath), plan);
-        using (OpenVerified(StagedOrCanonical(stage, store.MsiPath), promotion.MsiSha256, signed.ArtifactLength)) { }
-        using (OpenVerified(StagedOrCanonical(stage, store.HostPath), promotion.NewUpdaterSha256)) { }
+        using (OpenVerified(StagedOrCanonical(stage, store.MsiPath), promotion.MsiSha256, plan.Version, signed.ArtifactLength)) { }
+        using (OpenVerified(StagedOrCanonical(stage, store.HostPath), promotion.NewUpdaterSha256, plan.Version)) { }
         var record = JsonSerializer.Deserialize<AgentUpdateLkgRecord>(AgentUpdateLkgStore.ReadSmallFile(path), AgentUpdateLkgStore.RecordJson)
             ?? throw InvalidPromotion();
         if (record.PromotedUtc == default || record.PromotedUtc.Offset != TimeSpan.Zero ||
             record != BuildRecord(promotion, signed, identity, record.PromotedUtc))
-            throw InvalidPromotion();
+            throw new PromotionIntegrityFailure();
         return record;
     }
 
@@ -245,7 +267,7 @@ internal sealed partial class LkgPromotion(
             !string.Equals(manifest.EffectiveSignerKeyIdentity, plan.SignerKeyIdentity, StringComparison.OrdinalIgnoreCase) ||
             !metadata.AllowedSignerKeyIdentity.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
                 .Contains(manifest.EffectiveSignerKeyIdentity, StringComparer.OrdinalIgnoreCase))
-            throw InvalidPromotion();
+            throw new PromotionIntegrityFailure();
         return manifest;
     }
 
@@ -262,107 +284,6 @@ internal sealed partial class LkgPromotion(
         return identity;
     }
 
-    private void Publish(string stage, AgentUpdateLkgPromotion promotion, AgentUpdateLkgRecord record)
-    {
-        Validate(store.RecordPath, allowMissing: true);
-        Validate(store.HostPath, allowMissing: true);
-        Validate(store.HostRecordPath, allowMissing: true);
-        var currentUpdater = File.Exists(store.HostPath) ? HashProtectedFile(store.HostPath) : null;
-        if (currentUpdater is not null && !SameHash(currentUpdater, promotion.OldUpdaterSha256) &&
-            !SameHash(currentUpdater, promotion.NewUpdaterSha256))
-            throw InvalidPromotion();
-
-        PreservePreviousHost(promotion);
-
-        // Retire metadata before replacing either payload so mixed old/new files cannot be used as an LKG.
-        if (!HasPublishedRecord(record)) Retire(store.RecordPath, promotion.AttemptId, ".lkg.json");
-        Install(stage, store.MsiPath, promotion.AttemptId, ".msi");
-        Install(stage, store.ManifestPath, promotion.AttemptId, ".manifest.json");
-        if (!SameHash(currentUpdater, promotion.NewUpdaterSha256))
-            Install(stage, store.HostPath, promotion.AttemptId, ".exe");
-
-        AgentUpdateLkgStore.WriteRecord(store.RecordPath, store.UpdatesRoot, record);
-        AgentUpdateLkgStore.WriteRecord(store.HostRecordPath, store.UpdatesRoot, new AgentUpdateLkgHostRecord(
-            AgentUpdateLkgStore.HostSchema, record.Version, record.UpdaterSha256, "promotion", record.PromotedUtc,
-            record.WatchedAttemptId, record.Version));
-    }
-
-    private bool HasPublishedRecord(AgentUpdateLkgRecord record)
-    {
-        if (!File.Exists(store.RecordPath)) return false;
-        try
-        {
-            return JsonSerializer.Deserialize<AgentUpdateLkgRecord>(AgentUpdateLkgStore.ReadSmallFile(store.RecordPath),
-                AgentUpdateLkgStore.RecordJson) == record;
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException) { return false; }
-    }
-
-    private bool IsPublished(AgentUpdateLkgPromotion promotion, long sequence)
-    {
-        Validate(store.RecordPath, allowMissing: false);
-        var lkg = JsonSerializer.Deserialize<AgentUpdateLkgRecord>(AgentUpdateLkgStore.ReadSmallFile(store.RecordPath),
-            AgentUpdateLkgStore.RecordJson);
-        var host = store.ReadHost();
-        var floor = AgentUpdateRollbackFloor.Read(store.UpdatesRoot);
-        if (!(sequence > 0 && lkg is not null && lkg.Schema == AgentUpdateLkgStore.Schema &&
-            lkg.WatchedAttemptId == promotion.AttemptId && lkg.Version == promotion.NewVersion && lkg.ManifestSequence == sequence &&
-            SameHash(lkg.ManifestDigest, promotion.ManifestDigest) && SameHash(lkg.MsiSha256, promotion.MsiSha256) &&
-            SameHash(lkg.UpdaterSha256, promotion.NewUpdaterSha256) &&
-            host is { PlacedBy: "promotion" } && host.AttemptId == promotion.AttemptId && host.LkgVersion == lkg.Version &&
-            host.UpdaterVersion == lkg.Version && SameHash(host.UpdaterSha256, lkg.UpdaterSha256) &&
-            floor is not null && AgentVersionComparer.CompareReleaseCore(floor.MinVersion, lkg.Version) is >= 0))
-            return false;
-
-        Validate(store.ManifestPath, allowMissing: false);
-        var manifest = AgentUpdateManifestValidator.VerifyStoredSignature(
-            Encoding.UTF8.GetString(AgentUpdateLkgStore.ReadSmallFile(store.ManifestPath)), _manifestKeys);
-        Validate(store.MsiPath, allowMissing: false);
-        using var msi = File.OpenRead(store.MsiPath);
-        AgentUpdateLkgStore.ValidateRelease(lkg!, manifest, promotion.NewVersion, floor, msi.Length, Hash(msi));
-        return SameHash(HashProtectedFile(store.HostPath), promotion.NewUpdaterSha256);
-    }
-
-    private void Install(string stage, string destination, string attemptId, string suffix)
-    {
-        var source = Path.Combine(stage, Path.GetFileName(destination));
-        if (!File.Exists(source)) return; // ReadPrepared already verified the canonical copy.
-        Validate(source, allowMissing: false);
-        Retire(destination, attemptId, suffix);
-        File.Move(source, destination);
-    }
-
-    private void Retire(string path, string attemptId, string suffix)
-    {
-        Validate(path, allowMissing: true);
-        if (!File.Exists(path)) return;
-        var retired = RetiredPath(attemptId, suffix);
-        Validate(retired, allowMissing: true);
-        File.Move(path, retired);
-    }
-
-    private void Cleanup(AgentUpdateLkgPromotion promotion)
-    {
-        DeleteStage(Path.Combine(store.Root, promotion.StageDir));
-        foreach (var destination in new[] { store.HostPath, store.HostRecordPath, store.RecordPath, store.MsiPath,
-            store.ManifestPath, RetiredPath(promotion.AttemptId, PreviousHostSuffix) })
-        {
-            var pending = destination + ".restore.tmp";
-            Validate(pending, allowMissing: true);
-            File.Delete(pending);
-        }
-        var marker = Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName);
-        Validate(marker, allowMissing: false);
-        if (store.ReadPromotion() != promotion) throw InvalidPromotion();
-        File.Delete(marker);
-        foreach (var suffix in RetiredSuffixes[..^2])
-        {
-            var path = RetiredPath(promotion.AttemptId, suffix);
-            Validate(path, allowMissing: true);
-            File.Delete(path);
-        }
-    }
-
     private void DeleteStage(string stage)
     {
         Validate(stage, allowMissing: true);
@@ -375,7 +296,7 @@ internal sealed partial class LkgPromotion(
         Directory.Delete(stage);
     }
 
-    private FileStream OpenVerified(string path, string expectedHash, long? expectedLength = null)
+    private FileStream OpenVerified(string path, string expectedHash, string version, long? expectedLength = null)
     {
         Validate(path, allowMissing: false);
         var stream = File.OpenRead(path);
@@ -383,8 +304,8 @@ internal sealed partial class LkgPromotion(
         {
             if (stream.Length <= 0 || (expectedLength is not null && stream.Length != expectedLength) ||
                 !SameHash(Hash(stream), expectedHash))
-                throw InvalidPromotion();
-            verifyArtifact(path, expectedHash);
+                throw new PromotionIntegrityFailure();
+            verifyArtifact(path, version, expectedHash);
             return stream;
         }
         catch
@@ -457,4 +378,5 @@ internal sealed partial class LkgPromotion(
     private static bool SameHash(string? left, string? right) => string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
     private static bool SamePath(string left, string right) => string.Equals(Path.GetFullPath(left), right, StringComparison.OrdinalIgnoreCase);
     private static InvalidOperationException InvalidPromotion() => new("LKG promotion could not be verified.");
+    private sealed class PromotionIntegrityFailure : InvalidOperationException;
 }

@@ -3,6 +3,11 @@ using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Updater;
 
+// The in-process support fixtures substitute machine authority, service and journal-lock boundaries.
+internal sealed record LkgWatchHostPlatform(string UpdatesRoot, string ProcessPath, Func<bool> HasAuthority, Action<bool> Restart,
+    Action<string> ValidateHostRoot, Action VerifyTask, Func<string?> ReadInstalledVersion, Func<AgentUpdateJournal, bool> NoInstallerActivity,
+    Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> ChangeJournal, Func<long> ReadUptimeMilliseconds);
+
 internal static partial class LkgWatchHost
 {
     private const string RestartFailed = "watch_restart_failed";

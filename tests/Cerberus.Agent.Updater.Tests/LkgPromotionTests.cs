@@ -75,6 +75,7 @@ public sealed partial class LkgPromotionTests : IDisposable
         _plan = new("msi", Version, "dev", msi, manifest.Sha256, Now.ToString("O"), "support fixture", AttemptId: Attempt,
             Sequence: manifest.Sequence, ArtifactLength: manifest.ArtifactLength, ManifestPath: storedManifest, SignerKeyIdentity: Pin,
             ManifestDigest: AgentUpdateManifestValidator.Digest(manifest));
+        AgentUpdateDurableFile.Write(Path.Combine(attempt, AgentUpdateSecurity.PlanFileName), _store.UpdatesRoot, _plan);
         _watch = new(AgentUpdateWatchRecord.CurrentSchema, Attempt, Version, _plan.Sequence, _identity.ProductCode, OldVersion,
             OldVersion, Now, [], null, 0, 0, null, null, AgentUpdateWatchOutcomes.Passed, []);
     }
@@ -105,8 +106,11 @@ public sealed partial class LkgPromotionTests : IDisposable
         Assert.DoesNotContain(LkgProbe.PassedLogMarker, _logs);
     }
 
-    [Fact]
-    public void InterruptedRenamesRollForwardFromProbePassedBytes()
+    [Theory]
+    [InlineData("clean")]
+    [InlineData("runtime")]
+    [InlineData("staged")]
+    public void InterruptedRenamesRollForwardFromProbePassedBytes(string evidence)
     {
         var probes = 0;
         var promotion = Create(probe: (path, version) =>
@@ -115,21 +119,38 @@ public sealed partial class LkgPromotionTests : IDisposable
             Assert.Contains("stage-" + Attempt, path);
             Assert.Equal("new updater", File.ReadAllText(path));
             return version == Version;
-        }, validate: (path, root, missing) =>
-        {
-            AgentUpdateSecurity.ValidateTrustedPath(path, root, missing);
-            if (Path.GetFileName(path) == $"retired-{Attempt}.exe") throw new IOException("Interrupted before host replacement.");
-        });
+        }, checkpoint: step => { if (step == "retire_record") throw new OperationCanceledException(); });
 
-        Assert.False(promotion.Apply(() => _journal, Change, _watch, _plan, resume: false));
+        Assert.Throws<OperationCanceledException>(() => promotion.Apply(() => _journal, Change, _watch, _plan, resume: false));
         Assert.NotNull(_store.ReadPromotion());
         Assert.Equal(AgentUpdateWatchJournal.CommittedWatch, _journal.Phase);
         Assert.Equal("old updater", File.ReadAllText(_store.HostPath));
-        Assert.Equal("new MSI", File.ReadAllText(_store.MsiPath));
+        Assert.Equal("old MSI", File.ReadAllText(_store.MsiPath));
         Assert.False(File.Exists(_store.RecordPath));
         Assert.Equal(OldVersion, AgentUpdateRollbackFloor.Read(_store.UpdatesRoot)!.MinVersion);
 
         var resumed = Create(probe: (_, _) => throw new InvalidOperationException("Verified staged bytes should resume without a new probe."));
+        if (evidence == "runtime")
+        {
+            var reads = 0;
+            var wrongRuntime = Create(runtime: () => ++reads == 1 ? _identity : _identity with { ProductCode = Guid.NewGuid() });
+            var before = LkgInventory();
+            Assert.False(wrongRuntime.Apply(() => _journal, Change, _watch, _plan, resume: true));
+            Assert.Equal(1, _store.ReadPromotion()!.RetryCount);
+            Assert.Equal(before, LkgInventory());
+        }
+        if (evidence == "staged")
+        {
+            File.WriteAllText(Path.Combine(Stage, AgentUpdateLkgStore.UpdaterFileName), "changed fixture updater bytes");
+            var before = LkgInventory();
+            Assert.False(resumed.Apply(() => _journal, Change, _watch, _plan, resume: true));
+            Assert.Equal(AgentUpdateLkgPromotion.MaxRetries, _store.ReadPromotion()!.RetryCount);
+            Assert.Equal(before, LkgInventory());
+            Assert.Equal(AgentUpdateWatchJournal.LkgPromotionFailed, _journal.AlertCode);
+            Assert.Equal(Attempt, _journal.AlertAttemptId);
+            Assert.Single(_logs, code => code == AgentUpdateWatchJournal.LkgPromotionFailed);
+            return;
+        }
         Assert.True(resumed.Apply(() => _journal, Change, _watch, _plan, resume: true));
         Assert.Equal(1, probes);
         Assert.Contains(LkgProbe.PassedLogMarker, _logs);
@@ -172,7 +193,7 @@ public sealed partial class LkgPromotionTests : IDisposable
         var interruptedCleanup = Create(validate: (path, root, missing) =>
         {
             AgentUpdateSecurity.ValidateTrustedPath(path, root, missing);
-            if (Path.GetFileName(path) == AgentUpdateLkgStore.PromotionFileName) throw new IOException("Interrupted cleanup.");
+            if (!missing && Path.GetFileName(path) == AgentUpdateLkgStore.PromotionFileName) throw new IOException("Interrupted cleanup.");
         });
 
         Assert.False(interruptedCleanup.Apply(() => _journal, Change, _watch, _plan, resume: false));
@@ -197,10 +218,10 @@ public sealed partial class LkgPromotionTests : IDisposable
     }
 
     private LkgPromotion Create(Func<string, string, bool>? probe = null, Action<string, string>? verify = null,
-        Action<string, string, bool>? validate = null, Func<LkgPromotion.RuntimeIdentity?>? runtime = null)
+        Action<string, string, bool>? validate = null, Func<LkgPromotion.RuntimeIdentity?>? runtime = null, Action<string>? checkpoint = null)
         => new(_store, _metadata, runtime ?? (() => _identity), validate ?? AgentUpdateSecurity.ValidateTrustedPath,
             (path, root) => AgentUpdateSecurity.ValidateTrustedPath(path, root, allowMissing: false),
-            verify ?? ((_, _) => { }), probe ?? ((_, _) => true), _logs.Add);
+            (path, _, sha256) => verify?.Invoke(path, sha256), probe ?? ((_, _) => true), _logs.Add, checkpoint);
 
     private AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> patch) => _journal = patch(_journal);
     private string ReadRecordVersion() => JsonSerializer.Deserialize<AgentUpdateLkgRecord>(
