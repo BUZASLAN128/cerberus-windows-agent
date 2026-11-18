@@ -23,11 +23,11 @@ internal static class LkgWatchHostBinding
             {
                 if (MatchesVerifiedPlan(context, watch))
                     LkgPromotion.Run(context.Store, context.JournalStore, watch, context.Plan!, metadata,
-                        () => ReadPromotionRuntime(context, watch), (path, hash) => AdmitPromotedArtifact(path, watch.WatchedVersion, hash), context.Log);
+                        () => ReadPromotionRuntime(context, watch), AdmitPromotedArtifact, context.Log);
             },
             context => LkgPromotion.Resume(context.Store, context.JournalStore, context.Watch, context.Plan, metadata,
                 () => context.Watch is { } watch && MatchesVerifiedPlan(context, watch) ? ReadPromotionRuntime(context, watch) : null,
-                (path, hash) => context.Plan is { } plan && AdmitPromotedArtifact(path, plan.Version, hash), context.Log),
+                AdmitPromotedArtifact, context.Log),
             LkgPromotion.CleanupRetired,
             (context, watch) => LkgRollback.Run(context, watch, ReadLkg));
     }
@@ -121,12 +121,16 @@ internal static class LkgWatchHostBinding
         journal.AttemptId == attempt && journal.WatchAttemptId == attempt && journal.WatchRequestedUtc is not null;
 
     internal static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string code)
+        => CloseWithoutPromotion(context, watch, code, context.JournalStore.Change);
+
+    internal static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string code,
+        Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change)
     {
         if (context.Journal is not { Phase: AgentUpdateWatchJournal.CommittedWatch } expected || !BindsWatch(expected, watch.AttemptId))
             return;
 
         var installedIsWatched = MatchesVerifiedPlan(context, watch) && LkgWatchHostWindows.ReadInstalledVersion() == watch.WatchedVersion;
-        if (!AgentUpdateJournalPatch.TryApply(context.JournalStore, watch.AttemptId, expected.Phase,
+        if (!AgentUpdateJournalPatch.TryApply(change, watch.AttemptId, expected.Phase,
             before => before.LifecycleGeneration == expected.LifecycleGeneration && before.WatchRequestedUtc == expected.WatchRequestedUtc &&
                 BindsWatch(before, watch.AttemptId)
                 ? WithWatchOutcome(before, code, installedIsWatched ? watch.WatchedVersion : null,
@@ -196,7 +200,7 @@ internal static class LkgWatchHostBinding
         catch (Exception ex) when (LkgWatchHost.IsHostFailure(ex)) { return null; }
     }
 
-    private static AgentUpdateLkgRecord? ReadEligibleLkg(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata,
+    internal static AgentUpdateLkgRecord? ReadEligibleLkg(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata,
         IReadOnlyList<string> keys, string? replaced)
     {
         if (replaced is null) return null;

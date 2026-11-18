@@ -27,6 +27,21 @@ public sealed partial class AgentUpdaterContractTests
         Assert.Equal("agent.update.rollback_grant.v1", AgentUpdateRollbackGrant.Schema);
         Assert.Equal("agent.update.watch.v1", AgentUpdateWatchRecord.CurrentSchema);
         Assert.Equal("agent.update.probe.v1", LkgProbe.Schema);
+
+        const string promotionDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var legacyPromotion = new AgentUpdateLkgPromotion("attempt-1", "1.2.3", promotionDigest,
+            promotionDigest, promotionDigest, promotionDigest, "stage-attempt-1");
+        using var legacyPromotionJson = JsonSerializer.SerializeToDocument(legacyPromotion, AgentUpdateLkgStore.RecordJson);
+        var legacyPromotionFields = legacyPromotionJson.RootElement.EnumerateObject()
+            .Select(property => property.Name).Order(StringComparer.Ordinal);
+        Assert.Equal("attempt_id manifest_digest msi_sha256 new_updater_sha256 new_version old_updater_sha256 stage_dir",
+            string.Join(" ", legacyPromotionFields));
+        Assert.Equal(3, AgentUpdateLkgPromotion.MaxRetries);
+        using var promotionJson = JsonSerializer.SerializeToDocument(
+            legacyPromotion with { PivotStarted = true, RetryCount = AgentUpdateLkgPromotion.MaxRetries },
+            AgentUpdateLkgStore.RecordJson);
+        Assert.True(promotionJson.RootElement.GetProperty("pivot_started").GetBoolean());
+        Assert.Equal(3, promotionJson.RootElement.GetProperty("retry_count").GetInt32());
         Assert.Equal("--watch", AgentUpdateWatchHostArgs.WatchArgument);
         Assert.Equal("--scm-failure", AgentUpdateWatchHostArgs.ScmFailureArgument);
         Assert.Equal("--probe", AgentUpdateWatchHostArgs.ProbeArgument);

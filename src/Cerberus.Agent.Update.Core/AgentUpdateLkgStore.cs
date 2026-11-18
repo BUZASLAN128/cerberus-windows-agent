@@ -17,7 +17,15 @@ internal sealed record AgentUpdateLkgHostRecord(string Schema, string UpdaterVer
 }
 
 internal sealed record AgentUpdateLkgPromotion(string AttemptId, string NewVersion, string MsiSha256,
-    string OldUpdaterSha256, string NewUpdaterSha256, string ManifestDigest, string StageDir);
+    string OldUpdaterSha256, string NewUpdaterSha256, string ManifestDigest, string StageDir)
+{
+    internal const int MaxRetries = 3;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PivotStarted { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RetryCount { get; init; }
+}
 
 public sealed class AgentUpdateLkgStore(string updatesRoot)
 {
@@ -26,6 +34,7 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
     internal const string Schema = "agent.update.lkg.v1";
     internal const string HostSchema = "agent.update.lkg_host.v1";
     internal const string PromotionFileName = "promote.json";
+    internal const string StalePromotionPrefix = "promote.stale-";
     internal const string LockFileName = "host.lock";
     internal static JsonSerializerOptions RecordJson { get; } = new()
     {
@@ -95,6 +104,7 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
 
         var installedUpdater = Path.Combine(Path.GetFullPath(runtimeDirectory), UpdaterFileName);
         EnsureRoot();
+        ValidateStalePromotionLayout();
         var lockPath = Path.Combine(Root, LockFileName);
         AgentUpdateSecurity.ValidateProtectedPath(lockPath, UpdatesRoot, allowMissing: true);
         using var gate = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -214,8 +224,24 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
         if (!AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId) || value.StageDir != "stage-" + value.AttemptId ||
             !AgentUpdateManifestValidator.IsReleaseVersion(value.NewVersion) || !AgentUpdateManifestValidator.IsSha256(value.MsiSha256) ||
             !AgentUpdateManifestValidator.IsSha256(value.OldUpdaterSha256) || !AgentUpdateManifestValidator.IsSha256(value.NewUpdaterSha256) ||
-            !AgentUpdateManifestValidator.IsSha256(value.ManifestDigest))
+            !AgentUpdateManifestValidator.IsSha256(value.ManifestDigest) ||
+            (value.PivotStarted, value.RetryCount) is not
+                ((null, null) or (false, 0) or (true, >= 0 and <= AgentUpdateLkgPromotion.MaxRetries)))
             throw new InvalidOperationException("LKG promotion metadata is invalid.");
+    }
+
+    internal void ValidateStalePromotionLayout()
+    {
+        foreach (var path in Directory.EnumerateFileSystemEntries(Root, "promote.stale*"))
+        {
+            var name = Path.GetFileName(path);
+            if (!name.StartsWith(StalePromotionPrefix, StringComparison.Ordinal) ||
+                !name.EndsWith(".json", StringComparison.Ordinal) ||
+                name.Length != StalePromotionPrefix.Length + 64 + ".json".Length ||
+                name[StalePromotionPrefix.Length..^5].Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f')) ||
+                (File.GetAttributes(path) & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+                throw new InvalidOperationException("Stale LKG promotion artifact has an invalid layout.");
+        }
     }
 
     private T? ReadRecord<T>(string path) where T : class

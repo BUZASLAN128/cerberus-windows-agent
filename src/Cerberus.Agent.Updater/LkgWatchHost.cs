@@ -17,7 +17,7 @@ internal sealed record LkgWatchHostWork(
     Func<LkgWatchHostContext, Func<LkgWatchHostTick>?> StartSampling,
     Action<LkgWatchHostContext, AgentUpdateWatchRecord> CloseWithoutPromotion,
     Action<LkgWatchHostContext, AgentUpdateWatchRecord> Promote,
-    Action<LkgWatchHostContext> ResumePromotion,
+    Func<LkgWatchHostContext, bool> ResumePromotion,
     Action<AgentUpdateLkgStore> CleanupRetired,
     Action<LkgWatchHostContext, AgentUpdateWatchRecord> Rollback);
 
@@ -47,29 +47,42 @@ internal sealed record LkgWatchHostOperations(
     Action VerifyTask,
     Action<LkgWatchHostSnapshot, bool> Act,
     Action<AgentUpdateWatchRecord> WriteWatch,
-    Action<string> Log);
-
-internal static class LkgWatchHost
+    Action<string> Log)
 {
-    internal static int Run(AgentUpdateWatchHostArgs args, LkgWatchHostWork work)
+    public Action<int>? LogRestartWin32 { get; init; }
+    public Func<AgentUpdateJournal, bool>? NoInstallerActivity { get; init; }
+    public Func<AgentUpdateJournal, bool>? RecordRestartFailure { get; init; }
+    public Func<long> ReadUptimeMilliseconds { get; init; } = () => Environment.TickCount64;
+}
+
+internal static partial class LkgWatchHost
+{
+    internal static int Run(AgentUpdateWatchHostArgs args, LkgWatchHostWork work, LkgWatchHostPlatform? platform = null)
     {
-        var store = new AgentUpdateLkgStore(AgentUpdateSecurity.DefaultPrivilegedRoot);
+        var store = new AgentUpdateLkgStore(platform?.UpdatesRoot ?? AgentUpdateSecurity.DefaultPrivilegedRoot);
         var journal = new AgentUpdateJournalStore(store.UpdatesRoot);
         var log = new LkgHostLog(store.UpdatesRoot);
         return Run(args, new LkgWatchHostOperations(
-            () => AgentBuildProfile.IsServer && AgentUpdateSecurity.IsLocalSystem(),
-            scm => LkgWatchHostWindows.Restart(scm, () => TryReadRawJournal(store.UpdatesRoot)),
-            () => VerifySelf(store, work.VerifyHostArtifact),
+            platform?.HasAuthority ?? (() => AgentBuildProfile.IsServer && AgentUpdateSecurity.IsLocalSystem()),
+            platform?.Restart ?? (scm => LkgWatchHostWindows.Restart(scm, () => TryReadRawJournal(store.UpdatesRoot))),
+            () => VerifySelf(store, platform?.ProcessPath ?? Environment.ProcessPath,
+                platform?.ValidateHostRoot ?? AgentUpdateSecurity.ValidateProtectedTree, work.VerifyHostArtifact),
             () => ReadSnapshot(store, journal),
             () => TryLock(store),
             snapshot => LkgSignedFloor.Inspect(store.UpdatesRoot,
                 LkgSignedFloor.ReadPlan(store.UpdatesRoot, snapshot.Journal?.AttemptId),
-                LkgWatchHostWindows.ReadInstalledVersion(), work.ManifestKeys),
+                platform is null ? LkgWatchHostWindows.ReadInstalledVersion() : platform.ReadInstalledVersion(), work.ManifestKeys),
             candidate => LkgSignedFloor.Apply(store.UpdatesRoot, candidate, DateTimeOffset.UtcNow),
-            AgentUpdateWatchTask.VerifyAndRepair,
+            platform?.VerifyTask ?? AgentUpdateWatchTask.VerifyAndRepair,
             (snapshot, scm) => Act(store, journal, snapshot, scm, log.Write, work),
             watch => AgentUpdateWatchStore.Write(store.UpdatesRoot, watch),
-            log.Write));
+            log.Write)
+        {
+            LogRestartWin32 = log.WriteRestartFailure,
+            NoInstallerActivity = platform?.NoInstallerActivity ?? LkgWatchHostWindows.NoInstallerActivity,
+            RecordRestartFailure = expected => RecordInterruptedRestart(platform?.ChangeJournal ?? journal.Change, expected),
+            ReadUptimeMilliseconds = platform?.ReadUptimeMilliseconds ?? (() => Environment.TickCount64),
+        });
     }
 
     internal static int Run(AgentUpdateWatchHostArgs args, LkgWatchHostOperations operations)
@@ -78,8 +91,7 @@ internal static class LkgWatchHost
             return 2;
 
         var invokedByScm = args.Mode == AgentUpdateWatchHostMode.ScmFailure;
-        try { operations.Restart(invokedByScm); }
-        catch (Exception ex) when (IsHostFailure(ex)) { }
+        var restartFailed = !TryRestart(operations, invokedByScm);
 
         try { operations.VerifyHost(); }
         catch (Exception ex) when (IsHostFailure(ex))
@@ -93,7 +105,7 @@ internal static class LkgWatchHost
         {
             var state = operations.ReadSnapshot();
             acting = state.HasWork;
-            if (!acting && operations.InspectFloor(state)?.Pending is null)
+            if (!acting && !NeedsRestartCheck(state) && operations.InspectFloor(state)?.Pending is null)
                 return 0;
 
             using var gate = operations.TryLock();
@@ -112,6 +124,11 @@ internal static class LkgWatchHost
                 return 0;
             }
 
+            if (NeedsRestartCheck(state) && state.Journal is { } interrupted && !TryRestart(operations, invokedByScm) &&
+                operations.NoInstallerActivity?.Invoke(interrupted) == true &&
+                operations.RecordRestartFailure?.Invoke(interrupted) == true)
+                operations.Log(AgentUpdateWatchJournal.RollbackFailed);
+
             LkgSignedFloor.Inspection? floor = null;
             try { floor = operations.InspectFloor(state); }
             catch (Exception ex) when (acting && IsHostFailure(ex)) { operations.Log("watch_signed_floor_unavailable"); }
@@ -121,7 +138,7 @@ internal static class LkgWatchHost
             if (!acting)
                 return 0;
 
-            operations.VerifyTask();
+            state = VerifyTaskForAction(operations, state);
             operations.Act(state with { InstalledManifestVerified = floor is not null }, invokedByScm);
             return 0;
         }
@@ -130,9 +147,13 @@ internal static class LkgWatchHost
             if (acting) operations.Log("watch_host_action_failed");
             return 2;
         }
+
+        bool NeedsRestartCheck(LkgWatchHostSnapshot state) => restartFailed && !state.UnknownPhase &&
+            operations.ReadUptimeMilliseconds() >= (long)TimeSpan.FromMinutes(15).TotalMilliseconds &&
+            IsUnreportedPreCommit(state.Journal) && operations.NoInstallerActivity?.Invoke(state.Journal!) == true;
     }
 
-    private static void Act(AgentUpdateLkgStore store, AgentUpdateJournalStore journalStore, LkgWatchHostSnapshot state,
+    internal static void Act(AgentUpdateLkgStore store, AgentUpdateJournalStore journalStore, LkgWatchHostSnapshot state,
         bool invokedByScm, Action<string> log, LkgWatchHostWork work)
     {
         AgentUpdatePlan? plan = null;
@@ -140,12 +161,10 @@ internal static class LkgWatchHost
         catch (Exception ex) when (IsHostFailure(ex)) { }
         var context = new LkgWatchHostContext(store, journalStore, state.Journal, state.Watch, plan, invokedByScm,
             state.InstalledManifestVerified, log);
-        if (state.PromotionPending)
-        {
-            work.ResumePromotion(context);
+        if (state.PromotionPending && work.ResumePromotion(context))
             return;
-        }
-        if (state.HasRetiredFiles)
+        if (state.HasRetiredFiles && (state.Journal?.Phase != AgentUpdateWatchJournal.CommittedWatch ||
+            LkgPromotion.HasNoAttemptEvidence(store, state.Journal.AttemptId, AgentUpdateSecurity.ValidateTrustedPath)))
             work.CleanupRetired(store);
 
         if (state.Journal?.Phase == AgentUpdateWatchJournal.RollingBack)
@@ -216,23 +235,27 @@ internal static class LkgWatchHost
         }
     }
 
-    private static void VerifySelf(AgentUpdateLkgStore store, Action<string, string> verifyArtifact)
+    internal static void VerifySelf(AgentUpdateLkgStore store, string? processPath, Action<string> validateRoot,
+        Action<string, string> verifyArtifact)
     {
-        if (!string.Equals(Environment.ProcessPath, store.HostPath, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(processPath, store.HostPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("The update watch host must run from the protected LKG image.");
-        AgentUpdateSecurity.ValidateProtectedTree(store.Root);
+        validateRoot(store.Root);
         var host = store.ReadHost() ?? throw new InvalidOperationException("The watch host metadata is missing.");
-        var promotion = store.ReadPromotion();
+        store.ValidateStalePromotionLayout();
         using var image = new FileStream(store.HostPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         var hash = Convert.ToHexStringLower(SHA256.HashData(image));
-        if (!HashMatches(host.UpdaterSha256, hash) &&
-            (promotion is null || !HashMatches(promotion.OldUpdaterSha256, hash) && !HashMatches(promotion.NewUpdaterSha256, hash)))
-            throw new InvalidOperationException("The update watch host hash does not match protected metadata.");
+        if (!HashMatches(host.UpdaterSha256, hash))
+        {
+            var promotion = LkgPromotion.ReadMarkerForRecovery(store).Marker;
+            if (promotion is null || !HashMatches(promotion.OldUpdaterSha256, hash) && !HashMatches(promotion.NewUpdaterSha256, hash))
+                throw new InvalidOperationException("The update watch host hash does not match protected metadata.");
+        }
 
         verifyArtifact(store.HostPath, hash);
     }
 
-    private static LkgWatchHostSnapshot ReadSnapshot(AgentUpdateLkgStore store, AgentUpdateJournalStore journal)
+    internal static LkgWatchHostSnapshot ReadSnapshot(AgentUpdateLkgStore store, AgentUpdateJournalStore journal)
     {
         var raw = ReadRawJournal(store.UpdatesRoot);
         var unknown = raw is not null && !AgentUpdateJournalStore.KnownPhase(raw.Phase);
@@ -245,7 +268,7 @@ internal static class LkgWatchHost
         var active = raw is null ? null : journal.Read();
         if (active is not null && !AgentUpdateJournalStore.KnownPhase(active.Phase))
             throw new InvalidOperationException("The update journal changed while reading watch state.");
-        return new(active, watch, false, store.ReadPromotion() is not null,
+        return new(active, watch, false, LkgPromotion.HasPromotionEntry(store),
             Directory.EnumerateFiles(store.Root, "retired-*", SearchOption.TopDirectoryOnly).Any());
     }
 
@@ -280,36 +303,11 @@ internal sealed record LkgWatchHostObservation(string BootId, long TickCount, Da
     string? InstalledVersion, long? Generation, AgentUpdateWatchSample Service, LkgWatchRuntimeIdentity? Identity,
     bool? ProcessImageCanonical, bool? ServiceImageCanonical, long? ExeSize, DateTimeOffset? ExeMtime);
 
-internal static class LkgWatchHostWindows
+internal static partial class LkgWatchHostWindows
 {
     private const uint QueryStatus = 0x0004;
     private const uint Start = 0x0010;
     private const int ServiceAlreadyRunning = 1056;
-
-    internal static void Restart(bool invokedByScm, Func<AgentUpdateJournal?> readJournal)
-    {
-        AgentUpdateWatchRestart Decide()
-        {
-            var journal = readJournal();
-            var owner = HasInstallerProcess(journal);
-            var sample = ReadStatus(bootId: "", includeProcessStart: false);
-            return AgentUpdateWatchPolicy.RestartDecision(sample, invokedByScm, owner, InstallerOwnsService());
-        }
-
-        var decision = Decide();
-        if (decision == AgentUpdateWatchRestart.WaitThenStart)
-        {
-            Thread.Sleep(TimeSpan.FromSeconds(60));
-            decision = Decide();
-        }
-        if (decision != AgentUpdateWatchRestart.None)
-        {
-            using var manager = OpenManager();
-            using var service = OpenService(manager, Start);
-            if (!StartServiceW(service, 0, IntPtr.Zero) && Marshal.GetLastWin32Error() != ServiceAlreadyRunning)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
-    }
 
     internal static LkgWatchHostObservation Observe()
     {
@@ -378,31 +376,6 @@ internal static class LkgWatchHostWindows
         var paths = manager?.GetValue("PendingFileRenameOperations") as string[] ?? [];
         return paths.Any(value => value.TrimStart('!').Equals(@"\??\" + path, StringComparison.OrdinalIgnoreCase) ||
             value.TrimStart('!').Equals(path, StringComparison.OrdinalIgnoreCase));
-    }
-
-    internal static bool HasInstallerProcess(AgentUpdateJournal? journal)
-        => IsAlive(journal?.RunnerProcessId, journal?.RunnerStartedUtc) || IsAlive(journal?.InstallerProcessId, journal?.InstallerStartedUtc);
-
-    internal static bool InstallerOwnsService()
-    {
-        try
-        {
-            using var mutex = Mutex.OpenExisting(@"Global\_MSIExecute");
-            return true;
-        }
-        catch (WaitHandleCannotBeOpenedException) { return false; }
-        catch (UnauthorizedAccessException) { return true; }
-    }
-
-    private static bool IsAlive(int? pid, DateTimeOffset? startedUtc)
-    {
-        if (pid is not > 0 || startedUtc is null) return false;
-        try
-        {
-            using var process = Process.GetProcessById(pid.Value);
-            return !process.HasExited && new DateTimeOffset(process.StartTime.ToUniversalTime()) == startedUtc;
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception) { return false; }
     }
 
     private static bool? ReadProcessImageMatch(AgentUpdateWatchSample sample, string canonical)

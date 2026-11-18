@@ -202,6 +202,81 @@ public sealed class AgentAccessTokenCacheTests : IDisposable
         Assert.Equal(Token, (await cache.ReadAsync(Identity, Backend, KeyFingerprint, 4, Now, default))?.Token);
     }
 
+    [Fact]
+    public async Task StopCleanupDeletesOnlyTheExactDisposableCacheFiles()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var cache = new AgentAccessTokenCache(CacheDirectory, identity.User!);
+        Directory.CreateDirectory(_root);
+        await WriteAsync(cache);
+        await cache.WriteAsync(Identity with { Product = AgentProducts.Secondary }, Backend, KeyFingerprint, 4,
+            Token, Now.AddMinutes(15), Now, default);
+        var secondary = Path.Combine(CacheDirectory, "secondary-access-token.v1.dpapi");
+        Assert.True(File.Exists(CachePath));
+        Assert.True(File.Exists(secondary));
+
+        var unrelated = new[] { Path.Combine(CacheDirectory, "access-token.v1.dpapi.backup"),
+            Path.Combine(CacheDirectory, "enrollment.json"), Path.Combine(_root, "secrets.json") };
+        foreach (var path in unrelated) File.WriteAllText(path, "fixture sentinel");
+        var before = new DirectoryInfo(CacheDirectory).GetAccessControl().GetSecurityDescriptorBinaryForm();
+
+        cache.RemoveExactCacheFiles();
+        cache.RemoveExactCacheFiles();
+        Assert.False(File.Exists(CachePath));
+        Assert.False(File.Exists(secondary));
+        Assert.All(unrelated, path => Assert.Equal("fixture sentinel", File.ReadAllText(path)));
+        Assert.Equal(before, new DirectoryInfo(CacheDirectory).GetAccessControl().GetSecurityDescriptorBinaryForm());
+    }
+
+    [Theory]
+    [InlineData("foreign-directory")]
+    [InlineData("entry-directory")]
+    [InlineData("entry-reparse")]
+    [InlineData("entry-hardlink")]
+    public async Task StopCleanupRefusesUntrustedDirectoryAndAmbiguousEntries(string kind)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var cache = new AgentAccessTokenCache(CacheDirectory, identity.User!);
+        Directory.CreateDirectory(_root);
+        if (kind == "foreign-directory")
+        {
+            Directory.CreateDirectory(CacheDirectory);
+            File.WriteAllText(CachePath, "foreign entry");
+            Assert.Throws<UnauthorizedAccessException>(cache.RemoveExactCacheFiles);
+            Assert.Equal("foreign entry", File.ReadAllText(CachePath));
+            Assert.Throws<UnauthorizedAccessException>(
+                new AgentAccessTokenCache(CacheDirectory, production: false).RemoveExactCacheFiles);
+            return;
+        }
+
+        await WriteAsync(cache);
+        File.Delete(CachePath);
+        var target = Path.Combine(_root, "target");
+        if (kind == "entry-directory")
+        {
+            Directory.CreateDirectory(CachePath);
+            target = CachePath;
+        }
+        else
+        {
+            var junction = kind == "entry-reparse";
+            if (junction) Directory.CreateDirectory(target);
+            else File.WriteAllText(target, "target");
+            using var mklink = Process.Start(new ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/d", "/c", "mklink", junction ? "/j" : "/h", CachePath, target },
+                UseShellExecute = false, CreateNoWindow = true,
+            })!;
+            await mklink.WaitForExitAsync();
+            Assert.Equal(0, mklink.ExitCode);
+        }
+        Assert.Throws<InvalidOperationException>(cache.RemoveExactCacheFiles);
+        if (kind == "entry-hardlink") Assert.Equal("target", File.ReadAllText(target));
+        else Assert.True(Directory.Exists(target));
+        Assert.True(File.Exists(CachePath) || Directory.Exists(CachePath));
+        if (kind == "entry-reparse") Directory.Delete(CachePath);
+    }
+
     private static Task WriteAsync(AgentAccessTokenCache cache)
         => cache.WriteAsync(Identity, Backend, KeyFingerprint, 4, Token, Now.AddMinutes(15), Now, default);
 

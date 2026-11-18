@@ -9,7 +9,11 @@ internal sealed class LkgHostLog(string updatesRoot)
 {
     internal const long MaximumBytes = 1024 * 1024;
 
-    public void Write(string code)
+    public void Write(string code) => Write(code, null);
+
+    internal void WriteRestartFailure(int win32Error) => Write("watch_restart_failed", win32Error);
+
+    private void Write(string code, int? win32Error)
     {
         if (!AgentUpdateErrorCodes.IsCode(code))
             throw new ArgumentException("The watch host log requires a bounded event code.", nameof(code));
@@ -25,7 +29,8 @@ internal sealed class LkgHostLog(string updatesRoot)
             AgentUpdateSecurity.ValidateTrustedPath(previous, root, allowMissing: true);
             Directory.CreateDirectory(directory);
 
-            var entry = Encoding.UTF8.GetBytes(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) + " " + code + "\n");
+            var detail = win32Error is { } error ? " win32=" + error.ToString(CultureInfo.InvariantCulture) : "";
+            var entry = Encoding.UTF8.GetBytes(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture) + " " + code + detail + "\n");
             using (var log = Open(current))
             {
                 if (AppendIfFits(log, entry))

@@ -74,28 +74,48 @@ internal static class LkgProbe
         start.ArgumentList.Add("--probe");
         start.ArgumentList.Add(nonce);
 
+        return Run(start, nonce, expectedVersion, minimumContract, TimeSpan.FromSeconds(60));
+    }
+
+    internal static bool Run(ProcessStartInfo start, string nonce, string expectedVersion, int minimumContract, TimeSpan probeTimeout)
+    {
         using var process = Process.Start(start);
         if (process is null) return false;
-        try
+        using var timeout = new CancellationTokenSource(probeTimeout);
+        var expired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var terminate = timeout.Token.Register(() =>
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-            return ReadResponseAsync(process, nonce, expectedVersion, minimumContract, timeout.Token)
-                .GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException) { return false; }
+            TerminateChild(process);
+            expired.TrySetResult(false);
+        });
+        var response = ReadResponseAsync(process, nonce, expectedVersion, minimumContract);
+        if (Task.WhenAny(response, expired.Task).GetAwaiter().GetResult() == expired.Task)
+            return false;
+        try { return !timeout.IsCancellationRequested && response.GetAwaiter().GetResult(); }
         finally
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            TerminateChild(process);
         }
     }
 
-    private static async Task<bool> ReadResponseAsync(Process process, string nonce, string version,
-        int minimumContract, CancellationToken cancellationToken)
+    private static void TerminateChild(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or AggregateException)
+        {
+            // The probe can exit concurrently with termination. The timed read still fails closed.
+        }
+    }
+
+    private static async Task<bool> ReadResponseAsync(Process process, string nonce, string version, int minimumContract)
     {
         var buffer = new char[MaxOutputChars + 1];
-        var count = await process.StandardOutput.ReadBlockAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+        var count = await process.StandardOutput.ReadBlockAsync(buffer.AsMemory()).ConfigureAwait(false);
         if (count > MaxOutputChars) return false;
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitForExitAsync().ConfigureAwait(false);
         return Accepts(new string(buffer, 0, count), process.ExitCode, nonce, version, minimumContract);
     }
 
