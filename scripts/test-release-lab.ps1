@@ -32,9 +32,25 @@ try{
   foreach($override in @(@{Channel='preview'},@{BuildProfile='desktop'},@{SigningMode='Token'},@{AllowUnsigned=$false},@{Version='0.2.9999'})){
     $bad=$buildInputs.Clone();foreach($name in $override.Keys){$bad[$name]=$override[$name]};Require-Rejection $bad
   }
+  foreach($minutes in @(5,30)){
+    $p.watchMinutesOverride=$minutes
+    $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
+    if((Read-ReleaseLabPolicy @buildInputs).Policy.watchMinutesOverride -ne $minutes){throw 'Valid lab watch override was rejected.'}
+  }
+  foreach($minutes in @(4,31,'5',5.0,$true,$null)){
+    $p.watchMinutesOverride=$minutes
+    $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
+    Require-Rejection $buildInputs
+  }
+  $p.Remove('watchMinutesOverride')
+  $policyJson=$p|ConvertTo-Json -Depth 5
+  foreach($members in @('"WatchMinutesOverride":5,','"watchMinutesOverride":5,"WatchMinutesOverride":5,')){
+    $policyJson.Insert(1,$members)|Set-Content -LiteralPath $policyFile -Encoding utf8
+    Require-Rejection $buildInputs
+  }
   $p.expiresAtUtc=$now.AddHours(49).ToString('o')
   $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
   Require-Rejection $buildInputs
   if($null -ne (Read-ReleaseLabPolicy -PolicyFile '' -FeedRootFile '' -Version '0.2.1012' -Channel preview -BuildProfile server -SigningMode Pfx -AllowUnsigned $false)){throw 'Normal build without a lab policy was changed.'}
-  [pscustomobject]@{result='PASS';checks=8;level='unit/support';artifactRoot=$ArtifactRoot;certificateStoreChanged=$false;privateKeyPersisted=$false}|ConvertTo-Json
+  [pscustomobject]@{result='PASS';checks=18;level='unit/support';artifactRoot=$ArtifactRoot;certificateStoreChanged=$false;privateKeyPersisted=$false}|ConvertTo-Json
 }finally{$certificate.Dispose();$key.Dispose()}

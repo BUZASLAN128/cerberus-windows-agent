@@ -4,11 +4,30 @@ using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.App.Updates;
 
-/// <summary>A real, one-shot fault for every transition in the authorized two-target campaign.</summary>
+/// <summary>Fault schedule and protected once receipts for the authorized two-target campaign.</summary>
 internal static class AgentUpdateLabFaults
 {
+    internal const string InstallerMutexName = @"Global\_MSIExecute";
+    internal const string TokenRoute429 = "token-route-429";
+    private const string ServiceExit = "service-pre-download-exit";
+    private const string UpdaterExit = "updater-pre-installer-exit";
+    private const string InstallerBusy = "updater-msi-busy-1618";
+
+    // Indexed by the target's position in policy.Versions. Index 0 is bootstrap.
+    private static readonly string?[] Schedule = [null, ServiceExit, InstallerBusy, TokenRoute429,
+        UpdaterExit, "service-post-commit-crash", "feed-truncated-artifact", InstallerBusy, UpdaterExit,
+        TokenRoute429, ServiceExit];
+    private static Mutex? _installerBusyHold;
+
     private sealed record Receipt(string CampaignId, string AgentId, string TenantId, string KeyFingerprint,
         string Version, string Fault, DateTimeOffset Utc, int ProcessId, string? ArtifactSha256, string? AttemptId);
+
+    internal static string? FaultFor(AgentUpdateLabPolicy? policy, string version)
+    {
+        if (policy is null) return null;
+        var index = Array.IndexOf(policy.Versions, AgentUpdateCampaignTransition.Release(version));
+        return index >= 0 && index < Schedule.Length ? Schedule[index] : null;
+    }
 
     internal static void InterruptServiceOnce(AgentUpdateInstallRequest? request, IAgentLogger log)
     {
@@ -17,13 +36,13 @@ internal static class AgentUpdateLabFaults
         if (scope is null || request.LocalPolicyId != scope.Policy.CampaignId ||
             !UsesServiceInterruption(scope.Policy, request.ExpectedPlan.Version) ||
             !AgentUpdateLocalService.AllowsLabFault(scope.Context.Generation)) return;
-        if (!RecordOnce(scope, request.ExpectedPlan.Version, "service-pre-download-exit", request.ExpectedPlan.ArtifactSha256)) return;
+        if (!RecordOnce(scope, request.ExpectedPlan.Version, ServiceExit, request.ExpectedPlan.ArtifactSha256)) return;
         log.Warn("Controlled development campaign service interruption before artifact download.");
         Environment.Exit(86); // Abrupt process exit, no crash dump; SCM owns recovery.
     }
 
     internal static bool UsesServiceInterruption(AgentUpdateLabPolicy policy, string version)
-        => policy.Versions.Skip(1).Contains(version, StringComparer.Ordinal) && version != policy.Versions[8];
+        => FaultFor(policy, version) == ServiceExit;
 
     // Called inside the updater launch fence, before a launch grant or the MSI-start marker exists.
     internal static void InterruptUpdaterOnce(AgentUpdateJournal active, AgentUpdatePlan plan,
@@ -37,7 +56,15 @@ internal static class AgentUpdateLabFaults
         if (!ShouldInterruptUpdater(scope, active, plan, lifecycle, processId, startedUtc,
             state.IsQuarantined(scope.Context.AgentId), AgentUpdateLocalService.PendingStateDelivery(lifecycle,
                 new DpapiSecretStore(SecretStoreScope.Machine)))) return;
-        if (!RecordOnce(scope, plan.Version, "updater-pre-installer-exit", plan.Sha256, plan.AttemptId)) return;
+        var fault = FaultFor(scope.Policy, plan.Version)!;
+        if (!RecordOnce(scope, plan.Version, fault, plan.Sha256, plan.AttemptId)) return;
+        if (fault == InstallerBusy)
+        {
+            // Launch remains on this synchronous updater thread. Windows releases ownership on exit.
+            _installerBusyHold ??= TakeInstallerMutex(InstallerMutexName);
+            log("Controlled development campaign installer contention before installer handoff.");
+            return;
+        }
         log("Controlled development campaign updater interruption before installer handoff.");
         Environment.Exit(86); // The flushed installer fence has not been crossed.
     }
@@ -49,12 +76,34 @@ internal static class AgentUpdateLabFaults
             AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.Generation == scope.Context.Generation &&
             lifecycle.LastEnrollmentNonce == scope.Context.EnrollmentNonce &&
             active.LifecycleGeneration == lifecycle.Generation && active.InstallRequest?.LocalPolicyId == scope.Policy.CampaignId &&
-            plan.Version == scope.Policy.Versions[8] && active.Phase == "launch_requested" &&
+            FaultFor(scope.Policy, plan.Version) is (UpdaterExit or InstallerBusy) && active.Phase == "launch_requested" &&
             active.InstallRequest.BoundAttemptId == active.AttemptId &&
             AgentUpdateRunnerFiles.OwnsLaunch(active, plan.AttemptId!, processId, startedUtc) &&
             active.InstallRequest.VerifiedRelease is { } release && release.Matches(AgentUpdateExpectedPlan.FromPlan(plan));
 
-    private static bool RecordOnce(AgentUpdateLabRuntime.Scope scope, string version, string fault,
+    internal static Mutex TakeInstallerMutex(string name)
+    {
+        var state = AgentNamedMutex.Open(name, out var mutex);
+        if (mutex is null) throw new InvalidOperationException($"Development installer contention could not open its mutex ({state}).");
+        try
+        {
+            if (!TryAcquireMutex(mutex)) throw new InvalidOperationException("Development installer contention found an already held mutex.");
+            return mutex;
+        }
+        catch
+        {
+            mutex.Dispose();
+            throw;
+        }
+    }
+
+    internal static bool TryAcquireMutex(Mutex mutex)
+    {
+        try { return mutex.WaitOne(0); }
+        catch (AbandonedMutexException) { return true; } // Windows transferred ownership to this thread.
+    }
+
+    internal static bool RecordOnce(AgentUpdateLabRuntime.Scope scope, string version, string fault,
         string? artifactSha256 = null, string? attemptId = null)
     {
         var policy = scope.Policy;

@@ -15,7 +15,8 @@ internal sealed record AgentUpdateLabPolicy(
     AgentUpdateLabTarget[] Targets,
     string[] Versions,
     string BackendUrl,
-    string SsoBaseUrl)
+    string SsoBaseUrl,
+    int? WatchMinutesOverride = null)
 {
     internal const string MetadataName = "AgentUpdateLabPolicyB64";
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
@@ -66,7 +67,7 @@ internal sealed record AgentUpdateLabPolicy(
         if (SchemaVersion != "agent.update.lab.v1" || !Guid.TryParseExact(CampaignId, "D", out _) ||
             NotBeforeUtc.Offset != TimeSpan.Zero || ExpiresAtUtc.Offset != TimeSpan.Zero ||
             ExpiresAtUtc <= NotBeforeUtc || ExpiresAtUtc - NotBeforeUtc > TimeSpan.FromHours(48) ||
-            Targets is not { Length: 2 } || Versions is not { Length: 11 } ||
+            Targets is not { Length: 2 } || Versions is not { Length: 11 } || WatchMinutesOverride is < 5 ||
             !ValidBackendUri(BackendUrl) || !ValidBackendUri(SsoBaseUrl)) throw Denied();
         if (Targets.Any(t => t is null)) throw Denied();
         foreach (var target in Targets)

@@ -131,6 +131,16 @@ public sealed class AgentUpdateLabRemediationTests
         Assert.False(Eligible(active with { RunnerProcessId = 456 }, lifecycle));
         Assert.False(Eligible(active with { Phase = "install_may_have_started" }, lifecycle));
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, policy.ExpiresAtUtc, "0.2.907"));
+
+        foreach (var index in new[] { 1, 2, 3, 4, 5, 6, 7, 9, 10 })
+        {
+            var candidate = plan with { Version = policy.Versions[index], LabSourceVersion = policy.Versions[index - 1] };
+            var verified = AgentUpdateExpectedPlan.FromPlan(candidate);
+            var bound = active with { InstallRequest = request with { ExpectedPlan = verified,
+                VerifiedRelease = verified, LocalSourceVersion = candidate.LabSourceVersion } };
+            Assert.Equal(index is 2 or 4 or 7,
+                AgentUpdateLabFaults.ShouldInterruptUpdater(scope, bound, candidate, lifecycle, 123, Now, false, false));
+        }
     }
 
     [Fact]
