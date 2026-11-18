@@ -234,10 +234,21 @@ public sealed class AgentUpdateRecoveryTests
     [Fact]
     public void CloseRecovery_HealthyKeepsTheSequence()
     {
-        var closed = AgentUpdateLocalService.CloseRecovery(
-            Recovery(Recorded) with { FailedInstallSequence = 5 }, Plan, healthy: true, Recorded, AgentInstallerHealthPhase.Stability);
-        Assert.Equal(AgentUpdateStates.Installed, closed.Phase);
-        Assert.Equal(5, closed.FailedInstallSequence);
+        var before = Recovery(Recorded) with { FailedInstallSequence = 5 };
+        var now = Recorded.AddMinutes(1);
+        var desktop = AgentUpdateLocalService.CloseRecovery(
+            before, Plan, healthy: true, now, AgentInstallerHealthPhase.Stability, serverProfile: false);
+        Assert.Equal(AgentUpdateStates.Installed, desktop.Phase);
+        Assert.Equal(5, desktop.FailedInstallSequence);
+
+        var server = AgentUpdateLocalService.CloseRecovery(
+            before, Plan, healthy: true, now, AgentInstallerHealthPhase.Stability, serverProfile: true);
+        Assert.Equal(AgentUpdateWatchJournal.CommittedWatch, server.Phase);
+        Assert.Equal(now, server.WatchRequestedUtc);
+        Assert.NotNull(before.AttemptId);
+        Assert.Equal(before.AttemptId, server.AttemptId);
+        Assert.Equal(before.AttemptId, server.WatchAttemptId);
+        Assert.Equal(5, server.FailedInstallSequence);
     }
 
     private static bool Elevated
