@@ -110,8 +110,21 @@ try {
   Copy-Item -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Destination $fixtureRepo
   Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentUpdaterContract.cs'),
     (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
-  $version = Get-UpdaterSourceVersion $fixtureRepo
-  Set-Content -LiteralPath (Join-Path $fixtureCore 'updater-contract.lock') -Value "$version $(Get-UpdaterSourceFingerprint $fixtureRepo)" -Encoding utf8
+  $fixtureLock = Join-Path $fixtureCore 'updater-contract.lock'
+  $stampScript = Join-Path $fixtureScripts 'stamp-updater-contract-lock.ps1'
+  [IO.File]::WriteAllText($fixtureLock, '')
+  & $stampScript
+  $stampedLock = [IO.File]::ReadAllBytes($fixtureLock)
+  $sourceVersion = Get-UpdaterSourceVersion $fixtureRepo
+  $expectedStamp = "$sourceVersion $(Get-UpdaterSourceFingerprint $fixtureRepo)$([Environment]::NewLine)"
+  Check 'stamp writes exactly one BOM-less candidate accepted by the source lock gate' {
+    [Text.Encoding]::UTF8.GetString($stampedLock) -ceq $expectedStamp -and
+      (Assert-UpdaterSourceLock $fixtureRepo) -eq $sourceVersion
+  }
+  Check 'stamp refuses an existing fingerprint without changing the lock' {
+    (Throws { & $stampScript } 'fingerprint has already been stamped') -and
+      [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($fixtureLock)) -ceq $expectedStamp
+  }
   . (Join-Path $fixtureScripts 'release-publish-lib.ps1')
   . (Join-Path $fixtureScripts 'release-token-lib.ps1')
 
@@ -321,7 +334,7 @@ try {
     PayloadCheck = { param($Msi, $Setup) throw 'setup payload mismatch' }
   }
 
-  # Binding of the pending payload and of both runtime assemblies to what the build embeds
+  # Bind the pending payload to the trust values embedded in all three assemblies.
   $pinB = Get-SignerSpkiPin $certB
   $keysAOnlyList = ConvertTo-ManifestPublicKeyListB64 @($pemA)
   $keysAOnly = @($keysAOnlyList)
@@ -329,9 +342,9 @@ try {
   function Get-Pairs([string[]]$Keys = $keyListB64, [string[]]$Pins = @($pin), [string]$Prefix = $prefix, [string]$Channel = "stable") {
     Get-TrustPairs -Keys $Keys -Pins $Pins -Prefix $Prefix -Channel $Channel
   }
-  $both = { param($Pairs) @{ AgentPairs = $Pairs; RuntimePairs = $Pairs } }
-  Assert-FinalizeRefused "finalize refuses pending keys that differ from the embedded keys" "Pending manifest keys do not match" (New-Fixture -Options (& $both (Get-Pairs -Keys $keysAOnly))) $accept
-  Assert-FinalizeRefused "finalize refuses pending signer pins that differ from the embedded pins" "Pending signer pins do not match" (New-Fixture -Options (& $both (Get-Pairs -Pins @($pinB)))) $accept
+  $allAssemblies = { param($Pairs) @{ AgentPairs = $Pairs; RuntimePairs = $Pairs; UpdaterPairs = $Pairs } }
+  Assert-FinalizeRefused "finalize refuses pending keys that differ from the embedded keys" "Pending manifest keys do not match" (New-Fixture -Options (& $allAssemblies (Get-Pairs -Keys $keysAOnly))) $accept
+  Assert-FinalizeRefused "finalize refuses pending signer pins that differ from the embedded pins" "Pending signer pins do not match" (New-Fixture -Options (& $allAssemblies (Get-Pairs -Pins @($pinB)))) $accept
   $f = New-Fixture
   $pendingFile = Join-Path $f.Publish $pendingName
   $pendingObject = Get-Content -Raw -LiteralPath $pendingFile | ConvertFrom-Json
@@ -344,7 +357,7 @@ try {
   Assert-FinalizeRefused "finalize refuses embedded prefixes that differ from the pending prefixes" "Pending artifact prefixes do not match" (New-Fixture -Options @{ EmbeddedPrefix = $otherPrefix }) $accept
   Assert-FinalizeRefused "finalize refuses a runtime assembly without metadata" "carries no manifest public key" (New-Fixture -Options @{ RuntimePairs = @() }) $accept
   Assert-FinalizeRefused "finalize refuses a runtime assembly with a malformed key" "malformed manifest public key" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Keys @("***")) }) $accept
-  Assert-FinalizeRefused "finalize refuses embedded keys joined by a space (single unusable entry)" "malformed manifest public key" (New-Fixture -Options (& $both (Get-Pairs -Keys @($keyListB64 -join " ")))) $accept
+  Assert-FinalizeRefused "finalize refuses embedded keys joined by a space (single unusable entry)" "malformed manifest public key" (New-Fixture -Options (& $allAssemblies (Get-Pairs -Keys @($keyListB64 -join " ")))) $accept
   Assert-FinalizeRefused "finalize refuses a payload channel that differs from -Channel" "Pending manifest channel does not match" (New-Fixture -Options @{ CanonicalChannel = "preview" }) $accept
   Assert-FinalizeRefused "finalize refuses an embedded channel that differs only in case" "must be lowercase dev, preview or stable" (New-Fixture -Options @{ EmbeddedChannel = "Stable" }) $accept
   Assert-FinalizeRefused "finalize with embedded and -Channel 'Stable' is refused" "must be lowercase dev, preview or stable" (New-Fixture -Options @{ EmbeddedChannel = "Stable" }) $accept @{ Channel = "Stable" }
@@ -358,14 +371,14 @@ try {
   $urlB = @("AgentUpdateManifestUrl", "https://updates.example/b.json")
   Assert-FinalizeRefused "finalize refuses different update manifest URLs in the two assemblies" "different update manifest URLs" (New-Fixture -Options @{
     AgentPairs = (@(Get-Pairs) + ,$urlA); RuntimePairs = (@(Get-Pairs) + ,$urlB) }) $accept
-  foreach ($label in "AgentPairs", "RuntimePairs") {
+  foreach ($label in "AgentPairs", "RuntimePairs", "UpdaterPairs") {
     $unsigned = @{ $label = (@(Get-Pairs) + ,@("AllowUnsignedDevBuild", "true")) }
     Assert-FinalizeRefused "finalize refuses AllowUnsignedDevBuild=true in $label" "carries AllowUnsignedDevBuild='true'" (New-Fixture -Options $unsigned) $accept
   }
   Assert-FinalizeRefused "finalize refuses an AllowUnsignedDevBuild value that is not a boolean" "carries AllowUnsignedDevBuild='x'" (New-Fixture -Options @{
     RuntimePairs = (@(Get-Pairs) + ,@("AllowUnsignedDevBuild", "x")) }) $accept
   $sameUrl = @(Get-Pairs) + ,$urlA + ,@("AllowUnsignedDevBuild", "False")
-  $withUrl = New-Fixture -Options @{ AgentPairs = $sameUrl; RuntimePairs = $sameUrl }
+  $withUrl = New-Fixture -Options (& $allAssemblies $sameUrl)
   Invoke-Finalize $withUrl $recordAll
   Check "finalize accepts one shared manifest URL and AllowUnsignedDevBuild=False" { Test-Path -LiteralPath (Join-Path $withUrl.Publish $manifestName) }
   Assert-FinalizeRefused "finalize refuses a runtime assembly with a repeated metadata key" "Duplicate assembly metadata key 'AgentReleaseChannel'" (New-Fixture -Options @{
@@ -375,6 +388,18 @@ try {
   Assert-FinalizeRefused "finalize refuses runtime signer pins that differ from the app assembly" "embed different SignerPins" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Pins @($pinB)) }) $accept
   Assert-FinalizeRefused "finalize refuses runtime prefixes that differ from the app assembly" "embed different ArtifactPrefixes" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Prefix $otherPrefix) }) $accept
   Assert-FinalizeRefused "finalize refuses a runtime channel that differs from the app assembly" "embed different release channels" (New-Fixture -Options @{ RuntimePairs = (Get-Pairs -Channel "beta") }) $accept
+  $updaterDifferences = [ordered]@{
+    PublicKeyPems = (Get-Pairs -Keys $keysAOnly)
+    SignerPins = (Get-Pairs -Pins @($pinB))
+    ArtifactPrefixes = (Get-Pairs -Prefix $otherPrefix)
+    'release channels' = (Get-Pairs -Channel 'preview')
+    'update manifest URLs' = (@(Get-Pairs) + ,$urlB)
+  }
+  foreach ($different in $updaterDifferences.GetEnumerator()) {
+    $f = New-Fixture -Options @{ UpdaterPairs = $different.Value }
+    Assert-FinalizeRefused "finalize refuses Updater.dll-only mismatch in $($different.Key)" `
+      "Cerberus\.Agent\.Updater\.dll embed different $($different.Key)" $f $accept
+  }
   # Two signer pins: every signature check must receive both
   $script:checkedPins = @()
   $twoPinError = $null
@@ -422,6 +447,65 @@ try {
     New-CngSignedManifest -Canonical $cng.Canonical -Certificate $certB -RuntimeDir $cngRuntime -Channel $Channel -ArtifactPrefixes $Prefixes -KeyListB64 $Keys -SignerPins $Pins
   }
   Check "CNG self-check accepts declared values equal to the embedded ones" { (Invoke-CngCheck)["version"] -ceq "9.9.9" }
+  try {
+    [IO.File]::WriteAllText($fixtureLock, '')
+    Check 'unsigned dev build passes its runtime gates with an empty updater lock' {
+      $devPairs = @(Get-Pairs -Channel dev -Pins @('unsigned-dev')) + ,@('AllowUnsignedDevBuild', 'true')
+      $dev = New-Fixture -Options (& $allAssemblies $devPairs)
+      $devRuntime = Join-Path $dev.Publish 'runtime'
+      $depsName = 'Cerberus.Agent.Updater.deps.json'
+      Set-Content -LiteralPath (Join-Path $devRuntime $depsName) -Value `
+        '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Update.Core/1.0":{}}}'
+      # Supply runtime outputs at the compiler boundary and stop when the real dev path reaches packaging.
+      function dotnet {
+        if ($args[0] -cne 'publish') { throw 'Unexpected compiler command in unsigned dev fixture.' }
+        if ([IO.Path]::GetFileName($args[1]) -ceq 'Cerberus.Agent.Installer.Helper.csproj') {
+          throw 'Unsigned dev fixture reached installer helper publish.'
+        }
+        $outputArg = [array]::IndexOf($args, '-o')
+        $output = Join-Path $fixtureRepo 'out/unsigned-dev-fixture/publish/runtime'
+        if ($outputArg -lt 0 -or [IO.Path]::GetFullPath($args[$outputArg + 1]) -cne [IO.Path]::GetFullPath($output)) {
+          throw 'Unexpected runtime output path in unsigned dev fixture.'
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $output $depsName))) {
+          Copy-Item -Path (Join-Path $devRuntime '*') -Destination $output -Recurse
+        }
+        Set-Variable -Name LASTEXITCODE -Value 0 -Scope 1
+      }
+      $previousActions = $env:GITHUB_ACTIONS
+      $previousArtifactBase = $env:AGENT_RELEASE_ARTIFACT_BASE_URL
+      try {
+        $env:GITHUB_ACTIONS = $null
+        $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $prefix
+        try {
+          & $mainScript -Version '9.9.9' -Channel dev -OutputRoot 'out/unsigned-dev-fixture' -SkipTests `
+            -AllowUnsignedDevBuild -AllowEphemeralManifestKey -UpdateAllowedArtifactPrefixes $prefix 6>$null | Out-Null
+        } catch {
+          if ($_.Exception.Message -cne 'Unsigned dev fixture reached installer helper publish.') { throw }
+          return (Get-Item -LiteralPath $fixtureLock).Length -eq 0
+        }
+        $false
+      } finally {
+        $env:GITHUB_ACTIONS = $previousActions
+        $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $previousArtifactBase
+      }
+    }
+    $lockErrors = [ordered]@{
+      empty = 'Updater source lock has no candidate stamp'
+      stale = 'Updater source fingerprint does not match the latest lock entry'
+      missing = 'Updater source lock is missing'
+    }
+    foreach ($lockCase in $lockErrors.GetEnumerator()) {
+      switch ($lockCase.Key) {
+        stale { [IO.File]::WriteAllText($fixtureLock, "$sourceVersion $('0' * 64)") }
+        missing { Remove-Item -LiteralPath $fixtureLock }
+      }
+      Assert-FinalizeRefused "finalize refuses a $($lockCase.Key) updater lock" $lockCase.Value (New-Fixture) $accept
+      Check "CNG refuses a $($lockCase.Key) updater lock" { Throws { Invoke-CngCheck } $lockCase.Value }
+    }
+  } finally {
+    [IO.File]::WriteAllBytes($fixtureLock, $stampedLock)
+  }
   Check "CNG self-check refuses declared keys that differ from the embedded keys" { Throws { Invoke-CngCheck -Keys $keysAOnly } "Declared manifest keys do not match" }
   Check "CNG self-check refuses declared pins that differ from the embedded pins" { Throws { Invoke-CngCheck -Pins @($pinB) } "Declared signer pins do not match" }
   Check "CNG self-check refuses declared prefixes that differ from the embedded prefixes" { Throws { Invoke-CngCheck -Prefixes @($otherPrefix) } "Declared artifact prefixes do not match" }

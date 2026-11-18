@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Invoke only against the final release candidate source at freeze.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-trust-lib.ps1')

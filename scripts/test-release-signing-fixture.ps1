@@ -75,6 +75,7 @@ function New-FinalizeFixture {
     # Raw metadata for one DLL (replaces the default pairs); $null keeps the default.
     [object[]]$AgentPairs = $null,
     [object[]]$RuntimePairs = $null,
+    [object[]]$UpdaterPairs = $null,
     [string]$RuntimeNamespace = "System.Reflection",
     # Canonical payload signer identity, when it should differ from the embedded pin.
     [string]$CanonicalSignerPin = "",
@@ -93,9 +94,10 @@ function New-FinalizeFixture {
   $default = Get-TrustPairs -Keys $KeyListB64 -Pins (@($SignerPin) + @($ExtraPins)) -Prefix $embeddedPrefix -Channel $EmbeddedChannel
   if ($null -eq $AgentPairs) { $AgentPairs = $default }
   if ($null -eq $RuntimePairs) { $RuntimePairs = $default }
+  if ($null -eq $UpdaterPairs) { $UpdaterPairs = $default }
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.dll") -AssemblyName "Cerberus.Agent" -Pairs $AgentPairs
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Runtime.dll") -AssemblyName "Cerberus.Agent.Runtime" -Pairs $RuntimePairs -AttributeNamespace $RuntimeNamespace
-  New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Updater.dll") -AssemblyName "Cerberus.Agent.Updater" -Pairs $RuntimePairs -AttributeNamespace $RuntimeNamespace
+  New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Updater.dll") -AssemblyName "Cerberus.Agent.Updater" -Pairs $UpdaterPairs
   foreach ($exe in $script:ReleaseRuntimeExecutableNames) { Set-Content -LiteralPath (Join-Path $runtime $exe) -Value "fixture $exe" }
   New-Item -ItemType Directory -Path (Join-Path $runtime "tr") -Force | Out-Null
   Set-Content -LiteralPath (Join-Path $runtime "tr/Cerberus.Agent.resources.dll") -Value "fixture satellite"
