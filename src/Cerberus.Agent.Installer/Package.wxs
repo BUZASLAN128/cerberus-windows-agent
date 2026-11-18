@@ -332,7 +332,8 @@
           <util:ServiceConfig
               FirstFailureActionType="restart"
               SecondFailureActionType="restart"
-              ThirdFailureActionType="restart"
+              ThirdFailureActionType="runCommand"
+              ProgramCommandLine='"[CommonAppDataFolder]CerberusServerAgent\Privileged\Updates\lkg\Cerberus.Agent.Updater.exe" --scm-failure'
               RestartServiceDelayInSeconds="60"
               ResetPeriodInDays="1" />
         </ServiceInstall>
