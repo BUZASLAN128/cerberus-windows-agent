@@ -26,15 +26,15 @@ internal sealed class LkgPromotion(
 
     /// <summary>Starts promotion of a persisted passed watch. The caller holds lkg\host.lock.</summary>
     internal static bool Run(AgentUpdateLkgStore store, AgentUpdateJournalStore journal, AgentUpdateWatchRecord watch,
-        AgentUpdatePlan plan, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
+        AgentUpdatePlan plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
         Action<string> log)
-        => Create(store, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: false);
+        => Create(store, metadata, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: false);
 
     /// <summary>Recovers a promotion or finishes cleanup. The caller holds lkg\host.lock.</summary>
     internal static bool Resume(AgentUpdateLkgStore store, AgentUpdateJournalStore journal, AgentUpdateWatchRecord? watch,
-        AgentUpdatePlan? plan, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
+        AgentUpdatePlan? plan, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity, Func<string, string, bool> isAdmittedLabArtifact,
         Action<string> log)
-        => Create(store, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: true);
+        => Create(store, metadata, readRuntimeIdentity, isAdmittedLabArtifact, log).Apply(journal.Read, journal.Change, watch, plan, resume: true);
 
     /// <summary>Removes retired files at host start. The caller holds lkg\host.lock.</summary>
     internal static void CleanupRetired(AgentUpdateLkgStore store)
@@ -52,12 +52,11 @@ internal sealed class LkgPromotion(
         }
     }
 
-    private static LkgPromotion Create(AgentUpdateLkgStore store, Func<RuntimeIdentity?> readRuntimeIdentity,
+    private static LkgPromotion Create(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata, Func<RuntimeIdentity?> readRuntimeIdentity,
         Func<string, string, bool> isAdmittedLabArtifact, Action<string> log)
     {
         if (!AgentBuildProfile.IsServer || !AgentUpdateSecurity.IsLocalSystem())
             throw new InvalidOperationException("LKG promotion requires the server host running as LocalSystem.");
-        var metadata = AgentUpdateBuildMetadata.Read(typeof(LkgPromotion).Assembly);
         return new(store, metadata, readRuntimeIdentity, AgentUpdateSecurity.ValidateProtectedPath,
             AgentUpdateSecurity.ValidateInstalledServiceSource,
             (path, hash) => VerifyAuthenticode(metadata, path, hash, isAdmittedLabArtifact), LkgProbe.Run, log);
@@ -93,7 +92,8 @@ internal sealed class LkgPromotion(
             Cleanup(promotion, published: true);
             return true;
         }
-        if (watch is null || plan is null || active.Phase != AgentUpdateWatchJournal.CommittedWatch || active.AttemptId != watch.AttemptId)
+        if (watch is null || plan is null || active.Phase != AgentUpdateWatchJournal.CommittedWatch ||
+            !LkgWatchHostBinding.BindsWatch(active, watch.AttemptId))
             return false;
 
         RequirePassedWatch(watch, plan);
@@ -132,8 +132,8 @@ internal sealed class LkgPromotion(
 
             if (RequireRuntime(watch) != identity) return false;
             var current = readJournal();
-            if (current.AttemptId != active.AttemptId || current.Phase != active.Phase ||
-                current.LifecycleGeneration != active.LifecycleGeneration)
+            if (!LkgWatchHostBinding.BindsWatch(current, watch.AttemptId) || current.Phase != active.Phase ||
+                current.LifecycleGeneration != active.LifecycleGeneration || current.WatchRequestedUtc != active.WatchRequestedUtc)
                 return false;
 
             Publish(stage, promotion, record);
@@ -365,7 +365,9 @@ internal sealed class LkgPromotion(
     private static bool Close(Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeJournal,
         AgentUpdateJournal active, AgentUpdatePlan plan, string? failureCode)
         => AgentUpdateJournalPatch.TryApply(changeJournal, active.AttemptId!, AgentUpdateWatchJournal.CommittedWatch,
-            before => before.LifecycleGeneration != active.LifecycleGeneration ? null : before with
+            before => before.LifecycleGeneration != active.LifecycleGeneration || before.WatchRequestedUtc != active.WatchRequestedUtc ||
+                !LkgWatchHostBinding.BindsWatch(before, active.AttemptId!)
+                ? null : before with
             {
                 Phase = AgentUpdateStates.Installed,
                 HealthyInstalledVersion = plan.Version,
@@ -373,6 +375,12 @@ internal sealed class LkgPromotion(
                 FailureCode = failureCode,
                 FailureAttemptId = failureCode is null ? null : active.AttemptId,
                 FailureInstallerResultId = failureCode is null ? null : before.InstallerResult?.ResultId,
+                WatchOutcomeCode = failureCode,
+                WatchOutcomeAttemptId = failureCode is null ? null : active.AttemptId,
+                AlertCode = null,
+                AlertAttemptId = null,
+                InstallerProcessId = null,
+                InstallerStartedUtc = null,
             });
 
     private static void RequirePassedWatch(AgentUpdateWatchRecord watch, AgentUpdatePlan plan)

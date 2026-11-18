@@ -11,15 +11,15 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Cerberus.Agent.Updater;
 
-// Program supplies these adapters when the disjoint lanes and the journal phases are integrated.
 internal sealed record LkgWatchHostWork(
     IReadOnlyList<string> ManifestKeys,
-    Func<string, string, bool> IsAdmittedLabArtifact,
+    Action<string, string> VerifyHostArtifact,
     Func<LkgWatchHostContext, Func<LkgWatchHostTick>?> StartSampling,
     Action<LkgWatchHostContext, AgentUpdateWatchRecord> CloseWithoutPromotion,
     Action<LkgWatchHostContext, AgentUpdateWatchRecord> Promote,
     Action<LkgWatchHostContext> ResumePromotion,
-    Action<AgentUpdateLkgStore> CleanupRetired);
+    Action<AgentUpdateLkgStore> CleanupRetired,
+    Action<LkgWatchHostContext, AgentUpdateWatchRecord> Rollback);
 
 internal sealed record LkgWatchHostContext(AgentUpdateLkgStore Store, AgentUpdateJournalStore JournalStore,
     AgentUpdateJournal? Journal, AgentUpdateWatchRecord? Watch, AgentUpdatePlan? Plan, bool InvokedByScm,
@@ -59,7 +59,7 @@ internal static class LkgWatchHost
         return Run(args, new LkgWatchHostOperations(
             () => AgentBuildProfile.IsServer && AgentUpdateSecurity.IsLocalSystem(),
             scm => LkgWatchHostWindows.Restart(scm, () => TryReadRawJournal(store.UpdatesRoot)),
-            () => VerifySelf(store, work.IsAdmittedLabArtifact),
+            () => VerifySelf(store, work.VerifyHostArtifact),
             () => ReadSnapshot(store, journal),
             () => TryLock(store),
             snapshot => LkgSignedFloor.Inspect(store.UpdatesRoot,
@@ -148,9 +148,12 @@ internal static class LkgWatchHost
         if (state.HasRetiredFiles)
             work.CleanupRetired(store);
 
-        // B1 has not authorized rollback execution on this lane.
         if (state.Journal?.Phase == AgentUpdateWatchJournal.RollingBack)
+        {
+            if (state.Watch is { } rollbackWatch && LkgWatchHostBinding.BindsWatch(state.Journal, rollbackWatch.AttemptId))
+                work.Rollback(context, rollbackWatch);
             return;
+        }
 
         var committed = state.Journal?.Phase == AgentUpdateWatchJournal.CommittedWatch;
         var attempt = committed ? state.Journal!.AttemptId : state.Watch?.AttemptId;
@@ -161,6 +164,9 @@ internal static class LkgWatchHost
         {
             if (existing.Outcome == AgentUpdateWatchOutcomes.Passed && committed && state.InstalledManifestVerified && PlanMatches(plan, existing))
                 work.Promote(context, existing);
+            if (committed && existing.Outcome is (AgentUpdateWatchOutcomes.ForwardOnlyFailed or
+                AgentUpdateWatchOutcomes.Superseded or AgentUpdateWatchOutcomes.Inconclusive))
+                work.CloseWithoutPromotion(context, existing);
             return;
         }
 
@@ -181,6 +187,9 @@ internal static class LkgWatchHost
                     continue;
                 case AgentUpdateWatchOutcome.Passed when committed && state.InstalledManifestVerified && PlanMatches(plan, tick.Record):
                     work.Promote(context, tick.Record);
+                    break;
+                case AgentUpdateWatchOutcome.RollbackPending when committed:
+                    work.Rollback(context, tick.Record);
                     break;
                 case AgentUpdateWatchOutcome.ForwardOnlyFailed or AgentUpdateWatchOutcome.Superseded or AgentUpdateWatchOutcome.Inconclusive:
                     work.CloseWithoutPromotion(context, tick.Record);
@@ -207,7 +216,7 @@ internal static class LkgWatchHost
         }
     }
 
-    private static void VerifySelf(AgentUpdateLkgStore store, Func<string, string, bool> isAdmittedLabArtifact)
+    private static void VerifySelf(AgentUpdateLkgStore store, Action<string, string> verifyArtifact)
     {
         if (!string.Equals(Environment.ProcessPath, store.HostPath, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("The update watch host must run from the protected LKG image.");
@@ -220,9 +229,7 @@ internal static class LkgWatchHost
             (promotion is null || !HashMatches(promotion.OldUpdaterSha256, hash) && !HashMatches(promotion.NewUpdaterSha256, hash)))
             throw new InvalidOperationException("The update watch host hash does not match protected metadata.");
 
-        var metadata = AgentUpdateBuildMetadata.Read(typeof(Program).Assembly);
-        if (!UpdaterLab.IsLabBuild || !isAdmittedLabArtifact(store.HostPath, hash))
-            AgentUpdateAuthenticode.Verify(store.HostPath, metadata.ReleaseChannel, metadata.AllowedSignerKeyIdentity, allowUnsignedDevBuild: false);
+        verifyArtifact(store.HostPath, hash);
     }
 
     private static LkgWatchHostSnapshot ReadSnapshot(AgentUpdateLkgStore store, AgentUpdateJournalStore journal)
@@ -284,8 +291,7 @@ internal static class LkgWatchHostWindows
         AgentUpdateWatchRestart Decide()
         {
             var journal = readJournal();
-            var owner = IsAlive(journal?.RunnerProcessId, journal?.RunnerStartedUtc) ||
-                IsAlive(journal?.InstallerProcessId, journal?.InstallerStartedUtc);
+            var owner = HasInstallerProcess(journal);
             var sample = ReadStatus(bootId: "", includeProcessStart: false);
             return AgentUpdateWatchPolicy.RestartDecision(sample, invokedByScm, owner, InstallerOwnsService());
         }
@@ -374,7 +380,10 @@ internal static class LkgWatchHostWindows
             value.TrimStart('!').Equals(path, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static bool InstallerOwnsService()
+    internal static bool HasInstallerProcess(AgentUpdateJournal? journal)
+        => IsAlive(journal?.RunnerProcessId, journal?.RunnerStartedUtc) || IsAlive(journal?.InstallerProcessId, journal?.InstallerStartedUtc);
+
+    internal static bool InstallerOwnsService()
     {
         try
         {

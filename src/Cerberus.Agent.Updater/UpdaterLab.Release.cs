@@ -6,6 +6,13 @@ internal static partial class UpdaterLab
 {
     internal static bool IsLabBuild => false;
     internal static string CurrentVersion => AgentProductVersion.Get(typeof(Program).Assembly);
+    internal static int WatchMinutes => 30;
+
+    internal static AgentUpdateBuildMetadata WatchMetadata(AgentUpdateBuildMetadata metadata) => metadata;
+
+    internal static bool IsAdmittedWatchArtifact(string kind, string version, string sha256) => false;
+
+    internal static string? AdmitWatchRollback(string rollbackAttemptId, string targetVersion, string msiSha256) => null;
 
     internal static AgentUpdateTrust BuildTrust()
         => AgentUpdateTrustBuilder.Build(AgentUpdateBuildMetadata.Read(typeof(Program).Assembly), CurrentVersion, null);

@@ -26,6 +26,8 @@ public sealed class LkgPromotionTests : IDisposable
     {
         AttemptId = Attempt,
         Phase = AgentUpdateWatchJournal.CommittedWatch,
+        WatchAttemptId = Attempt,
+        WatchRequestedUtc = Now,
         HealthyInstalledVersion = OldVersion,
         HealthyInstalledSequence = 40,
         LifecycleGeneration = 1,
@@ -88,6 +90,8 @@ public sealed class LkgPromotionTests : IDisposable
         Assert.Equal(OldVersion, AgentUpdateRollbackFloor.Read(_store.UpdatesRoot)!.MinVersion);
         Assert.Equal(AgentUpdateStates.Installed, _journal.Phase);
         Assert.Equal(AgentUpdateWatchJournal.LkgPromotionFailed, _journal.FailureCode);
+        Assert.Equal(AgentUpdateWatchJournal.LkgPromotionFailed, _journal.WatchOutcomeCode);
+        Assert.Equal(Attempt, _journal.WatchOutcomeAttemptId);
         Assert.Equal(Version, _journal.HealthyInstalledVersion);
         Assert.Null(_store.ReadPromotion());
         Assert.DoesNotContain(LkgProbe.PassedLogMarker, _logs);

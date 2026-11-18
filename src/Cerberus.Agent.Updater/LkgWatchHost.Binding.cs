@@ -1,41 +1,46 @@
 using System.IO;
+using System.Security.Cryptography;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Updater;
 
 internal static class LkgWatchHostBinding
 {
-    internal static LkgWatchHostWork CreateSigned(Action<LkgWatchHostContext, AgentUpdateWatchRecord> closeWithoutPromotion)
+    internal static LkgWatchHostWork Create()
     {
-        ArgumentNullException.ThrowIfNull(closeWithoutPromotion);
-        if (UpdaterLab.IsLabBuild)
-            throw new InvalidOperationException("Lab watch hosting requires campaign artifact admission.");
-
-        var metadata = AgentUpdateBuildMetadata.Read(typeof(LkgWatchHostBinding).Assembly);
+        var metadata = UpdaterLab.WatchMetadata(AgentUpdateBuildMetadata.Read(typeof(LkgWatchHostBinding).Assembly));
         var keys = AgentUpdateTrustBuilder.ResolveUpdateManifestPublicKeys(metadata.ManifestPublicKeysB64,
             null, null, null, null);
 
-        // Lab admission needs the running host version for self-check, the plan version for promotion,
-        // and the replaced version for LKG validation. Bind each kind/version/hash to its campaign receipt.
-        static bool DenyUnsigned(string path, string sha256) => false;
+        AgentUpdateLkgRecord? ReadLkg(AgentUpdateLkgStore store, string? replaced) => ReadEligibleLkg(store, metadata, keys, replaced);
 
-        return new(keys, DenyUnsigned,
-            context => StartSampling(context, metadata, keys),
-            closeWithoutPromotion, // Late writer binds WatchOutcomeCode and WatchOutcomeAttemptId in one CAS.
+        return new(keys,
+            (path, hash) => LkgPromotion.VerifyAuthenticode(metadata, path, hash,
+                (_, digest) => UpdaterLab.IsAdmittedWatchArtifact("updater", AgentProductVersion.Get(typeof(Program).Assembly), digest)),
+            context => StartSampling(context, ReadLkg),
+            CloseWithoutPromotion,
             (context, watch) =>
             {
                 if (MatchesVerifiedPlan(context, watch))
-                    LkgPromotion.Run(context.Store, context.JournalStore, watch, context.Plan!,
-                        () => ReadPromotionRuntime(context, watch), DenyUnsigned, context.Log);
+                    LkgPromotion.Run(context.Store, context.JournalStore, watch, context.Plan!, metadata,
+                        () => ReadPromotionRuntime(context, watch), (path, hash) => AdmitPromotedArtifact(path, watch.WatchedVersion, hash), context.Log);
             },
-            context => LkgPromotion.Resume(context.Store, context.JournalStore, context.Watch, context.Plan,
+            context => LkgPromotion.Resume(context.Store, context.JournalStore, context.Watch, context.Plan, metadata,
                 () => context.Watch is { } watch && MatchesVerifiedPlan(context, watch) ? ReadPromotionRuntime(context, watch) : null,
-                DenyUnsigned, context.Log),
-            LkgPromotion.CleanupRetired);
+                (path, hash) => context.Plan is { } plan && AdmitPromotedArtifact(path, plan.Version, hash), context.Log),
+            LkgPromotion.CleanupRetired,
+            (context, watch) => LkgRollback.Run(context, watch, ReadLkg));
     }
 
+    private static bool AdmitPromotedArtifact(string path, string version, string sha256) => Path.GetFileName(path) switch
+    {
+        AgentUpdateLkgStore.UpdaterFileName => UpdaterLab.IsAdmittedWatchArtifact("updater", version, sha256),
+        AgentUpdateSecurity.ArtifactFileName => UpdaterLab.IsAdmittedWatchArtifact("msi", version, sha256),
+        _ => false,
+    };
+
     private static Func<LkgWatchHostTick>? StartSampling(LkgWatchHostContext context,
-        AgentUpdateBuildMetadata metadata, IReadOnlyList<string> keys)
+        Func<AgentUpdateLkgStore, string?, AgentUpdateLkgRecord?> readLkg)
     {
         var active = context.Journal;
         var attempt = active?.Phase == AgentUpdateWatchJournal.CommittedWatch ? active.AttemptId : context.Watch?.AttemptId;
@@ -48,7 +53,8 @@ internal static class LkgWatchHostBinding
             return null;
 
         var replaced = existing is null ? active?.HealthyInstalledVersion : existing.ReplacedVersion;
-        var eligible = ReadEligibleLkg(context.Store, metadata, keys, replaced);
+        var eligible = readLkg(context.Store, replaced);
+        var watchMinutes = UpdaterLab.WatchMinutes;
         LkgWatchSampling sampling;
         var persistOpen = existing is null;
         if (existing is not null)
@@ -77,13 +83,11 @@ internal static class LkgWatchHostBinding
             var record = sampling.Record;
             var observation = ToObservation(context, record.AttemptId, record.WatchedVersion, record.WatchedProductCode,
                 native, eligible is not null);
-            // The lab duration is carried separately by the compiled policy when its binding lands.
-            var result = sampling.Sample(observation, () => HashObservedImage(native),
-                (int)AgentUpdateWatchPolicy.RequiredObservation.TotalMinutes);
+            var result = sampling.Sample(observation, () => HashObservedImage(native), watchMinutes);
             var decision = result.Decision;
             if (decision is AgentUpdateWatchOutcome.RollbackPending or AgentUpdateWatchOutcome.ForwardOnlyFailed)
             {
-                decision = ReadEligibleLkg(context.Store, metadata, keys, replaced) is not null
+                decision = context.InstalledManifestVerified && readLkg(context.Store, replaced) is not null
                     ? AgentUpdateWatchOutcome.RollbackPending : AgentUpdateWatchOutcome.ForwardOnlyFailed;
             }
 
@@ -106,13 +110,59 @@ internal static class LkgWatchHostBinding
 
     private static bool IsCurrentWatch(LkgWatchHostContext context, string attempt)
     {
-        if (context.Journal is not { Phase: AgentUpdateWatchJournal.CommittedWatch } expected || expected.AttemptId != attempt)
+        if (context.Journal is not { Phase: AgentUpdateWatchJournal.CommittedWatch } expected || !BindsWatch(expected, attempt))
             return false;
-        // The late typed WatchAttemptId joins this check once the committed-watch writer lands.
         var current = context.JournalStore.Read();
-        return current.Phase == AgentUpdateWatchJournal.CommittedWatch && current.AttemptId == attempt &&
-            current.LifecycleGeneration == expected.LifecycleGeneration;
+        return current.Phase == AgentUpdateWatchJournal.CommittedWatch && BindsWatch(current, attempt) &&
+            current.LifecycleGeneration == expected.LifecycleGeneration && current.WatchRequestedUtc == expected.WatchRequestedUtc;
     }
+
+    internal static bool BindsWatch(AgentUpdateJournal journal, string attempt) =>
+        journal.AttemptId == attempt && journal.WatchAttemptId == attempt && journal.WatchRequestedUtc is not null;
+
+    internal static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string code)
+    {
+        if (context.Journal is not { Phase: AgentUpdateWatchJournal.CommittedWatch } expected || !BindsWatch(expected, watch.AttemptId))
+            return;
+
+        var installedIsWatched = MatchesVerifiedPlan(context, watch) && LkgWatchHostWindows.ReadInstalledVersion() == watch.WatchedVersion;
+        if (!AgentUpdateJournalPatch.TryApply(context.JournalStore, watch.AttemptId, expected.Phase,
+            before => before.LifecycleGeneration == expected.LifecycleGeneration && before.WatchRequestedUtc == expected.WatchRequestedUtc &&
+                BindsWatch(before, watch.AttemptId)
+                ? WithWatchOutcome(before, code, installedIsWatched ? watch.WatchedVersion : null,
+                    installedIsWatched ? watch.WatchedSequence : 0)
+                : null))
+            return;
+
+        context.Log(code);
+        if (watch.Outcome == AgentUpdateWatchOutcomes.ForwardOnlyFailed)
+            LkgWatchHostWindows.Restart(false, context.JournalStore.Read);
+    }
+
+    private static void CloseWithoutPromotion(LkgWatchHostContext context, AgentUpdateWatchRecord watch)
+        => CloseWithoutPromotion(context, watch, watch.Outcome switch
+        {
+            AgentUpdateWatchOutcomes.ForwardOnlyFailed when watch.Alerts.Contains(AgentUpdateWatchJournal.RollbackFailed, StringComparer.Ordinal)
+                => AgentUpdateWatchJournal.RollbackFailed,
+            AgentUpdateWatchOutcomes.ForwardOnlyFailed => AgentUpdateWatchJournal.PostCommitUnhealthy,
+            _ => AgentUpdateWatchJournal.WatchUnavailable,
+        });
+
+    internal static AgentUpdateJournal WithWatchOutcome(AgentUpdateJournal before, string code, string? version, long sequence) => before with
+    {
+        Phase = AgentUpdateStates.Installed,
+        HealthyInstalledVersion = version,
+        HealthyInstalledSequence = sequence,
+        WatchOutcomeCode = code,
+        WatchOutcomeAttemptId = before.AttemptId,
+        FailureCode = null,
+        FailureAttemptId = null,
+        FailureInstallerResultId = null,
+        AlertCode = null,
+        AlertAttemptId = null,
+        InstallerProcessId = null,
+        InstallerStartedUtc = null,
+    };
 
     private static LkgWatchObservation ToObservation(LkgWatchHostContext context, string attempt, string version,
         Guid productCode, LkgWatchHostObservation native, bool eligibleLkg)
@@ -150,7 +200,20 @@ internal static class LkgWatchHostBinding
         IReadOnlyList<string> keys, string? replaced)
     {
         if (replaced is null) return null;
-        try { return store.Validate(replaced, keys, metadata.ReleaseChannel, metadata.AllowedSignerKeyIdentity, allowUnsignedDevBuild: false); }
+        try
+        {
+            if (!UpdaterLab.IsLabBuild)
+                return store.Validate(replaced, keys, metadata.ReleaseChannel, metadata.AllowedSignerKeyIdentity, allowUnsignedDevBuild: false);
+
+            AgentUpdateSecurity.ValidateProtectedPath(store.MsiPath, store.UpdatesRoot, allowMissing: false);
+            using var msi = File.OpenRead(store.MsiPath);
+            var hash = Convert.ToHexStringLower(SHA256.HashData(msi));
+            if (metadata.ReleaseChannel != "dev" || !metadata.AllowUnsignedDevBuild || metadata.AllowedSignerKeyIdentity != "unsigned-dev" ||
+                !UpdaterLab.IsAdmittedWatchArtifact("msi", replaced, hash))
+                return null;
+            // Keep the receipt-bound bytes open through the store's signature, floor, hash and Authenticode checks.
+            return store.Validate(replaced, keys, metadata.ReleaseChannel, metadata.AllowedSignerKeyIdentity, allowUnsignedDevBuild: true);
+        }
         catch (Exception ex) when (LkgWatchHost.IsHostFailure(ex)) { return null; }
     }
 

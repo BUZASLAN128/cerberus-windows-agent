@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -26,15 +25,15 @@ internal static class LkgProbe
     private sealed record Response(string Schema, string Nonce, string Version, string[] Modes, int Contract);
 
     internal static int WriteResponse(string nonce, TextWriter output)
-        => WriteResponse(nonce, AgentProductVersion.Get(typeof(LkgProbe).Assembly), AgentUpdaterContract.Version, output);
+        => WriteResponse(nonce, AgentProductVersion.Get(typeof(LkgProbe).Assembly), AgentUpdaterContract.VersionNumber, output);
 
-    internal static int WriteResponse(string nonce, string version, string contract, TextWriter output)
+    internal static int WriteResponse(string nonce, string version, int contract, TextWriter output)
     {
         if (!AgentUpdateSecurity.IsSafeAttemptId(nonce) || !AgentUpdateManifestValidator.IsReleaseVersion(version) ||
-            !TryParseContract(contract, out var versionNumber))
+            contract <= 0)
             return 2;
 
-        output.WriteLine(JsonSerializer.Serialize(new Response(Schema, nonce, version, RequiredModes, versionNumber), ResponseJson));
+        output.WriteLine(JsonSerializer.Serialize(new Response(Schema, nonce, version, RequiredModes, contract), ResponseJson));
         return 0;
     }
 
@@ -60,7 +59,8 @@ internal static class LkgProbe
     /// <summary>The caller keeps the verified staged executable open for reading without delete/write sharing.</summary>
     internal static bool Run(string stagedUpdater, string expectedVersion)
     {
-        if (!TryParseContract(AgentUpdaterContract.Version, out var minimumContract)) return false;
+        var minimumContract = AgentUpdaterContract.VersionNumber;
+        if (minimumContract <= 0) return false;
 
         var nonce = Guid.NewGuid().ToString("N");
         var start = new ProcessStartInfo(stagedUpdater)
@@ -99,6 +99,4 @@ internal static class LkgProbe
         return Accepts(new string(buffer, 0, count), process.ExitCode, nonce, version, minimumContract);
     }
 
-    private static bool TryParseContract(string text, out int versionNumber)
-        => int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out versionNumber) && versionNumber > 0;
 }
