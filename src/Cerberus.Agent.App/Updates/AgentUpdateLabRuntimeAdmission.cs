@@ -10,11 +10,11 @@ using Cerberus.Agent.Security;
 namespace Cerberus.Agent.App.Updates;
 
 /// <summary>Shared with the MSI helper; admission precedes StopServices and cannot be renewed by a later health check.</summary>
-internal static class AgentUpdateLabRuntimeAdmission
+internal static partial class AgentUpdateLabRuntimeAdmission
 {
     internal sealed record Admission(string CampaignId, string TransactionId, string ProductCode, string Version,
         string PolicySha256, string RuntimeHashesBase64, AgentStateDeliveryContext Identity, DateTimeOffset AdmittedUtc,
-        string? AttemptId, string? ArtifactSha256, bool Completed = false, string? SourceVersion = null);
+        string? AttemptId, string? ArtifactSha256, bool Completed = false, string? SourceVersion = null, string Kind = "forward");
     internal sealed record LaunchGrant(string CampaignId, string TransactionId, string Version, string PolicySha256,
         AgentStateDeliveryContext Identity, DateTimeOffset AdmittedUtc, DateTimeOffset ExpiresUtc, string AttemptId, string ArtifactSha256,
         string SourceVersion);
@@ -28,7 +28,7 @@ internal static class AgentUpdateLabRuntimeAdmission
         policy.RequireTarget(new(identity.AgentId, identity.TenantId, identity.Product), identity.KeyFingerprint, now);
         policy.RequireVersion(plan.Version);
         var source = ReadInstalledSourceVersion();
-        policy.RequireSuccessor(source, plan.Version);
+        policy.RequireSuccessor(source, plan.Version, ReadEffectiveVersions(policy));
         if (!AgentUpdateSecurity.IsLocalSystem() || !Guid.TryParseExact(transactionId, "D", out _) ||
             request.LocalPolicyId != policy.CampaignId || request.LocalSourceVersion != source || plan.LabSourceVersion != source ||
             request.ExpiresUtc <= now || request.ExpiresUtc > policy.ExpiresAtUtc ||
@@ -38,7 +38,10 @@ internal static class AgentUpdateLabRuntimeAdmission
         var root = Root(policy);
         using var held = Lock(root);
         var path = LaunchPath(root, transactionId);
-        if (File.Exists(path)) throw new InvalidOperationException("Development launch identity cannot be reused.");
+        if (AgentUpdateDurableFile.Read<LaunchGrant>(path, root) is not null ||
+            AgentUpdateDurableFile.Read<RollbackAdmissionGrant>(RollbackPath(root, transactionId), root) is not null)
+            throw new InvalidOperationException("Development launch identity cannot be reused.");
+        RequireUnusedAdmission(root, transactionId);
         AgentUpdateDurableFile.Write(path, root, new LaunchGrant(policy.CampaignId, transactionId, plan.Version,
             PolicyHash(), identity, now, request.ExpiresUtc, plan.AttemptId!, plan.Sha256, source));
     }
@@ -60,10 +63,26 @@ internal static class AgentUpdateLabRuntimeAdmission
         var now = DateTimeOffset.UtcNow;
         // Read the installed, protected service image before StopServices/InstallFiles. This helper is the candidate, not the source.
         var sourceVersion = ReadInstalledSourceVersion();
-        var journal = new AgentUpdateJournalStore(AgentUpdateStager.DefaultStagingRoot).Read();
         string? attempt = null, artifact = null;
         var root = Root(policy);
         using var held = Lock(root);
+        var journal = new AgentUpdateJournalStore(AgentUpdateStager.DefaultStagingRoot).Read();
+        var path = ReceiptPath(root, transactionId!);
+        RequireUnusedAdmission(root, transactionId!);
+        var hashes = Metadata("AgentUpdateLabRuntimeHashesB64");
+        _ = ParseHashes(hashes);
+        var rollback = AgentUpdateDurableFile.Read<RollbackAdmissionGrant>(RollbackPath(root, transactionId!), root);
+        if (rollback is not null)
+        {
+            if (AgentUpdateDurableFile.Read<LaunchGrant>(LaunchPath(root, transactionId!), root) is not null)
+                throw new InvalidOperationException("Development MSI transaction has ambiguous launch authority.");
+            var forward = ReadVersionAdmission(root, policy, identity, version);
+            var admission = RequireRollbackBegin(rollback, forward, journal, policy, identity, productCode, version,
+                sourceVersion, transactionId!, PolicyHash(), hashes, now);
+            AgentUpdateDurableFile.Write(path, root, admission);
+            return;
+        }
+        var admissionTime = now;
         if (version != policy.Versions[0])
         {
             var request = journal.InstallRequest;
@@ -79,9 +98,10 @@ internal static class AgentUpdateLabRuntimeAdmission
                 grant.AdmittedUtc < policy.NotBeforeUtc || grant.AdmittedUtc >= grant.ExpiresUtc || grant.ExpiresUtc > policy.ExpiresAtUtc)
                 throw new InvalidOperationException("Development MSI has no matching admitted updater attempt.");
             policy.RequireTarget(new(identity.AgentId, identity.TenantId, identity.Product), identity.KeyFingerprint, grant.AdmittedUtc);
-            policy.RequireSuccessor(sourceVersion, version);
+            policy.RequireSuccessor(sourceVersion, version, ReadEffectiveVersions(policy));
             attempt = journal.AttemptId;
             artifact = request.VerifiedRelease.ArtifactSha256;
+            admissionTime = grant.AdmittedUtc;
         }
         else
         {
@@ -94,13 +114,6 @@ internal static class AgentUpdateLabRuntimeAdmission
             AgentUpdateDurableFile.Write(BootstrapPath(root), root,
                 new BootstrapLedger(policy.CampaignId, PolicyHash(), identity, transactionId!, sourceVersion, "pending"));
         }
-        var hashes = Metadata("AgentUpdateLabRuntimeHashesB64");
-        _ = ParseHashes(hashes);
-        var path = ReceiptPath(root, transactionId!);
-        if (AgentUpdateDurableFile.Read<Admission>(path, root) is not null)
-            throw new InvalidOperationException("Development MSI transaction admission cannot be reused.");
-        var admissionTime = version == policy.Versions[0] ? now :
-            AgentUpdateDurableFile.Read<LaunchGrant>(LaunchPath(root, transactionId!), root)!.AdmittedUtc;
         AgentUpdateDurableFile.Write(path, root, new Admission(policy.CampaignId, transactionId!, productCode.ToString("D"),
             version, PolicyHash(), hashes, identity, admissionTime, attempt, artifact, SourceVersion: sourceVersion));
     }
@@ -116,7 +129,7 @@ internal static class AgentUpdateLabRuntimeAdmission
             ?? throw new InvalidOperationException("Development MSI admission is missing.");
         var identity = ReadIdentity(requireActive: false);
         RequireContinuation(admitted, policy, productCode, version, transactionId!, identity, PolicyHash(),
-            Metadata("AgentUpdateLabRuntimeHashesB64"));
+            Metadata("AgentUpdateLabRuntimeHashesB64"), ReadEffectiveVersions(policy));
         // Expiry affects new admission, not this same transaction's already-authorized file/health verification.
         foreach (var item in ParseHashes(admitted.RuntimeHashesBase64))
         {
@@ -139,9 +152,10 @@ internal static class AgentUpdateLabRuntimeAdmission
         var path = ReceiptPath(root, transactionId!);
         var admission = AgentUpdateDurableFile.Read<Admission>(path, root) ?? throw new InvalidOperationException("MSI admission is missing.");
         RequireContinuation(admission with { Completed = false }, policy, productCode, version, transactionId!, ReadIdentity(false), PolicyHash(),
-            Metadata("AgentUpdateLabRuntimeHashesB64"));
+            Metadata("AgentUpdateLabRuntimeHashesB64"), ReadEffectiveVersions(policy));
         if (!admission.Completed) AgentUpdateDurableFile.Write(path, root, admission with { Completed = true });
-        if (version == policy.Versions[0])
+        WriteVersionReceipt(root, admission, DateTimeOffset.UtcNow);
+        if (admission.Kind == "forward" && version == policy.Versions[0])
         {
             var ledger = AgentUpdateDurableFile.Read<BootstrapLedger>(BootstrapPath(root), root)
                 ?? throw new InvalidOperationException("Bootstrap ledger is missing.");
@@ -222,19 +236,24 @@ internal static class AgentUpdateLabRuntimeAdmission
     }
 
     internal static void RequireContinuation(Admission admission, AgentUpdateLabPolicy policy, Guid productCode,
-        string version, string transactionId, AgentStateDeliveryContext identity, string policyHash, string runtimeHashes)
+        string version, string transactionId, AgentStateDeliveryContext identity, string policyHash, string runtimeHashes,
+        IReadOnlyList<string>? effectiveVersions = null)
     {
         if (admission.Completed || admission.CampaignId != policy.CampaignId || admission.TransactionId != transactionId ||
             admission.ProductCode != productCode.ToString("D") || admission.Version != version || admission.PolicySha256 != policyHash ||
             admission.RuntimeHashesBase64 != runtimeHashes || admission.Identity != identity ||
             admission.AdmittedUtc < policy.NotBeforeUtc || admission.AdmittedUtc >= policy.ExpiresAtUtc)
             throw new InvalidOperationException("Development MSI transaction authority changed or was already consumed.");
-        if (version == policy.Versions[0])
+        if (admission.Kind == "rollback")
+            AgentUpdateCampaignTransition.RequireNext(policy.Versions, version, admission.SourceVersion ?? "");
+        else if (admission.Kind != "forward")
+            throw new InvalidOperationException("Development MSI transaction type is invalid.");
+        else if (version == policy.Versions[0])
         {
             var target = policy.Targets.Single(t => t.AgentId == identity.AgentId && t.TenantId == identity.TenantId);
             if (admission.SourceVersion != target.BootstrapSourceVersion) throw new InvalidOperationException("Bootstrap source changed.");
         }
-        else policy.RequireSuccessor(admission.SourceVersion ?? "", version);
+        else policy.RequireSuccessor(admission.SourceVersion ?? "", version, effectiveVersions);
     }
 
     private static void RequireInvocation(AgentUpdateLabPolicy policy, string version, string? transactionId)
@@ -283,7 +302,7 @@ internal static class AgentUpdateLabRuntimeAdmission
     private static string PolicyHash() => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Metadata(AgentUpdateLabPolicy.MetadataName))));
     private static string Root(AgentUpdateLabPolicy policy)
     {
-        var root = Path.Combine(AgentUpdateStager.DefaultStagingRoot, "lab-campaign-" + policy.CampaignId, "installer-transactions");
+        var root = TransactionRoot(policy);
         AgentUpdateSecurity.EnsureProtectedRoot(root);
         return root;
     }

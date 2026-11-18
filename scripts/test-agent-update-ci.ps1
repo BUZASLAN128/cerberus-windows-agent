@@ -13,7 +13,7 @@ $proof = [ordered]@{
     source = (git -C $repoRoot rev-parse HEAD).Trim()
     profile = 'server'; startedUtc = [DateTimeOffset]::UtcNow.ToString('o'); status = 'failed'
     elevatedAdministrator = $false; testExitCode = $null; total = 0; passed = 0
-    nativeRequiredCases = 35; nativeObservedCases = 0
+    nativeRequiredCases = 39; nativeObservedCases = 0
     level = 'Windows native storage guards and updater/server unit/support; not installed service recovery or PC/VM self-update acceptance'
     installs = 0; targetAccess = $false
 }

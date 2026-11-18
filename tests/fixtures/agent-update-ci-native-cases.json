@@ -35,6 +35,10 @@
     "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.OnlyTokenPostArmsOnceAndReturnsRetryAfterWithoutNetwork",
     "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.ArmingExceptionPassesTheTokenPostThrough",
     "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.TokenFaultRequiresTheCurrentCampaignAttemptAfterCommit",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.HeldFixtureMutexPassesTokenPostThroughWithoutArming"
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.HeldFixtureMutexPassesTokenPostThroughWithoutArming",
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabRollbackAdmissionTests.RollbackAdmissionBindsGrantAndCompletedRawPredecessor",
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabRollbackAdmissionTests.CompletedVersionReceiptIsBoundAndCannotBeReplacedOrReused",
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabContinuationTests.OnlyBoundCommittedWatchArmsFiveCrashesAcrossServiceProcesses",
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabContinuationTests.OnlyVerifiedPlannedRollbackRecordsOneSkipAndAllowsTheNextEffectiveHop"
   ]
 }
