@@ -15,16 +15,15 @@
       Scope="perMachine"
       Compressed="yes">
 
+    <?if $(var.AgentBuildProfile) = server ?>
+    <MajorUpgrade Schedule="afterInstallExecute" AllowDowngrades="yes" />
+    <CustomActionRef Id="RequireRollbackGrant" />
+    <?else ?>
     <?if $(var.ReleaseChannel) = dev ?>
     <!-- Dev artifacts can be superseded by local smoke builds with higher MSI ProductVersion values. -->
     <MajorUpgrade
         Schedule="afterInstallExecute"
         AllowDowngrades="yes" />
-    <?else ?>
-    <?if $(var.AgentBuildProfile) = server ?>
-    <MajorUpgrade
-        Schedule="afterInstallExecute"
-        DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed." />
     <?else ?>
     <MajorUpgrade
         Schedule="afterInstallExecute"

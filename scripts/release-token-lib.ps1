@@ -88,6 +88,7 @@ function New-CngSignedManifest {
   )
   # No v1 manifest in token mode: current builds require v2, and a second hardware signature adds nothing for them.
   # Trust checks run before the token is asked to sign (a refusal after signing would waste a PIN entry); verification stays after.
+  Assert-FinalUpdaterContract $RuntimeDir (Split-Path -Parent $PSScriptRoot)
   $trust = Get-BuiltReleaseTrust $RuntimeDir
   $declaredKeys = @($KeyListB64 | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)).Trim() })
   Assert-EmbeddedTrustMatches -Trust $trust -KeyPems $declaredKeys -SignerPins (ConvertTo-NormalizedSignerPins @($SignerPins)) `
@@ -95,5 +96,5 @@ function New-CngSignedManifest {
   $signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Canonical -Certificate $Certificate
   return Assert-ManifestAgainstBuild `
     -Canonical $Canonical -Signature $signature -ExpectedKeyPem (Get-RsaPublicKeyPem $Certificate) -Trust $trust `
-    -CoreAssembly (Join-Path $RuntimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes $ArtifactPrefixes
+    -CoreAssembly (Join-Path $RuntimeDir "Cerberus.Agent.Update.Core.dll") -Channel $Channel -ArtifactPrefixes $ArtifactPrefixes
 }

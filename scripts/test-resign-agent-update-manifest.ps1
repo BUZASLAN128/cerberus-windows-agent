@@ -1,10 +1,11 @@
 # Support-tier end-to-end checks for scripts/resign-agent-update-manifest.ps1. Keys and certificates are generated
 # in memory at test time; no hardware token, certificate store or network is used. Needs the Release build of
-# Cerberus.Agent.Core.dll (agent validator). Exit code = number of failed checks.
+# Cerberus.Agent.Update.Core.dll (agent validator). Exit code = number of failed checks.
 param([string]$CoreDll = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-if ([string]::IsNullOrWhiteSpace($CoreDll)) { $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Core/bin/Release/net10.0/Cerberus.Agent.Core.dll" }
+$usesDefaultVerifier = [string]::IsNullOrWhiteSpace($CoreDll)
+if ($usesDefaultVerifier) { $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Update.Core/bin/Release/net10.0/Cerberus.Agent.Update.Core.dll" }
 if (-not (Test-Path -LiteralPath $CoreDll -PathType Leaf)) { throw "Build the solution in Release first (agent verifier assembly not found: $CoreDll)." }
 $CoreDll = (Resolve-Path -LiteralPath $CoreDll).Path
 . (Join-Path $PSScriptRoot "release-signing-lib.ps1")
@@ -67,8 +68,9 @@ try {
   }
   function Invoke-Resign([string]$In, [hashtable]$Extra = @{}) {
     $out = Join-Path $work ("out-" + [guid]::NewGuid().ToString("N").Substring(0, 6) + ".json")
-    $args = @{ ManifestPath = $In; PublicKeyFile = $keyA; OutputPath = $out; SigningCertificate = $certA; CoreAssembly = $CoreDll
+    $args = @{ ManifestPath = $In; PublicKeyFile = $keyA; OutputPath = $out; SigningCertificate = $certA
       AllowFailedAgentsToRetry = $true }
+    if (-not $usesDefaultVerifier) { $args.CoreAssembly = $CoreDll }
     foreach ($k in $Extra.Keys) { $args[$k] = $Extra[$k] }
     $null = & $resign @args 6>$null
     return $out

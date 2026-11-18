@@ -21,6 +21,31 @@ public static class AgentSingleFileBundle
     public static byte[] ReadAssembly(string bundlePath, string assemblyName)
     {
         using var file = File.OpenRead(bundlePath);
+        BundleEntry? selected = null;
+        foreach (var entry in ReadManifest(file))
+        {
+            if (!string.Equals(entry.Name, assemblyName, StringComparison.Ordinal)) continue;
+            if (selected is not null || entry.Kind != 1 || entry.Size is <= 0 or > MaxMemberBytes)
+                throw new InvalidDataException("Invalid managed bundle entry.");
+            selected = entry;
+        }
+        if (selected is not { } member) throw new InvalidDataException("Required assembly is not embedded in the bundle.");
+        file.Position = member.Offset;
+        var bytes = new byte[checked((int)member.Size)];
+        file.ReadExactly(bytes);
+        return bytes;
+    }
+
+    public static BundleEntry[] ReadEntries(string bundlePath)
+    {
+        using var file = File.OpenRead(bundlePath);
+        return ReadManifest(file);
+    }
+
+    public readonly record struct BundleEntry(string Name, byte Kind, long Offset, long Size);
+
+    private static BundleEntry[] ReadManifest(FileStream file)
+    {
         var header = FindHeader(file);
         if (header == 0) throw new InvalidDataException("The executable is not a single-file bundle.");
         file.Position = header;
@@ -34,8 +59,7 @@ public static class AgentSingleFileBundle
         _ = reader.ReadInt64(); _ = reader.ReadInt64(); // runtimeconfig.json location
         if (reader.ReadUInt64() != 0)
             throw new InvalidDataException("Managed extraction compatibility mode is not allowed.");
-        long selectedOffset = -1;
-        var selectedSize = 0;
+        var entries = new BundleEntry[count];
         for (var index = 0; index < count; index++)
         {
             var offset = reader.ReadInt64();
@@ -45,17 +69,9 @@ public static class AgentSingleFileBundle
             var name = ReadString(reader, 4096);
             if (offset < 0 || offset > header || size < 0 || size > header - offset || compressed != 0)
                 throw new InvalidDataException("Invalid or compressed bundle entry.");
-            if (!string.Equals(name, assemblyName, StringComparison.Ordinal)) continue;
-            if (selectedOffset >= 0 || kind != 1 || size is <= 0 or > MaxMemberBytes)
-                throw new InvalidDataException("Invalid managed bundle entry.");
-            selectedOffset = offset;
-            selectedSize = checked((int)size);
+            entries[index] = new(name, kind, offset, size);
         }
-        if (selectedOffset < 0) throw new InvalidDataException("Required assembly is not embedded in the bundle.");
-        file.Position = selectedOffset;
-        var bytes = new byte[selectedSize];
-        file.ReadExactly(bytes);
-        return bytes;
+        return entries;
     }
 
     private static long FindHeader(FileStream file)
