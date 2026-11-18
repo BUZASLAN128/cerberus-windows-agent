@@ -54,11 +54,14 @@ public sealed class AgentUpdateLkgStoreTests : IDisposable
         File.WriteAllText(source, "known installed updater bytes");
         var hash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(source)));
         var sourceChecks = 0;
-        bool Bootstrap(DateTimeOffset utc) => store.BootstrapCore(source, "1.2.0", hash, utc,
+        bool Bootstrap(DateTimeOffset time) => store.BootstrapCore(source, "1.2.0", hash, time.ToOffset(TimeSpan.FromHours(3)),
             () => sourceChecks++, path => Assert.Equal("known installed updater bytes", File.ReadAllText(path)));
 
         Assert.True(Bootstrap(Now));
-        Assert.Equal("bootstrap", store.ReadHost()!.PlacedBy);
+        var host = store.ReadHost()!;
+        Assert.Equal("bootstrap", host.PlacedBy);
+        Assert.Equal(Now, host.PlacedUtc);
+        Assert.Equal(TimeSpan.Zero, host.PlacedUtc.Offset);
         Assert.False(Bootstrap(Now.AddMinutes(1)));
         Assert.Equal(Now, store.ReadHost()!.PlacedUtc);
         Assert.Equal(1, sourceChecks);
@@ -70,6 +73,21 @@ public sealed class AgentUpdateLkgStoreTests : IDisposable
         Assert.Equal("bootstrap_repair", store.ReadHost()!.PlacedBy);
         Assert.Equal(hash, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(store.HostPath))));
         Assert.Equal(3, sourceChecks);
+    }
+
+    [Fact]
+    public void LkgRecordTimestampRoundTripsInUtc()
+    {
+        var store = CreateStore();
+        using var rsa = RSA.Create(2048);
+        var manifest = AgentUpdateManifestValidatorTests.SignedV2(rsa, null);
+        var record = Metadata(manifest) with { PromotedUtc = Now.ToOffset(TimeSpan.FromHours(-5)) };
+        AgentUpdateLkgStore.WriteRecord(store.RecordPath, store.UpdatesRoot, record);
+
+        var saved = JsonSerializer.Deserialize<AgentUpdateLkgRecord>(File.ReadAllText(store.RecordPath), AgentUpdateLkgStore.RecordJson)!;
+        Assert.Equal(record, saved);
+        Assert.Equal(TimeSpan.Zero, saved.PromotedUtc.Offset);
+        AgentUpdateLkgStore.ValidateRelease(saved, manifest, manifest.Version, Floor("1.0.0"), 100, Hash);
     }
 
     [Fact]

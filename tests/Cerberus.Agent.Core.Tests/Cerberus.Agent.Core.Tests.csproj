@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="..\..\src\Cerberus.Agent.Installer\Helper\Program.Lkg.cs" Link="InstallerHelper\Program.Lkg.cs" />
   </ItemGroup>
 
   <ItemGroup>
