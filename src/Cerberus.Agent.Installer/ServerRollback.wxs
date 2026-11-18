@@ -14,9 +14,23 @@
     <CustomAction Id="RequireRollbackGrant" BinaryRef="CerberusInstallerHelper"
         ExeCommand='require-rollback-grant "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "[RollbackServiceExeSha256]" "[RollbackServiceAssemblySha256]" "[CERBERUS_NEWER_DETECTED]" "[CERBERUS_ROLLBACK_ATTEMPT]" "[OriginalDatabase]"'
         Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="BlockServerInstallWithoutRollback" Error="Cerberus Server Agent requires Windows Installer rollback to be enabled." />
+    <CustomAction Id="LkgBootstrap" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='lkg-bootstrap "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "[RollbackServiceExeSha256]" "[RollbackServiceAssemblySha256]"'
+        Execute="commit" Impersonate="no" Return="ignore" />
+    <CustomAction Id="ReregisterWatchTask" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='reregister-watch-task "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "[RollbackServiceExeSha256]" "[RollbackServiceAssemblySha256]"'
+        Execute="rollback" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UnregisterWatchTask" BinaryRef="CerberusInstallerHelper"
+        ExeCommand='unregister-watch-task "[ProductCode]" "[APPFOLDER]." "$(var.ReleaseVersion)" "[RollbackServiceExeSha256]" "[RollbackServiceAssemblySha256]"'
+        Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
       <Custom Action="BlockNewServerDowngradeWithRemoval" Before="InstallInitialize" Condition="CERBERUS_NEWER_DETECTED AND REMOVE AND NOT Installed" />
+      <Custom Action="BlockServerInstallWithoutRollback" Before="InstallInitialize" Condition="NOT REMOVE AND RollbackDisabled" />
       <Custom Action="RequireRollbackGrant" After="InstallInitialize" Condition="CERBERUS_NEWER_DETECTED AND NOT REMOVE" />
+      <Custom Action="LkgBootstrap" After="CommitLabCampaignAdmission" Condition="NOT REMOVE" />
+      <Custom Action="ReregisterWatchTask" Before="UnregisterWatchTask" Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+      <Custom Action="UnregisterWatchTask" Before="RemoveFiles" Condition='REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' />
     </InstallExecuteSequence>
   </Fragment>
   <?endif ?>

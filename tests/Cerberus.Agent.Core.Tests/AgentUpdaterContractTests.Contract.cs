@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Cerberus.Agent.Core;
+using Cerberus.Agent.Updater;
 
 namespace Cerberus.Agent.Core.Tests;
 
@@ -25,20 +26,30 @@ public sealed partial class AgentUpdaterContractTests
         Assert.Equal("agent.update.rollback_floor.v1", AgentUpdateRollbackFloor.Schema);
         Assert.Equal("agent.update.rollback_grant.v1", AgentUpdateRollbackGrant.Schema);
         Assert.Equal("agent.update.watch.v1", AgentUpdateWatchRecord.CurrentSchema);
+        Assert.Equal("agent.update.probe.v1", LkgProbe.Schema);
+        Assert.Equal("--watch", AgentUpdateWatchHostArgs.WatchArgument);
+        Assert.Equal("--scm-failure", AgentUpdateWatchHostArgs.ScmFailureArgument);
+        Assert.Equal("--probe", AgentUpdateWatchHostArgs.ProbeArgument);
+        Assert.Equal("forward_only_failed inconclusive open passed rollback_failed rollback_pending rolled_back superseded",
+            string.Join(" ", ConstantsOf(typeof(AgentUpdateWatchOutcomes)).Order(StringComparer.Ordinal)));
+        Assert.Equal("lkg_below_floor lkg_promotion_failed post_commit_rollback post_commit_unhealthy rollback_failed watch_unavailable watch_unknown_phase",
+            string.Join(" ", ConstantsOf(typeof(AgentUpdateWatchJournal))
+                .Where(code => !AgentUpdateJournalStore.KnownPhase(code)).Order(StringComparer.Ordinal)));
 
         var journalSource = ReadSource("Cerberus.Agent.Update.Core", "AgentUpdateJournal.cs");
         var knownPhaseBody = Regex.Match(journalSource, @"internal static bool KnownPhase\([^)]*\) => (?<body>[^;]+);");
         Assert.True(knownPhaseBody.Success);
         var phases = ConstantsOf(typeof(AgentUpdateStates))
             .Concat(ConstantsOf(typeof(AgentUpdaterContract)))
+            .Concat(ConstantsOf(typeof(AgentUpdateWatchJournal)))
             .Concat(Regex.Matches(knownPhaseBody.Groups["body"].Value, "\"([^\"]+)\"")
                 .Select(match => match.Groups[1].Value))
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToArray();
         Assert.Equal(
-            "available awaiting_consent blocked checking current downloading failed health_pending install_may_have_started " +
-            "installed installing launch_requested not_checked pending_reboot quarantined recovery_required retryable_busy staged",
+            "available awaiting_consent blocked checking committed_watch current downloading failed health_pending install_may_have_started " +
+            "installed installing launch_requested not_checked pending_reboot quarantined recovery_required retryable_busy rolling_back staged",
             string.Join(" ", phases.Where(AgentUpdateJournalStore.KnownPhase)));
 
         var root = Path.Combine(Path.GetTempPath(), "cerberus-contract-snapshot-" + Guid.NewGuid().ToString("N"));
@@ -97,6 +108,27 @@ public sealed partial class AgentUpdaterContractTests
                 "preInstallRetryNotBeforeUtc", "alertCode", "alertAttemptId" };
             Assert.All(busyKeys, name => Assert.True(persisted.RootElement.TryGetProperty(name, out _),
                 $"Missing Track U journal property {name}."));
+
+            var watch = journal with
+            {
+                AttemptId = "attempt-1",
+                Phase = AgentUpdateWatchJournal.RollingBack,
+                WatchRequestedUtc = DateTimeOffset.UnixEpoch,
+                WatchAttemptId = "attempt-1",
+                WatchOutcomeCode = AgentUpdateWatchJournal.PostCommitRollback,
+                WatchOutcomeAttemptId = "attempt-1",
+                RollbackAttemptId = "rollback-1",
+                RollbackStartedUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+                RollbackFirstUtc = DateTimeOffset.UnixEpoch.AddMinutes(1),
+                RollbackAttemptCount = 3,
+            };
+            Assert.Equal(new[] { 0, 1, 2, 3 }, probes.Where(count => Accepts(watch with { RollbackAttemptCount = count })));
+            Assert.True(Accepts(watch));
+            using var watchJson = JsonDocument.Parse(File.ReadAllBytes(path));
+            var watchKeys = new[] { "watchRequestedUtc", "watchAttemptId", "watchOutcomeCode", "watchOutcomeAttemptId",
+                "rollbackAttemptId", "rollbackStartedUtc", "rollbackFirstUtc", "rollbackAttemptCount" };
+            Assert.All(watchKeys, name => Assert.True(watchJson.RootElement.TryGetProperty(name, out _),
+                $"Missing watch journal property {name}."));
 
             var requestSource = ReadSource("Cerberus.Agent.Update.Core", "AgentUpdateInstallRequest.cs");
             var terminalReasonBody = Regex.Match(requestSource, @"TerminalUtc is not null && TerminalReason is(?<body>[^;]+);");

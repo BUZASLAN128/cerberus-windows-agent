@@ -68,14 +68,22 @@ internal static partial class AgentUpdateLocalService
 
     internal static bool InstallOverdue(AgentUpdateJournal journal, DateTimeOffset now, DateTimeOffset systemStartedUtc,
         bool runnerAlive, bool installerAlive)
-        => (runnerAlive || installerAlive) && journal.AttemptId is not null && journal.AlertAttemptId != journal.AttemptId &&
-            (journal.InstallerStartedUtc ?? journal.RunnerStartedUtc) is { } started &&
-            now - (started < systemStartedUtc ? systemStartedUtc : started) >= TimeSpan.FromHours(1);
+    {
+        var rollback = journal.Phase == AgentUpdateWatchJournal.RollingBack;
+        var attemptId = rollback ? journal.RollbackAttemptId : journal.AttemptId;
+        var start = rollback ? journal.InstallerStartedUtc : journal.InstallerStartedUtc ?? journal.RunnerStartedUtc;
+        return (installerAlive || !rollback && runnerAlive) && attemptId is not null && journal.AlertAttemptId != attemptId &&
+            start is { } started && now - (started < systemStartedUtc ? systemStartedUtc : started) >= TimeSpan.FromHours(1);
+    }
 
     internal static AgentUpdateJournal TransitionInstallOverdue(AgentUpdateJournal journal, DateTimeOffset now,
         DateTimeOffset systemStartedUtc, bool runnerAlive, bool installerAlive)
         => InstallOverdue(journal, now, systemStartedUtc, runnerAlive, installerAlive)
-            ? journal with { AlertCode = AgentUpdateErrorCodes.InstallOverdue, AlertAttemptId = journal.AttemptId }
+            ? journal with
+            {
+                AlertCode = AgentUpdateErrorCodes.InstallOverdue,
+                AlertAttemptId = journal.Phase == AgentUpdateWatchJournal.RollingBack ? journal.RollbackAttemptId : journal.AttemptId,
+            }
             : journal;
 
     internal static AgentUpdateJournal TransitionRebootOverdue(AgentUpdateJournal journal, DateTimeOffset now, string bootId)
@@ -91,6 +99,9 @@ internal static partial class AgentUpdateLocalService
         var boot = SystemStartedUtc.Value;
         if (!InstallOverdue(active, now, boot, runnerAlive, installerAlive)) return;
         Journal.ChangeAttempt(active.AttemptId!, before => before.Phase == active.Phase
+            && (before.Phase != AgentUpdateWatchJournal.RollingBack ||
+                (before.RollbackAttemptId, before.InstallerProcessId, before.InstallerStartedUtc) ==
+                (active.RollbackAttemptId, active.InstallerProcessId, active.InstallerStartedUtc))
             ? TransitionInstallOverdue(before, now, boot, runnerAlive, installerAlive)
             : before);
     }

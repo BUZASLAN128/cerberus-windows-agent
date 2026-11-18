@@ -10,7 +10,11 @@ internal sealed record AgentUpdateLkgRecord(string Schema, string Version, Guid 
     string UpdaterSha256, string WatchedAttemptId, DateTimeOffset PromotedUtc);
 
 internal sealed record AgentUpdateLkgHostRecord(string Schema, string UpdaterVersion, string UpdaterSha256,
-    string PlacedBy, DateTimeOffset PlacedUtc, string? AttemptId, string? LkgVersion);
+    string PlacedBy, DateTimeOffset PlacedUtc, string? AttemptId, string? LkgVersion)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LabCampaignId { get; init; }
+}
 
 internal sealed record AgentUpdateLkgPromotion(string AttemptId, string NewVersion, string MsiSha256,
     string OldUpdaterSha256, string NewUpdaterSha256, string ManifestDigest, string StageDir);
@@ -81,30 +85,58 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
         return true;
     }
 
-    /// <summary>Copies a verified installed updater for a future host registration. The caller holds the host lock.</summary>
-    public bool Bootstrap(string installedUpdater, string version, string expectedUpdaterSha256,
-        string channel, string? compiledSignerPins, bool allowUnsignedDevBuild, DateTimeOffset now)
+    /// <summary>Bootstraps the protected updater host and creates its task while holding the host lock.</summary>
+    public void BootstrapWatchHost(string runtimeDirectory, string version, string channel, string? compiledSignerPins,
+        DateTimeOffset now, Func<string, string> readUpdaterVersion, string? labCampaignId, Func<string, string, bool>? isAdmittedLabUpdater)
     {
+        if (!OperatingSystem.IsWindows() || !AgentBuildProfile.IsServer || !AgentUpdateSecurity.IsLocalSystem() ||
+            !string.Equals(UpdatesRoot, AgentUpdateSecurity.DefaultPrivilegedRoot, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("The server update host bootstrap requires LocalSystem.");
+
+        var installedUpdater = Path.Combine(Path.GetFullPath(runtimeDirectory), UpdaterFileName);
         EnsureRoot();
-        return BootstrapCore(installedUpdater, version, expectedUpdaterSha256, now,
+        var lockPath = Path.Combine(Root, LockFileName);
+        AgentUpdateSecurity.ValidateProtectedPath(lockPath, UpdatesRoot, allowMissing: true);
+        using var gate = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        BootstrapCore(installedUpdater, version, null, now,
             () => AgentUpdateSecurity.ValidateInstalledServiceSource(installedUpdater, Path.GetDirectoryName(installedUpdater)!),
-            path => AgentUpdateAuthenticode.Verify(path, channel, compiledSignerPins, allowUnsignedDevBuild));
+            path => AgentUpdateAuthenticode.Verify(path, channel, compiledSignerPins, allowUnsignedDevBuild: labCampaignId is not null),
+            labCampaignId, isAdmittedLabUpdater, readUpdaterVersion);
+        AgentUpdateWatchTask.CreateIfAbsent();
     }
 
-    internal bool BootstrapCore(string installedUpdater, string version, string expectedUpdaterSha256, DateTimeOffset now,
-        Action validateInstalledSource, Action<string> verifyAuthenticode)
+    internal bool BootstrapCore(string installedUpdater, string version, string? expectedUpdaterSha256, DateTimeOffset now,
+        Action validateInstalledSource, Action<string> verifyAuthenticode, string? labCampaignId = null,
+        Func<string, string, bool>? isAdmittedLabUpdater = null, Func<string, string>? readUpdaterVersion = null)
     {
-        if (!AgentUpdateManifestValidator.IsReleaseVersion(version) || !AgentUpdateManifestValidator.IsSha256(expectedUpdaterSha256))
+        if (!AgentUpdateManifestValidator.IsReleaseVersion(version) ||
+            (expectedUpdaterSha256 is not null && !AgentUpdateManifestValidator.IsSha256(expectedUpdaterSha256)))
             throw new InvalidOperationException("Installed updater identity is invalid.");
+
+        void VerifyUpdater(string path, string updaterVersion, string sha256)
+        {
+            if (labCampaignId is not null && isAdmittedLabUpdater?.Invoke(updaterVersion, sha256) != true)
+                throw new InvalidOperationException("The updater does not match a completed lab admission.");
+            verifyAuthenticode(path);
+            // A pending installer rename can leave a different, still correctly signed updater at the source.
+            if (readUpdaterVersion is not null &&
+                AgentUpdateCampaignTransition.Release(readUpdaterVersion(path)) != AgentUpdateCampaignTransition.Release(updaterVersion))
+                throw new InvalidOperationException("The installed updater release does not match its bootstrap identity.");
+        }
+
         var previous = ReadHostForRepair();
+        var recordedCampaignMatches = previous is not null && previous.LabCampaignId == labCampaignId;
+        // Promotion records without the optional marker are still bound by the exact current campaign receipt.
+        var canVerifyPrevious = recordedCampaignMatches ||
+            (labCampaignId is not null && previous is { LabCampaignId: null, PlacedBy: "promotion" });
         bool IsCurrentHostValid()
         {
-            if (previous is null || !File.Exists(HostPath)) return false;
+            if (previous is null || !canVerifyPrevious || !File.Exists(HostPath)) return false;
             try
             {
                 using var host = File.OpenRead(HostPath);
                 if (!SameHash(Hash(host), previous.UpdaterSha256)) return false;
-                verifyAuthenticode(HostPath);
+                VerifyUpdater(HostPath, previous.UpdaterVersion, previous.UpdaterSha256);
                 return true;
             }
             catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex)) { return false; }
@@ -116,19 +148,30 @@ public sealed class AgentUpdateLkgStore(string updatesRoot)
         var repair = previous is not null || File.Exists(HostPath) || File.Exists(HostRecordPath);
         try
         {
+            string sourceHash;
             using (var input = File.OpenRead(installedUpdater))
             using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.WriteThrough))
             {
+                sourceHash = expectedUpdaterSha256 ?? Hash(input);
+                input.Position = 0;
                 input.CopyTo(output);
                 output.Flush(flushToDisk: true);
             }
             using (var copied = File.OpenRead(path))
-                if (!SameHash(Hash(copied), expectedUpdaterSha256))
+            {
+                if (!SameHash(Hash(copied), sourceHash))
                     throw new InvalidOperationException("Installed updater checksum mismatch.");
-            verifyAuthenticode(path);
+                VerifyUpdater(path, version, sourceHash);
+            }
             File.Move(path, HostPath, overwrite: true);
-            WriteRecord(HostRecordPath, UpdatesRoot, new AgentUpdateLkgHostRecord(HostSchema, version, expectedUpdaterSha256,
-                repair ? "bootstrap_repair" : "bootstrap", now, null, previous?.LkgVersion));
+            // A markerless promotion cannot carry an LKG version across a repair into a different build class.
+            var cachedLkgVersion = recordedCampaignMatches && (labCampaignId is not null || previous?.PlacedBy != "promotion")
+                ? previous?.LkgVersion : null;
+            WriteRecord(HostRecordPath, UpdatesRoot, new AgentUpdateLkgHostRecord(HostSchema, version, sourceHash,
+                repair ? "bootstrap_repair" : "bootstrap", now, null, cachedLkgVersion)
+            {
+                LabCampaignId = labCampaignId,
+            });
             return true;
         }
         finally { File.Delete(path); }

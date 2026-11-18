@@ -65,11 +65,20 @@ public sealed record AgentUpdateJournal
     public string? FailureInstallerResultId { get; init; }
     public string? AlertCode { get; init; }
     public string? AlertAttemptId { get; init; }
+    public DateTimeOffset? WatchRequestedUtc { get; init; }
+    public string? WatchAttemptId { get; init; }
+    public string? WatchOutcomeCode { get; init; }
+    public string? WatchOutcomeAttemptId { get; init; }
+    public string? RollbackAttemptId { get; init; }
+    public DateTimeOffset? RollbackStartedUtc { get; init; }
+    public int RollbackAttemptCount { get; init; }
+    public DateTimeOffset? RollbackFirstUtc { get; init; }
 
     [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
 
     public bool MayHaveStartedInstallation => Phase is AgentUpdaterContract.InstallMayHaveStartedPhase or "installing" or
-        "health_pending" or "pending_reboot" or "recovery_required";
+        "health_pending" or "pending_reboot" or "recovery_required" or
+        AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack;
 
     public bool HasUnfinishedAttempt => AttemptId is not null && Phase is not
         (AgentUpdateStates.Current or AgentUpdateStates.Installed or AgentUpdateStates.Failed or AgentUpdateStates.Quarantined or AgentUpdateStates.Blocked);
@@ -104,6 +113,13 @@ public sealed class AgentUpdateJournalStore
             (value.FailureInstallerResultId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureInstallerResultId)) ||
             (value.AlertCode is not null && !AgentUpdateErrorCodes.IsCode(value.AlertCode)) ||
             (value.AlertAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AlertAttemptId)) ||
+            (value.WatchAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.WatchAttemptId)) ||
+            (value.WatchOutcomeCode is not null && !AgentUpdateErrorCodes.IsCode(value.WatchOutcomeCode)) ||
+            (value.WatchOutcomeAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.WatchOutcomeAttemptId)) ||
+            (value.RollbackAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RollbackAttemptId)) ||
+            value.RollbackAttemptCount is < 0 or > 3 ||
+            !ValidOptionalUtc(value.WatchRequestedUtc) || !ValidOptionalUtc(value.RollbackStartedUtc) ||
+            !ValidOptionalUtc(value.RollbackFirstUtc) ||
             (value.InstallerResult is { } installerResult && !AgentUpdateSecurity.IsSafeAttemptId(installerResult.ResultId)) ||
             value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
@@ -111,6 +127,9 @@ public sealed class AgentUpdateJournalStore
             throw new InvalidOperationException("Update journal is invalid.");
         return value;
     }
+
+    private static bool ValidOptionalUtc(DateTimeOffset? value)
+        => value is null || (value.Value != default && value.Value.Offset == TimeSpan.Zero);
 
     private static bool ValidReconciliationSnapshot(AgentUpdateReconciliationSnapshot? snapshot)
         => snapshot is null ||
@@ -123,13 +142,19 @@ public sealed class AgentUpdateJournalStore
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or
-        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase;
+        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase or
+        AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack;
 
     public AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> change)
     {
         using var gate = AgentUpdateSecurity.AcquireGlobalLock(_root);
         var before = Read();
-        var after = change(before) with { Revision = checked(before.Revision + 1) };
+        var changed = change(before);
+        if (ReferenceEquals(before, changed) &&
+            before.Phase is AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack)
+            return before;
+
+        var after = changed with { Revision = checked(before.Revision + 1) };
         AgentUpdateDurableFile.Write(_path, _root, after);
         return after;
     }
