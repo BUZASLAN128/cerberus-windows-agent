@@ -66,6 +66,75 @@ public sealed partial class HeartbeatLoopTests
         }
     }
 
+    [Fact]
+    public async Task TokenRefresh429_RestartHeartbeatResumesAtPersistedClippedDeadline()
+    {
+        var clock = new FakeTime(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var startedAt = clock.Now;
+        var fullDeadline = startedAt.AddSeconds(600);
+        var ceiling = TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling);
+        var wire = new ContactDelayCollector(429, refresh: true, clock, retryAfter: 600);
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var secrets = new RefreshContactSecrets();
+        var store = new InMemoryAgentLifecycleStateStore();
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-heartbeat-restart-" + Guid.NewGuid().ToString("N"));
+        var dispatcher = new CommandDispatcher(Array.Empty<ICommandHandler>(),
+            new IdempotencyCache(Path.Combine(root, "idem.json"), 10, ceiling));
+
+        AgentTokenManager NewTokens() => new(http, secrets, utcNow: () => clock.Now, lifecycleState: store,
+            accessTokenCache: new AgentAccessTokenCache(Path.Combine(root, "cache"), production: false));
+        HeartbeatLoop NewLoop(AgentTokenManager tokens) => new(
+            new AgentApiClient(http, secrets, tokens, new StaticSigner(), store), dispatcher, TimeSpan.FromHours(1),
+            lifecycleState: store, supportsEvents: false, timeProvider: clock, retryJitter: () => 1d);
+
+        try
+        {
+            var tokens = NewTokens();
+            using var beforeRestart = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var firstRun = NewLoop(tokens).RunAsync(beforeRestart.Token);
+            DateTimeOffset persisted;
+            try
+            {
+                await Wait.UntilAsync(() => clock.ActiveTimerCount > 0, "first heartbeat retry scheduled");
+                Assert.Equal(1, wire.Contacts);
+                var gated = await Assert.ThrowsAsync<AgentHttpException>(() => tokens.RefreshAsync(beforeRestart.Token));
+                Assert.Equal(fullDeadline, clock.Now + Assert.IsType<TimeSpan>(gated.RetryAfter));
+                persisted = Assert.IsType<DateTimeOffset>((await store.LoadAsync(beforeRestart.Token)).NextAttemptUtc);
+                Assert.Equal(startedAt + ceiling, persisted);
+                Assert.True(persisted < fullDeadline);
+            }
+            finally
+            {
+                beforeRestart.Cancel();
+                await firstRun;
+            }
+
+            clock.Advance(TimeSpan.FromSeconds(30));
+            var restartAt = clock.Now;
+            var restartDeadline = persisted < restartAt + ceiling ? persisted : restartAt + ceiling;
+            using var afterRestart = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var restarted = NewLoop(NewTokens()).RunAsync(afterRestart.Token);
+            try
+            {
+                await Wait.UntilAsync(() => clock.ActiveTimerCount > 0, "restarted heartbeat retry scheduled");
+                clock.Advance(restartDeadline - restartAt - TimeSpan.FromSeconds(1));
+                Assert.Equal(1, wire.Contacts);
+                clock.Advance(TimeSpan.FromSeconds(1));
+                await Wait.UntilAsync(() => wire.Contacts == 2, "restarted heartbeat contacts token route");
+                Assert.Equal(restartDeadline, wire.LastContactAt);
+            }
+            finally
+            {
+                afterRestart.Cancel();
+                await restarted;
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class ContactDelayCollector(int status, bool refresh, FakeTime clock, int retryAfter) : HttpMessageHandler
     {
         private int _contacts;
