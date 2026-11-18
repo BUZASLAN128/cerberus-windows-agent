@@ -6,6 +6,50 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentSingleFileBundleTests
 {
     [Fact]
+    public void ReadEntriesPreservesNamesKindsAndOrder()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "bundle-entries-" + Guid.NewGuid().ToString("N"));
+        (string Name, byte Kind)[] expected = [("Agent.DLL", 1), ("unknown.dll", 0), ("Native.DLL", 2), ("agent.deps.json", 3)];
+        try
+        {
+            SyntheticSingleFileBundle.Write(path, expected);
+            Assert.Equal(expected, AgentSingleFileBundle.ReadEntries(path).Select(entry => (entry.Name, entry.Kind)));
+            Assert.Equal(new byte[] { 1 }, AgentSingleFileBundle.ReadAssembly(path, "Agent.DLL"));
+            Assert.Throws<InvalidDataException>(() => AgentSingleFileBundle.ReadAssembly(path, "agent.dll"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData((byte)0)]
+    [InlineData((byte)2)]
+    public void ReadAssemblyRefusesNonManagedEntry(byte kind)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "bundle-kind-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SyntheticSingleFileBundle.Write(path, ("entry.dll", kind));
+            Assert.Throws<InvalidDataException>(() => AgentSingleFileBundle.ReadAssembly(path, "entry.dll"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void ReadEntriesListsDuplicateNamesAndReadAssemblyRefusesAmbiguousMatch()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "bundle-duplicates-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            SyntheticSingleFileBundle.Write(path, ("duplicate.dll", 1), ("duplicate.dll", 1), ("other.dll", 1));
+            Assert.Equal(new[] { "duplicate.dll", "duplicate.dll", "other.dll" },
+                AgentSingleFileBundle.ReadEntries(path).Select(entry => entry.Name));
+            Assert.Throws<InvalidDataException>(() => AgentSingleFileBundle.ReadAssembly(path, "duplicate.dll"));
+            Assert.Equal(new byte[] { 1 }, AgentSingleFileBundle.ReadAssembly(path, "other.dll"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void OrdinaryManagedAssemblyCannotStandInForBundle()
     {
         var path = typeof(AgentSingleFileBundle).Assembly.Location;
