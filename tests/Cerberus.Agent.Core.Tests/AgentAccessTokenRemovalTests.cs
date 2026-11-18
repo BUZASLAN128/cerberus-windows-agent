@@ -5,6 +5,19 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentAccessTokenRemovalTests
 {
+    [Fact]
+    public void CompiledMachineStateClearBindsTheExactStoppedCacheRemoval()
+    {
+        // Inspect the production binding without calling SCM or touching the machine store.
+        var entry = typeof(AgentServiceLocalState).GetMethod(nameof(AgentServiceLocalState.ClearMachineStateAsync),
+            [typeof(CancellationToken)])!;
+        var removal = typeof(AgentAccessTokenCache).GetMethod(nameof(AgentAccessTokenCache.ClearForStoppedRemovalAsync),
+            [typeof(Action<Action>), typeof(CancellationToken)])!;
+        var il = entry.GetMethodBody()!.GetILAsByteArray()!;
+        Assert.Contains(Enumerable.Range(0, il.Length - 5), offset => il[offset] == 0xfe && il[offset + 1] == 0x06 &&
+            entry.Module.ResolveMethod(BitConverter.ToInt32(il, offset + 2)) == removal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

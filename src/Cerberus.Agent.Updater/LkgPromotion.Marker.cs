@@ -8,26 +8,50 @@ namespace Cerberus.Agent.Updater;
 
 internal sealed partial class LkgPromotion
 {
-    internal static AgentUpdateLkgPromotion? ReadMarkerForRecovery(AgentUpdateLkgStore store)
+    internal enum MarkerState { Absent, Valid, Invalid }
+
+    internal readonly record struct MarkerRead(MarkerState State, AgentUpdateLkgPromotion? Marker = null,
+        bool Readable = false);
+
+    internal static bool HasPromotionEntry(AgentUpdateLkgStore store)
+    {
+        try { return Exists(Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName)); }
+        catch (Exception ex) when (IsPromotionFailure(ex)) { return true; }
+    }
+
+    internal static MarkerRead ReadMarkerForRecovery(AgentUpdateLkgStore store,
+        Action<string, string, bool>? validate = null)
     {
         var path = Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName);
         try
         {
-            AgentUpdateSecurity.ValidateTrustedPath(path, store.UpdatesRoot, allowMissing: true);
-            if (!Exists(path)) return null;
+            (validate ?? AgentUpdateSecurity.ValidateTrustedPath)(path, store.UpdatesRoot, true);
+            if (!Exists(path)) return new(MarkerState.Absent);
             using var entry = OpenMarkerEntry(path);
-            return store.ReadPromotion();
+            try
+            {
+                return store.ReadPromotion() is { } marker
+                    ? new(MarkerState.Valid, marker, Readable: true)
+                    : new(MarkerState.Invalid, Readable: true);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException)
+            {
+                return new(MarkerState.Invalid, Readable: true);
+            }
         }
-        catch (Exception ex) when (IsPromotionFailure(ex)) { return null; }
+        catch (Exception ex) when (IsPromotionFailure(ex)) { return new(MarkerState.Invalid); }
     }
 
-    private bool ArchiveMarker(AgentUpdateLkgPromotion? marker, AgentUpdateJournal active,
+    private bool ArchiveMarker(MarkerRead read, AgentUpdateJournal active,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change)
     {
+        if (!HasNoAttemptEvidence(store, active.AttemptId, validateProtectedPath)) return false;
+        var marker = read.Marker;
         try
         {
             Validate(MarkerPath, allowMissing: true);
-            if (!Exists(MarkerPath)) return true;
+            if (read.State == MarkerState.Absent) return !Exists(MarkerPath);
+            if (!read.Readable) return false;
             if (marker is not null && OwnsMarker(active, marker)) return false;
             using var source = OpenMarkerEntry(MarkerPath);
             var digest = Hash(source);

@@ -218,10 +218,11 @@ public sealed partial class LkgPromotionTests : IDisposable
     }
 
     private LkgPromotion Create(Func<string, string, bool>? probe = null, Action<string, string>? verify = null,
-        Action<string, string, bool>? validate = null, Func<LkgPromotion.RuntimeIdentity?>? runtime = null, Action<string>? checkpoint = null)
+        Action<string, string, bool>? validate = null, Func<LkgPromotion.RuntimeIdentity?>? runtime = null,
+        Action<string>? checkpoint = null, Action<TimeSpan>? delayHostMove = null)
         => new(_store, _metadata, runtime ?? (() => _identity), validate ?? AgentUpdateSecurity.ValidateTrustedPath,
             (path, root) => AgentUpdateSecurity.ValidateTrustedPath(path, root, allowMissing: false),
-            (path, _, sha256) => verify?.Invoke(path, sha256), probe ?? ((_, _) => true), _logs.Add, checkpoint);
+            (path, _, sha256) => verify?.Invoke(path, sha256), probe ?? ((_, _) => true), _logs.Add, checkpoint, delayHostMove);
 
     private AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> patch) => _journal = patch(_journal);
     private string ReadRecordVersion() => JsonSerializer.Deserialize<AgentUpdateLkgRecord>(

@@ -28,6 +28,17 @@ internal static class LkgRollback
             return;
 
         var native = LkgWatchHostWindows.Observe();
+        RunCore(context, active, watch, native, readLkg, InstalledTargetProduct, Launch);
+    }
+
+    internal sealed record RefusalEffects(Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> ChangeJournal,
+        Action CleanupGrant, Action Restart);
+
+    internal static void RunCore(LkgWatchHostContext context, AgentUpdateJournal active, AgentUpdateWatchRecord watch,
+        LkgWatchHostObservation native, Func<AgentUpdateLkgStore, string?, AgentUpdateLkgRecord?> readLkg,
+        Func<Guid, bool> installedTarget, Action<LkgWatchHostContext, AgentUpdateJournal, AgentUpdateWatchRecord, AgentUpdateLkgRecord> launch,
+        RefusalEffects? refusalEffects = null)
+    {
         if (native.Generation is not { } generation || native.Service.InstallerMutexHeld)
             return;
 
@@ -51,7 +62,8 @@ internal static class LkgRollback
         if (lkg is null)
         {
             if (rollingBack)
-                Finish(context, active, watch, AgentUpdateWatchOutcomes.RollbackFailed, AgentUpdateWatchJournal.RollbackFailed, null);
+                Finish(context, active, watch, AgentUpdateWatchOutcomes.RollbackFailed, AgentUpdateWatchJournal.RollbackFailed, null,
+                    refusalEffects: refusalEffects);
             else
                 CloseBeforeRollback(context, watch, AgentUpdateWatchOutcomes.ForwardOnlyFailed, AgentUpdateWatchJournal.PostCommitUnhealthy);
             return;
@@ -83,7 +95,7 @@ internal static class LkgRollback
             !MatchesWatchedRuntime(native, watch, active.LifecycleGeneration))
             return;
 
-        if (lkg.ProductCode == identity.ProductCode || InstalledTargetProduct(lkg.ProductCode))
+        if (lkg.ProductCode == identity.ProductCode || installedTarget(lkg.ProductCode))
         {
             if (rollingBack)
                 Finish(context, active, watch, AgentUpdateWatchOutcomes.RollbackFailed, AgentUpdateWatchJournal.RollbackFailed, null);
@@ -92,7 +104,7 @@ internal static class LkgRollback
             return;
         }
 
-        Launch(context, active, watch, lkg);
+        launch(context, active, watch, lkg);
     }
 
     private static void Launch(LkgWatchHostContext context, AgentUpdateJournal active, AgentUpdateWatchRecord watch,
@@ -288,12 +300,19 @@ internal static class LkgRollback
     }
 
     private static void Finish(LkgWatchHostContext context, AgentUpdateJournal active, AgentUpdateWatchRecord watch,
-        string outcome, string code, AgentUpdateLkgRecord? lkg, int? count = null)
+        string outcome, string code, AgentUpdateLkgRecord? lkg, int? count = null, RefusalEffects? refusalEffects = null)
     {
         var now = DateTimeOffset.UtcNow;
         var record = outcome == AgentUpdateWatchOutcomes.RolledBack ? watch with { Outcome = outcome } : WithAlert(watch, outcome, code);
         AgentUpdateWatchStore.Write(context.Store.UpdatesRoot, record);
-        if (!Patch(context, active, watch, before =>
+        if (!AgentUpdateJournalPatch.TryApply(refusalEffects?.ChangeJournal ?? context.JournalStore.Change, watch.AttemptId,
+            active.Phase, before => SameAuthority(before, active, watch.AttemptId) ? Transition(before) : null)) return;
+        (refusalEffects?.CleanupGrant ?? (() => TryDeleteGrant(context)))();
+        context.Log(code);
+        if (outcome == AgentUpdateWatchOutcomes.RollbackFailed)
+            (refusalEffects?.Restart ?? (() => LkgWatchHostWindows.Restart(false, context.JournalStore.Read)))();
+
+        AgentUpdateJournal Transition(AgentUpdateJournal before)
         {
             var pin = AgentUpdateWatchPolicy.PostCommitPin(before.FailedInstallSequence, watch.WatchedSequence);
             if (outcome == AgentUpdateWatchOutcomes.Superseded)
@@ -317,11 +336,7 @@ internal static class LkgRollback
                 HealthyInstalledSequence = lkg?.ManifestSequence ?? 0,
                 NextCheckUtc = lkg is null ? before.NextCheckUtc : now.AddHours(24) + AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6)),
             };
-        })) return;
-        TryDeleteGrant(context);
-        context.Log(code);
-        if (outcome == AgentUpdateWatchOutcomes.RollbackFailed)
-            LkgWatchHostWindows.Restart(false, context.JournalStore.Read);
+        }
     }
 
     private static void CloseBeforeRollback(LkgWatchHostContext context, AgentUpdateWatchRecord watch, string outcome, string code)

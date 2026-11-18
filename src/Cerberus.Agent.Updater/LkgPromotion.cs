@@ -15,7 +15,7 @@ internal sealed partial class LkgPromotion(
     Action<string, string> validateInstalledSource,
     Action<string, string, string> verifyArtifact,
     Func<string, string, bool> probe,
-    Action<string> log, Action<string>? checkpoint = null)
+    Action<string> log, Action<string>? checkpoint = null, Action<TimeSpan>? delayHostMove = null)
 {
     internal sealed record RuntimeIdentity(string Version, Guid ProductCode, string ServiceExeSha256, string RuntimeRoot);
 
@@ -49,7 +49,7 @@ internal sealed partial class LkgPromotion(
     internal static void CleanupRetired(AgentUpdateLkgStore store, Action<string, string, bool> validate)
     {
         validate(store.Root, store.UpdatesRoot, false);
-        if (File.Exists(Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName))) return;
+        if (HasPromotionEntry(store)) return;
         foreach (var path in Directory.EnumerateFiles(store.Root, RetiredPrefix + "*"))
         {
             var name = Path.GetFileName(path);
@@ -89,13 +89,13 @@ internal sealed partial class LkgPromotion(
         handled = false;
         Validate(store.Root, allowMissing: false);
         var active = readJournal();
-        var marker = ReadMarkerForRecovery(store);
-        var markerPresent = File.Exists(MarkerPath);
+        var markerRead = ReadMarkerForRecovery(store, validateProtectedPath);
+        var marker = markerRead.Marker;
         if (resume)
         {
             if (marker is null || !OwnsMarker(active, marker))
             {
-                if (markerPresent) Alert(changeJournal, active, marker?.AttemptId);
+                if (markerRead.State != MarkerState.Absent) Alert(changeJournal, active, marker?.AttemptId);
                 return false;
             }
 
@@ -113,6 +113,7 @@ internal sealed partial class LkgPromotion(
         var eligible = watch is not null && plan is not null && active.Phase == AgentUpdateWatchJournal.CommittedWatch &&
             LkgWatchHostBinding.BindsWatch(active, watch.AttemptId);
         if (!resume && !eligible) return false;
+        if (!resume && !HasNoAttemptEvidence(store, active.AttemptId, validateProtectedPath)) return false;
 
         var promotion = resume ? marker : null;
         var runtimeVerified = false;
@@ -132,7 +133,6 @@ internal sealed partial class LkgPromotion(
 
             if (promotion is null)
             {
-                if (Exists(stage)) throw InvalidPromotion();
                 var previousHost = store.ReadHost() ?? throw InvalidPromotion();
                 if (!SameHash(HashProtectedFile(store.HostPath), previousHost.UpdaterSha256)) throw InvalidPromotion();
                 var installedUpdater = Path.Combine(identity.RuntimeRoot, AgentUpdateLkgStore.UpdaterFileName);
@@ -140,13 +140,17 @@ internal sealed partial class LkgPromotion(
                 using var installed = File.OpenRead(installedUpdater);
                 var next = new AgentUpdateLkgPromotion(watch.AttemptId, plan.Version, plan.Sha256, previousHost.UpdaterSha256,
                     Hash(installed), plan.ManifestDigest!, Path.GetFileName(stage)) { PivotStarted = false, RetryCount = 0 };
-                if (!ArchiveMarker(marker, active, changeJournal)) return false;
+                if (!ArchiveMarker(markerRead, active, changeJournal)) return false;
                 store.WritePromotion(next);
                 promotion = next;
                 checkpoint?.Invoke("marker");
             }
 
-            if (!prepared && HasCrossedPivot(promotion)) throw InvalidPromotion();
+            if (HasCrossedPivot(promotion))
+            {
+                if (!prepared) throw InvalidPromotion();
+                promotion = Moved(promotion);
+            }
             var record = prepared
                 ? ReadPrepared(preparedPath, promotion, plan, identity)
                 : Prepare(stage, preparedPath, promotion, plan, identity);

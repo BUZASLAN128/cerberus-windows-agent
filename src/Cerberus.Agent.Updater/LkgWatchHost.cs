@@ -163,7 +163,8 @@ internal static partial class LkgWatchHost
             state.InstalledManifestVerified, log);
         if (state.PromotionPending && work.ResumePromotion(context))
             return;
-        if (state.HasRetiredFiles)
+        if (state.HasRetiredFiles && (state.Journal?.Phase != AgentUpdateWatchJournal.CommittedWatch ||
+            LkgPromotion.HasNoAttemptEvidence(store, state.Journal.AttemptId, AgentUpdateSecurity.ValidateTrustedPath)))
             work.CleanupRetired(store);
 
         if (state.Journal?.Phase == AgentUpdateWatchJournal.RollingBack)
@@ -246,7 +247,7 @@ internal static partial class LkgWatchHost
         var hash = Convert.ToHexStringLower(SHA256.HashData(image));
         if (!HashMatches(host.UpdaterSha256, hash))
         {
-            var promotion = LkgPromotion.ReadMarkerForRecovery(store);
+            var promotion = LkgPromotion.ReadMarkerForRecovery(store).Marker;
             if (promotion is null || !HashMatches(promotion.OldUpdaterSha256, hash) && !HashMatches(promotion.NewUpdaterSha256, hash))
                 throw new InvalidOperationException("The update watch host hash does not match protected metadata.");
         }
@@ -267,7 +268,7 @@ internal static partial class LkgWatchHost
         var active = raw is null ? null : journal.Read();
         if (active is not null && !AgentUpdateJournalStore.KnownPhase(active.Phase))
             throw new InvalidOperationException("The update journal changed while reading watch state.");
-        return new(active, watch, false, File.Exists(Path.Combine(store.Root, AgentUpdateLkgStore.PromotionFileName)),
+        return new(active, watch, false, LkgPromotion.HasPromotionEntry(store),
             Directory.EnumerateFiles(store.Root, "retired-*", SearchOption.TopDirectoryOnly).Any());
     }
 

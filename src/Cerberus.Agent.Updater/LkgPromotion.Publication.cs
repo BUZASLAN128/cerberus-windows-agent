@@ -32,7 +32,7 @@ internal sealed partial class LkgPromotion
             if (Retire(store.HostPath, promotion.AttemptId, ".exe"))
                 Moved("retire_host");
             // The verified temp is ready before the canonical image is renamed away.
-            File.Move(preparedHost, store.HostPath);
+            MovePreparedHost(preparedHost, promotion);
             Moved("move_host");
         }
 
@@ -58,11 +58,61 @@ internal sealed partial class LkgPromotion
         void Moved(string step)
         {
             checkpoint?.Invoke(step);
-            if (promotion.PivotStarted == true) return;
-            promotion = promotion with { PivotStarted = true };
-            store.WritePromotion(promotion);
+            promotion = this.Moved(promotion);
         }
     }
+
+    private AgentUpdateLkgPromotion Moved(AgentUpdateLkgPromotion promotion)
+    {
+        if (promotion.PivotStarted == true) return promotion;
+        var current = ReadMarkerForRecovery(store, validateProtectedPath).Marker;
+        if (current is null || !SamePromotionIdentity(current, promotion))
+            throw InvalidPromotion();
+        if (current.PivotStarted == true) return current;
+        promotion = promotion with { PivotStarted = true };
+        store.WritePromotion(promotion);
+        return promotion;
+    }
+
+    private void MovePreparedHost(string source, AgentUpdateLkgPromotion promotion)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                checkpoint?.Invoke("before_move_host");
+                File.Move(source, store.HostPath);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt == 3)
+                {
+                    if (!TryRestoreHostName(promotion)) throw new HostRestoreFailure(ex);
+                    throw;
+                }
+                (delayHostMove ?? Thread.Sleep)(TimeSpan.FromSeconds(2));
+            }
+        }
+    }
+
+    private bool TryRestoreHostName(AgentUpdateLkgPromotion promotion)
+    {
+        try
+        {
+            var retiredHost = RetiredPath(promotion.AttemptId, ".exe");
+            Validate(retiredHost, allowMissing: false);
+            Validate(store.HostPath, allowMissing: true);
+            using var image = new FileStream(retiredHost, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            if (!SameHash(Hash(image), promotion.OldUpdaterSha256)) return false;
+            // Sole post-pivot exception: restore the verified host name after the second d rename fails.
+            File.Move(retiredHost, store.HostPath, overwrite: false);
+            return true;
+        }
+        catch (Exception ex) when (IsPromotionFailure(ex)) { return false; }
+    }
+
+    private sealed class HostRestoreFailure(Exception cause) : IOException("LKG host rename-back failed.", cause);
 
     private void PreservePreviousHost(string stage, AgentUpdateLkgPromotion promotion)
     {
@@ -123,7 +173,7 @@ internal sealed partial class LkgPromotion
     private void Cleanup(AgentUpdateLkgPromotion promotion)
     {
         Validate(MarkerPath, allowMissing: false);
-        if (store.ReadPromotion() != promotion) throw InvalidPromotion();
+        if (ReadMarkerForRecovery(store, validateProtectedPath).Marker != promotion) throw InvalidPromotion();
         DeleteStage(Path.Combine(store.Root, promotion.StageDir));
         File.Delete(MarkerPath);
         foreach (var suffix in RetiredSuffixes[..^2])

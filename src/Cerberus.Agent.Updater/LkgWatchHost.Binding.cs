@@ -200,7 +200,7 @@ internal static class LkgWatchHostBinding
         catch (Exception ex) when (LkgWatchHost.IsHostFailure(ex)) { return null; }
     }
 
-    private static AgentUpdateLkgRecord? ReadEligibleLkg(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata,
+    internal static AgentUpdateLkgRecord? ReadEligibleLkg(AgentUpdateLkgStore store, AgentUpdateBuildMetadata metadata,
         IReadOnlyList<string> keys, string? replaced)
     {
         if (replaced is null) return null;

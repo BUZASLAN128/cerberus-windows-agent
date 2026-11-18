@@ -94,28 +94,44 @@ public sealed partial class LkgWatchHostRecoveryTests
 
     [Theory]
     [InlineData("bound")]
+    [InlineData("no-result")]
+    [InlineData("no-attempt")]
+    [InlineData("other-plan")]
     [InlineData("stale-alert")]
+    [InlineData("other-alert-code")]
     [InlineData("different-code")]
+    [InlineData("other-failure-attempt")]
     [InlineData("stale-result")]
     [InlineData("prior-watch")]
+    [InlineData("real-rollback-failed")]
     [InlineData("desktop")]
     public void HealthyCommitClearsOnlyTheBoundServerRestartMarker(string branch)
     {
         var plan = new AgentUpdatePlan("msi", "1.2.3", "dev", "fixture", new string('a', 64),
-            Now.ToString("O"), "fixture", AttemptId: Attempt, Sequence: 20);
+            Now.ToString("O"), "fixture", AttemptId: branch == "no-attempt" ? null : branch == "other-plan" ? "other-attempt" : Attempt,
+            Sequence: 20);
+        var result = branch == "no-result" ? null : AgentUpdateInstallerResult.FromMsiExitCode(0, null, null);
+        var attempt = branch == "no-attempt" ? null : Attempt;
         var before = new AgentUpdateJournal
         {
-            AttemptId = Attempt, Phase = AgentUpdateStates.HealthPending,
-            WatchAttemptId = branch == "prior-watch" ? Attempt : null,
+            AttemptId = attempt, Phase = AgentUpdateStates.HealthPending, InstallerResult = result,
+            WatchAttemptId = branch == "prior-watch" ? Attempt : branch == "no-attempt" ? "other-attempt" : null,
+            RollbackAttemptId = branch == "real-rollback-failed" ? "rollback-attempt" : null,
             FailureCode = branch == "different-code" ? AgentUpdateErrorCodes.InstallOverdue : AgentUpdateWatchJournal.RollbackFailed,
-            FailureAttemptId = Attempt, FailureInstallerResultId = branch == "stale-result" ? "old-result" : null,
-            AlertCode = AgentUpdateWatchJournal.RollbackFailed, AlertAttemptId = branch == "stale-alert" ? "old-attempt" : Attempt,
+            FailureAttemptId = branch == "other-failure-attempt" ? "other-attempt" : attempt,
+            FailureInstallerResultId = branch == "stale-result" ? "old-result" : result?.ResultId,
+            AlertCode = branch == "other-alert-code" ? AgentUpdateWatchJournal.WatchUnavailable : AgentUpdateWatchJournal.RollbackFailed,
+            AlertAttemptId = branch == "stale-alert" ? "other-attempt" : attempt,
         };
 
         var after = AgentUpdateLocalService.TransitionHealthyInstall(before, plan, Now, serverProfile: branch != "desktop");
         Assert.Equal(branch == "desktop" ? AgentUpdateStates.Installed : AgentUpdateWatchJournal.CommittedWatch, after.Phase);
-        Assert.Equal(branch == "bound" ? null : before.AlertCode, after.AlertCode);
-        Assert.Equal(branch == "bound" ? null : before.FailureCode, after.FailureCode);
+        var cleared = branch is "bound" or "no-result";
+        Assert.Equal(cleared ? null : before.AlertCode, after.AlertCode);
+        Assert.Equal(cleared ? null : before.AlertAttemptId, after.AlertAttemptId);
+        Assert.Equal(cleared ? null : before.FailureCode, after.FailureCode);
+        Assert.Equal(cleared ? null : before.FailureAttemptId, after.FailureAttemptId);
+        Assert.Equal(cleared ? null : before.FailureInstallerResultId, after.FailureInstallerResultId);
         if (branch == "bound")
         {
             var recovered = AgentUpdateLocalService.CloseRecovery(before with { Phase = AgentUpdateStates.RecoveryRequired },

@@ -144,26 +144,43 @@ public sealed partial class LkgPromotionTests
             Directory.GetFileSystemEntries(_store.Root).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray());
     }
 
-    [Fact]
-    public void InstallerGateFailureDoesNotDispatchOrPin()
+    [Theory]
+    [InlineData(AgentInstallerHealthPhase.BackendContact, 17)]
+    [InlineData(AgentInstallerHealthPhase.PipeConnect, 17)]
+    [InlineData(AgentInstallerHealthPhase.PipeAuthority, 17)]
+    [InlineData(AgentInstallerHealthPhase.StatusRequest, 17)]
+    [InlineData(AgentInstallerHealthPhase.StatusResponse, 17)]
+    [InlineData(AgentInstallerHealthPhase.StabilityNoAnswer, 17)]
+    [InlineData(AgentInstallerHealthPhase.ServiceExecutableHash, 41)]
+    public void FailedInstallerGateDoesNotDispatchOrChangeInstallerPin(AgentInstallerHealthPhase phase, long expectedPin)
     {
         var before = CanonicalHashes();
         var floor = Hash(FloorPath);
-        var journal = new LkgSupportJournal(_store.UpdatesRoot);
-        journal.Change(_ => _journal with
+        var journal = JournalWithPassedWatch();
+        journal.Change(active => active with
         {
             Phase = AgentUpdateStates.Failed,
+            InstallerResult = AgentUpdateInstallerResult.FromMsiExitCode(1603, null, null) with { AttemptId = Attempt },
             FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(
-                0, AgentUpdateErrorCodes.MsiFailed, _plan.Sequence, AgentInstallerHealthPhase.BackendContact),
+                17, AgentUpdateErrorCodes.MsiFailed, _plan.Sequence, phase),
         });
+        var failed = journal.Read();
         var scheduler = new UnchangedWatchTask(_store.HostPath);
-        Assert.Equal(0, Start(journal, "--scm-failure", Create(checkpoint: _ =>
-            throw new Xunit.Sdk.XunitException("A failed installer gate authorized promotion")), scheduler));
-        Assert.Equal(0, journal.Read().FailedInstallSequence);
+        var promotion = Create(checkpoint: _ => throw new Xunit.Sdk.XunitException("A failed installer gate authorized promotion"));
+        Assert.False(promotion.Apply(journal.Read, journal.Change, _watch, _plan, resume: false));
+        var retired = Path.Combine(_store.Root, "retired-earlier-attempt.exe");
+        File.WriteAllText(retired, "older retired fixture");
+        Assert.Equal(0, Start(journal, "--scm-failure", promotion, scheduler));
+        Assert.False(File.Exists(retired));
+        Assert.Equal(expectedPin, failed.FailedInstallSequence);
+        Assert.Equal(failed.Revision, journal.Read().Revision);
+        Assert.Equal(failed.InstallerResult!.ResultId, journal.Read().InstallerResult!.ResultId);
+        Assert.Equal(expectedPin, journal.Read().FailedInstallSequence);
+        Assert.Equal(AgentUpdateWatchOutcomes.Passed, AgentUpdateWatchStore.Read(_store.UpdatesRoot)!.Outcome);
         Assert.Null(_store.ReadPromotion());
         Assert.Equal(before, CanonicalHashes());
         Assert.Equal(floor, Hash(FloorPath));
-        Assert.Equal(0, scheduler.Reads);
+        Assert.Equal(1, scheduler.Reads);
         Assert.Equal(0, scheduler.Writes);
     }
 

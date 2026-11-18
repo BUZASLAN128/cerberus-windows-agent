@@ -61,12 +61,25 @@ internal sealed partial class LkgPromotion
     private bool HandleFailure(AgentUpdateJournal active, Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         AgentUpdateLkgPromotion? marker, AgentUpdatePlan? verifiedPlan, Exception error)
     {
+        var current = ReadMarkerForRecovery(store, validateProtectedPath).Marker;
+        if (marker is not null && current is not null && SamePromotionIdentity(current, marker) && OwnsMarker(active, current))
+        {
+            marker = current;
+        }
+        else
+        {
+            if (current?.AttemptId == active.AttemptId || !HasNoAttemptEvidence(store, active.AttemptId, validateProtectedPath))
+                return false;
+            marker = null;
+        }
+
         if (marker is not null)
         {
+            if (error is HostRestoreFailure) Alert(change, active, marker.AttemptId);
             try
             {
                 if (HasCrossedPivot(marker))
-                    return RetainAndRetry(active, change, marker, error is PromotionIntegrityFailure);
+                    return RetainAndRetry(active, change, Moved(marker), error is PromotionIntegrityFailure);
             }
             catch (Exception ex) when (IsPromotionFailure(ex))
             {
@@ -74,7 +87,6 @@ internal sealed partial class LkgPromotion
                 return RetainAndRetry(active, change, marker, integrityFailed: false);
             }
         }
-
         if (!Close(change, active, verifiedPlan, AgentUpdateWatchJournal.LkgPromotionFailed))
             return false;
         LogFailure(log);
@@ -82,18 +94,22 @@ internal sealed partial class LkgPromotion
         return true;
     }
 
+    private static bool SamePromotionIdentity(AgentUpdateLkgPromotion left, AgentUpdateLkgPromotion right) =>
+        left with { PivotStarted = right.PivotStarted, RetryCount = right.RetryCount } == right;
+
     private bool RetainAndRetry(AgentUpdateJournal active, Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         AgentUpdateLkgPromotion expected, bool integrityFailed)
     {
         try
         {
-            var current = ReadMarkerForRecovery(store);
+            var current = ReadMarkerForRecovery(store, validateProtectedPath).Marker;
             if (current is null || !OwnsMarker(active, current) || current.AttemptId != expected.AttemptId ||
                 current.ManifestDigest != expected.ManifestDigest)
                 return false;
+            if (current.PivotStarted != true) return false;
             var count = integrityFailed ? AgentUpdateLkgPromotion.MaxRetries
                 : Math.Min(AgentUpdateLkgPromotion.MaxRetries, current.RetryCount!.Value + 1);
-            var next = current with { PivotStarted = true, RetryCount = count };
+            var next = current with { RetryCount = count };
             if (current != next) store.WritePromotion(next);
             if (count < AgentUpdateLkgPromotion.MaxRetries) return true;
             Alert(change, active, current.AttemptId);
@@ -125,6 +141,22 @@ internal sealed partial class LkgPromotion
         Validate(stagedMsi, allowMissing: true);
         Validate(store.MsiPath, allowMissing: true);
         return Exists(prepared) && !Exists(stagedMsi) && Exists(store.MsiPath);
+    }
+
+    internal static bool HasNoAttemptEvidence(AgentUpdateLkgStore store, string? attempt,
+        Action<string, string, bool> validate)
+    {
+        if (!AgentUpdateSecurity.IsSafeAttemptId(attempt)) return false;
+        try
+        {
+            var stage = Path.Combine(store.Root, "stage-" + attempt);
+            validate(stage, store.UpdatesRoot, true);
+            if (Exists(stage)) return false;
+            var retiredPrefix = RetiredPrefix + attempt + ".";
+            return !Directory.EnumerateFileSystemEntries(store.Root, "retired-*")
+                .Any(path => Path.GetFileName(path).StartsWith(retiredPrefix, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (IsPromotionFailure(ex)) { return false; }
     }
 
     private void Alert(Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
