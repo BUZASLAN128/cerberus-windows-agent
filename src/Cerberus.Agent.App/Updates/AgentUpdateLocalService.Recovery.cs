@@ -87,7 +87,7 @@ internal static partial class AgentUpdateLocalService
 
     /// <summary>
     /// Closes a recovery_required attempt once no runner or installer is alive and the grace period
-    /// passed: Installed when this service is the healthy planned version, otherwise terminal Failed.
+    /// passed: commits the healthy planned version or records a terminal failure.
     /// The next check is rescheduled a day out so a failing release is not retried in a tight loop.
     /// </summary>
     private static async Task TryCloseRecoveryAsync(AgentUpdateJournal active, CancellationToken ct)
@@ -106,7 +106,9 @@ internal static partial class AgentUpdateLocalService
         // The scan reads files, so it runs before the journal lock is taken.
         var rollbackPhase = RecoveryRollbackPhase(healthy, plan, active.InstallerStartedUtc,
             Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"));
-        Journal.ChangeAttempt(active.AttemptId, before => CloseRecovery(before, plan, healthy, now, rollbackPhase));
+        var closed = Journal.ChangeAttempt(active.AttemptId, before => CloseRecovery(before, plan, healthy, now, rollbackPhase));
+        if (closed.Phase == AgentUpdateWatchJournal.CommittedWatch && closed.WatchRequestedUtc == now)
+            AgentUpdateWatchTask.TryRun();
     }
 
     /// <summary>Newest health-rollback phase recorded for this attempt; null when healthy, without a plan, or when the records cannot be read.</summary>
@@ -122,18 +124,14 @@ internal static partial class AgentUpdateLocalService
         => active.AttemptId is not null && !runnerAlive && !installerAlive &&
            now - (LastInstallEvidenceUtc(active) is { } last && last > systemStartedUtc ? last : systemStartedUtc) >= RecoveryGrace;
 
-    /// <summary>Installed when healthy on the planned version, otherwise terminal Failed with a rescheduled check.</summary>
+    /// <summary>Commits the healthy planned version or closes with a failure and a rescheduled check.</summary>
     internal static AgentUpdateJournal CloseRecovery(AgentUpdateJournal before, AgentUpdatePlan? plan, bool healthy, DateTimeOffset now,
-        AgentInstallerHealthPhase? rollbackPhase = null)
+        AgentInstallerHealthPhase? rollbackPhase = null, bool? serverProfile = null)
     {
         if (before.Phase != AgentUpdateStates.RecoveryRequired) return before;
         before = before with { FailureCode = null, FailureAttemptId = null, FailureInstallerResultId = null };
         if (healthy && plan is not null)
-            return before with
-            {
-                Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
-                HealthyInstalledVersion = plan.Version,
-            };
+            return TransitionHealthyInstall(before, plan, now, serverProfile ?? AgentBuildProfile.IsServer);
         var result = before.InstallerResult ?? AgentUpdateInstallerResult.Failure(
             new InvalidOperationException("Update recovery timed out."));
         return before with
@@ -145,4 +143,18 @@ internal static partial class AgentUpdateLocalService
             NextCheckUtc = now.AddHours(24).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, TimeSpan.FromHours(6))),
         };
     }
+
+    internal static AgentUpdateJournal TransitionHealthyInstall(
+        AgentUpdateJournal before, AgentUpdatePlan plan, DateTimeOffset now, bool serverProfile)
+        => serverProfile ? before with
+        {
+            Phase = AgentUpdateWatchJournal.CommittedWatch,
+            WatchRequestedUtc = now,
+            WatchAttemptId = before.AttemptId,
+        } : before with
+        {
+            Phase = AgentUpdateStates.Installed,
+            HealthyInstalledSequence = plan.Sequence,
+            HealthyInstalledVersion = plan.Version,
+        };
 }
