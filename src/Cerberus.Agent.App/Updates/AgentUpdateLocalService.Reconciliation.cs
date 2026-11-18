@@ -290,12 +290,7 @@ internal static partial class AgentUpdateLocalService
         }
         else if (active.Phase == AgentUpdateStates.RetryableBusy && active.NextRetryUtc is null)
         {
-            Journal.ChangeAttempt(active.AttemptId, before => before with
-            {
-                RetryCount = Math.Min(3, before.RetryCount + 1),
-                NextRetryUtc = DateTimeOffset.UtcNow.AddSeconds(Math.Min(30, 4 * Math.Pow(2, before.RetryCount))),
-                Phase = before.RetryCount >= 2 ? AgentUpdateStates.Failed : AgentUpdateStates.RetryableBusy,
-            });
+            Journal.ChangeAttempt(active.AttemptId, before => TransitionBusyRetry(before, DateTimeOffset.UtcNow));
         }
         else if (active.Phase is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot)
         {

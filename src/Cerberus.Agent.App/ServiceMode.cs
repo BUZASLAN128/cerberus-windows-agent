@@ -324,7 +324,7 @@ internal static partial class ServiceMode
             updateStatusProvider: secondary ? null : async cancel =>
                 (await updateStateStore.ReconcileInstallerResultAsync(
                     WindowsDeviceInfo.GetAgentVersion(),
-                    cancel).ConfigureAwait(false))?.ToHeartbeatStatus(),
+                    cancel, log).ConfigureAwait(false))?.ToHeartbeatStatus(),
             agentVersion: agentVersion,
             buildId: buildId,
             buildChannel: buildChannel,
