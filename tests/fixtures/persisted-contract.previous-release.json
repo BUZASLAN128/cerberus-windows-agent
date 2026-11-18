@@ -52,6 +52,8 @@
     "agent.update.lkg.v1": "Server LKG metadata is isolated from records read by previously shipped agents.",
     "agent.update.lkg_host.v1": "Only the LKG store reads this protected host record.",
     "agent.update.rollback_floor.v1": "The server rollback path uses a separate protected floor file.",
-    "agent.update.rollback_grant.v1": "Only the server MSI rollback admission path reads this protected grant file."
+    "agent.update.rollback_grant.v1": "Only the server MSI rollback admission path reads this protected grant file.",
+    "agent.update.probe.v1": "The LKG probe uses an isolated stdout response consumed only by watch hosts.",
+    "agent.update.watch.v1": "The server watch uses a separate protected watch.json file that previously shipped agents do not read."
   }
 }
