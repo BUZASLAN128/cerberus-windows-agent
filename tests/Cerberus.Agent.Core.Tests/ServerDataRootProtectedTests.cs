@@ -1,22 +1,26 @@
 #if CERBERUS_SERVER_PROFILE
 using System.Security.AccessControl;
 using System.Security.Principal;
+using Xunit.Abstractions;
 using Cerberus.Agent.Core;
 using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Core.Tests;
 
-// Temp folders only. Owner and DACL changes need an elevated (non-SYSTEM) token; without it these cases return
-// early, like the existing ServerDataRootTests.
-public sealed class ServerDataRootProtectedTests : IDisposable
+// These tests use temporary storage. T1 shares the exclusive native cache test collection.
+[Collection("TC1 exact native storage")]
+public sealed partial class ServerDataRootProtectedTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "cerberus-dataroot-prot-" + Guid.NewGuid().ToString("N"));
+    private readonly ITestOutputHelper _tc1Output;
+    private string? _rootPath;
+    private string _root => _rootPath ??= Directory.CreateTempSubdirectory("cerberus-dataroot-prot-").FullName;
 
-    public ServerDataRootProtectedTests() => Directory.CreateDirectory(_root);
+    public ServerDataRootProtectedTests(ITestOutputHelper output) => _tc1Output = output;
 
     public void Dispose()
     {
-        try { Directory.Delete(_root, recursive: true); }
+        if (_rootPath is not { } path) return;
+        try { Directory.Delete(path, recursive: true); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
@@ -48,38 +52,6 @@ public sealed class ServerDataRootProtectedTests : IDisposable
 
         Assert.False(ServerDataRoot.EnsureProtected(root));
         Assert.False(ServerDataRoot.EnsureProtected(root));
-    }
-
-    [ElevatedAdministratorFact]
-    public void Elevated_administrator_can_verify_the_system_owned_cache_directory_without_listing_it()
-    {
-        var root = Path.Combine(_root, "data");
-        Assert.True(ServerDataRoot.EnsureProtected(root));
-        var child = new DirectoryInfo(Path.Combine(root, "token-cache"));
-        AgentUpdateStoragePrivilege.Run(() => child.Create(AgentAccessTokenCache.CreateDirectorySecurity()));
-        try
-        {
-            var before = child.GetAccessControl();
-            Assert.Equal(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                before.GetOwner(typeof(SecurityIdentifier)));
-            Assert.True(ServerDataRoot.EnsureProtected(root));
-            Assert.Equal(before.GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access),
-                child.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Owner | AccessControlSections.Access));
-            Assert.Throws<UnauthorizedAccessException>(() => child.GetFileSystemInfos());
-        }
-        finally
-        {
-            // The fixture is empty. The parent's DELETE_CHILD right removes it without listing the cache.
-            child.Delete(recursive: false);
-        }
-    }
-
-    private sealed class ElevatedAdministratorFactAttribute : FactAttribute
-    {
-        public ElevatedAdministratorFactAttribute()
-        {
-            if (!CanRun(out _)) Skip = "Requires an already-elevated non-SYSTEM administrator with SeRestorePrivilege for temporary SYSTEM ownership.";
-        }
     }
 
     [Fact]

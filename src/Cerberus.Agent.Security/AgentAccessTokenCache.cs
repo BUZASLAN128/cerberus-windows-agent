@@ -12,7 +12,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Cerberus.Agent.Security;
 
 /// <summary>Optional, service-only storage for a short-lived access token.</summary>
-public sealed class AgentAccessTokenCache
+public sealed partial class AgentAccessTokenCache
 {
     private const string Schema = "agent.access-token.v1";
     private const int MaxBytes = 16 * 1024;
@@ -219,17 +219,16 @@ public sealed class AgentAccessTokenCache
 
     private static void RemoveExactCacheFile(string path)
     {
-        using var handle = OpenForRemoval(path, DeleteAccess, allowMissing: true);
+        using var handle = OpenStoppedCacheEntry(path);
         if (handle.IsInvalid) return;
         if (!IsNonReparse(handle) || ReadStandardInfo(handle) is not { Directory: 0, LinkCount: 1 })
-            throw new InvalidOperationException("The token cache entry is not a regular, single-link file.");
+            throw new InvalidOperationException(InvalidCacheEntry);
         byte delete = 1;
         if (!SetFileInformationByHandle(handle, FileDispositionInfo, ref delete, 1))
             throw new Win32Exception(Marshal.GetLastWin32Error());
     }
 
     private const uint ReadControl = 0x00020000;
-    private const uint DeleteAccess = 0x00010000;
     private const uint OpenExisting = 3;
     private const uint BackupSemantics = 0x02000000;
     private const uint OpenReparsePoint = 0x00200000;

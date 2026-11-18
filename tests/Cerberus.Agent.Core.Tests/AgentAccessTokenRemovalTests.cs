@@ -6,6 +6,23 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentAccessTokenRemovalTests
 {
     [Fact]
+    public void StoppedFileOpenRequestsOnlyDeleteAndSynchronize()
+    {
+        var security = Path.Combine(ServerPackageStaticTests.FindRepoRoot(), "src", "Cerberus.Agent.Security");
+        var removal = File.ReadAllText(Path.Combine(security, "AgentAccessTokenCache.StoppedRemoval.cs"));
+        var cache = File.ReadAllText(Path.Combine(security, "AgentAccessTokenCache.cs"));
+
+        Assert.Contains("StoppedFileDeleteAccess = 0x00110000;", removal, StringComparison.Ordinal);
+        Assert.Contains("StoppedFileOpenOptions = 0x00204060;", removal, StringComparison.Ordinal);
+        Assert.Contains("FileOpen = 1;", removal, StringComparison.Ordinal);
+        Assert.Matches(@"NtCreateFile\(out var handle, StoppedFileDeleteAccess, ref attributes, out _,\s*IntPtr\.Zero, 0, FileShare\.Read \| FileShare\.Write, FileOpen, StoppedFileOpenOptions, IntPtr\.Zero, 0\)", removal);
+        Assert.Contains("using var handle = OpenStoppedCacheEntry(path);", cache, StringComparison.Ordinal);
+        Assert.Contains("OpenForRemoval(_directory, ReadControl, allowMissing: true)", cache, StringComparison.Ordinal);
+        Assert.DoesNotContain("SeBackupPrivilege", removal, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
     public void CompiledMachineStateClearBindsTheExactStoppedCacheRemoval()
     {
         // Inspect the production binding without calling SCM or touching the machine store.

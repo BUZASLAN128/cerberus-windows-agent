@@ -228,6 +228,23 @@ public sealed class AgentAccessTokenCacheTests : IDisposable
         Assert.Equal(before, new DirectoryInfo(CacheDirectory).GetAccessControl().GetSecurityDescriptorBinaryForm());
     }
 
+    [Fact]
+    public async Task StopCleanupReportsSharingViolationAndLeavesTheEntry()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var cache = new AgentAccessTokenCache(CacheDirectory, identity.User!);
+        Directory.CreateDirectory(_root);
+        await WriteAsync(cache);
+
+        using (File.Open(CachePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var error = Assert.Throws<System.ComponentModel.Win32Exception>(cache.RemoveExactCacheFiles);
+            Assert.Equal(32, error.NativeErrorCode);
+        }
+        Assert.True(File.Exists(CachePath));
+    }
+
+
     [Theory]
     [InlineData("foreign-directory")]
     [InlineData("entry-directory")]
