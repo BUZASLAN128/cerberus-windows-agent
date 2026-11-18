@@ -105,7 +105,11 @@ try{
     foreach($hostName in @('Cerberus.Agent.exe','Cerberus.Agent.Service.exe','Cerberus.Agent.Updater.exe')){
       $hostPath=Join-Path $runtime $hostName
       if(-not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)){throw 'Server campaign hosts must retain the verified single-file layout.'}
-      Assert-UpdaterBundleHasNoNativeEntries $hostPath
+      if($hostName -ceq 'Cerberus.Agent.exe'){
+        Assert-ServerAgentBundleEntryKinds $hostPath
+      }else{
+        Assert-UpdaterBundleHasNoNativeEntries $hostPath
+      }
       $hostAssembly=if($hostName -ceq 'Cerberus.Agent.exe'){'Cerberus.Agent.dll'}else{'Cerberus.Agent.Runtime.dll'}
       $metadata=Read-AssemblyMetadataValues (Join-Path $runtime $hostAssembly) -BundlePath $hostPath
       if($metadata['AgentUpdateLabPolicyB64'] -cne $lab.PolicyB64 -or $metadata['AgentUpdateLabFeedRootB64'] -cne $lab.RootB64 -or
@@ -154,6 +158,7 @@ try{
       if($fault -ceq 'feed-truncated-artifact'){$targetRow.truncated=Write-TruncatedCampaignArtifact $msi $msiLength $targetRoot $name}
       [pscustomobject]$targetRow
     })
+    # noNativeEntries records the headless updater admission check.
     $rows.Add([pscustomobject]@{version=$version;source=$ExpectedHead;msi=$msi;sha256=$msiHash;bytes=$msiLength;bootstrap=($version -ceq $lab.Policy.versions[0]);manifests=$manifests;
       fault=$fault;updaterSha256=$updaterSha256;noNativeEntries=$true;contractVersion=$contractVersion;labSourceFingerprint=$labSourceFingerprint;
       helperMetadataEvidence='compiler PE support; compressed helper runtime not executed';helperCompiler=$helperCompiler;
