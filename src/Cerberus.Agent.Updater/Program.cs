@@ -71,14 +71,21 @@ internal static class Program
                 AttemptId = plan.AttemptId,
                 RetryCount = active.RetryCount,
             };
-            // The record scan reads files, so it runs before the journal lock is taken.
+            // Scan the helper record and MSI log before taking the journal lock.
             var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
                 ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, AgentUpdaterContract.InstallerTransactionsDirectoryName),
                     journalStore.Read().InstallerStartedUtc, plan.Version, log.Write) : null;
+            var isEnvironmentFailure = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed &&
+                ClassifyMsiFailure(exitCode, msiLogPath, rollbackPhase) == AgentUpdateMsiFailureKind.Environment;
             journalStore.ChangeAttempt(attemptId, before => !MayWriteRunnerResult(before, attemptId, self.Id, ownStartedUtc) ? before : before with
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
+                AlertCode = null,
+                AlertAttemptId = null,
+                FailureCode = isEnvironmentFailure ? AgentUpdateErrorCodes.MsiEnvironment : before.FailureCode,
+                FailureAttemptId = isEnvironmentFailure ? attemptId : before.FailureAttemptId,
+                FailureInstallerResultId = isEnvironmentFailure ? installerResult.ResultId : before.FailureInstallerResultId,
                 // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
                 // Other installer failures, and a backend-contact, control-pipe or no-answer failure, keep the normal retry behavior.
                 FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
@@ -102,6 +109,8 @@ internal static class Program
                 {
                     Phase = before.MayHaveStartedInstallation ? AgentUpdateStates.RecoveryRequired : AgentUpdateStates.Failed,
                     InstallerResult = before.InstallerResult ?? result,
+                    AlertCode = null,
+                    AlertAttemptId = null,
                 });
             }
             catch (Exception failure) { log.Write($"Updater result persistence failed: {failure.GetType().Name}."); }
@@ -285,6 +294,21 @@ internal static class Program
         _ = process.StandardError.ReadToEnd();
         log.Write($"msiexec exit code: {process.ExitCode}.");
         return process.ExitCode;
+    }
+
+    private static AgentUpdateMsiFailureKind ClassifyMsiFailure(
+        int exitCode, string msiLogPath, AgentInstallerHealthPhase? rollbackPhase)
+    {
+        try
+        {
+            AgentUpdateSecurity.ValidateProtectedPath(msiLogPath, AgentUpdateSecurity.DefaultPrivilegedRoot, allowMissing: false);
+            using var msiLog = File.OpenRead(msiLogPath);
+            return AgentUpdateMsiFailure.Classify(exitCode, msiLog, rollbackPhase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException)
+        {
+            return AgentUpdateMsiFailure.Classify(exitCode, log: null, rollbackPhase);
+        }
     }
 
     private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
