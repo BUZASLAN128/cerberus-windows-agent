@@ -20,6 +20,7 @@ internal sealed record AgentUpdateLabPolicy(
     string? FaultProfile = null)
 {
     internal const string MetadataName = "AgentUpdateLabPolicyB64";
+    internal const string FastFaultProfile = "fast";
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
@@ -69,7 +70,7 @@ internal sealed record AgentUpdateLabPolicy(
             NotBeforeUtc.Offset != TimeSpan.Zero || ExpiresAtUtc.Offset != TimeSpan.Zero ||
             ExpiresAtUtc <= NotBeforeUtc || ExpiresAtUtc - NotBeforeUtc > TimeSpan.FromHours(48) ||
             Targets is not { Length: 2 } || Versions is not { Length: 11 } || WatchMinutesOverride is < 1 ||
-            FaultProfile is not (null or AgentUpdateLabFaults.FastProfile) ||
+            FaultProfile is not (null or FastFaultProfile) ||
             !ValidBackendUri(BackendUrl) || !ValidBackendUri(SsoBaseUrl)) throw Denied();
         if (Targets.Any(t => t is null)) throw Denied();
         foreach (var target in Targets)

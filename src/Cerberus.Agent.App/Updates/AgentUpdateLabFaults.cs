@@ -22,7 +22,7 @@ internal static class AgentUpdateLabFaults
     // The "fast" profile keeps only faults whose recovery takes about a minute or two.
     private static readonly string?[] FastSchedule = [null, ServiceExit, InstallerBusy, TokenRoute429,
         ServiceExit, InstallerBusy, TokenRoute429, ServiceExit, InstallerBusy, TokenRoute429, ServiceExit];
-    internal const string FastProfile = "fast";
+    internal const string FastProfile = AgentUpdateLabPolicy.FastFaultProfile;
     private static Mutex? _installerBusyHold;
 
     internal sealed record Receipt(string CampaignId, string AgentId, string TenantId, string KeyFingerprint,
