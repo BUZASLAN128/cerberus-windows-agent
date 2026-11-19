@@ -16,6 +16,8 @@ public static class AgentUpdateWatchTask
     internal const int Create = 2;
     internal const int CreateOrUpdate = 6;
     internal const int ServiceAccountLogon = 5;
+    internal const int TaskNotFound = unchecked((int)0x80070002);
+    internal const int TaskAlreadyExists = unchecked((int)0x800700B7);
     private const string SystemSid = "S-1-5-18";
     private const string StartBoundary = "2026-01-01T00:00:00";
     private static readonly XNamespace TaskNamespace = "http://schemas.microsoft.com/windows/2004/02/mit/task";
@@ -76,12 +78,17 @@ public static class AgentUpdateWatchTask
         else
         {
             try { scheduler.Register(xml, Create, TaskSddl); }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x800700B7) && scheduler.Read() is not null)
+            catch (Exception ex) when (IsSchedulerError(ex, TaskAlreadyExists) && scheduler.Read() is not null)
             {
                 // Another installer registered the task after the absence check.
             }
         }
     }
+
+    // Late-bound COM calls surface a failing HRESULT as its mapped .NET exception (0x80070002 arrives as
+    // FileNotFoundException), so scheduler outcomes are matched by HRESULT, not by exception type.
+    internal static bool IsSchedulerError(Exception ex, int hresult)
+        => ex is COMException or IOException && ex.HResult == hresult;
 
     internal static string BuildXml(string hostPath) => $$"""
         <Task version="1.3" xmlns="{{TaskNamespace}}">
@@ -181,8 +188,10 @@ public static class AgentUpdateWatchTask
         const int fullAccess = 0x1F01FF;
         try
         {
+            // Task Scheduler reports a registered "D:P(...)" DACL without the protected flag and adds a SYSTEM read
+            // entry, so the check rests on the entries: explicit allow entries for SYSTEM and Administrators only.
             var sd = new RawSecurityDescriptor(sddl);
-            if ((sd.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0 || sd.DiscretionaryAcl is not { } acl)
+            if (sd.DiscretionaryAcl is not { } acl)
                 return false;
             var system = 0;
             var admins = 0;
@@ -231,7 +240,6 @@ public static class AgentUpdateWatchTask
 
     private sealed class TaskSchedulerConnection : ITaskRegistration, IDisposable
     {
-        private const int FileNotFound = unchecked((int)0x80070002);
         private readonly dynamic _folder;
         private readonly dynamic _service;
 
@@ -259,7 +267,7 @@ public static class AgentUpdateWatchTask
         public void Delete()
         {
             try { _folder.DeleteTask(TaskName, 0); }
-            catch (COMException ex) when (ex.HResult == FileNotFound) { }
+            catch (Exception ex) when (IsSchedulerError(ex, TaskNotFound)) { }
         }
 
         public bool RunIfValid(string hostPath) => WithTask(task =>
@@ -273,7 +281,7 @@ public static class AgentUpdateWatchTask
         {
             dynamic task;
             try { task = _folder.GetTask(TaskName); }
-            catch (COMException ex) when (ex.HResult == FileNotFound) { return absent; }
+            catch (Exception ex) when (IsSchedulerError(ex, TaskNotFound)) { return absent; }
             try { return action(task); }
             finally { Release(task); }
         }

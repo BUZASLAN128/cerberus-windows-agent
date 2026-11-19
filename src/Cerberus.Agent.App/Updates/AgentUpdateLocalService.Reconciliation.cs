@@ -264,11 +264,15 @@ internal static partial class AgentUpdateLocalService
         return active;
     }
 
+    // Development campaign builds retry a check interrupted before installation after 30 seconds; release builds wait 15 minutes.
+    internal static TimeSpan InterruptedPreInstallRetryDelay(bool labBuild)
+        => labBuild ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(15);
+
     private static async Task ReconcileOwnedAsync(CancellationToken ct, bool allowHealth = true)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
-        var interruptedRetryAtUtc = now.AddMinutes(15);
+        var interruptedRetryAtUtc = now.Add(InterruptedPreInstallRetryDelay(AgentUpdateDefaults.LabPolicyB64.Length > 0));
         var active = RecoverActiveAttempt(
             Root,
             Journal.Read(),

@@ -70,6 +70,37 @@ public sealed class AgentUpdateWatchTaskTests
         Assert.Equal([6], scheduler.Writes);
     }
 
+    [Theory]
+    // As Task Scheduler reports a task registered with TaskSddl: no protected flag, an added SYSTEM read entry.
+    [InlineData("D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;SY)", true)]
+    [InlineData("D:P(A;;FA;;;SY)(A;;FA;;;BA)", true)]
+    [InlineData("D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)", false)]
+    [InlineData("D:(A;;FA;;;SY)(A;ID;FA;;;BA)", false)]
+    [InlineData("D:(A;;FA;;;SY)(A;;FR;;;BA)", false)]
+    [InlineData("D:(A;;FA;;;SY)(A;;FA;;;BA)(D;;FA;;;BU)", false)]
+    public void ReportedDaclMustGrantOnlySystemAndAdministratorsFullAccess(string sddl, bool expected)
+        => Assert.Equal(expected, AgentUpdateWatchTask.Matches(new(AgentUpdateWatchTask.BuildXml(HostPath), sddl, 5), HostPath));
+
+    [Theory]
+    [InlineData(AgentUpdateWatchTask.TaskNotFound, true)]
+    [InlineData(AgentUpdateWatchTask.TaskAlreadyExists, false)]
+    public void MappedSchedulerErrorsAreMatchedByHResult(int hresult, bool notFound)
+    {
+        // Late-bound COM raises 0x80070002 as FileNotFoundException, not COMException.
+        Assert.Equal(notFound, AgentUpdateWatchTask.IsSchedulerError(new FileNotFoundException(), hresult));
+        Assert.True(AgentUpdateWatchTask.IsSchedulerError(new System.Runtime.InteropServices.COMException("", hresult), hresult));
+        Assert.True(AgentUpdateWatchTask.IsSchedulerError(new IOException("", hresult), hresult));
+        Assert.False(AgentUpdateWatchTask.IsSchedulerError(new InvalidOperationException(), hresult));
+    }
+
+    [Fact]
+    public void ConcurrentCreateThatSurfacesAsMappedIOExceptionIsAccepted()
+    {
+        var scheduler = new SchedulerFixture { ThrowOnCreate = new IOException("", AgentUpdateWatchTask.TaskAlreadyExists) };
+        AgentUpdateWatchTask.RegisterWhenNeeded(scheduler, HostPath, allowRepair: false);
+        Assert.Equal([2], scheduler.Writes);
+    }
+
     [Fact]
     public void TimeTriggerMayNotReintroduceAnExecutionDeadline()
     {
@@ -83,6 +114,7 @@ public sealed class AgentUpdateWatchTaskTests
     {
         public AgentUpdateWatchTask.TaskDefinition? Definition { get; set; }
         public bool IgnoreSddl { get; init; }
+        public Exception? ThrowOnCreate { get; init; }
         public List<int> Writes { get; } = [];
 
         public AgentUpdateWatchTask.TaskDefinition? Read() => Definition;
@@ -91,6 +123,8 @@ public sealed class AgentUpdateWatchTaskTests
         {
             Writes.Add(flags);
             Definition = new(xml, IgnoreSddl ? "D:(A;;FA;;;SY)" : sddl, AgentUpdateWatchTask.ServiceAccountLogon);
+            // Another installer won the race: the task now exists and this create reports "already exists".
+            if (ThrowOnCreate is not null && flags == AgentUpdateWatchTask.Create) throw ThrowOnCreate;
         }
     }
 }

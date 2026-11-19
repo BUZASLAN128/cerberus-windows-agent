@@ -141,6 +141,13 @@ public sealed class AgentUpdateDeadlineTests
     }
 
     [Fact]
+    public void InterruptedPreInstallRetry_IsShortOnlyInDevelopmentCampaignBuilds()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(15), AgentUpdateLocalService.InterruptedPreInstallRetryDelay(labBuild: false));
+        Assert.Equal(TimeSpan.FromSeconds(30), AgentUpdateLocalService.InterruptedPreInstallRetryDelay(labBuild: true));
+    }
+
+    [Fact]
     public async Task ScheduledPreInstallGate_LeavesPendingRequestUnprocessed()
     {
         var root = NewRoot();
