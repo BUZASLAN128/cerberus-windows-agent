@@ -47,7 +47,10 @@ using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHa
 public static class CmpgnPipeAuthority { [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNamedPipeServerProcessId(SafePipeHandle p, out uint id); }
 '@
 function Read-CmpgnReadiness([int]$ExpectedPid) {
-  $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $Pinned.controlPipeName, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+  # The pipe grants administrators client rights only; InOut would also ask for FILE_CREATE_PIPE_INSTANCE and be denied.
+  $rights = [IO.Pipes.PipeAccessRights]'ReadData, WriteData, ReadAttributes, ReadPermissions, Synchronize'
+  $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $Pinned.controlPipeName, $rights, [IO.Pipes.PipeOptions]::Asynchronous,
+    [Security.Principal.TokenImpersonationLevel]::Identification, [IO.HandleInheritability]::None)
   try {
     $pipe.Connect(3000); $server = [uint32]0
     if (-not [CmpgnPipeAuthority]::GetNamedPipeServerProcessId($pipe.SafePipeHandle, [ref]$server) -or $server -ne $ExpectedPid) { return $null }
