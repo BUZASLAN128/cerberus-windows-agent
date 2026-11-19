@@ -34,75 +34,21 @@ foreach ($profile in @('server','desktop')) {
     if ($setter.Count -ne 1 -or $setter[0][0] -ne '51' -or $setter[0][1] -ne 'CERBERUS_EXPLICIT_CONSENT' -or $setter[0][2] -ne '0') { throw "Bad setter: $profile" }
 
     $upgradeRows = @(Query $db 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5)
-    $grantActions = @(Query $db "SELECT ``Type``, ``Source``, ``Target`` FROM ``CustomAction`` WHERE ``Action`` = 'RequireRollbackGrant'" 3)
-    $rollbackRows = @($upgradeRows | Where-Object { $_[4] -eq 'CERBERUS_NEWER_DETECTED' })
+    if (@($upgradeRows | Where-Object { $_[4] -notin @('WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED') }).Count) { throw "Unexpected upgrade detection row: $profile" }
     $secureRows = @(Query $db "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'SecureCustomProperties'" 1)
-    $secure = $secureRows[0][0] -split ';'
-    $grantSequence = @(Query $db 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExecuteSequence`' 3)
-    $grantScheduled = @($grantSequence | Where-Object { $_[0] -eq 'RequireRollbackGrant' })
-    $removalGuard = @($grantSequence | Where-Object { $_[0] -eq 'BlockNewServerDowngradeWithRemoval' })
-    $watchActions = @(Query $db 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction`' 4 | Where-Object {
-        $_[0] -in @('BlockServerInstallWithoutRollback', 'LkgBootstrap', 'ReregisterWatchTask', 'UnregisterWatchTask')
-    })
+    $secure = @($secureRows | ForEach-Object { $_[0] -split ';' })
+    if ('CERBERUS_NEWER_DETECTED' -in $secure -or 'CERBERUS_ROLLBACK_ATTEMPT' -in $secure) { throw "Unexpected post-install recovery property: $profile" }
+    # Installer health and Windows Installer rollback are the only automatic recovery; the helper runs only these commands.
+    $helperCommands = @('bootstrap', 'enroll', 'enroll-rollback', 'validate-runtime', 'health', 'ensure-running', 'lab-commit',
+        'lab-rollback', 'capture', 'configure', 'restore', 'stop', 'validate-proxy')
+    $helperActions = @(Query $db 'SELECT `Action`, `Source`, `Target` FROM `CustomAction`' 3 | Where-Object { $_[1] -eq 'CerberusInstallerHelper' })
+    if ($helperActions.Count -eq 0) { throw "Installer helper actions are missing: $profile" }
+    $unexpected = @($helperActions | Where-Object { ($_[2] -split ' ', 2)[0] -cnotin $helperCommands })
+    if ($unexpected.Count) { throw "Unexpected installer helper action: $profile $($unexpected[0][0])" }
     if ($profile -eq 'server') {
-        $version = @(Query $db "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductVersion'" 1)[0][0]
-        $major = @($upgradeRows | Where-Object { $_[4] -eq 'WIX_UPGRADE_DETECTED' })
-        if ($major.Count -ne 1 -or $major[0][2] -or ([int]$major[0][3] -band 2)) { throw 'Bad server major-upgrade row' }
-        if ($rollbackRows.Count -ne 1 -or $rollbackRows[0][0] -ne $major[0][0] -or $rollbackRows[0][1] -ne $version -or
-            $rollbackRows[0][2] -or ([int]$rollbackRows[0][3] -band 258) -ne 2) { throw 'Bad server newer-version detection row' }
-        if ('CERBERUS_NEWER_DETECTED' -notin $secure -or 'CERBERUS_ROLLBACK_ATTEMPT' -notin $secure) { throw 'Bad server rollback secure properties' }
-        $target = '^require-rollback-grant "\[ProductCode\]" "\[APPFOLDER\]\." "[^"]+" "\[RollbackServiceExeSha256\]" "\[RollbackServiceAssemblySha256\]" "\[CERBERUS_NEWER_DETECTED\]" "\[CERBERUS_ROLLBACK_ATTEMPT\]" "\[OriginalDatabase\]"$'
-        if ($grantActions.Count -ne 1 -or [int]$grantActions[0][0] -ne 0x2C02 -or $grantActions[0][1] -ne 'CerberusInstallerHelper' -or
-            $grantActions[0][2] -notmatch $target -or $grantActions[0][2].Length -gt 255) { throw 'Bad deferred server rollback grant action' }
-        foreach ($property in @('RollbackServiceExeSha256', 'RollbackServiceAssemblySha256')) {
-            $hashRows = @(Query $db "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$property'" 1)
-            if ($hashRows.Count -ne 1 -or $hashRows[0][0] -notmatch '^[a-f0-9]{64}$') { throw "Bad rollback hash property: $property" }
-        }
-
-        $actionOrder = @{}
-        foreach ($row in $grantSequence) { $actionOrder[$row[0]] = [int]$row[2] }
-        $initialize = $actionOrder['InstallInitialize']
-        $guard = $actionOrder['RequireRollbackGrant']
-        if ($grantScheduled.Count -ne 1 -or $grantScheduled[0][1] -ne 'CERBERUS_NEWER_DETECTED AND NOT REMOVE' -or
-            -not ($initialize -lt $guard -and $guard -lt $actionOrder['StopServices'] -and
-                $guard -lt $actionOrder['BootstrapCerberusMachineNamespace'])) { throw 'Bad server rollback grant sequence' }
-        if ($removalGuard.Count -ne 1 -or $removalGuard[0][1] -ne 'CERBERUS_NEWER_DETECTED AND REMOVE AND NOT Installed' -or
-            [int]$removalGuard[0][2] -ge $initialize) { throw 'A feature-removal request can skip grant admission' }
-        $customActions = @(Query $db 'SELECT `Action`, `Type` FROM `CustomAction`' 2)
-        $beforeGuard = @($customActions | Where-Object { ([int]$_[1] -band 0x400) -and
-            $actionOrder.ContainsKey($_[0]) -and $actionOrder[$_[0]] -lt $guard })
-        if ($beforeGuard.Count -ne 0) { throw 'The rollback grant must be the first in-script server custom action' }
-        $uninstall = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
-        $watchActionSpec = @(
-            @{ Action = 'BlockServerInstallWithoutRollback'; Type = 19; Condition = 'NOT REMOVE AND RollbackDisabled'; Before = 'InstallInitialize' }
-            @{ Action = 'LkgBootstrap'; Type = 0x0E42; Condition = 'NOT REMOVE'; After = 'CommitLabCampaignAdmission'; Before = 'InstallFinalize'; Command = 'lkg-bootstrap' }
-            @{ Action = 'ReregisterWatchTask'; Type = 0x0D42; Condition = $uninstall; After = 'InstallInitialize'; Before = 'UnregisterWatchTask'; Command = 'reregister-watch-task' }
-            @{ Action = 'UnregisterWatchTask'; Type = 0x0C02; Condition = $uninstall; After = 'InstallInitialize'; Before = 'RemoveFiles'; Command = 'unregister-watch-task' }
-        )
-        foreach ($spec in $watchActionSpec) {
-            $authored = @($watchActions | Where-Object { $_[0] -ceq $spec.Action })
-            $scheduled = @($grantSequence | Where-Object { $_[0] -ceq $spec.Action })
-            if ($authored.Count -ne 1 -or $scheduled.Count -ne 1 -or [int]$authored[0][1] -ne $spec.Type -or
-                $scheduled[0][1] -cne $spec.Condition -or
-                ($spec.After -and (-not $actionOrder.ContainsKey($spec.After) -or $actionOrder[$spec.Action] -le $actionOrder[$spec.After])) -or
-                -not $actionOrder.ContainsKey($spec.Before) -or $actionOrder[$spec.Action] -ge $actionOrder[$spec.Before] -or
-                ($spec.Command -and ($authored[0][2] -cne 'CerberusInstallerHelper' -or
-                    -not $authored[0][3].StartsWith($spec.Command + ' ', [StringComparison]::Ordinal)))) {
-                throw "Bad server watch custom action: $($spec.Action)"
-            }
-            Write-Output ('SERVER WATCH ACTION ' + ($scheduled[0] -join ' | ') + ' | Type=' + $authored[0][1])
-        }
-        $scm = @(Query $db 'SELECT `ServiceName`, `FirstFailureActionType`, `SecondFailureActionType`, `ThirdFailureActionType`, `ProgramCommandLine` FROM `Wix4ServiceConfig` WHERE `ServiceName` = ''CerberusServerAgent''' 5)
-        $command = '"[CommonAppDataFolder]CerberusServerAgent\Privileged\Updates\lkg\Cerberus.Agent.Updater.exe" --scm-failure'
-        if ($scm.Count -ne 1 -or ($scm[0][1..3] -join '/') -cne 'restart/restart/runCommand' -or
-            $scm[0][4] -cne $command) { throw 'Bad server SCM watch recovery configuration' }
-        Write-Output ('SERVER WATCH SCM ' + ($scm[0] -join ' | '))
-        Write-Output ('SERVER UPGRADE ' + ($major[0] -join ' | '))
-        Write-Output ('SERVER DETECT ' + ($rollbackRows[0] -join ' | '))
-        Write-Output ('SERVER ROLLBACK ' + ($grantScheduled[0] -join ' | '))
-    } elseif ($rollbackRows.Count -or $grantActions.Count -or $grantScheduled.Count -or $removalGuard.Count -or $watchActions.Count -or
-        'CERBERUS_NEWER_DETECTED' -in $secure -or 'CERBERUS_ROLLBACK_ATTEMPT' -in $secure) {
-        throw 'Desktop MSI contains server rollback authoring'
+        $scm = @(Query $db 'SELECT `ServiceName`, `FirstFailureActionType`, `SecondFailureActionType`, `ThirdFailureActionType`, `ProgramCommandLine` FROM `Wix4ServiceConfig`' 5)
+        if ($scm.Count -ne 1 -or ($scm[0][1..3] -join '/') -cne 'restart/restart/restart' -or $scm[0][4]) { throw 'Bad server service failure actions' }
+        Write-Output ('SERVER SCM ' + ($scm[0] -join ' | '))
     }
 
     Write-Output "PROFILE $profile"

@@ -26,10 +26,6 @@ public sealed record AgentUpdateManifest(
     public const string V1SchemaVersion = "agent.update.manifest.v1";
     public const string V2SchemaVersion = "agent.update.manifest.v2";
 
-    [JsonPropertyName("min_rollback_version")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? MinRollbackVersion { get; init; }
-
     public bool IsV2 => string.Equals(SchemaVersion, V2SchemaVersion, StringComparison.Ordinal);
 
     public string? EffectiveSignerKeyIdentity =>
@@ -42,8 +38,6 @@ public static class AgentUpdateManifestValidator
     public static readonly TimeSpan MaxV2ValidityWindow = TimeSpan.FromDays(45);
 
     private static readonly Regex Sha256Regex = new("^[a-fA-F0-9]{64}$", RegexOptions.Compiled);
-    private static readonly Regex ReleaseVersionRegex = new(
-        @"\A(?<core>[0-9]+(?:\.[0-9]+){1,3})(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z", RegexOptions.Compiled);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly HashSet<string> DisallowedKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -79,24 +73,6 @@ public static class AgentUpdateManifestValidator
         string? currentVersion = null,
         bool allowRollbackManifest = false,
         bool allowChannelDowngrade = false)
-        => Validate(ReadManifest(json), publicKeyPems, expectedChannel, allowedArtifactPrefixes,
-            currentVersion, allowRollbackManifest, allowChannelDowngrade);
-
-    public static AgentUpdateManifest VerifyStoredSignature(string json, IReadOnlyList<string> publicKeyPems)
-    {
-        var manifest = ReadManifest(json, stored: true);
-        if (!manifest.IsV2 || !IsReleaseVersion(manifest.Version))
-            throw new InvalidOperationException("Stored update manifest requires a v2 release version.");
-        ValidateRequiredFields(manifest, publicKeyPems);
-        var releasedAt = ReadReleaseTime(manifest);
-        _ = ParseArtifactUri(manifest);
-        ValidateV2Fields(manifest, releasedAt, requireCurrent: false);
-        ValidateRollbackFloor(manifest);
-        VerifySignature(manifest, publicKeyPems);
-        return manifest;
-    }
-
-    private static AgentUpdateManifest ReadManifest(string json, bool stored = false)
     {
         if (string.IsNullOrWhiteSpace(json))
             throw new InvalidOperationException("Update manifest is empty.");
@@ -111,15 +87,18 @@ public static class AgentUpdateManifestValidator
                 throw new InvalidOperationException("Update manifest has duplicate fields.");
             if (DisallowedKeys.Contains(property.Name))
                 throw new InvalidOperationException($"Update manifest rejects {property.Name}.");
-            if (property.Name.Equals("min_rollback_version", StringComparison.OrdinalIgnoreCase) &&
-                property.Value.ValueKind != JsonValueKind.String)
-                throw new InvalidOperationException("Update manifest rollback floor is invalid.");
         }
-        if (stored && !names.Contains("rollback_allowed"))
-            throw new InvalidOperationException("Stored update manifest rollback policy is missing.");
 
-        return JsonSerializer.Deserialize<AgentUpdateManifest>(json, JsonOptions)
+        var manifest = JsonSerializer.Deserialize<AgentUpdateManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException("Update manifest is empty.");
+        return Validate(
+            manifest,
+            publicKeyPems,
+            expectedChannel,
+            allowedArtifactPrefixes,
+            currentVersion,
+            allowRollbackManifest,
+            allowChannelDowngrade);
     }
 
     public static AgentUpdateManifest Validate(
@@ -149,29 +128,6 @@ public static class AgentUpdateManifestValidator
         bool allowChannelDowngrade = false)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        ValidateRequiredFields(manifest, publicKeyPems);
-        if (!string.Equals(manifest.Channel, expectedChannel, StringComparison.Ordinal))
-            throw new InvalidOperationException("Update manifest channel mismatch.");
-        var releasedAt = ReadReleaseTime(manifest);
-        if (releasedAt > DateTimeOffset.UtcNow.AddMinutes(5))
-            throw new InvalidOperationException("Update manifest release time is in the future.");
-        var artifactUri = ParseArtifactUri(manifest);
-        if (allowedArtifactPrefixes.Count > 0 && !allowedArtifactPrefixes.Any(prefix => IsAllowedArtifactUri(artifactUri, prefix)))
-            throw new InvalidOperationException("Update manifest artifact URL denied.");
-
-        if (manifest.IsV2) ValidateV2Fields(manifest, releasedAt, requireCurrent: true);
-        ValidateRollbackFloor(manifest);
-
-        var versionCompare = AgentVersionComparer.CompareReleaseCore(manifest.Version, currentVersion);
-        if (versionCompare is < 0 && !(allowChannelDowngrade || (allowRollbackManifest && manifest.RollbackAllowed)))
-            throw new InvalidOperationException("Update manifest downgrade denied.");
-
-        VerifySignature(manifest, publicKeyPems);
-        return manifest;
-    }
-
-    private static void ValidateRequiredFields(AgentUpdateManifest manifest, IReadOnlyList<string> publicKeyPems)
-    {
         if (manifest.SchemaVersion is not (null or "" or AgentUpdateManifest.V1SchemaVersion or AgentUpdateManifest.V2SchemaVersion))
             throw new InvalidOperationException("Update manifest schema is unsupported.");
         Require(manifest.ArtifactKind, "Update manifest artifact kind missing.");
@@ -188,60 +144,44 @@ public static class AgentUpdateManifestValidator
 
         if (!string.Equals(manifest.ArtifactKind, "msi", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest artifact kind denied.");
-    }
-
-    private static DateTimeOffset ReadReleaseTime(AgentUpdateManifest manifest)
-    {
+        if (!string.Equals(manifest.Channel, expectedChannel, StringComparison.Ordinal))
+            throw new InvalidOperationException("Update manifest channel mismatch.");
         if (!Sha256Regex.IsMatch(manifest.Sha256))
             throw new InvalidOperationException("Update manifest checksum invalid.");
         if (!DateTimeOffset.TryParse(manifest.ReleasedAtUtc, out var releasedAt))
             throw new InvalidOperationException("Update manifest release time invalid.");
-        return releasedAt;
-    }
-
-    private static Uri ParseArtifactUri(AgentUpdateManifest manifest)
-    {
+        if (releasedAt > DateTimeOffset.UtcNow.AddMinutes(5))
+            throw new InvalidOperationException("Update manifest release time is in the future.");
         if (!Uri.TryCreate(manifest.ArtifactUrl, UriKind.Absolute, out var artifactUri) ||
             !string.Equals(artifactUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update manifest artifact URL invalid.");
-        return artifactUri;
-    }
+        if (allowedArtifactPrefixes.Count > 0 &&
+            !allowedArtifactPrefixes.Any(prefix => IsAllowedArtifactUri(artifactUri, prefix)))
+            throw new InvalidOperationException("Update manifest artifact URL denied.");
 
-    private static void ValidateRollbackFloor(AgentUpdateManifest manifest)
-    {
-        if (manifest.MinRollbackVersion is not null && (!manifest.IsV2 ||
-            !IsReleaseVersion(manifest.MinRollbackVersion) || !IsReleaseVersion(manifest.Version) ||
-            AgentVersionComparer.CompareReleaseCore(manifest.MinRollbackVersion, manifest.Version) is not <= 0))
-            throw new InvalidOperationException("Update manifest rollback floor is invalid.");
-    }
+        if (manifest.IsV2)
+        {
+            if (manifest.Sequence <= 0)
+                throw new InvalidOperationException("Update manifest sequence is invalid.");
+            if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt))
+                throw new InvalidOperationException("Update manifest expiry is invalid.");
+            if (expiresAt <= DateTimeOffset.UtcNow)
+                throw new InvalidOperationException("Update manifest has expired.");
+            if (expiresAt - releasedAt > MaxV2ValidityWindow)
+                throw new InvalidOperationException("Update manifest validity window is too long.");
+            if (manifest.ArtifactLength is null or <= 0)
+                throw new InvalidOperationException("Update manifest artifact length is invalid.");
+            if (string.IsNullOrWhiteSpace(manifest.EffectiveSignerKeyIdentity))
+                throw new InvalidOperationException("Update manifest signer identity missing.");
+        }
 
-    private static void ValidateV2Fields(AgentUpdateManifest manifest, DateTimeOffset releasedAt, bool requireCurrent)
-    {
-        if (manifest.Sequence <= 0)
-            throw new InvalidOperationException("Update manifest sequence is invalid.");
-        if (!DateTimeOffset.TryParse(manifest.ExpiresAtUtc, out var expiresAt))
-            throw new InvalidOperationException("Update manifest expiry is invalid.");
-        if (requireCurrent && expiresAt <= DateTimeOffset.UtcNow)
-            throw new InvalidOperationException("Update manifest has expired.");
-        if (expiresAt - releasedAt > MaxV2ValidityWindow)
-            throw new InvalidOperationException("Update manifest validity window is too long.");
-        if (manifest.ArtifactLength is null or <= 0)
-            throw new InvalidOperationException("Update manifest artifact length is invalid.");
-        if (string.IsNullOrWhiteSpace(manifest.EffectiveSignerKeyIdentity))
-            throw new InvalidOperationException("Update manifest signer identity missing.");
-    }
+        var versionCompare = AgentVersionComparer.CompareReleaseCore(manifest.Version, currentVersion);
+        if (versionCompare is < 0)
+        {
+            if (!(allowChannelDowngrade || (allowRollbackManifest && manifest.RollbackAllowed)))
+                throw new InvalidOperationException("Update manifest downgrade denied.");
+        }
 
-    internal static bool IsReleaseVersion(string? value)
-    {
-        if (value is null || value.Length > 128) return false;
-        var match = ReleaseVersionRegex.Match(value);
-        return match.Success && System.Version.TryParse(match.Groups["core"].Value, out _);
-    }
-
-    internal static bool IsSha256(string? value) => value is { Length: 64 } && Sha256Regex.IsMatch(value);
-
-    private static void VerifySignature(AgentUpdateManifest manifest, IReadOnlyList<string> publicKeyPems)
-    {
         byte[] signature;
         try
         {
@@ -255,6 +195,7 @@ public static class AgentUpdateManifestValidator
         var payload = Encoding.UTF8.GetBytes(CanonicalPayload(manifest));
         if (!VerifyWithAnyPublicKey(payload, signature, publicKeyPems))
             throw new InvalidOperationException("Update manifest signature invalid.");
+        return manifest;
     }
 
     public static bool IsAllowedArtifactUri(Uri artifact, string prefix)
@@ -290,8 +231,6 @@ public static class AgentUpdateManifestValidator
             payload.Add(manifest.ExpiresAtUtc ?? "");
             payload.Add(manifest.ArtifactLength?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "");
             payload.Add(manifest.EffectiveSignerKeyIdentity ?? "");
-            if (manifest.MinRollbackVersion is not null)
-                payload.Add($"min_rollback_version:{manifest.MinRollbackVersion}");
         }
 
         return string.Join("\n", payload);

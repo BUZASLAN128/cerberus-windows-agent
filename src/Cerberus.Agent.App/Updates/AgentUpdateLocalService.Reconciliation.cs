@@ -321,14 +321,13 @@ internal static partial class AgentUpdateLocalService
                 }
             }
             if (plan is not null && await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
-            {
-                var committedAt = DateTimeOffset.UtcNow;
-                var committed = Journal.ChangeAttempt(active.AttemptId, before => before.Phase == active.Phase
-                    ? TransitionHealthyInstall(before, plan, committedAt, AgentBuildProfile.IsServer)
+                Journal.ChangeAttempt(active.AttemptId, before => before.Phase == active.Phase
+                    ? before with
+                    {
+                        Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
+                        HealthyInstalledVersion = plan.Version,
+                    }
                     : before);
-                if (committed.Phase == AgentUpdateWatchJournal.CommittedWatch && committed.WatchRequestedUtc == committedAt)
-                    AgentUpdateWatchTask.TryRun();
-            }
             else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, SystemStartedUtc.Value))
                 return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
@@ -343,15 +342,6 @@ internal static partial class AgentUpdateLocalService
             if (!allowHealth) return;
             RecordInstallOverdue(active, now, IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc));
             await TryCloseRecoveryAsync(active, ct).ConfigureAwait(false);
-        }
-        else if (AgentBuildProfile.IsServer &&
-            active.Phase is AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack)
-        {
-            if (active.Phase == AgentUpdateWatchJournal.RollingBack &&
-                IsProcessAlive(active.InstallerProcessId, active.InstallerStartedUtc))
-                RecordInstallOverdue(active, now, runnerAlive: false);
-            else
-                ReconcilePostCommitWatch(active, now);
         }
         else if (active.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking)
             Journal.ChangeAttempt(active.AttemptId, before => before.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking

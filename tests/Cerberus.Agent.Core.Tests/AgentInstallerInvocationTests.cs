@@ -7,23 +7,6 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentInstallerInvocationTests
 {
     [Theory]
-    [InlineData("require-rollback-grant", 9)]
-    [InlineData("lkg-bootstrap", 6)]
-    [InlineData("unregister-watch-task", 6)]
-    [InlineData("reregister-watch-task", 6)]
-    public void RollbackOperationsRequireExactArity(string operation, int count)
-    {
-        var args = Enumerable.Repeat("", count).ToArray();
-        args[0] = operation;
-        args[1] = Guid.NewGuid().ToString("B");
-        Assert.True(AgentInstallerInvocation.TryParse(args, out _));
-        Assert.False(AgentInstallerInvocation.TryParse(args[..^1], out _));
-        Assert.False(AgentInstallerInvocation.TryParse([..args, ""], out _));
-        args[0] = "unknown";
-        Assert.False(AgentInstallerInvocation.TryParse(args, out _));
-    }
-
-    [Theory]
     [InlineData("")]
     [InlineData("a0441929-53d0-4a1f-9d86-64b437bd38cd")]
     public void EveryActualWixHelperCommandParsesWithNormalBlankOrLabTransaction(string transaction)

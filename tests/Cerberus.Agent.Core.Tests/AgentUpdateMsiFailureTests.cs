@@ -7,8 +7,6 @@ public sealed class AgentUpdateMsiFailureTests
 {
     private const int FatalMsiExit = 1603;
     private const string Note1310 = "MSI (s) (AB:CD) [01:02:03:456]: Note: 1: 1310 2: synthetic.file";
-    private static readonly Guid RollbackProduct = Guid.Parse("cf25d448-1309-41dd-af37-982dbceb96c0");
-    private static readonly DateTimeOffset RollbackStart = new(2026, 11, 18, 10, 0, 0, TimeSpan.Zero);
 
     [Theory]
     [InlineData("CustomAction SyntheticAction returned actual error code 1310 (note: synthetic detail)")]
@@ -35,98 +33,6 @@ public sealed class AgentUpdateMsiFailureTests
         using var log = Utf16Log(Note1310);
         Assert.Equal(AgentUpdateMsiFailureKind.Busy,
             AgentUpdateMsiFailure.Classify(1618, log, AgentInstallerHealthPhase.ServiceState));
-        Assert.Equal(0, log.Position);
-    }
-
-    [Theory]
-    [InlineData("grant_floor", "Terminal")]
-    [InlineData("grant_version", "Terminal")]
-    [InlineData("grant_product_code", "Terminal")]
-    [InlineData("grant_msi_hash", "Terminal")]
-    [InlineData("grant_expired", "Retry")]
-    [InlineData("grant_boot_id", "Retry")]
-    [InlineData("grant_attempt_id", "Retry")]
-    [InlineData("grant_profile", "Alert")]
-    [InlineData("grant_schema", "Alert")]
-    [InlineData("grant_parse", "Alert")]
-    [InlineData("grant_path", "Alert")]
-    [InlineData("grant_consume", "Alert")]
-    public void BoundRollbackGrantDenialPrecedesMsiLogAndUsesExactDisposition(string reason, string disposition)
-    {
-        using var fixture = new GrantResultFixture();
-        fixture.Write(RollbackProduct, AgentUpdateRollbackGrantResult.Denied(reason), RollbackStart.AddSeconds(1));
-        using var log = Utf16Log(Note1310);
-
-        var (kind, refusal) = fixture.Classify(FatalMsiExit, log);
-
-        Assert.Equal(AgentUpdateMsiFailureKind.GrantRefused, kind);
-        Assert.NotNull(refusal);
-        Assert.Equal(reason, refusal.ReasonCode);
-        Assert.Equal(disposition, refusal.Disposition.ToString());
-        Assert.Equal(0, log.Position);
-    }
-
-    [Theory]
-    [InlineData("unknown_code", "\"grant_future\"")]
-    [InlineData("non_string", "42")]
-    [InlineData("missing_code", null)]
-    public void BoundUnknownGrantDenialReturnsGenericAlertWithoutEchoingReason(string condition, string? reasonJson)
-    {
-        using var fixture = new GrantResultFixture();
-        var reason = condition == "missing_code" ? "" : $",\"reason_code\":{reasonJson}";
-        File.WriteAllText(fixture.ReceiptPath, $$"""{"result":"denied","utc":"2026-11-18T10:00:01Z"{{reason}}}""");
-        using var log = Utf16Log(Note1310);
-
-        var (kind, refusal) = fixture.Classify(FatalMsiExit, log);
-
-        Assert.Equal(AgentUpdateMsiFailureKind.GrantRefused, kind);
-        Assert.Equal(new AgentUpdateGrantRefusal("grant_unknown", AgentUpdateGrantRefusalDisposition.Alert), refusal);
-        Assert.Equal(0, log.Position);
-    }
-
-    [Theory]
-    [InlineData("missing")]
-    [InlineData("wrong_product")]
-    [InlineData("stale")]
-    [InlineData("future")]
-    [InlineData("non_utc")]
-    [InlineData("admitted")]
-    [InlineData("unsafe")]
-    [InlineData("malformed")]
-    public void UnboundGrantResultFallsBackToOrdinaryMsiClassification(string condition)
-    {
-        using var fixture = new GrantResultFixture();
-        var denied = AgentUpdateRollbackGrantResult.Denied("grant_floor");
-        var recordedUtc = condition switch
-        {
-            "stale" => RollbackStart.AddTicks(-1),
-            "future" => RollbackStart.AddMinutes(2),
-            "non_utc" => RollbackStart.AddSeconds(1).ToOffset(TimeSpan.FromHours(3)),
-            _ => RollbackStart.AddSeconds(1),
-        };
-        if (condition == "malformed")
-            File.WriteAllText(fixture.ReceiptPath, "{");
-        else if (condition != "missing")
-            fixture.Write(condition == "wrong_product" ? Guid.NewGuid() : RollbackProduct,
-                condition == "admitted" ? AgentUpdateRollbackGrantResult.Accepted : denied, recordedUtc);
-        using var log = Utf16Log(Note1310);
-
-        var result = fixture.Classify(FatalMsiExit, log, trusted: condition != "unsafe");
-
-        Assert.Equal((AgentUpdateMsiFailureKind.Environment, null), result);
-    }
-
-    [Fact]
-    public void RollbackBusyNeverReadsGrantResultOrMsiLog()
-    {
-        using var fixture = new GrantResultFixture();
-        fixture.Write(RollbackProduct, AgentUpdateRollbackGrantResult.Denied("grant_floor"), RollbackStart.AddSeconds(1));
-        using var log = Utf16Log(Note1310);
-
-        var result = fixture.Classify(1618, log);
-
-        Assert.Equal((AgentUpdateMsiFailureKind.Busy, null), result);
-        Assert.Equal(0, fixture.ValidationCount);
         Assert.Equal(0, log.Position);
     }
 
@@ -212,35 +118,6 @@ public sealed class AgentUpdateMsiFailureTests
 
     private static MemoryStream Utf16Log(string text)
         => new([.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(text)], writable: false);
-
-    private sealed class GrantResultFixture : IDisposable
-    {
-        private readonly DirectoryInfo _root = Directory.CreateTempSubdirectory("cerberus-grant-classifier-");
-        private readonly string _transactions;
-
-        public GrantResultFixture() => _transactions = _root.CreateSubdirectory("installer-transactions").FullName;
-
-        public string ReceiptPath => Path.Combine(_transactions, RollbackProduct.ToString("N") + ".rollback-grant.json");
-        public int ValidationCount { get; private set; }
-
-        public void Write(Guid productCode, AgentUpdateRollbackGrantResult result, DateTimeOffset utc)
-            => AgentUpdateRollbackGrant.WriteResultRecord(_root.FullName, _transactions, productCode, result, utc);
-
-        public (AgentUpdateMsiFailureKind Kind, AgentUpdateGrantRefusal? GrantRefusal) Classify(
-            int exitCode, Stream log, bool trusted = true)
-            => AgentUpdateMsiFailure.ClassifyRollback(exitCode, log, _root.FullName, RollbackProduct, RollbackStart,
-                RollbackStart.AddMinutes(1), (path, root, allowMissing) =>
-                {
-                    ValidationCount++;
-                    Assert.Equal(ReceiptPath, path);
-                    Assert.Equal(_root.FullName, root);
-                    Assert.True(allowMissing);
-                    if (!trusted)
-                        throw new InvalidOperationException("Synthetic protected path refusal.");
-                });
-
-        public void Dispose() => _root.Delete(recursive: true);
-    }
 
     private sealed class UnreadableLogStream : MemoryStream
     {

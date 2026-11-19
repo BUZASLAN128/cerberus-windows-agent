@@ -37,7 +37,7 @@ internal static class AgentUpdateTrustFactory
             return new(keys, "dev", [lab.Target.ArtifactPrefix], WindowsDeviceInfo.GetAgentVersion(),
                 ConfiguredManifestUrl: lab.Target.ManifestUrl, AllowedSignerKeyIdentity: "unsigned-dev",
                 AllowUnsignedDevBuild: true, RequireManifestV2: true, RequireBitsDownloader: true,
-                RequireSystemAuthority: true, TestCampaignVersions: AgentUpdateLabRuntime.EffectiveVersions(lab.Policy),
+                RequireSystemAuthority: true, TestCampaignVersions: lab.Policy.Versions,
                 TestCampaignBitsTrust: new(AgentUpdateDefaults.LabFeedRootB64, lab.Target.ArtifactPrefix, lab.Policy.ExpiresAtUtc));
         }
         return AgentUpdateTrustBuilder.Build(new AgentUpdateBuildMetadata(

@@ -80,7 +80,7 @@ internal static partial class AgentUpdateLocalService
     /// </summary>
     internal static InstallRequestStep NextInstallRequestStep(
         AgentUpdateJournal active, long lifecycleGeneration, bool allowed, DateTimeOffset now)
-        => IsWatchOwned(active) || active.InstallRequest is not { IsPending: true } request ? InstallRequestStep.None
+        => active.InstallRequest is not { IsPending: true } request ? InstallRequestStep.None
             : request.LifecycleGeneration != lifecycleGeneration || !allowed || request.ExpiresUtc <= now
                 ? InstallRequestStep.Drop
             : active.MayHaveStartedInstallation || active.Phase == "launch_requested" || request.NotBeforeUtc > now
@@ -261,11 +261,7 @@ internal static partial class AgentUpdateLocalService
 
     private static AgentUpdateJournal Replace(
         AgentUpdateJournal journal, AgentUpdateInstallRequest expected, AgentUpdateInstallRequest? next)
-        => !IsWatchOwned(journal) && MatchesPending(journal.InstallRequest, expected)
-            ? journal with { InstallRequest = AnchorTerminal(journal, next) } : journal;
-
-    private static bool IsWatchOwned(AgentUpdateJournal journal)
-        => journal.Phase is AgentUpdateWatchJournal.CommittedWatch or AgentUpdateWatchJournal.RollingBack;
+        => MatchesPending(journal.InstallRequest, expected) ? journal with { InstallRequest = AnchorTerminal(journal, next) } : journal;
 
     private static bool MatchesPending(AgentUpdateInstallRequest? current, AgentUpdateInstallRequest expected)
         => current is { IsPending: true } && current.SameIdentity(expected) && current.Attempts == expected.Attempts &&

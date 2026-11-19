@@ -20,8 +20,6 @@ public sealed record AgentInstallerInvocation(string Operation, Guid ProductCode
             "health" => args.Length is 6 or 7 or 8,
             "enroll" => args.Length == 7 && !string.IsNullOrWhiteSpace(args[6]),
             "enroll-rollback" => args.Length == 6,
-            "require-rollback-grant" => args.Length == 9,
-            "lkg-bootstrap" or "unregister-watch-task" or "reregister-watch-task" => args.Length == 6,
             "capture" or "configure" or "stop" or "restore" or "commit" or "ensure-running" or "validate-proxy" => args.Length == 6,
             _ => false,
         };

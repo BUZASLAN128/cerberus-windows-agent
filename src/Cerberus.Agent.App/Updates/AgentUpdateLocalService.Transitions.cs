@@ -82,14 +82,6 @@ internal static partial class AgentUpdateLocalService
                 InstallerProcessId = operationStart.InstallerProcessId,
                 InstallerStartedUtc = operationStart.InstallerStartedUtc,
                 InstallationBootId = operationStart.InstallationBootId,
-                WatchOutcomeCode = operationStart.WatchOutcomeCode,
-                WatchOutcomeAttemptId = operationStart.WatchOutcomeAttemptId,
-                WatchRequestedUtc = operationStart.WatchRequestedUtc,
-                WatchAttemptId = operationStart.WatchAttemptId,
-                RollbackAttemptId = operationStart.RollbackAttemptId,
-                RollbackStartedUtc = operationStart.RollbackStartedUtc,
-                RollbackFirstUtc = operationStart.RollbackFirstUtc,
-                RollbackAttemptCount = operationStart.RollbackAttemptCount,
                 NextCheckUtc = retryAtUtc,
             };
         }
@@ -448,14 +440,6 @@ internal static partial class AgentUpdateLocalService
             InstallerProcessId = null,
             InstallerStartedUtc = null,
             InstallationBootId = null,
-            WatchOutcomeCode = null,
-            WatchOutcomeAttemptId = null,
-            WatchRequestedUtc = null,
-            WatchAttemptId = null,
-            RollbackAttemptId = null,
-            RollbackStartedUtc = null,
-            RollbackFirstUtc = null,
-            RollbackAttemptCount = 0,
             NextCheckUtc = nextCheckUtc,
         };
 

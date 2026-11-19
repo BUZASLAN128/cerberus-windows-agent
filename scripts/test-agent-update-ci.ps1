@@ -13,7 +13,7 @@ $proof = [ordered]@{
     source = (git -C $repoRoot rev-parse HEAD).Trim()
     profile = 'server'; startedUtc = [DateTimeOffset]::UtcNow.ToString('o'); status = 'failed'
     elevatedAdministrator = $false; testExitCode = $null; total = 0; passed = 0
-    nativeRequiredCases = 39; nativeObservedCases = 0
+    nativeRequiredCases = 29; nativeObservedCases = 0
     level = 'Windows native storage guards and updater/server unit/support; not installed service recovery or PC/VM self-update acceptance'
     installs = 0; targetAccess = $false
 }
@@ -36,7 +36,7 @@ try {
     $anchors = (Get-Content -LiteralPath $anchorsPath -Raw).Trim()
     $proof.selectionSha256 = (Get-FileHash -LiteralPath $selectionPath).Hash
     $proof.publicFixtureAnchorsSha256 = (Get-FileHash -LiteralPath $anchorsPath).Hash
-    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~Cerberus.Agent.Updater.Tests.|FullyQualifiedName~LkgWatchSamplingTests|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~ServiceWorkerFailureTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile|FullyQualifiedName=Cerberus.Agent.Core.Tests.ServerDataRootProtectedTests.Elevated_administrator_can_verify_the_system_owned_cache_directory_without_listing_it'
+    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~Cerberus.Agent.Updater.Tests.|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~ServiceWorkerFailureTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile|FullyQualifiedName=Cerberus.Agent.Core.Tests.ServerDataRootProtectedTests.Elevated_administrator_can_verify_the_system_owned_cache_directory_without_listing_it'
     $project = Join-Path $repoRoot 'tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj'
     $proof.filter = $filter
     # Same isolated public-anchor server compilation used by preflight.ps1. No release trust inputs.

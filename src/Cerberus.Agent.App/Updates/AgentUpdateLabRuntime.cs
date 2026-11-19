@@ -40,12 +40,11 @@ internal static class AgentUpdateLabRuntime
         if (scope is null) return;
         if (!AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(scope.Policy, scope.Context))
             throw new InvalidOperationException("Development launch waits for bootstrap MSI commit.");
-        RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion(),
-            EffectiveVersions(scope.Policy));
+        RequireLaunchScope(scope, active, lifecycle.Generation, DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion());
     }
 
     internal static void RequireLaunchScope(Scope scope, AgentUpdateJournal active, long lifecycleGeneration, DateTimeOffset now,
-        string installedVersion, IReadOnlyList<string>? effectiveVersions = null)
+        string installedVersion)
     {
         if (active.InstallRequest is not { LocalPolicyId: not null, VerifiedRelease: not null } request ||
             request.LocalPolicyId != scope.Policy.CampaignId || request.LifecycleGeneration != scope.Context.Generation ||
@@ -56,22 +55,7 @@ internal static class AgentUpdateLabRuntime
             request.TerminalReason is not null)
             throw new InvalidOperationException("Development update campaign authority expired or changed.");
         scope.Policy.RequireVersion(request.VerifiedRelease.Version);
-        scope.Policy.RequireSuccessor(installedVersion, request.VerifiedRelease.Version, effectiveVersions);
-    }
-
-    internal static IReadOnlyList<string> EffectiveVersions(AgentUpdateLabPolicy policy) =>
-        AgentUpdateLabRuntimeAdmission.ReadEffectiveVersions(policy);
-
-    internal static bool IsAdmittedLabArtifact(string kind, string version, string sha256)
-    {
-        if (string.IsNullOrEmpty(AgentUpdateDefaults.LabPolicyB64)) return false;
-        try
-        {
-            var scope = Resolve();
-            return scope is not null && AgentUpdateLabRuntimeAdmission.IsAdmittedLabArtifact(scope.Policy, scope.Context,
-                kind, version, sha256);
-        }
-        catch (Exception ex) when (AgentUpdateLabRuntimeAdmission.IsLabRecordFailure(ex)) { return false; }
+        scope.Policy.RequireSuccessor(installedVersion, request.VerifiedRelease.Version);
     }
 
     internal static HttpClientHandler CreateUpdateHandler()

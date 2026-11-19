@@ -61,8 +61,8 @@ internal sealed record AgentUpdateLabPolicy(
         if (!Versions.Contains(release, StringComparer.Ordinal)) throw Denied();
     }
 
-    internal void RequireSuccessor(string installedVersion, string targetVersion, IReadOnlyList<string>? effectiveVersions = null)
-        => AgentUpdateCampaignTransition.RequireNext(effectiveVersions ?? Versions, installedVersion, targetVersion);
+    internal void RequireSuccessor(string installedVersion, string targetVersion)
+        => AgentUpdateCampaignTransition.RequireNext(Versions, installedVersion, targetVersion);
 
     private void Validate()
     {

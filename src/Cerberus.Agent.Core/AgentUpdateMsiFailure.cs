@@ -1,6 +1,4 @@
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Cerberus.Agent.Core;
@@ -11,17 +9,7 @@ public enum AgentUpdateMsiFailureKind
     HealthRollback,
     Environment,
     InstallerFailed,
-    GrantRefused,
 }
-
-internal enum AgentUpdateGrantRefusalDisposition
-{
-    Retry,
-    Terminal,
-    Alert,
-}
-
-internal sealed record AgentUpdateGrantRefusal(string ReasonCode, AgentUpdateGrantRefusalDisposition Disposition);
 
 public static class AgentUpdateMsiFailure
 {
@@ -50,64 +38,6 @@ public static class AgentUpdateMsiFailure
 
         return AgentUpdateMsiFailureKind.InstallerFailed;
     }
-
-    /// <summary>Classifies one completed rollback invocation, with a protected grant denial taking precedence over MSI log evidence.</summary>
-    internal static (AgentUpdateMsiFailureKind Kind, AgentUpdateGrantRefusal? GrantRefusal) ClassifyRollback(
-        int exitCode, Stream? log, string updatesRoot, Guid targetProductCode,
-        DateTimeOffset invocationStartedUtc, DateTimeOffset invocationCompletedUtc)
-        => ClassifyRollback(exitCode, log, updatesRoot, targetProductCode, invocationStartedUtc, invocationCompletedUtc,
-            AgentUpdateSecurity.ValidateProtectedPath);
-
-    internal static (AgentUpdateMsiFailureKind Kind, AgentUpdateGrantRefusal? GrantRefusal) ClassifyRollback(
-        int exitCode, Stream? log, string updatesRoot, Guid targetProductCode,
-        DateTimeOffset invocationStartedUtc, DateTimeOffset invocationCompletedUtc,
-        Action<string, string, bool> validateProtectedPath)
-    {
-        if (exitCode == 1603 && targetProductCode != Guid.Empty &&
-            IsUtc(invocationStartedUtc) && IsUtc(invocationCompletedUtc) && invocationStartedUtc <= invocationCompletedUtc &&
-            ReadGrantResult(updatesRoot, targetProductCode, validateProtectedPath) is { Result: "denied" } result &&
-            IsUtc(result.Utc) && result.Utc >= invocationStartedUtc && result.Utc <= invocationCompletedUtc)
-        {
-            var reasonCode = result.ReasonCode.ValueKind == JsonValueKind.String ? result.ReasonCode.GetString() : null;
-            return (AgentUpdateMsiFailureKind.GrantRefused, MapGrantRefusal(reasonCode));
-        }
-
-        return (Classify(exitCode, log, rollbackPhase: null), null);
-    }
-
-    private static GrantResultRecord? ReadGrantResult(string updatesRoot, Guid targetProductCode,
-        Action<string, string, bool> validateProtectedPath)
-    {
-        try
-        {
-            var root = AgentUpdateSecurity.NormalizeRoot(updatesRoot);
-            var path = Path.Combine(root, AgentUpdaterContract.InstallerTransactionsDirectoryName,
-                targetProductCode.ToString("N") + ".rollback-grant.json");
-            validateProtectedPath(path, root, true);
-            return AgentUpdateDurableFile.Read<GrantResultRecord>(path, root);
-        }
-        catch (Exception ex) when (AgentUpdateRollbackGrant.IsStorageFailure(ex))
-        {
-            return null;
-        }
-    }
-
-    private static bool IsUtc(DateTimeOffset value) => value != default && value.Offset == TimeSpan.Zero;
-
-    private static AgentUpdateGrantRefusal MapGrantRefusal(string? reasonCode)
-        => reasonCode switch
-        {
-            "grant_floor" or "grant_version" or "grant_product_code" or "grant_msi_hash"
-                => new(reasonCode, AgentUpdateGrantRefusalDisposition.Terminal),
-            "grant_expired" or "grant_boot_id" or "grant_attempt_id"
-                => new(reasonCode, AgentUpdateGrantRefusalDisposition.Retry),
-            "grant_profile" or "grant_schema" or "grant_parse" or "grant_path" or "grant_consume"
-                => new(reasonCode, AgentUpdateGrantRefusalDisposition.Alert),
-            _ => new("grant_unknown", AgentUpdateGrantRefusalDisposition.Alert),
-        };
-
-    private sealed record GrantResultRecord(string? Result, [property: JsonPropertyName("reason_code")] JsonElement ReasonCode,
-        DateTimeOffset Utc);
 
     private static bool HasEnvironmentError(Stream? log)
     {

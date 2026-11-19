@@ -28,17 +28,7 @@
     "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"revoke\")",
     "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"corrupt_replay\")",
     "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"missing_replay\")",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabPolicyTests.WatchOverrideIsOptionalAndRequiresAtLeastFiveMinutes",
     "Cerberus.Agent.Core.Tests.AgentUpdateLabRemediationTests.UpdaterFaultUsesDurableAuthorityWithoutAServiceProcessCallback",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabFaultScheduleTests.OnlyTheTenCountedVersionsHaveTheSixScheduledFaultClasses",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.NonLabWrapReturnsTheSameHandler",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.OnlyTokenPostArmsOnceAndReturnsRetryAfterWithoutNetwork",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.ArmingExceptionPassesTheTokenPostThrough",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.TokenFaultRequiresTheCurrentCampaignAttemptAfterCommit",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabHttpFaultTests.HeldFixtureMutexPassesTokenPostThroughWithoutArming",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabRollbackAdmissionTests.RollbackAdmissionBindsGrantAndCompletedRawPredecessor",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabRollbackAdmissionTests.CompletedVersionReceiptIsBoundAndCannotBeReplacedOrReused",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabContinuationTests.OnlyBoundCommittedWatchArmsFiveCrashesAcrossServiceProcesses",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabContinuationTests.OnlyVerifiedPlannedRollbackRecordsOneSkipAndAllowsTheNextEffectiveHop"
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabFaultScheduleTests.OnlyTheTenCountedVersionsHaveTheSixScheduledFaultClasses"
   ]
 }

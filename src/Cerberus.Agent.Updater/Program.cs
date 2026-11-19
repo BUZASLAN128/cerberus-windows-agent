@@ -9,17 +9,6 @@ internal static class Program
 {
     public static int Main(string[] args)
     {
-        if (args is { Length: > 0 })
-        {
-            if (AgentUpdateWatchHostArgs.TryParse(args, out var host))
-                return host.Mode == AgentUpdateWatchHostMode.Probe
-                    ? LkgProbe.WriteResponse(host.Nonce!, Console.Out)
-                    : LkgWatchHost.Run(host, LkgWatchHostBinding.Create());
-            if (args[0] is AgentUpdateWatchHostArgs.ProbeArgument or AgentUpdateWatchHostArgs.WatchArgument or
-                AgentUpdateWatchHostArgs.ScmFailureArgument)
-                return 2;
-        }
-
         var log = UpdaterLog.Create();
         log.Write("Cerberus Agent updater starting.");
         if (!AgentUpdateSecurity.IsLocalSystem())

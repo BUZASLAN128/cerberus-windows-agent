@@ -21,7 +21,7 @@ public sealed class AgentUpdateLabFaultScheduleTests
     {
         var policy = AgentUpdateLabPolicyTests.Valid();
         string?[] expected = [null, "service-pre-download-exit", "updater-msi-busy-1618", "token-route-429",
-            "updater-pre-installer-exit", "service-post-commit-crash", "feed-truncated-artifact",
+            "updater-pre-installer-exit", null, "feed-truncated-artifact",
             "updater-msi-busy-1618", "updater-pre-installer-exit", "token-route-429", "service-pre-download-exit"];
         Assert.Equal(expected, policy.Versions.Select(version => AgentUpdateLabFaults.FaultFor(policy, version)));
         Assert.Equal(new[] { policy.Versions[1], policy.Versions[10] },

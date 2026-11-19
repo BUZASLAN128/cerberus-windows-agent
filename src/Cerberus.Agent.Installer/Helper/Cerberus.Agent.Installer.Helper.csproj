@@ -25,6 +25,5 @@
     <ProjectReference Include="..\..\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
     <Compile Include="..\..\Cerberus.Agent.App\Updates\AgentUpdateLabPolicy.cs" Link="AgentUpdateLabPolicy.cs" />
     <Compile Include="..\..\Cerberus.Agent.App\Updates\AgentUpdateLabRuntimeAdmission.cs" Link="AgentUpdateLabRuntimeAdmission.cs" />
-    <Compile Include="..\..\Cerberus.Agent.App\Updates\AgentUpdateLabRuntimeAdmission.Rollback.cs" Link="AgentUpdateLabRuntimeAdmission.Rollback.cs" />
   </ItemGroup>
 </Project>

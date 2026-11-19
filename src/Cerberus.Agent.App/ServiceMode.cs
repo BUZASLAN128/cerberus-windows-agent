@@ -230,8 +230,7 @@ internal static partial class ServiceMode
         var registrationContext = EnvelopeWiring.RegistrationContext(secrets, lifecycleState);
         secrets = new ProductBoundSecretStore(secrets, loadedSecrets.Identity, storedBackendUrl, privateKeyPem);
 
-        using var http = new HttpClient(AgentUpdateLabHttpFaults.Wrap(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = false }))) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
-        if (!secondary) AgentUpdateLabFaults.ArmPostCommitCrash(log, ct);
+        using var http = new HttpClient(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = false })) { BaseAddress = baseAddress, Timeout = TimeSpan.FromSeconds(30) };
         // Update downloads carry no agent credentials and retain their existing redirect behavior.
         using var updateHttp = new HttpClient(BackendTrust.Apply(new HttpClientHandler { AllowAutoRedirect = true }))
         {

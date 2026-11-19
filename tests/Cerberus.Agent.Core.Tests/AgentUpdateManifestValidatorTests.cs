@@ -8,66 +8,6 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentUpdateManifestValidatorTests
 {
     [Fact]
-    public void V2WithoutFloor_KeepsThePreviousCanonicalBytes()
-    {
-        using var rsa = RSA.Create(2048);
-        var manifest = SignedV2(rsa, null);
-        var expected = string.Join('\n', "msi", "1.2.0", "stable", "https://releases.cerberus.local/agent/1.2.0.msi",
-            new string('a', 64), "Cerberus Agent Release", "2026-05-07T00:00:00Z", "agent.heartbeat.v1", "false",
-            "agent.update.manifest.v2", "43", "2026-05-08T00:00:00Z", "100", "test-pin");
-        Assert.Equal(expected, AgentUpdateManifestValidator.CanonicalPayload(manifest));
-        Assert.Equal("817d1a64703f15890a86ffef1598e133f8d17794033a78cf0bd0943809a589e3",
-            AgentUpdateManifestValidator.Digest(manifest));
-        Assert.DoesNotContain("min_rollback_version", JsonSerializer.Serialize(manifest));
-    }
-
-    [Fact]
-    public void StoredV2_AuthenticatesTheOptionalFloorAndIgnoresExpiry()
-    {
-        using var rsa = RSA.Create(2048);
-        var without = SignedV2(rsa, null);
-        var withFloor = SignedV2(rsa, "1.1.0");
-        Assert.Equal(withFloor, Read(withFloor));
-        Assert.Equal(without, Read(without));
-        Assert.Contains("signature invalid", Assert.Throws<InvalidOperationException>(() => Read(withFloor with { MinRollbackVersion = null })).Message);
-        Assert.Contains("signature invalid", Assert.Throws<InvalidOperationException>(() => Read(without with { MinRollbackVersion = "1.1.0" })).Message);
-        Assert.Contains("signature invalid", Assert.Throws<InvalidOperationException>(() => Read(withFloor with { Signature = "AAAA" })).Message);
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateManifestValidator.VerifyStoredSignature(
-            JsonSerializer.Serialize(withFloor).Replace("\"min_rollback_version\"", "\"tenant_id\":\"a\",\"min_rollback_version\""), [PublicKeyPem(rsa)]));
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateManifestValidator.VerifyStoredSignature(
-            JsonSerializer.Serialize(withFloor).Replace("\"min_rollback_version\"", "\"MIN_ROLLBACK_VERSION\":\"1.1.0\",\"min_rollback_version\""), [PublicKeyPem(rsa)]));
-        Assert.Contains("expired", Assert.Throws<InvalidOperationException>(() => AgentUpdateManifestValidator.ParseAndValidateJson(
-            JsonSerializer.Serialize(withFloor), PublicKeyPem(rsa), "stable", [], currentVersion: "1.3.0")).Message);
-
-        AgentUpdateManifest Read(AgentUpdateManifest value) => AgentUpdateManifestValidator.VerifyStoredSignature(
-            JsonSerializer.Serialize(value), [PublicKeyPem(rsa)]);
-    }
-
-    [Theory]
-    [InlineData("1.3.0")]
-    [InlineData("release1.1.0")]
-    [InlineData("2147483648.0.0")]
-    public void StoredV2_RejectsMalformedOrHigherRollbackFloor(string minimum)
-    {
-        using var rsa = RSA.Create(2048);
-        var manifest = SignedV2(rsa, minimum);
-        var ex = Assert.Throws<InvalidOperationException>(() => AgentUpdateManifestValidator.VerifyStoredSignature(
-            JsonSerializer.Serialize(manifest), [PublicKeyPem(rsa)]));
-        Assert.Contains("rollback floor is invalid", ex.Message);
-    }
-
-    internal static AgentUpdateManifest SignedV2(RSA rsa, string? minimum)
-    {
-        var manifest = SignedManifest(rsa) with
-        {
-            SchemaVersion = AgentUpdateManifest.V2SchemaVersion, Sequence = 43, ArtifactLength = 100,
-            ExpiresAtUtc = "2026-05-08T00:00:00Z", SignerKeyIdentity = "test-pin", MinRollbackVersion = minimum,
-        };
-        var signature = rsa.SignData(Encoding.UTF8.GetBytes(AgentUpdateManifestValidator.CanonicalPayload(manifest)),
-            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        return manifest with { Signature = Convert.ToBase64String(signature) };
-    }
-    [Fact]
     public void Validate_AcceptsSignedServerOwnedManifest()
     {
         using var rsa = RSA.Create(2048);

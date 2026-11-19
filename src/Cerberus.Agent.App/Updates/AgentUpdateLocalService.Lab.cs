@@ -29,14 +29,10 @@ internal static partial class AgentUpdateLocalService
         if (lifecycle.Generation != scope.Context.Generation || !AllowsAutomatic(lifecycle) || Quarantined()) return;
         var active = Journal.Read();
         if (active.HasUnfinishedAttempt || active.InstallRequest is { IsPending: true }) return;
-        var installedVersion = AgentUpdateCampaignTransition.Release(WindowsDeviceInfo.GetAgentVersion());
-        var skip = AgentUpdateLabRuntimeAdmission.ReadSkipped(scope.Policy);
-        if (skip is null && IsRolledBackLabAttempt(active, scope.Policy.CampaignId))
-            skip = TryRecordLabSkip(scope, installedVersion);
         // A failed campaign stays stopped. A separately committed operator bootstrap
         // may transfer a closed predecessor, preserving its receipt under the journal lock.
-        if (!CanContinueLabCampaign(active, scope.Policy, installedVersion,
-                AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(scope.Policy, scope.Context), skip)) return;
+        if (!CanContinueLabCampaign(active, scope.Policy, WindowsDeviceInfo.GetAgentVersion(),
+                AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(scope.Policy, scope.Context))) return;
         using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler()) { Timeout = TimeSpan.FromSeconds(30) };
         var trust = AgentUpdateTrustFactory.BuildTrust();
         var signal = new AgentUpdateSignal(false, true, trust.ConfiguredManifestUrl, "compiled_lab_campaign", trust.ExpectedChannel);
@@ -55,21 +51,19 @@ internal static partial class AgentUpdateLocalService
                 !AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(locked.Policy, locked.Context)) return before;
             return AdmitLabInstallRequest(before, locked.Policy, release, locked.Context.Generation,
                 DateTimeOffset.UtcNow, WindowsDeviceInfo.GetAgentVersion(), true,
-                predecessor => PreserveClosedLabFailure(Root, predecessor),
-                AgentUpdateLabRuntimeAdmission.ReadSkipped(locked.Policy));
+                predecessor => PreserveClosedLabFailure(Root, predecessor));
         });
     }
 
     internal static AgentUpdateJournal AdmitLabInstallRequest(AgentUpdateJournal before, AgentUpdateLabPolicy policy,
         AgentUpdateExpectedPlan release, long generation, DateTimeOffset now, string installedVersion,
-        bool committedCurrentBootstrap = false, Action<AgentUpdateJournal>? preserveClosedFailure = null,
-        AgentUpdateLabRuntimeAdmission.SkippedRelease? skip = null)
+        bool committedCurrentBootstrap = false, Action<AgentUpdateJournal>? preserveClosedFailure = null)
     {
         policy.RequireVersion(release.Version);
-        policy.RequireSuccessor(installedVersion, release.Version, AgentUpdateLabRuntimeAdmission.EffectiveVersions(policy, skip));
+        policy.RequireSuccessor(installedVersion, release.Version);
         if (now < policy.NotBeforeUtc || now >= policy.ExpiresAtUtc || !release.IsValid() || generation < 0 ||
             before.HasUnfinishedAttempt || before.MayHaveStartedInstallation || before.InstallRequest is { IsPending: true }) return before;
-        if (!CanContinueLabCampaign(before, policy, installedVersion, committedCurrentBootstrap, skip) ||
+        if (!CanContinueLabCampaign(before, policy, installedVersion, committedCurrentBootstrap) ||
             before.InstallRequest is { LocalPolicyId: not null } previous && previous.ExpectedPlan?.Version == release.Version) return before;
         var normalDeadline = now + MaxInstallRequestDelay;
         var request = new AgentUpdateInstallRequest(now, generation,
@@ -86,71 +80,16 @@ internal static partial class AgentUpdateLocalService
     }
 
     internal static bool CanContinueLabCampaign(AgentUpdateJournal before, AgentUpdateLabPolicy policy,
-        string installedVersion, bool committedCurrentBootstrap, AgentUpdateLabRuntimeAdmission.SkippedRelease? skip = null)
+        string installedVersion, bool committedCurrentBootstrap)
     {
         if (before.InstallRequest is not { LocalPolicyId: not null } previous) return true;
         if (previous.LocalPolicyId == policy.CampaignId)
-        {
-            if (IsRolledBackLabAttempt(before, policy.CampaignId))
-                return skip is not null && skip.CampaignId == policy.CampaignId && skip.AttemptId == before.AttemptId &&
-                    skip.Version == previous.VerifiedRelease?.Version &&
-                    skip.RestoredVersion == AgentUpdateCampaignTransition.Release(installedVersion);
             return previous.TerminalReason is "installed" or "current";
-        }
         if (!committedCurrentBootstrap || AgentUpdateCampaignTransition.Release(installedVersion) != policy.Versions[0]) return false;
         return previous.TerminalReason is "installed" or "current"
             ? before.Phase is AgentUpdateStates.Installed or AgentUpdateStates.Current
             : IsClosedLabFailure(before);
     }
-
-    private static AgentUpdateLabRuntimeAdmission.SkippedRelease? TryRecordLabSkip(AgentUpdateLabRuntime.Scope scope, string installedVersion)
-    {
-        if (!AgentUpdateSecurity.IsLocalSystem()) return null;
-        using var journalLock = AgentUpdateSecurity.AcquireGlobalLock(Root);
-        var active = Journal.Read();
-        if (!IsRolledBackLabAttempt(active, scope.Policy.CampaignId) || active.LifecycleGeneration != scope.Context.Generation)
-            return null;
-        var plan = ReadPlan(active);
-        if (plan is null || AgentUpdateLabFaults.FaultFor(scope.Policy, plan.Version) != AgentUpdateLabFaults.PostCommitCrash)
-            return null;
-        var root = AgentUpdateLabRuntimeAdmission.CampaignRoot(scope.Policy);
-        using var faultLock = AgentUpdateLabFaults.LockFaultRecords(root);
-        var receipt = AgentUpdateDurableFile.Read<AgentUpdateLabFaults.Receipt>(Path.Combine(root, plan.Version + ".json"), root);
-        var skip = PlanLabSkip(scope, active, plan, receipt, installedVersion, DateTimeOffset.UtcNow);
-        if (skip is not null) WriteLabSkip(root, skip);
-        return skip;
-    }
-
-    internal static void WriteLabSkip(string root, AgentUpdateLabRuntimeAdmission.SkippedRelease skip)
-    {
-        var path = Path.Combine(root, "skipped.json");
-        if (AgentUpdateDurableFile.Read<AgentUpdateLabRuntimeAdmission.SkippedRelease>(path, root) is not null)
-            throw new InvalidOperationException("Development campaign already has a skipped release.");
-        AgentUpdateDurableFile.Write(path, root, skip);
-    }
-
-    internal static AgentUpdateLabRuntimeAdmission.SkippedRelease? PlanLabSkip(AgentUpdateLabRuntime.Scope scope,
-        AgentUpdateJournal journal, AgentUpdatePlan plan, AgentUpdateLabFaults.Receipt? receipt, string installedVersion,
-        DateTimeOffset now)
-    {
-        if (!IsRolledBackLabAttempt(journal, scope.Policy.CampaignId) || journal.LifecycleGeneration != scope.Context.Generation ||
-            plan.AttemptId != journal.AttemptId || journal.InstallRequest?.VerifiedRelease is not { } release ||
-            !release.Matches(AgentUpdateExpectedPlan.FromPlan(plan)) ||
-            AgentUpdateLabFaults.FaultFor(scope.Policy, plan.Version) != AgentUpdateLabFaults.PostCommitCrash ||
-            receipt is null || !AgentUpdateLabFaults.MatchesCrashReceipt(scope, journal, plan.Version, receipt) ||
-            now < scope.Policy.NotBeforeUtc || now >= scope.Policy.ExpiresAtUtc || receipt.Utc > now)
-            return null;
-        var restoredVersion = AgentUpdateCampaignTransition.Release(installedVersion);
-        var index = Array.IndexOf(scope.Policy.Versions, plan.Version);
-        return index > 0 && scope.Policy.Versions[index - 1] == restoredVersion
-            ? new(scope.Policy.CampaignId, plan.Version, plan.AttemptId!, restoredVersion, now) : null;
-    }
-
-    private static bool IsRolledBackLabAttempt(AgentUpdateJournal journal, string campaignId) =>
-        journal.Phase == AgentUpdateStates.Failed && journal.FailureCode == AgentUpdateWatchJournal.PostCommitRollback &&
-        AgentUpdateSecurity.IsSafeAttemptId(journal.AttemptId) && journal.FailureAttemptId == journal.AttemptId &&
-        journal.InstallRequest is { } request && request.LocalPolicyId == campaignId &&
-        request.LifecycleGeneration == journal.LifecycleGeneration && request.BoundAttemptId == journal.AttemptId;
 
     internal static bool IsClosedLabFailure(AgentUpdateJournal before)
         => before.Phase == AgentUpdateStates.Failed && !before.HasUnfinishedAttempt && !before.MayHaveStartedInstallation &&
