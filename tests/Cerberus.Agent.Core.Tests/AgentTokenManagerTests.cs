@@ -5,7 +5,7 @@ using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed partial class AgentTokenManagerTests
+public sealed class AgentTokenManagerTests
 {
     [Fact]
     public async Task SecondaryTokenIsNeverSentToAnotherEndpoint()

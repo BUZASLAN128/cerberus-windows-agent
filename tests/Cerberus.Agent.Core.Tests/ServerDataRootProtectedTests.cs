@@ -1,26 +1,21 @@
 #if CERBERUS_SERVER_PROFILE
 using System.Security.AccessControl;
 using System.Security.Principal;
-using Xunit.Abstractions;
 using Cerberus.Agent.Core;
-using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Core.Tests;
 
-// These tests use temporary storage. T1 shares the exclusive native cache test collection.
-[Collection("TC1 exact native storage")]
-public sealed partial class ServerDataRootProtectedTests : IDisposable
+// Temp folders only. Owner and DACL changes need an elevated (non-SYSTEM) token; without it these cases return
+// early, like the existing ServerDataRootTests.
+public sealed class ServerDataRootProtectedTests : IDisposable
 {
-    private readonly ITestOutputHelper _tc1Output;
-    private string? _rootPath;
-    private string _root => _rootPath ??= Directory.CreateTempSubdirectory("cerberus-dataroot-prot-").FullName;
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "cerberus-dataroot-prot-" + Guid.NewGuid().ToString("N"));
 
-    public ServerDataRootProtectedTests(ITestOutputHelper output) => _tc1Output = output;
+    public ServerDataRootProtectedTests() => Directory.CreateDirectory(_root);
 
     public void Dispose()
     {
-        if (_rootPath is not { } path) return;
-        try { Directory.Delete(path, recursive: true); }
+        try { Directory.Delete(_root, recursive: true); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 

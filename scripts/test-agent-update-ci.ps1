@@ -36,7 +36,7 @@ try {
     $anchors = (Get-Content -LiteralPath $anchorsPath -Raw).Trim()
     $proof.selectionSha256 = (Get-FileHash -LiteralPath $selectionPath).Hash
     $proof.publicFixtureAnchorsSha256 = (Get-FileHash -LiteralPath $anchorsPath).Hash
-    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~Cerberus.Agent.Updater.Tests.|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~ServiceWorkerFailureTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile|FullyQualifiedName=Cerberus.Agent.Core.Tests.ServerDataRootProtectedTests.Elevated_administrator_can_verify_the_system_owned_cache_directory_without_listing_it'
+    $filter = 'FullyQualifiedName~AgentUpdate|FullyQualifiedName~Cerberus.Agent.Updater.Tests.|FullyQualifiedName~AgentInstallerInvocationTests|FullyQualifiedName~AgentServerManualUpdatePolicyTests|FullyQualifiedName~ServerServiceStartupTests|FullyQualifiedName~ServiceWorkerFailureTests|FullyQualifiedName~CompiledServiceHost_ActuallyCallsTheSharedCacheLifecycleInThisProfile'
     $project = Join-Path $repoRoot 'tests/Cerberus.Agent.Core.Tests/Cerberus.Agent.Core.Tests.csproj'
     $proof.filter = $filter
     # Same isolated public-anchor server compilation used by preflight.ps1. No release trust inputs.

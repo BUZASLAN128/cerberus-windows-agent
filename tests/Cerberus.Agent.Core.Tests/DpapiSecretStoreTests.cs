@@ -80,32 +80,6 @@ public sealed class DpapiSecretStoreTests
     }
 
     [Fact]
-    public async Task ClearAsync_NoSecretsFile_StillDeletesCache()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "cerberus-cache-clear-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var store = new DpapiSecretStore(SecretStoreScope.Machine, dir);
-            var cacheDirectory = Path.Combine(dir, "token-cache");
-            var cache = new AgentAccessTokenCache(cacheDirectory, production: false);
-            var now = DateTimeOffset.UtcNow;
-            foreach (var product in new[] { AgentProducts.Cerberus, AgentProducts.Secondary })
-                await cache.WriteAsync(new AgentIdentity("agent", "tenant", product), "https://example.test", "fixture-key", 0,
-                    "fixture-token", now.AddMinutes(15), now, default);
-
-            Assert.False(File.Exists(Path.Combine(dir, "secrets.json")));
-            Assert.Equal(2, Directory.GetFiles(cacheDirectory).Length);
-            await store.ClearAsync(cache, default);
-
-            Assert.False(Directory.Exists(cacheDirectory));
-        }
-        finally
-        {
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        }
-    }
-
-    [Fact]
     public async Task ClearAsync_OverwritesAndDeletesSecretFile()
     {
         var dir = Path.Combine(Path.GetTempPath(), "cerberus-agent-tests", Guid.NewGuid().ToString("N"));

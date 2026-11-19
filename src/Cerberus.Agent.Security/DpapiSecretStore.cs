@@ -156,15 +156,11 @@ public sealed class DpapiSecretStore : ISecretStore
         );
     }
 
-    public Task ClearAsync(CancellationToken ct)
-        => ClearAsync(_canonicalMachine ? AgentAccessTokenCache.Machine : null, ct);
-
-    internal async Task ClearAsync(AgentAccessTokenCache? accessTokenCache, CancellationToken ct)
+    public async Task ClearAsync(CancellationToken ct)
     {
         using var access = _canonicalMachine ? await AgentCredentialPublication.AcquireActiveAccessAsync(ct).ConfigureAwait(false) : null;
         if (_protectedPending) AgentCredentialPublication.ValidateProtectedItem(_path, allowMissing: true);
         ct.ThrowIfCancellationRequested();
-        accessTokenCache?.ClearUnderActiveAccess();
         if (!File.Exists(_path))
             return;
 
