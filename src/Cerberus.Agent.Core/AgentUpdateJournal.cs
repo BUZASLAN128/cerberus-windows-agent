@@ -186,12 +186,36 @@ public static class AgentUpdateDurableFile
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            Replace(temporary, path);
         }
         finally
         {
             if (File.Exists(temporary))
                 File.Delete(temporary);
+        }
+    }
+
+    private const int ReplaceAttempts = 12;
+    private const int SharingViolation = unchecked((int)0x80070020);
+
+    /// <summary>
+    /// Windows refuses to replace a file while any process has it open (the service, the updater, an MSI helper or an
+    /// antivirus scan reading the record), even when that reader shares delete access. Such reads close within
+    /// milliseconds, so the replace is retried for about a quarter second; a lasting denial still fails.
+    /// </summary>
+    internal static void Replace(string temporary, string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < ReplaceAttempts && ex is UnauthorizedAccessException or IOException { HResult: SharingViolation })
+            {
+                Thread.Sleep(20);
+            }
         }
     }
 }

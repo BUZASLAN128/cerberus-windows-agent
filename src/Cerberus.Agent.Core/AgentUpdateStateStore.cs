@@ -284,7 +284,7 @@ public sealed class AgentUpdateStateStore
             };
             var json = JsonSerializer.Serialize(safeResult, JsonOptions);
             await File.WriteAllTextAsync(tempPath, json, ct).ConfigureAwait(false);
-            File.Move(tempPath, InstallerResultPath, overwrite: true);
+            AgentUpdateDurableFile.Replace(tempPath, InstallerResultPath);
         }
         finally
         {
