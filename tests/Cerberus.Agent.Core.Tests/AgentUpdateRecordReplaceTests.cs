@@ -8,7 +8,7 @@ public sealed class AgentUpdateRecordReplaceTests
     private sealed record Record(int Value);
 
     [Fact]
-    public async Task Write_WaitsForAReaderThatClosesWithinTheRetryWindow()
+    public void Write_WaitsForAReaderThatClosesWithinTheRetryWindow()
     {
         var root = NewRoot();
         try
@@ -16,10 +16,12 @@ public sealed class AgentUpdateRecordReplaceTests
             var path = Path.Combine(root, "transaction.json");
             AgentUpdateDurableFile.Write(path, root, new Record(1));
             var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-            var release = Task.Run(async () => { await Task.Delay(80); reader.Dispose(); });
+            // A dedicated thread, not the thread pool: a busy parallel test run must not delay the release past the window.
+            var release = new Thread(() => { Thread.Sleep(40); reader.Dispose(); }) { IsBackground = true };
+            release.Start();
 
             AgentUpdateDurableFile.Write(path, root, new Record(2));
-            await release;
+            release.Join();
 
             Assert.Equal(new Record(2), AgentUpdateDurableFile.Read<Record>(path, root));
             Assert.Empty(Directory.GetFiles(root, "*.tmp"));
