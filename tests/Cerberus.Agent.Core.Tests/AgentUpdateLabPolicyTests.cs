@@ -261,5 +261,23 @@ public sealed class AgentUpdateLabPolicyTests
     private static AgentUpdateLabPolicy Parse(AgentUpdateLabPolicy policy) => AgentUpdateLabPolicy.Parse(Encode(policy), "dev", true, true)!;
     private static void AssertDenied(AgentUpdateLabPolicy policy)
         => Assert.Throws<InvalidOperationException>(() => Parse(policy));
+
+    [Fact]
+    public async Task AdmissionLock_WaitsForAnotherHolderInsteadOfFailing()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "admission-" + Guid.NewGuid().ToString("N") + ".lock");
+        try
+        {
+            var holder = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            var waiter = Task.Run(() => AgentUpdateLabRuntimeAdmission.OpenExclusive(path, TimeSpan.FromSeconds(10)));
+            await Task.Delay(300);
+            Assert.False(waiter.IsCompleted);
+            holder.Dispose();
+            using (await waiter.WaitAsync(TimeSpan.FromSeconds(10))) { }
+            using var stillHeld = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            Assert.Throws<IOException>(() => AgentUpdateLabRuntimeAdmission.OpenExclusive(path, TimeSpan.FromMilliseconds(200)));
+        }
+        finally { File.Delete(path); }
+    }
 }
 #endif

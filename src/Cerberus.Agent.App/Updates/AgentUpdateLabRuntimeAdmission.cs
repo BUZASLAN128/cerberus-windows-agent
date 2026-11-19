@@ -291,7 +291,18 @@ internal static class AgentUpdateLabRuntimeAdmission
     {
         var path = Path.Combine(root, "admission.lock");
         AgentUpdateSecurity.ValidateProtectedPath(path, root, allowMissing: true);
-        return new(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        return OpenExclusive(path, TimeSpan.FromSeconds(20));
+    }
+
+    // The MSI health check and the starting service take this lock at the same moment: wait for the holder, do not fail.
+    internal static FileStream OpenExclusive(string path, TimeSpan wait)
+    {
+        var deadline = Environment.TickCount64 + (long)wait.TotalMilliseconds;
+        while (true)
+        {
+            try { return new(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020) && Environment.TickCount64 < deadline) { Thread.Sleep(50); }
+        }
     }
     private static string ReceiptPath(string root, string transactionId) => Path.Combine(root, transactionId + ".json");
     private static string BootstrapPath(string root) => Path.Combine(root, "bootstrap.json");
