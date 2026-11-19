@@ -10,6 +10,15 @@ public sealed class AgentReleaseSigningScriptTests
     public Task ReleaseSigningScript_ReportsNoFailedChecks() =>
         RunScript(FindRepoRoot(), "test-release-signing.ps1", typeof(AgentUpdateAuthenticode).Assembly.Location);
 
+    // Release gate refusals: campaign metadata and types, artifact URL preflight.
+    [Fact]
+    public Task ReleaseLabMetadataScript_ReportsNoFailedChecks() =>
+        RunScript(FindRepoRoot(), "test-release-lab-metadata.ps1");
+
+    [Fact]
+    public Task ReleaseArtifactPreflightScript_Passes() =>
+        RunScript(FindRepoRoot(), "test-release-artifact-preflight.ps1", successMarker: "Release artifact preflight support checks passed");
+
     [Fact]
     public async Task ResignScript_UsesDefaultVerifierPath()
     {
@@ -35,7 +44,7 @@ public sealed class AgentReleaseSigningScriptTests
         }
     }
 
-    private static async Task RunScript(string repoRoot, string scriptName, string? coreDll = null)
+    private static async Task RunScript(string repoRoot, string scriptName, string? coreDll = null, string successMarker = "failures=0")
     {
         var script = Path.Combine(repoRoot, "scripts", scriptName);
         var startInfo = new ProcessStartInfo
@@ -82,7 +91,7 @@ public sealed class AgentReleaseSigningScriptTests
         Assert.True(
             process.ExitCode == 0,
             $"{scriptName} exit {process.ExitCode}; failed checks:{Environment.NewLine}{string.Join(Environment.NewLine, failed)}{Environment.NewLine}{errors}");
-        Assert.Contains("failures=0", output);
+        Assert.Contains(successMarker, output);
     }
 
     private static string FindRepoRoot()

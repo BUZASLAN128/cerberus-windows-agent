@@ -397,20 +397,6 @@ public static class AgentHttpFailure
     {
         try
         {
-            return ReadRetryAfter(response, TimeSpan.FromSeconds(AgentTimingPolicy.Current.Bounds.PollCeiling));
-        }
-        catch (InvalidOperationException)
-        {
-            // Unavailable timing metadata must not hide the HTTP failure.
-            return null;
-        }
-    }
-
-    /// <summary>Reads a single Retry-After value with a five-second floor and the caller's cap.</summary>
-    public static TimeSpan? ReadRetryAfter(HttpResponseMessage response, TimeSpan cap)
-    {
-        try
-        {
             if (!response.Headers.TryGetValues("Retry-After", out var values))
                 return null;
 
@@ -424,12 +410,12 @@ public static class AgentHttpFailure
                 return null;
 
             if (int.TryParse(raw, out var seconds) && seconds >= 0)
-                return TimeSpan.FromSeconds(Math.Min(Math.Max(seconds, 5), cap.TotalSeconds));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(seconds, 5)));
 
             if (DateTimeOffset.TryParse(raw, out var retryAt))
             {
                 var delay = retryAt - DateTimeOffset.UtcNow;
-                return TimeSpan.FromSeconds(Math.Min(Math.Max(delay.TotalSeconds, 5), cap.TotalSeconds));
+                return AgentTimingPolicy.Current.ClampContactDelay(TimeSpan.FromSeconds(Math.Max(delay.TotalSeconds, 5)));
             }
         }
         catch

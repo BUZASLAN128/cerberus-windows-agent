@@ -134,8 +134,6 @@ exception; RSA manifest signatures, hash/length, enrollment and runtime guards
 remain enforced. Default candidate checks run once; later version variants
 reuse unchanged functional evidence. If `-SkipTests` is used, identify the
 existing exact-candidate checks and every missing check in the delivery report.
-The test project does not compile with campaign metadata, so campaign builds
-run with `-SkipTests`; report the default and server test runs of the same head.
 `-PackageCount 5` builds only the first five packages (trial campaign); a
 counted campaign needs all eleven. The builder writes
 `campaign-artifacts.json.sha256` for the launcher. It does not upload or

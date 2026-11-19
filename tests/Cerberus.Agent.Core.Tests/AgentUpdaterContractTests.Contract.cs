@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Cerberus.Agent.Core;
-using Cerberus.Agent.Updater;
 
 namespace Cerberus.Agent.Core.Tests;
 

@@ -48,7 +48,5 @@
       "pending_reboot", "quarantined", "recovery_required", "retryable_busy", "staged"
     ]
   },
-  "read_only_additions": {
-    "agent.access-token.v1": "Only the current token manager reads this separate protected access-token cache."
-  }
+  "read_only_additions": {}
 }
