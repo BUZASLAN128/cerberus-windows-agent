@@ -1,3 +1,4 @@
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
 using System.Runtime.InteropServices;
 using System.Text;
 using Cerberus.Agent.App.Updates;
@@ -92,3 +93,4 @@ public sealed partial class AgentUpdateLabRemediationTests
         finally { Marshal.FreeHGlobal(block); }
     }
 }
+#endif

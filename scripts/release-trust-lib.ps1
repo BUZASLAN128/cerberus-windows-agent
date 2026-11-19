@@ -157,6 +157,38 @@ function Assert-NoLabCampaignMetadata {
     if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) { throw "Assembly to check for lab metadata was not found: $assembly" }
     & $check (Read-AssemblyMetadataValues $assembly) ([IO.Path]::GetFileName($assembly))
   }
+  # A non-lab release is built with -p:ExcludeUpdateCampaignCode=true, so no AgentUpdateLab* type may be compiled in.
+  # Every managed Cerberus.Agent* entry of a bundle is read: the service bundle carries the App update code in Cerberus.Agent.Runtime.dll.
+  $hits = New-Object System.Collections.Generic.List[string]
+  $scan = {
+    param([byte[]]$Bytes, [string]$Label)
+    $pe = [System.Reflection.PortableExecutable.PEReader]::new([IO.MemoryStream]::new($Bytes))
+    try {
+      $reader = [System.Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($pe)
+      $names = @(foreach ($handle in $reader.TypeDefinitions) {
+        $name = $reader.GetString($reader.GetTypeDefinition($handle).Name)
+        if ($name.StartsWith('AgentUpdateLab', [StringComparison]::Ordinal)) { $name }
+      })
+      if ($names.Count -gt 0) { $hits.Add("$Label defines $($names -join ', ')") }
+    } finally { $pe.Dispose() }
+  }
+  foreach ($name in 'Cerberus.Agent.dll', 'Cerberus.Agent.Runtime.dll', 'Cerberus.Agent.Updater.dll') {
+    $path = Join-Path $RuntimeDir $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) { & $scan ([IO.File]::ReadAllBytes($path)) $name }
+  }
+  foreach ($hostName in 'Cerberus.Agent.exe', 'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe') {
+    $hostPath = Join-Path $RuntimeDir $hostName
+    if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf) -or -not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { continue }
+    $entries = @([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadEntries($hostPath) | Where-Object { $_.Kind -eq 1 -and $_.Name -like 'Cerberus.Agent*.dll' })
+    if ($entries.Count -eq 0) { throw "Bundle $hostName has no managed Cerberus.Agent assembly to check for update campaign types." }
+    foreach ($entry in $entries) {
+      & $scan ([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly($hostPath, $entry.Name)) "Bundle $hostName ($($entry.Name))"
+    }
+  }
+  foreach ($assembly in $ExtraAssemblies) { & $scan ([IO.File]::ReadAllBytes($assembly)) ([IO.Path]::GetFileName($assembly)) }
+  if ($hits.Count -gt 0) {
+    throw "Non-lab release carries update campaign types (build with -p:ExcludeUpdateCampaignCode=true): $($hits -join '; ')."
+  }
 }
 
 function Assert-ReleaseTrustEqual($Agent, $Other, [string]$Label, [switch]$CompareSignerPins) {

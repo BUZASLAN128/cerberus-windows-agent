@@ -20,6 +20,9 @@ function Publish-AgentProject([string]$Project, [object]$LabBuild = $null) {
   # Every publish must pass the same routing metadata to the shared runtime project.
   if ($null -ne $labBuild) {
     $args += @("-p:AgentUpdateLabPolicyB64=$($labBuild.PolicyB64)", "-p:AgentUpdateLabFeedRootB64=$($labBuild.RootB64)")
+  } else {
+    # Non-lab binaries are compiled without the update campaign code (the release gate refuses AgentUpdateLab* types).
+    $args += "-p:ExcludeUpdateCampaignCode=true"
   }
   # Otherwise later service/updater publishes overwrite it with an unconfigured runtime.
   $args += @(

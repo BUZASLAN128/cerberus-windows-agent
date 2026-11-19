@@ -107,7 +107,7 @@ public sealed class AgentUpdateInstallRequestTests
         var request = new AgentUpdateInstallRequest(Now, 7, Now.AddHours(24));
 
         var first = AgentUpdateLocalService.RetryInstallRequest(request, Now);
-        Assert.Equal(request with { Attempts = 1, NotBeforeUtc = Now + AgentUpdateLocalService.InstallRequestRetryDelay }, first);
+        Assert.Equal(request with { Attempts = 1, NotBeforeUtc = Now + TimeSpan.FromMinutes(5) }, first);
         var second = AgentUpdateLocalService.RetryInstallRequest(first!, Now);
         Assert.Equal(2, second!.Attempts);
         Assert.Null(AgentUpdateLocalService.RetryInstallRequest(second, Now));

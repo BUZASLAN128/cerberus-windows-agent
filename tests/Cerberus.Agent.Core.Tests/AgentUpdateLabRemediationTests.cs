@@ -1,3 +1,4 @@
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,18 +25,18 @@ public sealed partial class AgentUpdateLabRemediationTests
     {
         var policy = Policy();
         var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], Identity());
-        var plan = new AgentUpdatePlan("msi", "0.2.908", "dev", "payload", new('a', 64), Now.ToString("O"), "lab",
-            AttemptId: new('a', 32), Sequence: 8, LabSourceVersion: "0.2.907");
+        var plan = new AgentUpdatePlan("msi", "0.2.909", "dev", "payload", new('a', 64), Now.ToString("O"), "lab",
+            AttemptId: new('a', 32), Sequence: 9, LabSourceVersion: "0.2.908");
         var release = AgentUpdateExpectedPlan.FromPlan(plan);
         var request = new AgentUpdateInstallRequest(Now, 7, Now.AddMinutes(30), ExpectedPlan: release,
-            LocalPolicyId: policy.CampaignId, LocalSourceVersion: "0.2.907", BoundAttemptId: plan.AttemptId, VerifiedRelease: release);
+            LocalPolicyId: policy.CampaignId, LocalSourceVersion: "0.2.908", BoundAttemptId: plan.AttemptId, VerifiedRelease: release);
         var active = new AgentUpdateJournal { Phase = "launch_requested", AttemptId = plan.AttemptId, LifecycleGeneration = 7,
             RunnerProcessId = 123, RunnerStartedUtc = Now, InstallRequest = request };
         var lifecycle = new AgentLifecycleSnapshot { Generation = 7, LastEnrollmentNonce = "nonce" };
         Assert.True(AgentUpdateLocalService.Quarantined(null, isServer: true)); // Deliberately remains fail closed.
         bool Eligible(AgentUpdateJournal a, AgentLifecycleSnapshot l, bool quarantine = false, bool pending = false)
             => AgentUpdateLabFaults.ShouldInterruptUpdater(scope, a, plan, l, 123, Now, quarantine, pending);
-        AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, Now, "0.2.907");
+        AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, Now, "0.2.908");
         Assert.True(Eligible(active, lifecycle));
         Assert.False(Eligible(active, lifecycle, quarantine: true));
         Assert.False(Eligible(active, lifecycle, pending: true));
@@ -43,15 +44,15 @@ public sealed partial class AgentUpdateLabRemediationTests
         Assert.False(Eligible(active, lifecycle with { LastEnrollmentNonce = "changed" }));
         Assert.False(Eligible(active with { RunnerProcessId = 456 }, lifecycle));
         Assert.False(Eligible(active with { Phase = "install_may_have_started" }, lifecycle));
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, policy.ExpiresAtUtc, "0.2.907"));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, policy.ExpiresAtUtc, "0.2.908"));
 
-        foreach (var index in new[] { 1, 2, 3, 4, 5, 6, 7, 9, 10 })
+        foreach (var index in new[] { 1, 2, 3, 4, 5, 6, 7, 8, 10 })
         {
             var candidate = plan with { Version = policy.Versions[index], LabSourceVersion = policy.Versions[index - 1] };
             var verified = AgentUpdateExpectedPlan.FromPlan(candidate);
             var bound = active with { InstallRequest = request with { ExpectedPlan = verified,
                 VerifiedRelease = verified, LocalSourceVersion = candidate.LabSourceVersion } };
-            Assert.Equal(index is 2 or 4 or 7,
+            Assert.Equal(index is 6,
                 AgentUpdateLabFaults.ShouldInterruptUpdater(scope, bound, candidate, lifecycle, 123, Now, false, false));
         }
     }
@@ -413,3 +414,4 @@ public sealed partial class AgentUpdateLabRemediationTests
             => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { RequestMessage = request, Content = new StringContent(json) });
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
 using Cerberus.Agent.App.Updates;
 
 namespace Cerberus.Agent.Core.Tests;
@@ -5,28 +6,19 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed class AgentUpdateLabFaultScheduleTests
 {
     [Fact]
-    public void FastProfileUsesOnlyTheThreeQuickFaultClasses()
+    public void ServiceFaultsOnFiveEightTenAndUpdaterFaultsOnSixNine()
     {
-        var policy = AgentUpdateLabPolicyTests.Valid() with { FaultProfile = AgentUpdateLabFaults.FastProfile };
-        string?[] expected = [null, "service-pre-download-exit", "updater-msi-busy-1618", "token-route-429",
-            "service-pre-download-exit", "updater-msi-busy-1618", "token-route-429",
-            "service-pre-download-exit", "updater-msi-busy-1618", "token-route-429", "service-pre-download-exit"];
-        Assert.Equal(expected, policy.Versions.Select(version => AgentUpdateLabFaults.FaultFor(policy, version)));
-        Assert.Equal(new[] { policy.Versions[1], policy.Versions[4], policy.Versions[7], policy.Versions[10] },
-            policy.Versions.Where(version => AgentUpdateLabFaults.UsesServiceInterruption(policy, version)));
+        var policy = AgentUpdateLabPolicyTests.Valid();
+        string?[] expected = [null, null, null, null, null, "service", "updater", null, "service", "updater", "service"];
+        Assert.Equal(expected, policy.Versions.Select(version =>
+            AgentUpdateLabFaults.UsesServiceInterruption(policy, version) ? "service"
+            : AgentUpdateLabFaults.UsesUpdaterInterruption(policy, version) ? "updater" : null));
+        Assert.False(AgentUpdateLabFaults.UsesServiceInterruption(policy, "0.2.9999"));
+        Assert.False(AgentUpdateLabFaults.UsesUpdaterInterruption(policy, "0.2.9999"));
     }
 
     [Fact]
-    public void OnlyTheTenCountedVersionsHaveTheSixScheduledFaultClasses()
-    {
-        var policy = AgentUpdateLabPolicyTests.Valid();
-        string?[] expected = [null, "service-pre-download-exit", "updater-msi-busy-1618", "token-route-429",
-            "updater-pre-installer-exit", null, "feed-truncated-artifact",
-            "updater-msi-busy-1618", "updater-pre-installer-exit", "token-route-429", "service-pre-download-exit"];
-        Assert.Equal(expected, policy.Versions.Select(version => AgentUpdateLabFaults.FaultFor(policy, version)));
-        Assert.Equal(new[] { policy.Versions[1], policy.Versions[10] },
-            policy.Versions.Where(version => AgentUpdateLabFaults.UsesServiceInterruption(policy, version)));
-        Assert.Null(AgentUpdateLabFaults.FaultFor(policy, "0.2.9999"));
-        Assert.Null(AgentUpdateLabFaults.FaultFor(null, policy.Versions[1]));
-    }
+    public void ReleaseMetadataKeyMatchesTheCampaignPolicyKey()
+        => Assert.Equal(AgentUpdateLabPolicy.MetadataName, AgentUpdateDefaults.LabPolicyMetadataName);
 }
+#endif

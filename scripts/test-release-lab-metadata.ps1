@@ -52,6 +52,24 @@ try {
     $dir = New-RuntimeDir; Remove-Item -LiteralPath (Join-Path $dir "Cerberus.Agent.Runtime.dll")
     Throws { Assert-NoLabCampaignMetadata $dir } "was not found"
   }
+  # Compiled fixtures: one defines an internal update campaign type, one does not.
+  $labTypes = Join-Path $work "lab-types.dll"
+  Add-Type -TypeDefinition 'namespace Fixture { internal sealed class AgentUpdateLabX { } }' -OutputAssembly $labTypes -OutputType Library
+  $releaseTypes = Join-Path $work "release-types.dll"
+  Add-Type -TypeDefinition 'namespace Fixture { internal sealed class AgentUpdateRelease { } }' -OutputAssembly $releaseTypes -OutputType Library
+  function New-UpdaterRuntimeDir([string]$Updater) {
+    $dir = New-RuntimeDir
+    Copy-Item -LiteralPath $Updater -Destination (Join-Path $dir "Cerberus.Agent.Updater.dll")
+    return $dir
+  }
+  Check "compiled runtime assembly without a campaign type passes" { Assert-NoLabCampaignMetadata (New-UpdaterRuntimeDir $releaseTypes); $true }
+  Check "compiled runtime assembly defining AgentUpdateLabX is refused" {
+    Throws { Assert-NoLabCampaignMetadata (New-UpdaterRuntimeDir $labTypes) } "Cerberus\.Agent\.Updater\.dll defines AgentUpdateLabX"
+  }
+  Check "compiled extra assembly without a campaign type passes" { Assert-NoLabCampaignMetadata (New-RuntimeDir) -ExtraAssemblies @($releaseTypes); $true }
+  Check "compiled extra assembly defining AgentUpdateLabX is refused" {
+    Throws { Assert-NoLabCampaignMetadata (New-RuntimeDir) -ExtraAssemblies @($labTypes) } "lab-types\.dll defines AgentUpdateLabX"
+  }
   Check "release build script runs the gate for non-lab builds before signing and for the helper" {
     $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot "build-agent-public-release.ps1") -Raw
     $gate = [regex]::Matches($text, 'if \(\$null -eq \$labBuild\) \{ Assert-NoLabCampaignMetadata \$runtimePublishDir')

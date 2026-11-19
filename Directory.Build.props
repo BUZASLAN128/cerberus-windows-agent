@@ -23,7 +23,14 @@
     <SatelliteResourceLanguages>en;tr;tr-TR;de-DE</SatelliteResourceLanguages>
     <!-- Build-time profile: -p:AgentBuildProfile=server selects the server profile. Default is empty. -->
     <DefineConstants Condition="'$(AgentBuildProfile)' == 'server'">$(DefineConstants);CERBERUS_SERVER_PROFILE</DefineConstants>
+    <!-- Tests only: -p:ExcludeUpdateCampaignCode=true compiles the product without the update campaign code. -->
+    <DefineConstants Condition="'$(ExcludeUpdateCampaignCode)' == 'true' and '$(MSBuildProjectName)' == 'Cerberus.Agent.Core.Tests'">$(DefineConstants);CERBERUS_EXCLUDE_UPDATE_CAMPAIGN</DefineConstants>
   </PropertyGroup>
+  <Target Name="RejectExcludedUpdateCampaignPolicy" BeforeTargets="CoreCompile;GenerateAssemblyInfo;GetAssemblyAttributes"
+          Condition="'$(ExcludeUpdateCampaignCode)' == 'true' and '$(AgentUpdateLabPolicyB64)' != ''">
+    <Error Code="CERBAGENT007"
+           Text="ExcludeUpdateCampaignCode=true cannot be combined with AgentUpdateLabPolicyB64: a campaign build needs the campaign code." />
+  </Target>
 
   <!-- Common poll bounds; snapshot metadata remains per profile. Override with -p:. -->
   <PropertyGroup>

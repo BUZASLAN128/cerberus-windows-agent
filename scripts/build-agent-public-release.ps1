@@ -301,7 +301,7 @@ if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
 }
 Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
-$helperLabArgs = @()
+$helperLabArgs = @('-p:ExcludeUpdateCampaignCode=true')  # non-lab: no campaign admission code in the helper
 if ($null -ne $labBuild) {
   $runtimeHashes = [ordered]@{}
   foreach ($file in @(Get-FirstPartyPeFiles $runtimePublishDir)) {

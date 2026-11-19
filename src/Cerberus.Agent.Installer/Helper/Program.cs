@@ -54,7 +54,7 @@ internal static partial class Program
                 // Fresh MSI installs have no service yet. Establish authority before the UI can write machine data.
                 // Existing namespaces pass the same provenance gate; bootstrap never repairs or resets them.
                 AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
-                Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Begin(product, args[3], _labTransaction);
+                InstallerCampaignHooks.Begin(product, args[3], _labTransaction);
                 return 0;
             }
             if (operation == "validate-runtime")
@@ -96,8 +96,8 @@ internal static partial class Program
             if (operation is "lab-commit" or "lab-rollback")
             {
                 if (!AgentBuildProfile.IsServer) return 2;
-                if (operation == "lab-commit") Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Complete(product, args[3], _labTransaction);
-                else Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.Rollback(product, args[3], _labTransaction);
+                if (operation == "lab-commit") InstallerCampaignHooks.Complete(product, args[3], _labTransaction);
+                else InstallerCampaignHooks.Rollback(product, args[3], _labTransaction);
                 return 0;
             }
 

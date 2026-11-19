@@ -328,7 +328,7 @@ public sealed class AgentUxStaticTests
         Assert.Contains("AgentUpdateDefaults.ManifestUrl", trustFactory);
         Assert.Contains("AgentUpdateDefaults.AllowedArtifactPrefixes", trustFactory);
         Assert.Contains("AllowChannelDowngrade: false", trustBuilder);
-        Assert.Contains("RequireManifestV2: true", trustFactory);
+        Assert.Contains("RequireManifestV2: true", trustBuilder);
     }
 
     [Fact]

@@ -29,6 +29,6 @@
     "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"corrupt_replay\")",
     "Cerberus.Agent.Core.Tests.AgentUpdateStateBarrierTests.StagedLaunchIsDeniedUnderRealFenceWithoutRepairingEvidence(failure: \"missing_replay\")",
     "Cerberus.Agent.Core.Tests.AgentUpdateLabRemediationTests.UpdaterFaultUsesDurableAuthorityWithoutAServiceProcessCallback",
-    "Cerberus.Agent.Core.Tests.AgentUpdateLabFaultScheduleTests.OnlyTheTenCountedVersionsHaveTheSixScheduledFaultClasses"
+    "Cerberus.Agent.Core.Tests.AgentUpdateLabFaultScheduleTests.ServiceFaultsOnFiveEightTenAndUpdaterFaultsOnSixNine"
   ]
 }

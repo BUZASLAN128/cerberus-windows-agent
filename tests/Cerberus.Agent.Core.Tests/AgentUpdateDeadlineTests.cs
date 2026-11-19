@@ -148,6 +148,24 @@ public sealed class AgentUpdateDeadlineTests
     }
 
     [Fact]
+    public void PreInstallBackoff_IsFlatThirtySecondsOnlyInDevelopmentCampaignBuilds()
+    {
+        int[] releaseMinutes = [15, 30, 60, 120, 240, 240, 240, 240];
+        for (var count = 1; count <= 8; count++)
+        {
+            Assert.Equal(TimeSpan.FromMinutes(releaseMinutes[count - 1]), AgentUpdateLocalService.PreInstallBackoffDelay(count, labBuild: false));
+            Assert.Equal(TimeSpan.FromSeconds(30), AgentUpdateLocalService.PreInstallBackoffDelay(count, labBuild: true));
+        }
+    }
+
+    [Fact]
+    public void InstallRequestRetry_IsShortOnlyInDevelopmentCampaignBuilds()
+    {
+        Assert.Equal(TimeSpan.FromMinutes(5), AgentUpdateLocalService.InstallRequestRetryDelay(labBuild: false));
+        Assert.Equal(TimeSpan.FromSeconds(30), AgentUpdateLocalService.InstallRequestRetryDelay(labBuild: true));
+    }
+
+    [Fact]
     public async Task ScheduledPreInstallGate_LeavesPendingRequestUnprocessed()
     {
         var root = NewRoot();

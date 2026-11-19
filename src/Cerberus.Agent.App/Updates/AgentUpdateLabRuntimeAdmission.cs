@@ -283,12 +283,10 @@ internal static class AgentUpdateLabRuntimeAdmission
     private static string PolicyHash() => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Metadata(AgentUpdateLabPolicy.MetadataName))));
     private static string Root(AgentUpdateLabPolicy policy)
     {
-        var root = Path.Combine(CampaignRoot(policy), "installer-transactions");
+        var root = Path.Combine(AgentUpdateStager.DefaultStagingRoot, "lab-campaign-" + policy.CampaignId, "installer-transactions");
         AgentUpdateSecurity.EnsureProtectedRoot(root);
         return root;
     }
-    internal static string CampaignRoot(AgentUpdateLabPolicy policy) =>
-        Path.Combine(AgentUpdateStager.DefaultStagingRoot, "lab-campaign-" + policy.CampaignId);
     private static FileStream Lock(string root)
     {
         var path = Path.Combine(root, "admission.lock");

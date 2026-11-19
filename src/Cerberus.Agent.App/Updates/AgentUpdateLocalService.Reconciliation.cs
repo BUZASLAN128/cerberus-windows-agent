@@ -47,7 +47,7 @@ internal static partial class AgentUpdateLocalService
         lock (CancellationGate) { _networkOperation = cancellation; }
         try
         {
-            using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler())
+            using var http = new HttpClient(UpdateCampaignHooks.CreateUpdateHandler())
             {
                 Timeout = TimeSpan.FromSeconds(30),
             };
@@ -293,7 +293,7 @@ internal static partial class AgentUpdateLocalService
         {
             if (!IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc))
             {
-                if (active.Phase != "launch_requested" || !await ReconcileUnstartedLabRunnerAsync(active, ct).ConfigureAwait(false))
+                if (active.Phase != "launch_requested" || !await ReconcileUnstartedCampaignRunnerAsync(active, ct).ConfigureAwait(false))
                     Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
             }
             else RecordInstallOverdue(active, now, runnerAlive: true);

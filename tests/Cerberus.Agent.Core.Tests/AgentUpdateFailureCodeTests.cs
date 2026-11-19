@@ -5,6 +5,7 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUpdateFailureCodeTests
 {
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
     [Fact]
     public void BusyRetryExhaustion_RecordsCauseWithoutInventingInstallerEvidence()
     {
@@ -39,6 +40,7 @@ public sealed class AgentUpdateFailureCodeTests
         }
         finally { Directory.Delete(root, recursive: true); }
     }
+#endif
 
     [Fact]
     public void CountedBusyRetryExhaustion_PreservesExistingInstallerCause()
@@ -173,6 +175,7 @@ public sealed class AgentUpdateFailureCodeTests
         }
     }
 
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN
     [Fact]
     public void ClosedLabFailureReceipt_SurvivesAReportedFailure()
     {
@@ -191,6 +194,7 @@ public sealed class AgentUpdateFailureCodeTests
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root,
             closed with { FailedInstallSequence = closed.FailedInstallSequence + 1 }));
     }
+#endif
 
     [Fact]
     public void ProjectedErrorCode_IsHiddenOutsideFailedStates()

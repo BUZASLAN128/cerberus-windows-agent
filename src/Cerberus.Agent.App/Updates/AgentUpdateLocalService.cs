@@ -270,9 +270,7 @@ internal static partial class AgentUpdateLocalService
             await ReconcileOwnedAsync(token).ConfigureAwait(false);
             AgentUpdateAttemptRetention.PrunePayloads(Root, Journal.Read());
             // The first normal update must not race the bootstrap MSI's own health/commit transaction.
-            if (!await RunLabTickAfterBootstrapAsync(AgentUpdateLabRuntime.Resolve(),
-                lab => AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(lab.Policy, lab.Context),
-                RunLabCampaignTickAsync, token).ConfigureAwait(false)) return;
+            if (!await RunCampaignTickAfterBootstrapAsync(token).ConfigureAwait(false)) return;
             var lifecycle = await LoadLifecycleAsync(token).ConfigureAwait(false);
             await RunScheduledTickAsync(Journal, lifecycle, Quarantined, PendingStateDelivery,
                 async required => (await CheckAndStageOwnedAsync(automatic: true, required, token,

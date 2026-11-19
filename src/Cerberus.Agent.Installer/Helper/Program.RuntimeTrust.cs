@@ -15,8 +15,7 @@ internal static partial class Program
             .SingleOrDefault(attribute => attribute.Key == key)?.Value ?? "";
         var pins = Metadata("AgentUpdateAllowedSignerKeyIdentity");
         var channel = Metadata("AgentReleaseChannel");
-        var allowLabRuntime = Cerberus.Agent.App.Updates.AgentUpdateLabRuntimeAdmission.AllowRuntime(runtime,
-            _labProduct, _labVersion, _labTransaction);
+        var allowLabRuntime = InstallerCampaignHooks.AllowRuntime(runtime, _labProduct, _labVersion, _labTransaction);
         foreach (var name in RuntimeExecutables)
         {
             var path = Path.Combine(runtime, name);

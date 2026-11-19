@@ -61,10 +61,15 @@ internal static partial class AgentUpdateLocalService
             return after;
 
         var count = Math.Min(8, before.PreInstallFailureCount + 1);
-        var delay = TimeSpan.FromMinutes(Math.Min(240, 15 * (1 << (count - 1))));
-        var retryAt = now.Add(delay).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, delay / 4));
+        var labBuild = AgentUpdateDefaults.LabPolicyB64.Length > 0;
+        var delay = PreInstallBackoffDelay(count, labBuild);
+        var retryAt = labBuild ? now.Add(delay) : now.Add(delay).Add(AgentUpdateJournalStore.Offset(before.ScheduleSeed, delay / 4));
         return after with { PreInstallFailureCount = count, NextCheckUtc = retryAt, PreInstallRetryNotBeforeUtc = retryAt };
     }
+
+    // Development campaign builds retry a failed download after a flat 30 seconds; release builds back off from 15 minutes to 4 hours.
+    internal static TimeSpan PreInstallBackoffDelay(int failureCount, bool labBuild)
+        => labBuild ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(Math.Min(240, 15 * (1 << (failureCount - 1))));
 
     internal static bool InstallOverdue(AgentUpdateJournal journal, DateTimeOffset now, DateTimeOffset systemStartedUtc,
         bool runnerAlive, bool installerAlive)

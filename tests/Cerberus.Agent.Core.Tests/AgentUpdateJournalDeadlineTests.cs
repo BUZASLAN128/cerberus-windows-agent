@@ -48,6 +48,7 @@ public sealed class AgentUpdateJournalDeadlineTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
     [Fact]
     public void ClosedLabFailure_SurvivesCancelWithNewFields()
     {
@@ -75,6 +76,7 @@ public sealed class AgentUpdateJournalDeadlineTests
         }
         finally { Directory.Delete(root, recursive: true); }
     }
+#endif
 
     private sealed record PreviousJournalShape(string SchemaVersion, string ScheduleSeed)
     {

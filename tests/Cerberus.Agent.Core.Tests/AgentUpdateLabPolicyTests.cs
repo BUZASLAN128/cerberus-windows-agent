@@ -1,3 +1,4 @@
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
 using System.Text;
 using System.Text.Json;
 using Cerberus.Agent.App.Updates;
@@ -115,29 +116,13 @@ public sealed class AgentUpdateLabPolicyTests
     }
 
     [Fact]
-    public void FaultProfileIsOptionalAndOnlyFast()
+    public void RemovedCampaignTimingAndProfileFieldsAreRejected()
     {
-        var policy = Valid();
-        Assert.Null(Parse(policy).FaultProfile);
-        Assert.Equal("fast", Parse(policy with { FaultProfile = "fast" }).FaultProfile);
-        AssertDenied(policy with { FaultProfile = "Fast" });
-        AssertDenied(policy with { FaultProfile = "" });
-        AssertDenied(policy with { FaultProfile = "full" });
-    }
-
-    [Fact]
-    public void WatchOverrideIsOptionalAndRequiresAtLeastOneMinute()
-    {
-        var policy = Valid();
-        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
-        var omitted = JsonSerializer.Serialize(policy, options).Replace(",\"watchMinutesOverride\":null", "", StringComparison.Ordinal);
-        Assert.Null(AgentUpdateLabPolicy.Parse(EncodeJson(omitted), "dev", true, true)!.WatchMinutesOverride);
-        Assert.Null(Parse(policy).WatchMinutesOverride);
-        AssertDenied(policy with { WatchMinutesOverride = 0 });
-        AssertDenied(policy with { WatchMinutesOverride = -1 });
-        Assert.Equal(1, Parse(policy with { WatchMinutesOverride = 1 }).WatchMinutesOverride);
-        Assert.Equal(5, Parse(policy with { WatchMinutesOverride = 5 }).WatchMinutesOverride);
-        Assert.Equal(31, Parse(policy with { WatchMinutesOverride = 31 }).WatchMinutesOverride);
+        var json = JsonSerializer.Serialize(Valid(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        foreach (var member in new[] { "\"watchMinutesOverride\":5,", "\"faultProfile\":\"fast\"," })
+            Assert.Throws<InvalidOperationException>(() => AgentUpdateLabPolicy.Parse(
+                EncodeJson(json.Replace("{\"schemaVersion\"", "{" + member + "\"schemaVersion\"", StringComparison.Ordinal)),
+                "dev", true, true));
     }
 
     [Fact]
@@ -277,3 +262,4 @@ public sealed class AgentUpdateLabPolicyTests
     private static void AssertDenied(AgentUpdateLabPolicy policy)
         => Assert.Throws<InvalidOperationException>(() => Parse(policy));
 }
+#endif

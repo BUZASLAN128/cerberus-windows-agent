@@ -10,7 +10,9 @@ internal static partial class AgentUpdateLocalService
 {
     /// <summary>Latest start a request may ask for, and how long it stays valid after that start.</summary>
     internal static readonly TimeSpan MaxInstallRequestDelay = TimeSpan.FromHours(24);
-    internal static readonly TimeSpan InstallRequestRetryDelay = TimeSpan.FromMinutes(5);
+    // Development campaign builds retry a failed request after 30 seconds; release builds wait 5 minutes.
+    internal static TimeSpan InstallRequestRetryDelay(bool labBuild)
+        => labBuild ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5);
     internal const int MaxInstallRequestAttempts = 3;
 
     private static volatile Func<bool>? _serverQuarantined;
@@ -90,7 +92,7 @@ internal static partial class AgentUpdateLocalService
     /// <summary>The request after a failed staging: due again after the retry delay, or null once tries or time run out.</summary>
     internal static AgentUpdateInstallRequest? RetryInstallRequest(AgentUpdateInstallRequest request, DateTimeOffset now)
     {
-        var next = request with { Attempts = request.Attempts + 1, NotBeforeUtc = now + InstallRequestRetryDelay };
+        var next = request with { Attempts = request.Attempts + 1, NotBeforeUtc = now + InstallRequestRetryDelay(AgentUpdateDefaults.LabPolicyB64.Length > 0) };
         return next.Attempts >= MaxInstallRequestAttempts || next.NotBeforeUtc >= request.ExpiresUtc ? null : next;
     }
 
