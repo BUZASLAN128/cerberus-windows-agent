@@ -4,7 +4,7 @@ param(
   [Parameter(Mandatory)][string]$FeedRootFile,
   [Parameter(Mandatory)][string]$AgentCommandTrustAnchorsFile,
   [Parameter(Mandatory)][string]$BackendTrustAnchorsFile,
-  [Parameter(Mandatory)][ValidateSet(1,5,30)][int]$WatchMinutes,
+  [ValidateRange(1,11)][int]$PackageCount=11,
   [string]$DefaultSsoClientId='server-profile-none',
   [string]$OutputRoot='out/test-campaign',
   [switch]$SkipTests
@@ -47,23 +47,23 @@ function Write-TruncatedCampaignArtifact([string]$Source, [long]$FullLength, [st
 $policy=Get-Content -LiteralPath $PolicyFile -Raw|ConvertFrom-Json -DateKind String
 $lab=Read-ReleaseLabPolicy -PolicyFile $PolicyFile -FeedRootFile $FeedRootFile -Version $policy.versions[0] `
   -Channel dev -BuildProfile server -SigningMode Pfx -AllowUnsigned $true
-if(($WatchMinutes -ne 30 -and $lab.Policy.watchMinutesOverride -ne $WatchMinutes) -or
-   ($WatchMinutes -eq 30 -and $lab.Policy.Contains('watchMinutesOverride'))){throw 'Use watchMinutesOverride 1 or 5 for a short campaign and omit the member for a 30-minute campaign.'}
-$faultSchedule=if($lab.Policy.faultProfile -ceq 'fast'){[ordered]@{
-  '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='service-pre-download-exit';
-  '5'='updater-msi-busy-1618';'6'='token-route-429';'7'='service-pre-download-exit';'8'='updater-msi-busy-1618';
-  '9'='token-route-429';'10'='service-pre-download-exit'
-}}else{[ordered]@{
-  '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='updater-pre-installer-exit';
-  '5'='service-post-commit-crash';'6'='feed-truncated-artifact';'7'='updater-msi-busy-1618';'8'='updater-pre-installer-exit';
-  '9'='token-route-429';'10'='service-pre-download-exit'
-}}
+# One table for trial and counted campaigns; scripts/campaign/invoke-update-campaign.ps1 holds the same table. Busy, truncated
+# and kill hops are made by the campaign runner; the two exits are the in-product faults on Versions[5,8,10] and [6,9].
+$faultSchedule=[ordered]@{
+  '1'='installer-busy-1618';'2'='feed-truncated-artifact';'3'='kill-health-pending';'4'='feed-truncated-artifact';
+  '5'='service-pre-download-exit';'6'='updater-pre-installer-exit';'7'='installer-busy-1618';'8'='service-pre-download-exit';
+  '9'='updater-pre-installer-exit';'10'='service-pre-download-exit'
+}
+# Hops 1 and 7 also carry a truncated copy for the installer-busy fallback.
+$truncatedHops=@(1,2,4,7)
+if(@($lab.Policy.versions).Count -ne 11){throw 'The campaign policy must list 11 versions.'}
 $output=[IO.Path]::GetFullPath($OutputRoot,$repoRoot)
 $allowedRoot=[IO.Path]::GetFullPath((Join-Path $repoRoot 'out'))+[IO.Path]::DirectorySeparatorChar
 if(-not $output.StartsWith($allowedRoot,[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)){throw 'Use a fresh output directory inside this worktree/out; existing artifacts are preserved.'}
 $null=New-Item -ItemType Directory -Path $output
 $frozenPolicy=Join-Path $output 'campaign-policy.json'
 $frozenRoot=Join-Path $output 'feed-root.pem'
+$artifactsFile=Join-Path $output 'campaign-artifacts.json'
 Copy-Item -LiteralPath $PolicyFile -Destination $frozenPolicy
 Copy-Item -LiteralPath $FeedRootFile -Destination $frozenRoot
 $frozenLab=Read-ReleaseLabPolicy -PolicyFile $frozenPolicy -FeedRootFile $frozenRoot -Version $lab.Policy.versions[0] `
@@ -81,7 +81,8 @@ try{
   $publicKey=$key.ExportSubjectPublicKeyInfoPem()
   $publicKey|Set-Content -LiteralPath (Join-Path $output 'manifest-public.pem') -Encoding ascii
   $variantIndex=0
-  foreach($version in $lab.Policy.versions){
+  # A trial builds only the first packages; the policy still lists all 11 versions.
+  foreach($version in @($lab.Policy.versions)[0..($PackageCount-1)]){
     if((Get-FileHash -LiteralPath $frozenPolicy).Hash -cne $policyHash -or (Get-FileHash -LiteralPath $frozenRoot).Hash -cne $rootHash){throw 'Frozen public campaign inputs changed.'}
     $versionOutput=Join-Path $output $version
     $skipVariantTests=[bool]$SkipTests -or $variantIndex -gt 0
@@ -134,7 +135,6 @@ try{
     }
     $sourceManifest=Join-Path $publish "Cerberus.Agent.Bundle-dev-$version-server.update-manifest.v2.json"
     $original=Get-Content -LiteralPath $sourceManifest -Raw|ConvertFrom-Json -AsHashtable -DateKind String
-    if($original.Keys -icontains 'min_rollback_version'){throw 'Campaign manifests must retain the 14-field signature payload.'}
     $fault=$faultSchedule[[string]$variantIndex]
     $targetIndex=0
     $manifests=@(foreach($target in $lab.Policy.targets){
@@ -155,7 +155,7 @@ try{
       $manifest=Join-Path $targetRoot 'Cerberus.Agent.Bundle-dev-latest-server.update-manifest.v2.json'
       $copy|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $manifest -Encoding utf8
       $targetRow=[ordered]@{agentId=$target.agentId;manifestUrl=$target.manifestUrl;path=$manifest;sha256=(Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant();artifactUrl=$copy.artifact_url}
-      if($fault -ceq 'feed-truncated-artifact'){$targetRow.truncated=Write-TruncatedCampaignArtifact $msi $msiLength $targetRoot $name}
+      if($variantIndex -in $truncatedHops){$targetRow.truncated=Write-TruncatedCampaignArtifact $msi $msiLength $targetRoot $name}
       [pscustomobject]$targetRow
     })
     # noNativeEntries records the headless updater admission check.
@@ -167,10 +167,14 @@ try{
     $variantIndex++
   }
   [pscustomobject]@{source=$ExpectedHead;campaignId=$lab.Policy.campaignId;policySha256=$policyHash.ToLowerInvariant();
-    feedRootSha256=$rootHash.ToLowerInvariant();watchMinutes=$WatchMinutes;faultSchedule=$faultSchedule;artifacts=$rows.ToArray();
+    feedRootSha256=$rootHash.ToLowerInvariant();packageCount=$PackageCount;faultSchedule=$faultSchedule;artifacts=$rows.ToArray();
     signedPayload=$false;manifestSignature='RSA3072/PKCS1-SHA256; one ephemeral campaign key';initialTestsSkipped=[bool]$SkipTests;
     laterVariantTests='reuse unchanged frozen functional candidate';uploaded=$false;installed=$false;acceptanceTransitions=0}|
-    ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $output 'campaign-artifacts.json') -Encoding utf8
+    ConvertTo-Json -Depth 8|Set-Content -LiteralPath $artifactsFile -Encoding utf8
+  # The launcher takes this value as -ArtifactsSha256.
+  $artifactsSha256=(Get-FileHash -LiteralPath $artifactsFile -Algorithm SHA256).Hash.ToLowerInvariant()
+  Set-Content -LiteralPath "$artifactsFile.sha256" -Value $artifactsSha256 -Encoding ascii -NoNewline
+  Write-Output "campaign-artifacts.json SHA-256: $artifactsSha256"
 }finally{
   Remove-Item -LiteralPath env:AGENT_UPDATE_MANIFEST_PRIVATE_KEY_PEM -ErrorAction SilentlyContinue
   if($null -eq $oldArtifactBase){Remove-Item -LiteralPath env:AGENT_RELEASE_ARTIFACT_BASE_URL -ErrorAction SilentlyContinue}else{$env:AGENT_RELEASE_ARTIFACT_BASE_URL=$oldArtifactBase}
