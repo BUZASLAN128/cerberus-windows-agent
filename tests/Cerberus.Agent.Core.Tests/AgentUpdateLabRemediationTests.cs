@@ -221,11 +221,21 @@ public sealed partial class AgentUpdateLabRemediationTests
     [InlineData("generation")]
     [InlineData("verified-release")]
     [InlineData("recovery-required")]
+    [InlineData("recovery-timeout")]
+    [InlineData("reboot")]
+    [InlineData("exit-zero")]
+    [InlineData("unknown-with-exit")]
+    [InlineData("pre-launch-recovery-required")]
     public void InconsistentOrUnfinishedFailureCannotBeHandedOver(string changed)
     {
         var policy = Policy(); var failed = ClosedForeignFailure(); var request = failed.InstallRequest!;
         failed = changed switch
         {
+            "recovery-timeout" => failed with { InstallerResult = failed.InstallerResult! with { ErrorCode = "recovery_timeout", MsiExitCode = null } },
+            "reboot" => failed with { InstallerResult = failed.InstallerResult! with { RequiresReboot = true } },
+            "exit-zero" => failed with { InstallerResult = failed.InstallerResult! with { MsiExitCode = 0 } },
+            "unknown-with-exit" => failed with { InstallerResult = failed.InstallerResult! with { ErrorCode = "unknown" } },
+            "pre-launch-recovery-required" => PreLaunchUpdaterFailure() with { Phase = AgentUpdateStates.RecoveryRequired },
             "bound" => failed with { InstallRequest = request with { BoundAttemptId = new('b', 32) } },
             "terminal-attempt" => failed with { InstallRequest = request with { TerminalJournalAttemptId = new('b', 32) } },
             "terminal-phase" => failed with { InstallRequest = request with { TerminalJournalPhase = AgentUpdateStates.Installed } },
@@ -282,6 +292,25 @@ public sealed partial class AgentUpdateLabRemediationTests
         File.WriteAllText(path, "not-json");
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root, original));
         Assert.Equal(original, store.Read());
+    }
+
+    [Fact]
+    public void UpdaterFailureBeforeItsInstallerLaunchCanBeHandedOver()
+    {
+        var policy = Policy(); var failed = PreLaunchUpdaterFailure(); var writes = 0;
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(failed, policy, "0.2.900", true));
+        var admitted = AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Now, "0.2.900", true, _ => writes++);
+        Assert.Equal(1, writes);
+        Assert.Equal(policy.CampaignId, admitted.InstallRequest!.LocalPolicyId);
+    }
+
+    // The updater's own failure path, after a busy installer exited and before the next launch fence was written.
+    private static AgentUpdateJournal PreLaunchUpdaterFailure()
+    {
+        var failed = ClosedForeignFailure();
+        return failed with { InstallerBusyCount = 1, InstallerResult = failed.InstallerResult! with
+            { ErrorCode = "unknown", MsiExitCode = null, ErrorMessage = "Updater requires recovery." } };
     }
 
     internal static AgentUpdateJournal ClosedForeignFailure()
