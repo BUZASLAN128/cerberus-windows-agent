@@ -114,7 +114,7 @@ public sealed class AgentUpdateLaunchGateTests
             var incomplete = Directory.CreateDirectory(Path.Combine(root, "incomplete")).FullName;
             const string updaterName = "Cerberus.Agent.Updater.exe";
             var updater = Path.Combine(install, updaterName);
-            SyntheticSingleFileBundle.Write(updater, ("Cerberus.Agent.Updater.dll", 1), ("Cerberus.Agent.Update.Core.dll", 1));
+            SyntheticSingleFileBundle.Write(updater, ("Cerberus.Agent.Updater.dll", 1), ("Cerberus.Agent.Core.dll", 1));
             File.WriteAllText(Path.Combine(install, "Cerberus.Agent.Service.exe"), "unrelated executable");
 
             var runner = Path.GetDirectoryName(AgentUpdateRunnerFiles.Prepare(install, attempt))!;

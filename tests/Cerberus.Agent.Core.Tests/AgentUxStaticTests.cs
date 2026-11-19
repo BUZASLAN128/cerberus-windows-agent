@@ -311,7 +311,7 @@ public sealed class AgentUxStaticTests
         var appProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Cerberus.Agent.App.csproj"));
         var runtimeProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Runtime", "Cerberus.Agent.Runtime.csproj"));
         var trustFactory = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.App", "Updates", "AgentUpdateTrustFactory.cs"));
-        var trustBuilder = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Update.Core", "AgentUpdateTrustBuilder.cs"));
+        var trustBuilder = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Core", "AgentUpdateTrustBuilder.cs"));
         var updaterProject = File.ReadAllText(Path.Combine(repoRoot, "src", "Cerberus.Agent.Updater", "Cerberus.Agent.Updater.csproj"));
 
         Assert.Contains("AgentUpdateManifestPublicKeysB64", appProject);
@@ -368,7 +368,7 @@ public sealed class AgentUxStaticTests
         var deviceInfo = File.ReadAllText(Path.Combine(
             repoRoot,
             "src",
-            "Cerberus.Agent.Update.Core",
+            "Cerberus.Agent.Core",
             "AgentProductVersion.cs"));
 
         Assert.Contains("AssemblyInformationalVersionAttribute", deviceInfo);

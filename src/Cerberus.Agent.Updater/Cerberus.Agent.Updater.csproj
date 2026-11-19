@@ -46,7 +46,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Cerberus.Agent.Update.Core\Cerberus.Agent.Update.Core.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
     <ProjectReference Include="..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj" Condition="'$(AgentUpdateLabPolicyB64)' != ''" />
     <Compile Remove="UpdaterLab.Runtime.cs" Condition="'$(AgentUpdateLabPolicyB64)' == ''" />
     <Compile Remove="UpdaterLab.Release.cs" Condition="'$(AgentUpdateLabPolicyB64)' != ''" />

@@ -27,7 +27,7 @@ if ($PSVersionTable.PSEdition -ne "Core") { throw "PowerShell 7+ (pwsh) is requi
 . (Join-Path $PSScriptRoot "release-signing-lib.ps1")
 . (Join-Path $PSScriptRoot "release-trust-lib.ps1")
 if ([string]::IsNullOrWhiteSpace($CoreAssembly)) {
-  $CoreAssembly = Join-Path $PSScriptRoot "../src/Cerberus.Agent.Update.Core/bin/Release/net10.0/Cerberus.Agent.Update.Core.dll"
+  $CoreAssembly = Join-Path $PSScriptRoot "../src/Cerberus.Agent.Core/bin/Release/net10.0/Cerberus.Agent.Core.dll"
 }
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { throw "Manifest was not found: $ManifestPath" }
 if ([IO.Path]::GetFullPath($OutputPath) -ceq [IO.Path]::GetFullPath($ManifestPath) -or (Test-Path -LiteralPath $OutputPath)) {

@@ -6,7 +6,7 @@ param([string]$CoreDll = "")
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($CoreDll)) {
-  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Update.Core/bin/Release/net10.0/Cerberus.Agent.Update.Core.dll"
+  $CoreDll = Join-Path $repoRoot "src/Cerberus.Agent.Core/bin/Release/net10.0/Cerberus.Agent.Core.dll"
 }
 if (-not (Test-Path -LiteralPath $CoreDll -PathType Leaf)) {
   throw "Build the solution in Release first (agent verifier assembly not found: $CoreDll)."
@@ -103,13 +103,13 @@ $outRoot = 'out/test-release-signing'
 $outRootFull = Join-Path $fixtureRepo $outRoot
 try {
   # Run both finalize entry points from an isolated source tree, so real signing guards see the fixture lock.
-  $fixtureCore = Join-Path $fixtureRepo 'src/Cerberus.Agent.Update.Core'
+  $fixtureCore = Join-Path $fixtureRepo 'src/Cerberus.Agent.Core'
   $fixtureUpdater = Join-Path $fixtureRepo 'src/Cerberus.Agent.Updater'
   New-Item -ItemType Directory -Path $fixtureScripts, $fixtureCore, $fixtureUpdater -Force | Out-Null
   Copy-Item -Path (Join-Path $PSScriptRoot '*.ps1') -Destination $fixtureScripts
   Copy-Item -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Destination $fixtureRepo
-  Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentUpdaterContract.cs'),
-    (Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Core/AgentUpdaterContract.cs'),
+    (Join-Path $repoRoot 'src/Cerberus.Agent.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
   $fixtureLock = Join-Path $fixtureCore 'updater-contract.lock'
   $stampScript = Join-Path $fixtureScripts 'stamp-updater-contract-lock.ps1'
   [IO.File]::WriteAllText($fixtureLock, '')
@@ -346,7 +346,7 @@ try {
       $devRuntime = Join-Path $dev.Publish 'runtime'
       $depsName = 'Cerberus.Agent.Updater.deps.json'
       Set-Content -LiteralPath (Join-Path $devRuntime $depsName) -Value `
-        '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Update.Core/1.0":{}}}'
+        '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{}}}'
       # Supply runtime outputs at the compiler boundary and stop when the real dev path reaches packaging.
       function dotnet {
         if ($args[0] -cne 'publish') { throw 'Unexpected compiler command in unsigned dev fixture.' }

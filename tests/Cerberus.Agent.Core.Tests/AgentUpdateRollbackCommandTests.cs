@@ -22,7 +22,7 @@ public sealed class AgentUpdateRollbackCommandTests
     {
         var src = Path.Combine(ServerPackageStaticTests.FindRepoRoot(), "src");
         var directories = new[] { "Cerberus.Agent.Updater", Path.Combine("Cerberus.Agent.App", "Updates"),
-            Path.Combine("Cerberus.Agent.Installer", "Helper"), "Cerberus.Agent.Core", "Cerberus.Agent.Update.Core" };
+            Path.Combine("Cerberus.Agent.Installer", "Helper"), "Cerberus.Agent.Core" };
         var forbidden = new Regex(@"(?<![\w/])/(?:x|uninstall)(?![\w])|\bREMOVE=ALL\b|\bMsiConfigureProduct(?:Ex)?\b", RegexOptions.IgnoreCase);
         var matches = directories.Select(dir => Path.Combine(src, dir)).Where(Directory.Exists)
             .SelectMany(dir => Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
@@ -35,7 +35,6 @@ public sealed class AgentUpdateRollbackCommandTests
     private static bool IsGeneratedOrUnrelated(string path)
     {
         var components = path.Split(Path.DirectorySeparatorChar);
-        return components.Any(part => part is "obj" or "bin") ||
-            (components.Contains("Cerberus.Agent.Core") && !Path.GetFileName(path).StartsWith("AgentUpdate", StringComparison.Ordinal));
+        return components.Any(part => part is "obj" or "bin");
     }
 }

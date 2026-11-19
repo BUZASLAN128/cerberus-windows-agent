@@ -35,8 +35,8 @@
   $recordAll = { param($Path, $AllowedPins) $script:checked += $Path; $script:checkedPins += (@($AllowedPins) -join "|") }
   $good = New-Fixture
   $goodRuntime = Join-Path $good.Publish 'runtime'
-  $expectedRuntime = @('Cerberus.Agent.dll', 'Cerberus.Agent.exe', 'Cerberus.Agent.Runtime.dll',
-    'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Uninstall.exe', 'Cerberus.Agent.Update.Core.dll',
+  $expectedRuntime = @('Cerberus.Agent.Core.dll', 'Cerberus.Agent.dll', 'Cerberus.Agent.exe', 'Cerberus.Agent.Runtime.dll',
+    'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Uninstall.exe',
     'Cerberus.Agent.Updater.dll', 'Cerberus.Agent.Updater.exe', 'tr\Cerberus.Agent.resources.dll')
   $expectedChecks = $expectedRuntime.Count + 2
   Invoke-Finalize $good $recordAll

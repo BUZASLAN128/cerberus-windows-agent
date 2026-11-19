@@ -1,6 +1,6 @@
 # Fixture helpers for scripts/test-release-signing.ps1 (dot-source only; no side effects on load).
 # Builds a publish directory that finalize can measure: agent, runtime and updater assembly fixtures
-# carrying only AssemblyMetadata, placeholder runtime executables, an Update.Core assembly copy, a fixture MSI and a matching
+# carrying only AssemblyMetadata, placeholder runtime executables, a Core assembly copy, a fixture MSI and a matching
 # pending payload. The assemblies are written with System.Reflection.Metadata (MetadataBuilder + ManagedPEBuilder),
 # which exists unchanged in .NET 8, so no Reflection.Emit save support is required.
 
@@ -86,10 +86,10 @@ function New-FinalizeFixture {
   )
   $runtime = Join-Path $PublishDir "runtime"
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
-  if ([Reflection.AssemblyName]::GetAssemblyName($UpdaterVerifierDll).Name -cne 'Cerberus.Agent.Update.Core') {
-    throw 'Finalize fixture requires the actual Cerberus.Agent.Update.Core verifier assembly.'
+  if ([Reflection.AssemblyName]::GetAssemblyName($UpdaterVerifierDll).Name -cne 'Cerberus.Agent.Core') {
+    throw 'Finalize fixture requires the actual Cerberus.Agent.Core verifier assembly.'
   }
-  Copy-Item -LiteralPath $UpdaterVerifierDll -Destination (Join-Path $runtime 'Cerberus.Agent.Update.Core.dll')
+  Copy-Item -LiteralPath $UpdaterVerifierDll -Destination (Join-Path $runtime 'Cerberus.Agent.Core.dll')
   $embeddedPrefix = if ($EmbeddedPrefix) { $EmbeddedPrefix } else { $Prefix }
   $default = Get-TrustPairs -Keys $KeyListB64 -Pins (@($SignerPin) + @($ExtraPins)) -Prefix $embeddedPrefix -Channel $EmbeddedChannel
   if ($null -eq $AgentPairs) { $AgentPairs = $default }

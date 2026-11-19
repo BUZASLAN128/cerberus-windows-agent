@@ -69,7 +69,7 @@ public sealed partial class AgentUpdaterContractTests
         }
 
         $root = Join-Path $Work 'source'
-        $core = Join-Path $root 'src/Cerberus.Agent.Update.Core'
+        $core = Join-Path $root 'src/Cerberus.Agent.Core'
         $updater = Join-Path $root 'src/Cerberus.Agent.Updater'
         $null = New-Item -ItemType Directory -Path $core, $updater -Force
         Set-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Value '<Project />' -Encoding utf8
@@ -112,9 +112,9 @@ public sealed partial class AgentUpdaterContractTests
         $null = New-Item -ItemType Directory -Path $runtime
         $agent = Join-Path $runtime 'Cerberus.Agent.dll'
         $updaterAssembly = Join-Path $runtime 'Cerberus.Agent.Updater.dll'
-        $updateCore = Join-Path $runtime 'Cerberus.Agent.Update.Core.dll'
+        $coreDll = Join-Path $runtime 'Cerberus.Agent.Core.dll'
         $deps = Join-Path $runtime 'Cerberus.Agent.Updater.deps.json'
-        Set-Content -LiteralPath $deps -Value '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Update.Core/1.0":{}}}'
+        Set-Content -LiteralPath $deps -Value '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{}}}'
         $rsa = [Security.Cryptography.RSA]::Create(2048)
         $otherRsa = [Security.Cryptography.RSA]::Create(2048)
         try {
@@ -128,7 +128,7 @@ public sealed partial class AgentUpdaterContractTests
         }
         function Make-Core([string]$Version) {
           $pairs = @(@('AgentUpdaterContractVersion', $Version), @('BackendTrustAnchors', 'AA==,AQ=='))
-          New-MetadataAssembly -Path $updateCore -AssemblyName 'Cerberus.Agent.Update.Core' -Pairs $pairs
+          New-MetadataAssembly -Path $coreDll -AssemblyName 'Cerberus.Agent.Core' -Pairs $pairs
         }
         New-MetadataAssembly -Path $agent -AssemblyName 'Cerberus.Agent' -Pairs $trust
         Make-Updater $trust
@@ -142,7 +142,7 @@ public sealed partial class AgentUpdaterContractTests
         Make-Core 'non-integer'
         Refuses { Assert-FinalUpdaterContract $runtime $root } 'positive updater contract version'
 
-        Set-Content -LiteralPath $deps -Value '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Update.Core/1.0":{},"Cerberus.Agent.Runtime/1.0":{}}}'
+        Set-Content -LiteralPath $deps -Value '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{},"Cerberus.Agent.Runtime/1.0":{}}}'
         Make-Core '1'
         Refuses { Assert-UpdaterBuildContract $runtime desktop $root $false 'AA==%2CAQ==' } 'forbidden dependency'
         Make-Core '2'

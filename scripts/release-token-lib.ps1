@@ -96,5 +96,5 @@ function New-CngSignedManifest {
   $signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Canonical -Certificate $Certificate
   return Assert-ManifestAgainstBuild `
     -Canonical $Canonical -Signature $signature -ExpectedKeyPem (Get-RsaPublicKeyPem $Certificate) -Trust $trust `
-    -CoreAssembly (Join-Path $RuntimeDir "Cerberus.Agent.Update.Core.dll") -Channel $Channel -ArtifactPrefixes $ArtifactPrefixes
+    -CoreAssembly (Join-Path $RuntimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes $ArtifactPrefixes
 }

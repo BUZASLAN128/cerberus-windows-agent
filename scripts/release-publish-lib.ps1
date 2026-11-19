@@ -264,7 +264,7 @@ function Complete-ExternalManifestSigning(
   $expectedKey = Read-ManifestPublicKeyFile $PublicKeyPath
   $manifest = Assert-ManifestAgainstBuild `
     -Canonical $canonical -Signature $signature -ExpectedKeyPem $expectedKey -Trust $trust `
-    -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Update.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
+    -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
   if (-not [string]::Equals([string]$manifest["version"], $Version, [StringComparison]::Ordinal)) { throw "Pending manifest version does not match -Version." }
   Assert-ReleaseArtifactUrl -ArtifactUrl $manifest['artifact_url'] -ArtifactPrefixes $trust.ArtifactPrefixes -RequirePublicDns:$RequirePublicDns
 

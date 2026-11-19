@@ -9,7 +9,6 @@
     <Project Path="src/Cerberus.Agent.Security/Cerberus.Agent.Security.csproj" />
     <Project Path="src/Cerberus.Agent.Service/Cerberus.Agent.Service.csproj" />
     <Project Path="src/Cerberus.Agent.Uninstall/Cerberus.Agent.Uninstall.csproj" />
-    <Project Path="src/Cerberus.Agent.Update.Core/Cerberus.Agent.Update.Core.csproj" />
     <Project Path="src/Cerberus.Agent.Updater/Cerberus.Agent.Updater.csproj" />
   </Folder>
   <Folder Name="/tests/">

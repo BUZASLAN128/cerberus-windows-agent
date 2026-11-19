@@ -25,8 +25,8 @@ public sealed class AgentReleaseSigningScriptTests
             }
 
             // Stage the verifier where the operator script looks for it when no override is supplied.
-            var verifier = fixture.CreateSubdirectory("src/Cerberus.Agent.Update.Core/bin/Release/net10.0");
-            File.Copy(typeof(AgentUpdateAuthenticode).Assembly.Location, Path.Combine(verifier.FullName, "Cerberus.Agent.Update.Core.dll"));
+            var verifier = fixture.CreateSubdirectory("src/Cerberus.Agent.Core/bin/Release/net10.0");
+            File.Copy(typeof(AgentUpdateAuthenticode).Assembly.Location, Path.Combine(verifier.FullName, "Cerberus.Agent.Core.dll"));
             await RunScript(fixture.FullName, testScript);
         }
         finally

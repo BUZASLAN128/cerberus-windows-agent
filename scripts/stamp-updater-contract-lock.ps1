@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-trust-lib.ps1')
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$lockPath = Join-Path $repoRoot 'src/Cerberus.Agent.Update.Core/updater-contract.lock'
+$lockPath = Join-Path $repoRoot 'src/Cerberus.Agent.Core/updater-contract.lock'
 $version = Get-UpdaterSourceVersion $repoRoot
 $fingerprint = Get-UpdaterSourceFingerprint $repoRoot
 $lines = [IO.File]::ReadAllLines($lockPath)

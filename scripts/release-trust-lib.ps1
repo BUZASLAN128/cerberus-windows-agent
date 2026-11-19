@@ -4,7 +4,7 @@
 
 function Import-AgentBundleReader {
   if (-not ('Cerberus.Agent.Core.AgentSingleFileBundle' -as [type])) {
-    Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/Cerberus.Agent.Update.Core/AgentSingleFileBundle.cs')))
+    Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/Cerberus.Agent.Core/AgentSingleFileBundle.cs')))
   }
 }
 
@@ -206,7 +206,7 @@ function ConvertTo-UpdaterContractVersion([string]$Value, [string]$Label) {
 }
 
 function Get-UpdaterSourceVersion([string]$RepoRoot) {
-  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Update.Core/AgentUpdaterContract.cs'
+  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Core/AgentUpdaterContract.cs'
   $version = [regex]::Match([IO.File]::ReadAllText($path), '(?m)^\s*public const string Version = "([0-9]+)";[ \t]*\r?$')
   if (-not $version.Success) { throw 'Updater contract source version was not found.' }
   return ConvertTo-UpdaterContractVersion $version.Groups[1].Value 'Source contract version'
@@ -226,7 +226,7 @@ function Get-UpdaterSourceFingerprint([string]$RepoRoot) {
   $root = (Resolve-Path -LiteralPath $RepoRoot).Path
   $paths = [string[]]@(
     'Directory.Build.props'
-    foreach ($project in 'Cerberus.Agent.Update.Core', 'Cerberus.Agent.Updater') {
+    foreach ($project in 'Cerberus.Agent.Core', 'Cerberus.Agent.Updater') {
       Get-UpdaterFingerprintFiles (Join-Path $root "src/$project") |
         ForEach-Object { [IO.Path]::GetRelativePath($root, $_).Replace('\', '/') }
     }
@@ -243,7 +243,7 @@ function Get-UpdaterSourceFingerprint([string]$RepoRoot) {
 }
 
 function Assert-UpdaterSourceLock([string]$RepoRoot) {
-  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Update.Core/updater-contract.lock'
+  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Core/updater-contract.lock'
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Updater source lock is missing.' }
   $version = 0
   $lastHash = ''
@@ -289,7 +289,7 @@ function Assert-UpdaterMetadataVersion($Metadata, [int]$Expected) {
 
 function Assert-FinalUpdaterContract([string]$RuntimeDir, [string]$RepoRoot) {
   $locked = Assert-UpdaterSourceLock $RepoRoot
-  $assembly = Join-Path $RuntimeDir 'Cerberus.Agent.Update.Core.dll'
+  $assembly = Join-Path $RuntimeDir 'Cerberus.Agent.Core.dll'
   $hostPath = Join-Path $RuntimeDir 'Cerberus.Agent.Updater.exe'
   Import-AgentBundleReader
   $bundle = if ((Test-Path -LiteralPath $hostPath -PathType Leaf) -and
@@ -302,7 +302,7 @@ function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile,
   $updater = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.Updater.dll') -BuildComparison
   Assert-ReleaseTrustEqual $agent $updater 'Cerberus.Agent.Updater.dll'
 
-  $contractAssembly = Join-Path $RuntimeDir 'Cerberus.Agent.Update.Core.dll'
+  $contractAssembly = Join-Path $RuntimeDir 'Cerberus.Agent.Core.dll'
   $expectedAnchors = $BackendAnchors.Replace('%2C', ',')
   $expectedVersion = if ($Lab) { Write-Host "Lab updater source fingerprint: $(Get-UpdaterSourceFingerprint $RepoRoot)"; 0 }
     else { Get-UpdaterSourceVersion $RepoRoot }
@@ -320,7 +320,7 @@ function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile,
   }
   if ($Lab) { return }
 
-  $allowed = @('Cerberus.Agent.Updater', 'Cerberus.Agent.Update.Core')
+  $allowed = @('Cerberus.Agent.Updater', 'Cerberus.Agent.Core')
   $libraries = if ($BuildProfile -ceq 'server') {
     [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadEntries((Join-Path $RuntimeDir 'Cerberus.Agent.Updater.exe')) |
       Where-Object { $_.Kind -eq 1 } | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) }

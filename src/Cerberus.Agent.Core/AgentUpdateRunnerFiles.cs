@@ -57,7 +57,7 @@ public static class AgentUpdateRunnerFiles
         if (!AgentBuildProfile.IsServer || inventory.Count != 1) return false;
         var host = Path.Combine(directory, "Cerberus.Agent.Updater.exe");
         _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Updater.dll");
-        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Update.Core.dll");
+        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Core.dll");
         return true;
     }
 

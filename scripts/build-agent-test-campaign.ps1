@@ -116,8 +116,8 @@ try{
          $metadata['AgentUpdateManifestPublicKeysB64'] -cne [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKey.Trim()))){throw 'A host embedded different campaign trust.'}
     }
     $updaterPath=Join-Path $runtime 'Cerberus.Agent.Updater.exe'
-    # The host loop reads Runtime.dll from the updater. Read Update.Core from the same bundle.
-    $contractMetadata=Read-AssemblyMetadataValues (Join-Path $runtime 'Cerberus.Agent.Update.Core.dll') -BundlePath $updaterPath
+    # The host loop reads Runtime.dll from the updater. Read Core from the same bundle.
+    $contractMetadata=Read-AssemblyMetadataValues (Join-Path $runtime 'Cerberus.Agent.Core.dll') -BundlePath $updaterPath
     $contractVersion=ConvertTo-UpdaterContractVersion ([string]$contractMetadata['AgentUpdaterContractVersion']) 'Lab updater contract version'
     $updaterSha256=(Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $helperCompiler=Join-Path $versionOutput 'lab-build-evidence/installer-helper-compiler.dll'

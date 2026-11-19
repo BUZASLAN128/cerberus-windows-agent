@@ -51,7 +51,7 @@ public sealed partial class AgentUpdaterContractTests
             string.Join(" ", ConstantsOf(typeof(AgentUpdateWatchJournal))
                 .Where(code => !AgentUpdateJournalStore.KnownPhase(code)).Order(StringComparer.Ordinal)));
 
-        var journalSource = ReadSource("Cerberus.Agent.Update.Core", "AgentUpdateJournal.cs");
+        var journalSource = ReadSource("Cerberus.Agent.Core", "AgentUpdateJournal.cs");
         var knownPhaseBody = Regex.Match(journalSource, @"internal static bool KnownPhase\([^)]*\) => (?<body>[^;]+);");
         Assert.True(knownPhaseBody.Success);
         var phases = ConstantsOf(typeof(AgentUpdateStates))
@@ -145,7 +145,7 @@ public sealed partial class AgentUpdaterContractTests
             Assert.All(watchKeys, name => Assert.True(watchJson.RootElement.TryGetProperty(name, out _),
                 $"Missing watch journal property {name}."));
 
-            var requestSource = ReadSource("Cerberus.Agent.Update.Core", "AgentUpdateInstallRequest.cs");
+            var requestSource = ReadSource("Cerberus.Agent.Core", "AgentUpdateInstallRequest.cs");
             var terminalReasonBody = Regex.Match(requestSource, @"TerminalUtc is not null && TerminalReason is(?<body>[^;]+);");
             Assert.True(terminalReasonBody.Success);
             var reasons = Regex.Matches(terminalReasonBody.Groups["body"].Value, "\"([^\"]+)\"")
@@ -190,7 +190,7 @@ public sealed partial class AgentUpdaterContractTests
     }
 
     [Fact]
-    public void UpdateCore_ReferencesNoAgentAssembly()
+    public void ContractAssembly_ReferencesNoAgentAssembly()
         => Assert.DoesNotContain(typeof(AgentUpdaterContract).Assembly.GetReferencedAssemblies(),
             assembly => assembly.Name!.StartsWith("Cerberus.", StringComparison.Ordinal));
 
@@ -201,7 +201,7 @@ public sealed partial class AgentUpdaterContractTests
         var references = updater.Descendants("ProjectReference").ToArray();
         Assert.Equal(2, references.Length);
         var unconditional = Assert.Single(references.Where(reference => reference.Attribute("Condition") is null));
-        Assert.Equal(@"..\Cerberus.Agent.Update.Core\Cerberus.Agent.Update.Core.csproj", (string?)unconditional.Attribute("Include"));
+        Assert.Equal(@"..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj", (string?)unconditional.Attribute("Include"));
         var lab = Assert.Single(references.Where(reference => reference.Attribute("Condition") is not null));
         Assert.Equal(@"..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj", (string?)lab.Attribute("Include"));
         Assert.Equal("'$(AgentUpdateLabPolicyB64)' != ''", (string?)lab.Attribute("Condition"));
@@ -209,9 +209,9 @@ public sealed partial class AgentUpdaterContractTests
         var removes = updater.Descendants("Compile").ToDictionary(node => (string)node.Attribute("Remove")!);
         Assert.Equal("'$(AgentUpdateLabPolicyB64)' == ''", (string?)removes["UpdaterLab.Runtime.cs"].Attribute("Condition"));
         Assert.Equal("'$(AgentUpdateLabPolicyB64)' != ''", (string?)removes["UpdaterLab.Release.cs"].Attribute("Condition"));
-        var updateCore = XDocument.Parse(ReadSource("Cerberus.Agent.Update.Core", "Cerberus.Agent.Update.Core.csproj"));
-        Assert.Empty(updateCore.Descendants("PackageReference"));
-        Assert.Empty(updateCore.Descendants("ProjectReference"));
+        var core = XDocument.Parse(ReadSource("Cerberus.Agent.Core", "Cerberus.Agent.Core.csproj"));
+        Assert.Empty(core.Descendants("PackageReference"));
+        Assert.Empty(core.Descendants("ProjectReference"));
     }
 
     [Fact]
@@ -268,7 +268,7 @@ public sealed partial class AgentUpdaterContractTests
     public void UpdaterSources_NeverPassMsiexecUninstall()
     {
         var source = Path.Combine(ServerPackageStaticTests.FindRepoRoot(), "src");
-        foreach (var project in new[] { "Cerberus.Agent.Updater", "Cerberus.Agent.Update.Core" })
+        foreach (var project in new[] { "Cerberus.Agent.Updater", "Cerberus.Agent.Core" })
         {
             var root = Path.Combine(source, project);
             foreach (var file in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))

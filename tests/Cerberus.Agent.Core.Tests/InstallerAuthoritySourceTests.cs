@@ -10,7 +10,7 @@ public sealed class InstallerAuthoritySourceTests
         var root = ServerPackageStaticTests.FindRepoRoot();
         var helper = Path.Combine(root, "src", "Cerberus.Agent.Installer", "Helper");
         var bootstrap = File.ReadAllText(Path.Combine(helper, "Program.LkgBootstrap.cs"));
-        var store = File.ReadAllText(Path.Combine(root, "src", "Cerberus.Agent.Update.Core", "AgentUpdateLkgStore.cs"));
+        var store = File.ReadAllText(Path.Combine(root, "src", "Cerberus.Agent.Core", "AgentUpdateLkgStore.cs"));
         var health = File.ReadAllText(Path.Combine(helper, "Program.Health.cs"));
         Assert.Contains("!OperatingSystem.IsWindows() || !AgentBuildProfile.IsServer || !AgentUpdateSecurity.IsLocalSystem()", bootstrap);
         Assert.Contains("AgentUpdateWatchTask.Delete();", bootstrap);
@@ -28,7 +28,7 @@ public sealed class InstallerAuthoritySourceTests
         var root = ServerPackageStaticTests.FindRepoRoot();
         var helper = Path.Combine(root, "src", "Cerberus.Agent.Installer", "Helper");
         var bootstrap = File.ReadAllText(Path.Combine(helper, "Program.LkgBootstrap.cs"));
-        var store = File.ReadAllText(Path.Combine(root, "src", "Cerberus.Agent.Update.Core", "AgentUpdateLkgStore.cs"));
+        var store = File.ReadAllText(Path.Combine(root, "src", "Cerberus.Agent.Core", "AgentUpdateLkgStore.cs"));
         var project = File.ReadAllText(Path.Combine(helper, "Cerberus.Agent.Installer.Helper.csproj"));
         Assert.Contains("IsAdmittedLabArtifact(\"updater\", updaterVersion, sha256)", bootstrap);
         Assert.Contains("AgentInstalledProductVersion.Read, policy?.CampaignId", bootstrap);
