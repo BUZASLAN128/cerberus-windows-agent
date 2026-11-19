@@ -45,7 +45,29 @@ function Get-CmpgnLifecycleDigest {
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
 public static class CmpgnPipeAuthority { [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNamedPipeServerProcessId(SafePipeHandle p, out uint id); }
+public static class CmpgnBits {   // read-only progress of the agent's BITS job (Bits.h vtable order; S3-S11 are never called)
+  [ComImport, Guid("4991D34B-80A1-4291-83B6-3328366B9097")] class Manager { }
+  [ComImport, Guid("5CE34C0D-0DC9-4C1F-897C-DAA1B78CEE7C"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IManager { [PreserveSig] int CreateJob(IntPtr name, int type, out Guid id, out IntPtr job); [PreserveSig] int GetJob(ref Guid id, out IJob job); }
+  [ComImport, Guid("37668D37-507E-4160-9316-26306D150B12"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IJob { void S3(); void S4(); void S5(); void S6(); void S7(); void S8(); void S9(); void S10(); void S11(); [PreserveSig] int GetProgress(out Progress p); }
+  [StructLayout(LayoutKind.Sequential)] struct Progress { public ulong Total, Done; public uint FilesTotal, FilesDone; }
+  public static long Transferred(Guid id) {
+    var m = (IManager)new Manager();
+    try { IJob j; if (m.GetJob(ref id, out j) != 0 || j == null) return -1;
+      try { Progress p; return j.GetProgress(out p) == 0 ? (long)p.Done : -1; } finally { Marshal.ReleaseComObject(j); } }
+    finally { Marshal.ReleaseComObject(m); }
+  }
+}
 '@
+# Bytes the agent's BITS job for this attempt has received; -1 when the job or its receipt cannot be read.
+function Get-CmpgnBitsBytes([string]$AttemptId) {
+  try { [CmpgnBits]::Transferred([Guid][string](Read-CmpgnJson (Join-Path $root "attempts\attempt-$AttemptId\bits-job.json")).jobId) } catch { -1 }
+}
+function Get-CmpgnAttemptAgeSec([string]$AttemptId) {   # since the runner first saw this attempt
+  $f = @($script:events | Where-Object { $_.attempt -ceq $AttemptId })[0]
+  if ($f) { [int]([DateTime]::UtcNow - [DateTimeOffset]::Parse($f.utc).UtcDateTime).TotalSeconds } else { 0 }
+}
 function Read-CmpgnReadiness([int]$ExpectedPid) {
   # The pipe grants administrators client rights only; InOut would also ask for FILE_CREATE_PIPE_INSTANCE and be denied.
   $rights = [IO.Pipes.PipeAccessRights]'ReadData, WriteData, ReadAttributes, ReadPermissions, Synchronize'
@@ -289,13 +311,25 @@ function Invoke-CmpgnHop([int]$Hop, [string]$Fault) {
     $fatal = New-CmpgnFatal $pre $allowed ($Fault -ceq 'updater-pre-installer-exit')
     switch ($Fault) {
       'installer-busy-1618' {
-        # Upload first, then hold, then publish the manifest: the hold's own cap is not spent on the upload.
+        # Hold once the agent's download moves: Windows can pause background downloads before the first byte (BITS in
+        # Game Mode), and that pause must not spend the hold's cap. A pause after the transfer starts still can.
         $rec.artifactPublishedUtc = Invoke-CmpgnPublish $a.msi $m.artifactUrl $a.sha256
         if (Test-CmpgnInstallerBusy) { throw 'Windows Installer is already busy before the hold.' }
+        $rec.manifestPublishedUtc = Invoke-CmpgnPublish $m.path $m.manifestUrl $m.sha256
+        $seen = @{}
+        $moving = Wait-CmpgnState -What 'agent download start' -Fatal $fatal -PollMs 250 -Done { param($o)
+          if ($o.attemptId -and $o.attemptId -cne $pre.attemptId -and $o.phase -cnotin 'checking', 'downloading') { throw "Agent left downloading ($($o.phase)) before the hold." }
+          if ($o.phase -cne 'downloading' -or $o.attemptId -ceq $pre.attemptId) { return $false }
+          $b = Get-CmpgnBitsBytes $o.attemptId; $p = $seen[$o.attemptId]; $seen[$o.attemptId] = $b
+          $null -ne $p -and $p -ge 0 -and $b -gt $p }
+        $rec.fault.downloadMovingUtc = $moving.utc
         try { $hold = Start-CmpgnHold $Hop } catch { $rec.fault.delivered = $false; $rec.fault.notDeliveredReason = 'hold_start_failed'; throw }
         $rec.fault.utc = $hold.startedUtc.ToString('o')
+        # Busy can also be the agent's own msiexec: the hold counts only while the same attempt is still downloading.
+        $chk = Get-CmpgnObservation
+        if ($chk.attemptId -cne $moving.attemptId -or $chk.phase -cne 'downloading') {
+          $rec.fault.delivered = $false; $rec.fault.notDeliveredReason = 'download_finished_before_hold'; throw 'Agent left downloading before the hold was in place.' }
         $script:deadline = $hold.startedUtc.Add($HoldCap)
-        $rec.manifestPublishedUtc = Invoke-CmpgnPublish $m.path $m.manifestUrl $m.sha256
         try {
           $busy = Wait-CmpgnState -What 'installer busy (fault not delivered)' -Fatal $fatal -Done { param($o)
             $o.resultId -cne $preResult -and ($o.phase -ceq 'retryable_busy' -or $o.msiExit -eq 1618) }
@@ -323,8 +357,11 @@ function Invoke-CmpgnHop([int]$Hop, [string]$Fault) {
         $rec.manifestPublishedUtc = Invoke-CmpgnPublish $m.path $m.manifestUrl $m.sha256
         # The rejection is a new attempt closed by the stager, with no installer result and a short-artifact code. The
         # install request retries 30 s later (lab build), so the full artifact must be in place before that.
+        # A download stalled to the agent's 900 s no-progress limit closes the same way; only a quicker failure is the truncation.
         $rej = Wait-CmpgnState -What 'truncated download rejection' -Fatal $fatal -PollMs 250 -Done { param($o)
-          $o.phase -ceq 'failed' -and $o.attemptId -and $o.attemptId -cne $pre.attemptId -and -not $o.resultId -and $o.failureCode -cin $ExpectedFailures['feed-truncated-artifact'] }
+          if (-not ($o.phase -ceq 'failed' -and $o.attemptId -and $o.attemptId -cne $pre.attemptId -and -not $o.resultId)) { return $false }
+          if ((Get-CmpgnAttemptAgeSec $o.attemptId) -ge 840) { throw 'Download stalled to the no-progress limit; not a truncation rejection.' }
+          $o.failureCode -cin $ExpectedFailures['feed-truncated-artifact'] }
         if ($script:plans.Contains($rej.attemptId)) { throw 'The rejected attempt has a staged plan.' }
         $rec.fault.rejectedUtc = $rej.utc; $rec.fault.rejectionCode = $rej.failureCode; $rec.fault.rejectedAttemptId = $rej.attemptId
         $rec.artifactPublishedUtc = Invoke-CmpgnFeedSwap $m.artifactUrl $a.sha256
