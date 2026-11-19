@@ -262,7 +262,9 @@ internal static partial class AgentUpdateLocalService
     public static async Task RunScheduledAsync(CancellationToken ct)
     {
         RequireService();
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+        // Development campaign builds poll faster; release builds keep the one-minute tick.
+        using var timer = new PeriodicTimer(AgentUpdateDefaults.LabPolicyB64.Length > 0
+            ? TimeSpan.FromSeconds(15) : TimeSpan.FromMinutes(1));
         await RunScheduledAsync(ct, timer.WaitForNextTickAsync, async token =>
         {
             await ReconcileOwnedAsync(token).ConfigureAwait(false);

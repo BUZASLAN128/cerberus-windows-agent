@@ -32,17 +32,26 @@ try{
   foreach($override in @(@{Channel='preview'},@{BuildProfile='desktop'},@{SigningMode='Token'},@{AllowUnsigned=$false},@{Version='0.2.9999'})){
     $bad=$buildInputs.Clone();foreach($name in $override.Keys){$bad[$name]=$override[$name]};Require-Rejection $bad
   }
-  foreach($minutes in @(5,30)){
+  foreach($minutes in @(1,5,30)){
     $p.watchMinutesOverride=$minutes
     $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
     if((Read-ReleaseLabPolicy @buildInputs).Policy.watchMinutesOverride -ne $minutes){throw 'Valid lab watch override was rejected.'}
   }
-  foreach($minutes in @(4,31,'5',5.0,$true,$null)){
+  foreach($minutes in @(0,31,'5',5.0,$true,$null)){
     $p.watchMinutesOverride=$minutes
     $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
     Require-Rejection $buildInputs
   }
   $p.Remove('watchMinutesOverride')
+  $p.faultProfile='fast'
+  $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
+  if((Read-ReleaseLabPolicy @buildInputs).Policy.faultProfile -cne 'fast'){throw 'Valid lab fault profile was rejected.'}
+  foreach($profile in @('Fast','full','',$null,1)){
+    $p.faultProfile=$profile
+    $p|ConvertTo-Json -Depth 5|Set-Content -LiteralPath $policyFile -Encoding utf8
+    Require-Rejection $buildInputs
+  }
+  $p.Remove('faultProfile')
   $policyJson=$p|ConvertTo-Json -Depth 5
   foreach($members in @('"WatchMinutesOverride":5,','"watchMinutesOverride":5,"WatchMinutesOverride":5,')){
     $policyJson.Insert(1,$members)|Set-Content -LiteralPath $policyFile -Encoding utf8

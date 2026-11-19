@@ -72,7 +72,7 @@ internal sealed class LkgWatchSampling
     internal LkgWatchTick Sample(LkgWatchObservation observation, Func<string?> readImageSha256, int watchMinutes)
     {
         observation = NormalizeObservation(observation);
-        ArgumentOutOfRangeException.ThrowIfLessThan(watchMinutes, 5);
+        ArgumentOutOfRangeException.ThrowIfLessThan(watchMinutes, 1);
         var sameBoot = _last?.Service.BootId == observation.Service.BootId;
         var delta = sameBoot ? observation.TickCount64 - _last!.TickCount64 : 0;
         if (sameBoot && delta < SampleInterval.TotalMilliseconds)

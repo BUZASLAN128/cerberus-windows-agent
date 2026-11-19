@@ -32,7 +32,7 @@ public sealed class AgentUpdateLabHttpFaultTests
 
         using var fault = await client.PostAsync(TokenRoute, null);
         Assert.Equal(HttpStatusCode.TooManyRequests, fault.StatusCode);
-        Assert.Equal(TimeSpan.FromSeconds(120), fault.Headers.RetryAfter!.Delta);
+        Assert.Equal(TimeSpan.FromSeconds(30), fault.Headers.RetryAfter!.Delta);
         Assert.Equal("application/json", fault.Content.Headers.ContentType!.MediaType);
         Assert.Equal("{}", await fault.Content.ReadAsStringAsync());
         Assert.Equal(2, inner.Calls);
@@ -141,7 +141,7 @@ public sealed class AgentUpdateLabHttpFaultTests
         Assert.Equal("READ", evidence.Status);
         Assert.Equal(faultAt, evidence.SinceUtc);
         Assert.Equal(clock.GetUtcNow(), evidence.ThroughUtc);
-        Assert.Equal(new AgentUpdateLabHttpFaults.RefreshSample(faultAt, 429, 120), evidence.SyntheticResponse);
+        Assert.Equal(new AgentUpdateLabHttpFaults.RefreshSample(faultAt, 429, 30), evidence.SyntheticResponse);
         Assert.Equal(new AgentUpdateLabHttpFaults.RefreshSample(clock.GetUtcNow(), 429, 45), Assert.Single(evidence.BackendSends));
 
         var context = attempt.Scope.Context;
@@ -172,7 +172,7 @@ public sealed class AgentUpdateLabHttpFaultTests
         var inner = new RecordingHandler();
         using var client = Observe(inner, attempt, clock, recorded);
         using var synthetic = await client.PostAsync(TokenRoute, null);
-        clock.Advance(TimeSpan.FromSeconds(119));
+        clock.Advance(TimeSpan.FromSeconds(29));
         using var actual = await client.PostAsync(TokenRoute, null);
 
         Assert.Equal(HttpStatusCode.OK, actual.StatusCode);

@@ -19,6 +19,10 @@ internal static class AgentUpdateLabFaults
     private static readonly string?[] Schedule = [null, ServiceExit, InstallerBusy, TokenRoute429,
         UpdaterExit, PostCommitCrash, "feed-truncated-artifact", InstallerBusy, UpdaterExit,
         TokenRoute429, ServiceExit];
+    // The "fast" profile keeps only faults whose recovery takes about a minute or two.
+    private static readonly string?[] FastSchedule = [null, ServiceExit, InstallerBusy, TokenRoute429,
+        ServiceExit, InstallerBusy, TokenRoute429, ServiceExit, InstallerBusy, TokenRoute429, ServiceExit];
+    internal const string FastProfile = "fast";
     private static Mutex? _installerBusyHold;
 
     internal sealed record Receipt(string CampaignId, string AgentId, string TenantId, string KeyFingerprint,
@@ -28,8 +32,9 @@ internal static class AgentUpdateLabFaults
     internal static string? FaultFor(AgentUpdateLabPolicy? policy, string version)
     {
         if (policy is null) return null;
+        var schedule = policy.FaultProfile == FastProfile ? FastSchedule : Schedule;
         var index = Array.IndexOf(policy.Versions, AgentUpdateCampaignTransition.Release(version));
-        return index >= 0 && index < Schedule.Length ? Schedule[index] : null;
+        return index >= 0 && index < schedule.Length ? schedule[index] : null;
     }
 
     internal static void InterruptServiceOnce(AgentUpdateInstallRequest? request, IAgentLogger log)

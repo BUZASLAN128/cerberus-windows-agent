@@ -131,7 +131,7 @@ internal static class AgentUpdateLabHttpFaults
                         RequestMessage = request,
                         Content = new StringContent("{}", Encoding.UTF8, "application/json"),
                     };
-                    response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+                    response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
                     var now = _time.GetUtcNow();
                     if (publish is not null && now >= since && ObservedRetryAfter(response) is { } delay)
                         _observation = new(armed, since, new(now, (int)response.StatusCode, delay), _time.GetTimestamp());

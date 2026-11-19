@@ -15,7 +15,7 @@ internal static partial class UpdaterLab
         {
             var lab = AgentUpdateLabRuntime.Resolve() ?? throw new InvalidOperationException("Development watch scope is missing.");
             var minutes = lab.Policy.WatchMinutesOverride ?? 30;
-            return minutes >= 5 ? minutes : throw new InvalidOperationException("Development watch duration is invalid.");
+            return minutes >= 1 ? minutes : throw new InvalidOperationException("Development watch duration is invalid.");
         }
     }
 

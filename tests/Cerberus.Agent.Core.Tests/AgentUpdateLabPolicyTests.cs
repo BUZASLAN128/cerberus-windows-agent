@@ -115,14 +115,27 @@ public sealed class AgentUpdateLabPolicyTests
     }
 
     [Fact]
-    public void WatchOverrideIsOptionalAndRequiresAtLeastFiveMinutes()
+    public void FaultProfileIsOptionalAndOnlyFast()
+    {
+        var policy = Valid();
+        Assert.Null(Parse(policy).FaultProfile);
+        Assert.Equal("fast", Parse(policy with { FaultProfile = "fast" }).FaultProfile);
+        AssertDenied(policy with { FaultProfile = "Fast" });
+        AssertDenied(policy with { FaultProfile = "" });
+        AssertDenied(policy with { FaultProfile = "full" });
+    }
+
+    [Fact]
+    public void WatchOverrideIsOptionalAndRequiresAtLeastOneMinute()
     {
         var policy = Valid();
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var omitted = JsonSerializer.Serialize(policy, options).Replace(",\"watchMinutesOverride\":null", "", StringComparison.Ordinal);
         Assert.Null(AgentUpdateLabPolicy.Parse(EncodeJson(omitted), "dev", true, true)!.WatchMinutesOverride);
         Assert.Null(Parse(policy).WatchMinutesOverride);
-        AssertDenied(policy with { WatchMinutesOverride = 4 });
+        AssertDenied(policy with { WatchMinutesOverride = 0 });
+        AssertDenied(policy with { WatchMinutesOverride = -1 });
+        Assert.Equal(1, Parse(policy with { WatchMinutesOverride = 1 }).WatchMinutesOverride);
         Assert.Equal(5, Parse(policy with { WatchMinutesOverride = 5 }).WatchMinutesOverride);
         Assert.Equal(31, Parse(policy with { WatchMinutesOverride = 31 }).WatchMinutesOverride);
     }

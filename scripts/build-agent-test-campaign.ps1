@@ -4,7 +4,7 @@ param(
   [Parameter(Mandatory)][string]$FeedRootFile,
   [Parameter(Mandatory)][string]$AgentCommandTrustAnchorsFile,
   [Parameter(Mandatory)][string]$BackendTrustAnchorsFile,
-  [Parameter(Mandatory)][ValidateSet(5,30)][int]$WatchMinutes,
+  [Parameter(Mandatory)][ValidateSet(1,5,30)][int]$WatchMinutes,
   [string]$DefaultSsoClientId='server-profile-none',
   [string]$OutputRoot='out/test-campaign',
   [switch]$SkipTests
@@ -47,14 +47,18 @@ function Write-TruncatedCampaignArtifact([string]$Source, [long]$FullLength, [st
 $policy=Get-Content -LiteralPath $PolicyFile -Raw|ConvertFrom-Json -DateKind String
 $lab=Read-ReleaseLabPolicy -PolicyFile $PolicyFile -FeedRootFile $FeedRootFile -Version $policy.versions[0] `
   -Channel dev -BuildProfile server -SigningMode Pfx -AllowUnsigned $true
-if(($WatchMinutes -eq 5 -and $lab.Policy.watchMinutesOverride -ne 5) -or
-   ($WatchMinutes -eq 30 -and $lab.Policy.Contains('watchMinutesOverride'))){throw 'Use watchMinutesOverride 5 for a 5-minute campaign and omit the member for a 30-minute campaign.'}
+if(($WatchMinutes -ne 30 -and $lab.Policy.watchMinutesOverride -ne $WatchMinutes) -or
+   ($WatchMinutes -eq 30 -and $lab.Policy.Contains('watchMinutesOverride'))){throw 'Use watchMinutesOverride 1 or 5 for a short campaign and omit the member for a 30-minute campaign.'}
 $labSourceFingerprint=Get-UpdaterSourceFingerprint $repoRoot
-$faultSchedule=[ordered]@{
+$faultSchedule=if($lab.Policy.faultProfile -ceq 'fast'){[ordered]@{
+  '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='service-pre-download-exit';
+  '5'='updater-msi-busy-1618';'6'='token-route-429';'7'='service-pre-download-exit';'8'='updater-msi-busy-1618';
+  '9'='token-route-429';'10'='service-pre-download-exit'
+}}else{[ordered]@{
   '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='updater-pre-installer-exit';
   '5'='service-post-commit-crash';'6'='feed-truncated-artifact';'7'='updater-msi-busy-1618';'8'='updater-pre-installer-exit';
   '9'='token-route-429';'10'='service-pre-download-exit'
-}
+}}
 $output=[IO.Path]::GetFullPath($OutputRoot,$repoRoot)
 $allowedRoot=[IO.Path]::GetFullPath((Join-Path $repoRoot 'out'))+[IO.Path]::DirectorySeparatorChar
 if(-not $output.StartsWith($allowedRoot,[StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)){throw 'Use a fresh output directory inside this worktree/out; existing artifacts are preserved.'}

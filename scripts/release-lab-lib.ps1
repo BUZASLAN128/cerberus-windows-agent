@@ -20,8 +20,13 @@ function Read-ReleaseLabPolicy {
   if ($watchMembers.Count -gt 0 -and
       ($watchMembers.Count -ne 1 -or $watchMembers[0] -cne 'watchMinutesOverride' -or
        ($p.watchMinutesOverride -isnot [int] -and $p.watchMinutesOverride -isnot [long]) -or
-       $p.watchMinutesOverride -lt 5 -or $p.watchMinutesOverride -gt 30)) {
-    throw 'Use one watchMinutesOverride member with an integer from 5 to 30.'
+       $p.watchMinutesOverride -lt 1 -or $p.watchMinutesOverride -gt 30)) {
+    throw 'Use one watchMinutesOverride member with an integer from 1 to 30.'
+  }
+  $profileMembers=@($p.Keys | Where-Object { $_ -ieq 'faultProfile' })
+  if ($profileMembers.Count -gt 0 -and
+      ($profileMembers.Count -ne 1 -or $profileMembers[0] -cne 'faultProfile' -or $p.faultProfile -cne 'fast')) {
+    throw 'Use one faultProfile member with the value fast, or omit it.'
   }
   $from=[DateTimeOffset]::Parse($p.notBeforeUtc,[Globalization.CultureInfo]::InvariantCulture)
   $until=[DateTimeOffset]::Parse($p.expiresAtUtc,[Globalization.CultureInfo]::InvariantCulture)
