@@ -107,13 +107,6 @@ internal static partial class AgentUpdateLocalService
     /// First scheduler step. True when the tick ends here: quarantined (everything waits, a pending request included),
     /// automatic updates not allowed, or the request was staged.
     /// </summary>
-    private static async Task<bool> HoldOrRunInstallRequestAsync(
-        AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
-        => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, PendingStateDelivery, Journal.Change,
-            async required => (await CheckAndStageOwnedAsync(automatic: true, required, ct,
-                bypassSchedule: true, installRequest: active.InstallRequest).ConfigureAwait(false)) is not null,
-            _requestLog, ct).ConfigureAwait(false);
-
     internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
         AgentLifecycleSnapshot lifecycle, Func<bool> quarantined, Func<AgentLifecycleSnapshot, bool> pendingState,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,

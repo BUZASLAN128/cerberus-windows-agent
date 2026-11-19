@@ -102,29 +102,12 @@ $mainScript = Join-Path $fixtureScripts 'build-agent-public-release.ps1'
 $outRoot = 'out/test-release-signing'
 $outRootFull = Join-Path $fixtureRepo $outRoot
 try {
-  # Run both finalize entry points from an isolated source tree, so real signing guards see the fixture lock.
+  # Run both finalize entry points from an isolated source tree.
   $fixtureCore = Join-Path $fixtureRepo 'src/Cerberus.Agent.Core'
-  $fixtureUpdater = Join-Path $fixtureRepo 'src/Cerberus.Agent.Updater'
-  New-Item -ItemType Directory -Path $fixtureScripts, $fixtureCore, $fixtureUpdater -Force | Out-Null
+  New-Item -ItemType Directory -Path $fixtureScripts, $fixtureCore -Force | Out-Null
   Copy-Item -Path (Join-Path $PSScriptRoot '*.ps1') -Destination $fixtureScripts
   Copy-Item -LiteralPath (Join-Path $repoRoot 'Directory.Build.props') -Destination $fixtureRepo
-  Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Core/AgentUpdaterContract.cs'),
-    (Join-Path $repoRoot 'src/Cerberus.Agent.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
-  $fixtureLock = Join-Path $fixtureCore 'updater-contract.lock'
-  $stampScript = Join-Path $fixtureScripts 'stamp-updater-contract-lock.ps1'
-  [IO.File]::WriteAllText($fixtureLock, '')
-  & $stampScript
-  $stampedLock = [IO.File]::ReadAllBytes($fixtureLock)
-  $sourceVersion = Get-UpdaterSourceVersion $fixtureRepo
-  $expectedStamp = "$sourceVersion $(Get-UpdaterSourceFingerprint $fixtureRepo)$([Environment]::NewLine)"
-  Check 'stamp writes exactly one BOM-less candidate accepted by the source lock gate' {
-    [Text.Encoding]::UTF8.GetString($stampedLock) -ceq $expectedStamp -and
-      (Assert-UpdaterSourceLock $fixtureRepo) -eq $sourceVersion
-  }
-  Check 'stamp refuses an existing fingerprint without changing the lock' {
-    (Throws { & $stampScript } 'fingerprint has already been stamped') -and
-      [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($fixtureLock)) -ceq $expectedStamp
-  }
+  Copy-Item -LiteralPath (Join-Path $repoRoot 'src/Cerberus.Agent.Core/AgentSingleFileBundle.cs') -Destination $fixtureCore
   . (Join-Path $fixtureScripts 'release-publish-lib.ps1')
   . (Join-Path $fixtureScripts 'release-token-lib.ps1')
 
@@ -338,64 +321,46 @@ try {
     New-CngSignedManifest -Canonical $cng.Canonical -Certificate $certB -RuntimeDir $cngRuntime -Channel $Channel -ArtifactPrefixes $Prefixes -KeyListB64 $Keys -SignerPins $Pins
   }
   Check "CNG self-check accepts declared values equal to the embedded ones" { (Invoke-CngCheck)["version"] -ceq "9.9.9" }
-  try {
-    [IO.File]::WriteAllText($fixtureLock, '')
-    Check 'unsigned dev build passes its runtime gates with an empty updater lock' {
-      $devPairs = @(Get-Pairs -Channel dev -Pins @('unsigned-dev')) + ,@('AllowUnsignedDevBuild', 'true')
-      $dev = New-Fixture -Options (& $allAssemblies $devPairs)
-      $devRuntime = Join-Path $dev.Publish 'runtime'
-      $depsName = 'Cerberus.Agent.Updater.deps.json'
-      Set-Content -LiteralPath (Join-Path $devRuntime $depsName) -Value `
-        '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{}}}'
-      # Supply runtime outputs at the compiler boundary and stop when the real dev path reaches packaging.
-      function dotnet {
-        if ($args[0] -cne 'publish') { throw 'Unexpected compiler command in unsigned dev fixture.' }
-        if ([IO.Path]::GetFileName($args[1]) -ceq 'Cerberus.Agent.Installer.Helper.csproj') {
-          throw 'Unsigned dev fixture reached installer helper publish.'
-        }
-        $outputArg = [array]::IndexOf($args, '-o')
-        $output = Join-Path $fixtureRepo 'out/unsigned-dev-fixture/publish/runtime'
-        if ($outputArg -lt 0 -or [IO.Path]::GetFullPath($args[$outputArg + 1]) -cne [IO.Path]::GetFullPath($output)) {
-          throw 'Unexpected runtime output path in unsigned dev fixture.'
-        }
-        if (-not (Test-Path -LiteralPath (Join-Path $output $depsName))) {
-          Copy-Item -Path (Join-Path $devRuntime '*') -Destination $output -Recurse
-        }
-        Set-Variable -Name LASTEXITCODE -Value 0 -Scope 1
+  Check 'unsigned dev build passes its runtime gates' {
+    $devPairs = @(Get-Pairs -Channel dev -Pins @('unsigned-dev')) + ,@('AllowUnsignedDevBuild', 'true')
+    $dev = New-Fixture -Options (& $allAssemblies $devPairs)
+    $devRuntime = Join-Path $dev.Publish 'runtime'
+    $depsName = 'Cerberus.Agent.Updater.deps.json'
+    Set-Content -LiteralPath (Join-Path $devRuntime $depsName) -Value `
+      '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{}}}'
+    # Supply runtime outputs at the compiler boundary and stop when the real dev path reaches packaging.
+    function dotnet {
+      if ($args[0] -cne 'publish') { throw 'Unexpected compiler command in unsigned dev fixture.' }
+      if ([IO.Path]::GetFileName($args[1]) -ceq 'Cerberus.Agent.Installer.Helper.csproj') {
+        throw 'Unsigned dev fixture reached installer helper publish.'
       }
-      $previousActions = $env:GITHUB_ACTIONS
-      $previousArtifactBase = $env:AGENT_RELEASE_ARTIFACT_BASE_URL
+      $outputArg = [array]::IndexOf($args, '-o')
+      $output = Join-Path $fixtureRepo 'out/unsigned-dev-fixture/publish/runtime'
+      if ($outputArg -lt 0 -or [IO.Path]::GetFullPath($args[$outputArg + 1]) -cne [IO.Path]::GetFullPath($output)) {
+        throw 'Unexpected runtime output path in unsigned dev fixture.'
+      }
+      if (-not (Test-Path -LiteralPath (Join-Path $output $depsName))) {
+        Copy-Item -Path (Join-Path $devRuntime '*') -Destination $output -Recurse
+      }
+      Set-Variable -Name LASTEXITCODE -Value 0 -Scope 1
+    }
+    $previousActions = $env:GITHUB_ACTIONS
+    $previousArtifactBase = $env:AGENT_RELEASE_ARTIFACT_BASE_URL
+    try {
+      $env:GITHUB_ACTIONS = $null
+      $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $prefix
       try {
-        $env:GITHUB_ACTIONS = $null
-        $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $prefix
-        try {
-          & $mainScript -Version '9.9.9' -Channel dev -OutputRoot 'out/unsigned-dev-fixture' -SkipTests `
-            -AllowUnsignedDevBuild -AllowEphemeralManifestKey -UpdateAllowedArtifactPrefixes $prefix 6>$null | Out-Null
-        } catch {
-          if ($_.Exception.Message -cne 'Unsigned dev fixture reached installer helper publish.') { throw }
-          return (Get-Item -LiteralPath $fixtureLock).Length -eq 0
-        }
-        $false
-      } finally {
-        $env:GITHUB_ACTIONS = $previousActions
-        $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $previousArtifactBase
+        & $mainScript -Version '9.9.9' -Channel dev -OutputRoot 'out/unsigned-dev-fixture' -SkipTests `
+          -AllowUnsignedDevBuild -AllowEphemeralManifestKey -UpdateAllowedArtifactPrefixes $prefix 6>$null | Out-Null
+      } catch {
+        if ($_.Exception.Message -cne 'Unsigned dev fixture reached installer helper publish.') { throw }
+        return $true
       }
+      $false
+    } finally {
+      $env:GITHUB_ACTIONS = $previousActions
+      $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $previousArtifactBase
     }
-    $lockErrors = [ordered]@{
-      empty = 'Updater source lock has no candidate stamp'
-      stale = 'Updater source fingerprint does not match the latest lock entry'
-      missing = 'Updater source lock is missing'
-    }
-    foreach ($lockCase in $lockErrors.GetEnumerator()) {
-      switch ($lockCase.Key) {
-        stale { [IO.File]::WriteAllText($fixtureLock, "$sourceVersion $('0' * 64)") }
-        missing { Remove-Item -LiteralPath $fixtureLock }
-      }
-      Assert-FinalizeRefused "finalize refuses a $($lockCase.Key) updater lock" $lockCase.Value (New-Fixture) $accept
-      Check "CNG refuses a $($lockCase.Key) updater lock" { Throws { Invoke-CngCheck } $lockCase.Value }
-    }
-  } finally {
-    [IO.File]::WriteAllBytes($fixtureLock, $stampedLock)
   }
   Check "CNG self-check refuses declared keys that differ from the embedded keys" { Throws { Invoke-CngCheck -Keys $keysAOnly } "Declared manifest keys do not match" }
   Check "CNG self-check refuses declared pins that differ from the embedded pins" { Throws { Invoke-CngCheck -Pins @($pinB) } "Declared signer pins do not match" }

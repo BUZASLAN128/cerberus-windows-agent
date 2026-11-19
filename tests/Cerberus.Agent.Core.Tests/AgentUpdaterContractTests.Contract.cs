@@ -166,8 +166,6 @@ public sealed partial class AgentUpdaterContractTests
     [Fact]
     public void GoldenContractValues()
     {
-        Assert.Equal("1", AgentUpdaterContract.Version);
-        Assert.Equal(1, AgentUpdaterContract.VersionNumber);
         Assert.Equal("--attempt", AgentUpdaterContract.AttemptArgument);
         Assert.Equal("agent.update.plan.v2", AgentUpdaterContract.PlanSchema);
         Assert.Equal("agent.update.journal.v1", AgentUpdaterContract.JournalSchema);

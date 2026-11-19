@@ -282,7 +282,7 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 
 if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir }
-Assert-UpdaterBuildContract $runtimePublishDir $BuildProfile $repoRoot ($null -ne $labBuild) (Get-BackendTrustAnchorsValue $BackendTrustAnchorsFile)
+Assert-UpdaterBuildContract $runtimePublishDir $BuildProfile ($null -ne $labBuild) (Get-BackendTrustAnchorsValue $BackendTrustAnchorsFile)
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false

@@ -61,19 +61,6 @@ public static class AgentUpdateTrustBuilder
             RequireSystemAuthority: true);
     }
 
-    public static string ResolveUpdateManifestPublicKey(
-        string? envPem,
-        string? envBase64,
-        string? registryPem,
-        string? registryBase64)
-        => ResolveUpdateManifestPublicKeys(
-                embeddedBase64: null,
-                envPem: envPem,
-                envBase64: envBase64,
-                registryPem: registryPem,
-                registryBase64: registryBase64)
-            .FirstOrDefault() ?? "";
-
     public static IReadOnlyList<string> ResolveUpdateManifestPublicKeys(
         string? embeddedBase64,
         string? envPem,

@@ -73,10 +73,6 @@ internal static class AgentUpdateTrustFactory
             Channel: channel);
     }
 
-    public static string ResolveUpdateManifestPublicKey(
-        string? envPem, string? envBase64, string? registryPem, string? registryBase64)
-        => AgentUpdateTrustBuilder.ResolveUpdateManifestPublicKey(envPem, envBase64, registryPem, registryBase64);
-
     public static IReadOnlyList<string> ResolveUpdateManifestPublicKeys(
         string? embeddedBase64, string? envPem, string? envBase64, string? registryPem, string? registryBase64,
         IAgentLogger? log = null)

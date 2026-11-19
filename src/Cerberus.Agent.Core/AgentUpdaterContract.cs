@@ -2,10 +2,6 @@ namespace Cerberus.Agent.Core;
 
 public static class AgentUpdaterContract
 {
-    public const string Version = "1";
-    public static int VersionNumber { get; } =
-        int.TryParse(Version, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var value) &&
-        value > 0 ? value : throw new InvalidOperationException("Updater contract version must be a positive integer.");
     public const string AttemptArgument = "--attempt";
     public const string PlanSchema = "agent.update.plan.v2";
     public const string JournalSchema = "agent.update.journal.v1";

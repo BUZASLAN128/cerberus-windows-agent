@@ -5,7 +5,7 @@ namespace Cerberus.Agent.Core.Tests;
 public sealed partial class AgentUpdaterContractTests
 {
     [Fact]
-    public async Task SourceLockGate_OnFixtureFiles()
+    public async Task BuildContractGate_OnFixtureFiles()
     {
         var work = Path.Combine(Path.GetTempPath(), "cerberus-updater-gate-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
@@ -68,38 +68,6 @@ public sealed partial class AgentUpdaterContractTests
           throw "Expected refusal matching: $ErrorPattern"
         }
 
-        $root = Join-Path $Work 'source'
-        $core = Join-Path $root 'src/Cerberus.Agent.Core'
-        $updater = Join-Path $root 'src/Cerberus.Agent.Updater'
-        $null = New-Item -ItemType Directory -Path $core, $updater -Force
-        Set-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Value '<Project />' -Encoding utf8
-        Set-Content -LiteralPath (Join-Path $core 'AgentUpdaterContract.cs') -Value '    public const string Version = "1";' -Encoding utf8
-        $tracked = Join-Path $updater 'UpdaterLab.Release.cs'
-        $lf = [char]10
-        $crlf = [string][char]13 + $lf
-        [IO.File]::WriteAllText($tracked, "trusted$($lf)source$lf")
-        $fingerprint = Get-UpdaterSourceFingerprint $root
-        [IO.File]::WriteAllText($tracked, "trusted$($crlf)source$crlf", [Text.UTF8Encoding]::new($true))
-        Set-Content -LiteralPath (Join-Path $updater 'UpdaterLab.Runtime.cs') -Value 'excluded runtime source'
-        $obj = Join-Path $updater 'obj-fixture'
-        $null = New-Item -ItemType Directory -Path $obj
-        Set-Content -LiteralPath (Join-Path $obj 'generated.cs') -Value 'excluded generated source'
-        if ((Get-UpdaterSourceFingerprint $root) -cne $fingerprint) { throw 'Fingerprint changed on normalization or exclusions.' }
-        $lock = Join-Path $core 'updater-contract.lock'
-        $older = 'a' * 64
-        Set-Content -LiteralPath $lock -Value @("1 $older", "1 $fingerprint")
-        if ((Assert-UpdaterSourceLock $root) -ne 1) { throw 'Expected lock version 1.' }
-        Add-Content -LiteralPath $tracked -Value 'different'
-        Refuses { Assert-UpdaterSourceLock $root } 'fingerprint does not match'
-        [IO.File]::WriteAllText($tracked, "trusted$($lf)source$lf")
-        Set-Content -LiteralPath $lock -Value @("2 $older", "1 $fingerprint")
-        Refuses { Assert-UpdaterSourceLock $root } 'versions decrease'
-        Set-Content -LiteralPath $lock -Value @("1 $fingerprint", "1 $fingerprint")
-        Refuses { Assert-UpdaterSourceLock $root } 'duplicate fingerprint'
-        Set-Content -LiteralPath $lock -Value "2 $fingerprint"
-        Refuses { Assert-UpdaterSourceLock $root } 'differs from source'
-        Set-Content -LiteralPath $lock -Value "1 $fingerprint"
-
         Assert-UpdaterBundleHasNoNativeEntries (Join-Path $Work 'managed.exe')
         Assert-ServerAgentBundleEntryKinds (Join-Path $Work 'app.exe')
         Refuses { Assert-ServerAgentBundleEntryKinds (Join-Path $Work 'app-extra.exe') } 'disallowed entry kind 2: other.dll'
@@ -126,27 +94,18 @@ public sealed partial class AgentUpdaterContractTests
         function Make-Updater($Pairs) {
           New-MetadataAssembly -Path $updaterAssembly -AssemblyName 'Cerberus.Agent.Updater' -Pairs $Pairs
         }
-        function Make-Core([string]$Version) {
-          $pairs = @(@('AgentUpdaterContractVersion', $Version), @('BackendTrustAnchors', 'AA==,AQ=='))
-          New-MetadataAssembly -Path $coreDll -AssemblyName 'Cerberus.Agent.Core' -Pairs $pairs
+        function Make-Core() {
+          New-MetadataAssembly -Path $coreDll -AssemblyName 'Cerberus.Agent.Core' -Pairs @(,@('BackendTrustAnchors', 'AA==,AQ=='))
         }
         New-MetadataAssembly -Path $agent -AssemblyName 'Cerberus.Agent' -Pairs $trust
         Make-Updater $trust
-        Make-Core '1'
-        Assert-UpdaterBuildContract $runtime desktop $root $false 'AA==%2CAQ=='
-        Assert-FinalUpdaterContract $runtime $root
-        Refuses { Assert-UpdaterBuildContract $runtime desktop $root $false '' } 'BackendTrustAnchors differ'
-        Make-Core '2'
-        Refuses { Assert-UpdaterBuildContract $runtime desktop $root $false 'AA==%2CAQ==' } 'differs from expected version'
-        Refuses { Assert-FinalUpdaterContract $runtime $root } 'differs from expected version'
-        Make-Core 'non-integer'
-        Refuses { Assert-FinalUpdaterContract $runtime $root } 'positive updater contract version'
+        Make-Core
+        Assert-UpdaterBuildContract $runtime desktop $false 'AA==%2CAQ=='
+        Refuses { Assert-UpdaterBuildContract $runtime desktop $false '' } 'BackendTrustAnchors differ'
 
         Set-Content -LiteralPath $deps -Value '{"libraries":{"Cerberus.Agent.Updater/1.0":{},"Cerberus.Agent.Core/1.0":{},"Cerberus.Agent.Runtime/1.0":{}}}'
-        Make-Core '1'
-        Refuses { Assert-UpdaterBuildContract $runtime desktop $root $false 'AA==%2CAQ==' } 'forbidden dependency'
-        Make-Core '2'
-        Assert-UpdaterBuildContract $runtime desktop $root $true 'AA==%2CAQ=='
+        Refuses { Assert-UpdaterBuildContract $runtime desktop $false 'AA==%2CAQ==' } 'forbidden dependency'
+        Assert-UpdaterBuildContract $runtime desktop $true 'AA==%2CAQ=='
 
         $changes = [ordered]@{
           AgentUpdateManifestPublicKeysB64 = @($otherKey, 'PublicKeyPems')
@@ -159,7 +118,7 @@ public sealed partial class AgentUpdaterContractTests
             if ($_[0] -ceq $change.Key) { ,@($_[0], $change.Value[0]) } else { ,$_ }
           })
           Make-Updater $changed
-          Refuses { Assert-UpdaterBuildContract $runtime desktop $root $true 'AA==%2CAQ==' } "different $($change.Value[1])"
+          Refuses { Assert-UpdaterBuildContract $runtime desktop $true 'AA==%2CAQ==' } "different $($change.Value[1])"
         }
 
         Write-Output 'C1 gate fixtures passed'

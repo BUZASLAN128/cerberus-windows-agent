@@ -197,71 +197,6 @@ function Get-BuiltReleaseTrust {
   return $trust
 }
 
-function ConvertTo-UpdaterContractVersion([string]$Value, [string]$Label) {
-  $version = 0
-  if ($Value -cnotmatch '\A[1-9][0-9]*\z' -or -not [int]::TryParse($Value, [ref]$version)) {
-    throw "$Label must be a positive updater contract version."
-  }
-  return $version
-}
-
-function Get-UpdaterSourceVersion([string]$RepoRoot) {
-  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Core/AgentUpdaterContract.cs'
-  $version = [regex]::Match([IO.File]::ReadAllText($path), '(?m)^\s*public const string Version = "([0-9]+)";[ \t]*\r?$')
-  if (-not $version.Success) { throw 'Updater contract source version was not found.' }
-  return ConvertTo-UpdaterContractVersion $version.Groups[1].Value 'Source contract version'
-}
-
-function Get-UpdaterFingerprintFiles([string]$Directory) {
-  foreach ($entry in Get-ChildItem -LiteralPath $Directory -Force) {
-    if ($entry.PSIsContainer) {
-      if ($entry.Name -notmatch '^(bin|obj)') { Get-UpdaterFingerprintFiles $entry.FullName }
-    } elseif ($entry.Extension -in @('.cs', '.csproj', '.manifest') -and $entry.Name -cne 'UpdaterLab.Runtime.cs') {
-      $entry.FullName
-    }
-  }
-}
-
-function Get-UpdaterSourceFingerprint([string]$RepoRoot) {
-  $root = (Resolve-Path -LiteralPath $RepoRoot).Path
-  $paths = [string[]]@(
-    'Directory.Build.props'
-    foreach ($project in 'Cerberus.Agent.Core', 'Cerberus.Agent.Updater') {
-      Get-UpdaterFingerprintFiles (Join-Path $root "src/$project") |
-        ForEach-Object { [IO.Path]::GetRelativePath($root, $_).Replace('\', '/') }
-    }
-  )
-  [array]::Sort($paths, [StringComparer]::Ordinal)
-  $utf8 = [Text.UTF8Encoding]::new($false, $true)
-  $lines = [Text.StringBuilder]::new()
-  foreach ($path in $paths) {
-    $text = $utf8.GetString([IO.File]::ReadAllBytes((Join-Path $root $path))).TrimStart([char]0xFEFF).Replace("`r`n", "`n")
-    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($text))).ToLowerInvariant()
-    [void]$lines.Append("$path`n$hash`n")
-  }
-  return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($lines.ToString()))).ToLowerInvariant()
-}
-
-function Assert-UpdaterSourceLock([string]$RepoRoot) {
-  $path = Join-Path $RepoRoot 'src/Cerberus.Agent.Core/updater-contract.lock'
-  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Updater source lock is missing.' }
-  $version = 0
-  $lastHash = ''
-  $hashes = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-  foreach ($line in [IO.File]::ReadAllLines($path)) {
-    if ($line -cnotmatch '\A([1-9][0-9]*) ([0-9a-f]{64})\z') { throw 'Updater source lock has an invalid line.' }
-    $next = ConvertTo-UpdaterContractVersion $Matches[1] 'Locked contract version'
-    $lastHash = $Matches[2]
-    if ($next -lt $version) { throw 'Updater source lock contract versions decrease.' }
-    if (-not $hashes.Add($lastHash)) { throw 'Updater source lock has a duplicate fingerprint.' }
-    $version = $next
-  }
-  if ($version -eq 0) { throw 'Updater source lock has no candidate stamp.' }
-  if ($lastHash -cne (Get-UpdaterSourceFingerprint $RepoRoot)) { throw 'Updater source fingerprint does not match the latest lock entry.' }
-  if ($version -ne (Get-UpdaterSourceVersion $RepoRoot)) { throw 'Locked updater contract version differs from source.' }
-  return $version
-}
-
 function Assert-BundleEntryKinds([string]$BundlePath, [string[]]$AllowedNativeNames = @()) {
   Import-AgentBundleReader
   $remainingNativeNames = [System.Collections.Generic.HashSet[string]]::new($AllowedNativeNames, [StringComparer]::Ordinal)
@@ -282,30 +217,13 @@ function Assert-ServerAgentBundleEntryKinds([string]$BundlePath) {
     'PresentationNative_cor3.dll', 'vcruntime140_cor3.dll', 'wpfgfx_cor3.dll')
 }
 
-function Assert-UpdaterMetadataVersion($Metadata, [int]$Expected) {
-  $built = ConvertTo-UpdaterContractVersion ([string]$Metadata['AgentUpdaterContractVersion']) 'Built contract version'
-  if ($built -ne $Expected) { throw "Built updater contract version $built differs from expected version $Expected." }
-}
-
-function Assert-FinalUpdaterContract([string]$RuntimeDir, [string]$RepoRoot) {
-  $locked = Assert-UpdaterSourceLock $RepoRoot
-  $assembly = Join-Path $RuntimeDir 'Cerberus.Agent.Core.dll'
-  $hostPath = Join-Path $RuntimeDir 'Cerberus.Agent.Updater.exe'
-  Import-AgentBundleReader
-  $bundle = if ((Test-Path -LiteralPath $hostPath -PathType Leaf) -and
-    [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { $hostPath } else { '' }
-  Assert-UpdaterMetadataVersion (Read-AssemblyMetadataValues $assembly -BundlePath $bundle) $locked
-}
-
-function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile, [string]$RepoRoot, [bool]$Lab, [string]$BackendAnchors) {
+function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile, [bool]$Lab, [string]$BackendAnchors) {
   $agent = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.dll') -BuildComparison
   $updater = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.Updater.dll') -BuildComparison
   Assert-ReleaseTrustEqual $agent $updater 'Cerberus.Agent.Updater.dll'
 
   $contractAssembly = Join-Path $RuntimeDir 'Cerberus.Agent.Core.dll'
   $expectedAnchors = $BackendAnchors.Replace('%2C', ',')
-  $expectedVersion = if ($Lab) { Write-Host "Lab updater source fingerprint: $(Get-UpdaterSourceFingerprint $RepoRoot)"; 0 }
-    else { Get-UpdaterSourceVersion $RepoRoot }
   $bundles = if ($BuildProfile -ceq 'server') { @('Cerberus.Agent.exe', 'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe') } else { @('') }
   foreach ($name in $bundles) {
     $bundle = ''
@@ -316,7 +234,6 @@ function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile,
     }
     $metadata = Read-AssemblyMetadataValues $contractAssembly -BundlePath $bundle
     if (([string]$metadata['BackendTrustAnchors']) -cne $expectedAnchors) { throw "Built BackendTrustAnchors differ from the backend anchor input in '$name'." }
-    if (-not $Lab) { Assert-UpdaterMetadataVersion $metadata $expectedVersion }
   }
   if ($Lab) { return }
 

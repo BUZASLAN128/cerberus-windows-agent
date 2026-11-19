@@ -255,7 +255,6 @@ function Complete-ExternalManifestSigning(
 
   # Everything below is measured from the publish directory; nothing is written until every check has passed.
   $runtimeDir = Join-Path $PublishDir "runtime"
-  Assert-FinalUpdaterContract $runtimeDir (Split-Path -Parent $PSScriptRoot)
   $trust = Get-BuiltReleaseTrust $runtimeDir
   $pendingKeys = @($pending.public_keys_b64 | ForEach-Object { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)).Trim() })
   Assert-EmbeddedTrustMatches -Trust $trust -KeyPems $pendingKeys -SignerPins (ConvertTo-NormalizedSignerPins @($pending.signer_pins)) `

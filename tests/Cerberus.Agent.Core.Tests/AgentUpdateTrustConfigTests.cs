@@ -1,4 +1,5 @@
 using Cerberus.Agent.App;
+using Cerberus.Agent.App.Updates;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -14,55 +15,11 @@ public sealed class AgentUpdateTrustConfigTests
         """;
 
     [Fact]
-    public void ResolveUpdateManifestPublicKey_PrefersPlainPemOverBase64Sources()
-    {
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(PublicKeyPem));
-
-        var resolved = ServiceMode.ResolveUpdateManifestPublicKey(
-            envPem: PublicKeyPem,
-            envBase64: encoded,
-            registryPem: PublicKeyPem,
-            registryBase64: encoded);
-
-        Assert.Equal(PublicKeyPem.Trim(), resolved);
-    }
-
-    [Fact]
-    public void ResolveUpdateManifestPublicKey_DecodesBase64WhenPemIsNotProvided()
-    {
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(PublicKeyPem));
-
-        var resolved = ServiceMode.ResolveUpdateManifestPublicKey(
-            envPem: null,
-            envBase64: "",
-            registryPem: null,
-            registryBase64: encoded);
-
-        Assert.Equal(PublicKeyPem.Trim(), resolved);
-    }
-
-    [Fact]
-    public void ResolveUpdateManifestPublicKey_PrefersEnvironmentBase64OverRegistryPem()
-    {
-        var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(PublicKeyPem));
-        using var rsa = RSA.Create(2048);
-        var registryPem = ExportPublicKeyPem(rsa);
-
-        var resolved = ServiceMode.ResolveUpdateManifestPublicKey(
-            envPem: null,
-            envBase64: encoded,
-            registryPem: registryPem,
-            registryBase64: null);
-
-        Assert.Equal(PublicKeyPem.Trim(), resolved);
-    }
-
-    [Fact]
     public void ResolveUpdateManifestPublicKeys_IgnoresInvalidOverrideWhenEmbeddedKeyExists()
     {
         var embedded = Convert.ToBase64String(Encoding.UTF8.GetBytes(PublicKeyPem));
 
-        var resolved = ServiceMode.ResolveUpdateManifestPublicKeys(
+        var resolved = AgentUpdateTrustFactory.ResolveUpdateManifestPublicKeys(
             embeddedBase64: embedded,
             envPem: "not-a-public-key",
             envBase64: "not-base64",
@@ -80,7 +37,7 @@ public sealed class AgentUpdateTrustConfigTests
         var embedded = Convert.ToBase64String(Encoding.UTF8.GetBytes(PublicKeyPem));
         var extraEncoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(extraPem));
 
-        var resolved = ServiceMode.ResolveUpdateManifestPublicKeys(
+        var resolved = AgentUpdateTrustFactory.ResolveUpdateManifestPublicKeys(
             embeddedBase64: embedded,
             envPem: null,
             envBase64: extraEncoded,

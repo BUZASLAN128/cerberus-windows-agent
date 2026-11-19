@@ -49,7 +49,6 @@ $lab=Read-ReleaseLabPolicy -PolicyFile $PolicyFile -FeedRootFile $FeedRootFile -
   -Channel dev -BuildProfile server -SigningMode Pfx -AllowUnsigned $true
 if(($WatchMinutes -ne 30 -and $lab.Policy.watchMinutesOverride -ne $WatchMinutes) -or
    ($WatchMinutes -eq 30 -and $lab.Policy.Contains('watchMinutesOverride'))){throw 'Use watchMinutesOverride 1 or 5 for a short campaign and omit the member for a 30-minute campaign.'}
-$labSourceFingerprint=Get-UpdaterSourceFingerprint $repoRoot
 $faultSchedule=if($lab.Policy.faultProfile -ceq 'fast'){[ordered]@{
   '1'='service-pre-download-exit';'2'='updater-msi-busy-1618';'3'='token-route-429';'4'='service-pre-download-exit';
   '5'='updater-msi-busy-1618';'6'='token-route-429';'7'='service-pre-download-exit';'8'='updater-msi-busy-1618';
@@ -120,9 +119,6 @@ try{
          $metadata['AgentUpdateManifestPublicKeysB64'] -cne [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($publicKey.Trim()))){throw 'A host embedded different campaign trust.'}
     }
     $updaterPath=Join-Path $runtime 'Cerberus.Agent.Updater.exe'
-    # The host loop reads Runtime.dll from the updater. Read Core from the same bundle.
-    $contractMetadata=Read-AssemblyMetadataValues (Join-Path $runtime 'Cerberus.Agent.Core.dll') -BundlePath $updaterPath
-    $contractVersion=ConvertTo-UpdaterContractVersion ([string]$contractMetadata['AgentUpdaterContractVersion']) 'Lab updater contract version'
     $updaterSha256=(Get-FileHash -LiteralPath $updaterPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $helperCompiler=Join-Path $versionOutput 'lab-build-evidence/installer-helper-compiler.dll'
     $helperMetadata=Read-AssemblyMetadataValues $helperCompiler
@@ -164,7 +160,7 @@ try{
     })
     # noNativeEntries records the headless updater admission check.
     $rows.Add([pscustomobject]@{version=$version;source=$ExpectedHead;msi=$msi;sha256=$msiHash;bytes=$msiLength;bootstrap=($version -ceq $lab.Policy.versions[0]);manifests=$manifests;
-      fault=$fault;updaterSha256=$updaterSha256;noNativeEntries=$true;contractVersion=$contractVersion;labSourceFingerprint=$labSourceFingerprint;
+      fault=$fault;updaterSha256=$updaterSha256;noNativeEntries=$true;
       helperMetadataEvidence='compiler PE support; compressed helper runtime not executed';helperCompiler=$helperCompiler;
       helperCompilerSha256=(Get-FileHash -LiteralPath $helperCompiler).Hash.ToLowerInvariant();
       publishedHelperSha256=(Get-FileHash -LiteralPath (Join-Path $versionOutput 'installer-helper/Cerberus.Agent.Installer.Helper.exe')).Hash.ToLowerInvariant()})
