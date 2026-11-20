@@ -305,6 +305,58 @@ public sealed partial class AgentUpdateLabRemediationTests
         Assert.Equal(policy.CampaignId, admitted.InstallRequest!.LocalPolicyId);
     }
 
+    [Fact]
+    public void StagingThatGaveUpBeforeBindingIsHandedOverWithItsReceipt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-staging-" + Guid.NewGuid().ToString("N"));
+        var store = new AgentUpdateJournalStore(root); store.Change(_ => GaveUpStaging());
+        var original = store.Read(); var policy = Policy(); string? retained = null;
+        Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(original, policy, "0.2.900", true));
+        store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, new("0.2.901", "dev:new", new('a', 64)),
+            7, Now, "0.2.900", true, snapshot => retained = AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot)));
+        Assert.Equal(original, AgentUpdateDurableFile.Read<AgentUpdateJournal>(retained!, root));
+        Assert.Equal(policy.CampaignId, store.Read().InstallRequest!.LocalPolicyId);
+    }
+
+    [Theory]
+    [InlineData("bound")]
+    [InlineData("verified-release")]
+    [InlineData("installer-result")]
+    [InlineData("downloading")]
+    [InlineData("awaiting-consent")]
+    [InlineData("generation")]
+    [InlineData("plan_mismatch")]
+    [InlineData("release_unavailable")]
+    [InlineData("expired")]
+    public void StagingFailureThatMayHaveProgressedCannotBeHandedOver(string changed)
+    {
+        var closed = GaveUpStaging(); var request = closed.InstallRequest!;
+        var failed = changed switch
+        {
+            "bound" => closed with { InstallRequest = request with { BoundAttemptId = closed.AttemptId } },
+            "verified-release" => closed with { InstallRequest = request with { VerifiedRelease = request.ExpectedPlan } },
+            "installer-result" => closed with { InstallerResult = ClosedForeignFailure().InstallerResult! with { AttemptId = closed.AttemptId } },
+            "downloading" => closed with { Phase = AgentUpdateStates.Downloading },
+            "awaiting-consent" => closed with { Phase = AgentUpdateStates.AwaitingConsent },
+            "generation" => closed with { LifecycleGeneration = 8 },
+            _ => closed with { InstallRequest = request with { TerminalReason = changed } },
+        };
+        Assert.False(AgentUpdateLocalService.CanContinueLabCampaign(failed, Policy(), "0.2.900", true));
+        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, Policy(), new("0.2.901", "dev:new", new('a', 64)),
+            7, Now, "0.2.900", true, _ => throw new InvalidOperationException("Invalid predecessors cannot write receipts.")));
+    }
+
+    // Three staging tries ran out while the download was paused; the request was never bound to an attempt.
+    private static AgentUpdateJournal GaveUpStaging() => new()
+    {
+        Phase = AgentUpdateStates.Failed, AttemptId = "52e9ac8124e6462798d76bc129a364c0", LifecycleGeneration = 7,
+        HealthyInstalledVersion = "0.2.900", HealthyInstalledSequence = 42,
+        InstallRequest = new AgentUpdateInstallRequest(Now.AddHours(-2), 7, Now.AddHours(1), Attempts: 3,
+            ExpectedPlan: new("0.2.941", "dev:failed", new('b', 64)), TerminalReason: "staging_failed", TerminalUtc: Now.AddHours(-1),
+            TerminalJournalPhase: AgentUpdateStates.Failed, TerminalJournalAttemptId: "a0c950fcba90401890bec7511ba0c17c",
+            LocalPolicyId: "d317377e-5553-43cf-9404-bfcb0a236733", LocalSourceVersion: "0.2.940"),
+    };
+
     // The updater's own failure path, after a busy installer exited and before the next launch fence was written.
     private static AgentUpdateJournal PreLaunchUpdaterFailure()
     {

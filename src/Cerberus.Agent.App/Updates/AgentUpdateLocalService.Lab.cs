@@ -92,7 +92,8 @@ internal static partial class AgentUpdateLocalService
     }
 
     internal static bool IsClosedLabFailure(AgentUpdateJournal before)
-        => before.Phase == AgentUpdateStates.Failed && !before.HasUnfinishedAttempt && !before.MayHaveStartedInstallation &&
+        => IsClosedLabStagingFailure(before) ||
+           before.Phase == AgentUpdateStates.Failed && !before.HasUnfinishedAttempt && !before.MayHaveStartedInstallation &&
            AgentUpdateSecurity.IsSafeAttemptId(before.AttemptId) &&
            before.InstallRequest is { TerminalReason: "attempt_failed", TerminalUtc: not null,
                TerminalJournalPhase: AgentUpdateStates.Failed, LocalPolicyId: not null,
@@ -101,6 +102,14 @@ internal static partial class AgentUpdateLocalService
            request.LifecycleGeneration == before.LifecycleGeneration && request.ExpectedPlan.Matches(request.VerifiedRelease) &&
            before.InstallerResult is { State: AgentUpdateStates.Failed, RequiresReboot: false, Quarantined: false } result &&
            result.AttemptId == before.AttemptId && IsClosedLabResult(result);
+
+    /// <summary>A request whose staging gave up before it was bound to an attempt: no installer ran for it.</summary>
+    private static bool IsClosedLabStagingFailure(AgentUpdateJournal before)
+        => before.Phase is AgentUpdateStates.Failed or AgentUpdateStates.Current && !before.HasUnfinishedAttempt &&
+           !before.MayHaveStartedInstallation && before.InstallerResult is null &&
+           before.InstallRequest is { TerminalReason: "staging_failed", TerminalUtc: not null, BoundAttemptId: null,
+               VerifiedRelease: null, LocalPolicyId: not null, ExpectedPlan: not null } request &&
+           request.IsValid() && request.LifecycleGeneration == before.LifecycleGeneration;
 
     /// <summary>
     /// An installer that ran and failed, or an updater that stopped before its launch fence: only the updater's own
