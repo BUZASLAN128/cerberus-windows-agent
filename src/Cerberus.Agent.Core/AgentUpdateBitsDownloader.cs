@@ -68,23 +68,26 @@ public sealed partial class AgentUpdateBitsDownloader
             if (testTrust is null) AllowCompiledBackendRoot(job);
             else certificateValidation = ConfigureCampaignTls(job, testTrust, source, jobId, attemptId, attemptDirectory);
             Check(job.AddFile(source.AbsoluteUri, fullDestination), "BITS file registration failed.");
+            Check(job.SetMinimumRetryDelay(60), "BITS retry delay could not be set.");
+            Check(job.SetNoProgressTimeout(AgentUpdateBitsProgressWatch.NoProgressTimeoutSeconds), "BITS no-progress timeout could not be set.");
             ct.ThrowIfCancellationRequested();
             Check(job.Resume(), "BITS job could not be resumed.");
 
-            var deadline = DateTimeOffset.UtcNow.AddHours(1);
+            var progressWatch = new AgentUpdateBitsProgressWatch();
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 testTrust?.RequireSource(source);
                 if (certificateValidation?.Rejected == true)
                     throw new InvalidOperationException("BITS development TLS certificate was rejected.");
-                if (DateTimeOffset.UtcNow >= deadline)
-                    throw new InvalidOperationException("BITS update download timed out.");
+                progressWatch.ThrowIfOverallTimedOut();
 
                 Check(job.GetState(out var state), "BITS state could not be read.");
                 Check(job.GetProgress(out var progress), "BITS progress could not be read.");
                 AgentUpdateArtifactTransfer.ValidateBitsProgress(expectedBytes, progress.BytesTotal,
                     progress.BytesTransferred, state == BackgroundCopyJobState.Transferred);
+                // BITS applies its own no-progress timeout after a transient error. Check every state here.
+                progressWatch.Observe(progress.BytesTransferred);
                 switch (state)
                 {
                     case BackgroundCopyJobState.Transferred:
@@ -97,10 +100,6 @@ public sealed partial class AgentUpdateBitsDownloader
                     case BackgroundCopyJobState.Error:
                     case BackgroundCopyJobState.Cancelled:
                         throw new InvalidOperationException("BITS update download failed.");
-                    case BackgroundCopyJobState.TransientError:
-                        // BITS owns transient retry scheduling. Keep polling so
-                        // the existing one-hour deadline remains the upper bound.
-                        break;
                 }
 
                 await Task.Delay(PollInterval, ct).ConfigureAwait(false);

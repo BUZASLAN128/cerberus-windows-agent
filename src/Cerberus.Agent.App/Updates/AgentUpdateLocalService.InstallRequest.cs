@@ -10,7 +10,9 @@ internal static partial class AgentUpdateLocalService
 {
     /// <summary>Latest start a request may ask for, and how long it stays valid after that start.</summary>
     internal static readonly TimeSpan MaxInstallRequestDelay = TimeSpan.FromHours(24);
-    internal static readonly TimeSpan InstallRequestRetryDelay = TimeSpan.FromMinutes(5);
+    // Development campaign builds retry a failed request after 30 seconds; release builds wait 5 minutes.
+    internal static TimeSpan InstallRequestRetryDelay(bool labBuild)
+        => labBuild ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(5);
     internal const int MaxInstallRequestAttempts = 3;
 
     private static volatile Func<bool>? _serverQuarantined;
@@ -90,7 +92,7 @@ internal static partial class AgentUpdateLocalService
     /// <summary>The request after a failed staging: due again after the retry delay, or null once tries or time run out.</summary>
     internal static AgentUpdateInstallRequest? RetryInstallRequest(AgentUpdateInstallRequest request, DateTimeOffset now)
     {
-        var next = request with { Attempts = request.Attempts + 1, NotBeforeUtc = now + InstallRequestRetryDelay };
+        var next = request with { Attempts = request.Attempts + 1, NotBeforeUtc = now + InstallRequestRetryDelay(AgentUpdateDefaults.LabPolicyB64.Length > 0) };
         return next.Attempts >= MaxInstallRequestAttempts || next.NotBeforeUtc >= request.ExpiresUtc ? null : next;
     }
 
@@ -107,13 +109,6 @@ internal static partial class AgentUpdateLocalService
     /// First scheduler step. True when the tick ends here: quarantined (everything waits, a pending request included),
     /// automatic updates not allowed, or the request was staged.
     /// </summary>
-    private static async Task<bool> HoldOrRunInstallRequestAsync(
-        AgentUpdateJournal active, AgentLifecycleSnapshot lifecycle, CancellationToken ct)
-        => await HoldOrRunInstallRequestAsync(active, lifecycle, Quarantined, PendingStateDelivery, Journal.Change,
-            async required => (await CheckAndStageOwnedAsync(automatic: true, required, ct,
-                bypassSchedule: true, installRequest: active.InstallRequest).ConfigureAwait(false)) is not null,
-            _requestLog, ct).ConfigureAwait(false);
-
     internal static async Task<bool> HoldOrRunInstallRequestAsync(AgentUpdateJournal active,
         AgentLifecycleSnapshot lifecycle, Func<bool> quarantined, Func<AgentLifecycleSnapshot, bool> pendingState,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
@@ -252,8 +247,8 @@ internal static partial class AgentUpdateLocalService
         HoldExpiredInstallRequest(before, automatic, ct);
         var preserveAuthority = automatic || AgentBuildProfile.IsServer;
         // Explicit local consent is its own source; an old signed request must not obstruct its later busy retries.
-        return before with { Phase = "launch_requested", LifecycleGeneration = generation, Automatic = automatic,
-            InstallerResult = null, NextRetryUtc = null,
+        return before with { Phase = AgentUpdaterContract.LaunchRequestedPhase, LifecycleGeneration = generation, Automatic = automatic,
+            InstallerResult = null, NextRetryUtc = null, AlertCode = null, AlertAttemptId = null,
             Required = before.Required && (preserveAuthority || before.RequiredPolicyGeneration is not null),
             RequiredInstallAttemptId = preserveAuthority ? before.RequiredInstallAttemptId : null,
             InstallRequestAuthorityExpiresUtc = preserveAuthority ? before.InstallRequestAuthorityExpiresUtc : null };

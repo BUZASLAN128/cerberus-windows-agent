@@ -25,7 +25,7 @@ public static class AgentUpdateAuthenticode
         // the root of trust and Authenticode is a pin check: WinVerifyTrust reports digest and signature failures
         // (TRUST_E_BAD_DIGEST, TRUST_E_NOSIGNATURE) instead of CERT_E_UNTRUSTEDROOT, so an untrusted root with a pinned
         // signer key still proves the file is intact. Builds without anchors keep requiring a trusted chain.
-        var allowUntrustedRoot = BackendTrust.HasAnchors;
+        var allowUntrustedRoot = BackendTrustAnchors.HasAnchors;
         var status = WinVerifyTrustFile(path);
         if (status != 0)
         {

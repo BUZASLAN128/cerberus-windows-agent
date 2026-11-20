@@ -14,7 +14,7 @@ internal static partial class Program
         public static readonly HealthOptions Desktop = new(TimeSpan.FromSeconds(60), TimeSpan.Zero, false, false);
         private static readonly TimeSpan BackendWindow = TimeSpan.FromMinutes(3);
         public static HealthOptions Server(bool requireBackend)
-            => new(TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(60), requireBackend, true);
+            => new(TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(120), requireBackend, true);
         public TimeSpan SettleLimit => RequireBackend ? BackendWindow : Stability + TimeSpan.FromSeconds(30);
     }
 

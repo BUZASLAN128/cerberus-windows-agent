@@ -13,7 +13,7 @@ $proof = [ordered]@{
     source = (git -C $repoRoot rev-parse HEAD).Trim()
     profile = 'server'; startedUtc = [DateTimeOffset]::UtcNow.ToString('o'); status = 'failed'
     elevatedAdministrator = $false; testExitCode = $null; total = 0; passed = 0
-    nativeRequiredCases = 27; nativeObservedCases = 0
+    nativeRequiredCases = 29; nativeObservedCases = 0
     level = 'Windows native storage guards and updater/server unit/support; not installed service recovery or PC/VM self-update acceptance'
     installs = 0; targetAccess = $false
 }
@@ -66,7 +66,8 @@ try {
     $diagnostics = @($rows | Where-Object { $_.testName.Contains('.ServiceWorkerFailureTests.') }).Count
     $proof.workerFailureCases = $diagnostics
     if ($proof.testExitCode -ne 0 -or $proof.total -eq 0 -or $proof.passed -ne $proof.total -or
-        $selection.schemaVersion -ne 1 -or @($selection.cases | Sort-Object -Unique).Count -ne 27 -or $nativeRows.Count -ne 27 -or
+        $selection.schemaVersion -ne 1 -or @($selection.cases | Sort-Object -Unique).Count -ne $proof.nativeRequiredCases -or
+        $nativeRows.Count -ne $proof.nativeRequiredCases -or
         @($nativeRows | Where-Object outcome -ne 'Passed').Count -ne 0 -or $serverStartup -eq 0 -or $adapter -eq 0 -or $diagnostics -eq 0) {
         throw 'Updater/server checks are failed, missing or skipped; preserve evidence and stop.'
     }

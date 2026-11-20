@@ -1,0 +1,28 @@
+{
+  "campaignArtifactsPath": "C:\\path\\to\\out\\test-campaign\\campaign-artifacts.json",
+  "targetIndex": 0,
+  "mode": "trial",
+  "serviceName": "CerberusServerAgent",
+  "controlPipeName": "CerberusServerAgent.Control.v1",
+  "privilegedUpdateRoot": "C:\\ProgramData\\CerberusServerAgent\\Privileged\\Updates",
+  "holdInstallerPath": "C:\\path\\to\\out\\hold-installer\\cerberus-campaign-hold.msi",
+  "healthServices": ["TermService", "Tailscale"],
+  "feed": {
+    "urlPrefix": "https://feed.example.invalid/",
+    "remotePrefix": "srv/feed-root/",
+    "rootCertFile": "C:\\path\\to\\feed-root-ca.cer",
+    "rootCertSha256": "REPLACE-WITH-SHA256",
+    "publishCommand": ["C:\\path\\to\\publish-tool.exe", "--config", "C:\\path\\to\\publish-tool.conf", "{local}", "{remote}"],
+    "renameCommand": ["C:\\path\\to\\rename-tool.exe", "--config", "C:\\path\\to\\publish-tool.conf", "{from}", "{to}"]
+  },
+  "backendQueryCommand": ["C:\\path\\to\\backend-read-only-query.exe", "--target", "REPLACE"],
+  "backendQueryPerHop": false,
+  "toolSha256": {
+    "publish": "REPLACE-WITH-SHA256",
+    "rename": "REPLACE-WITH-SHA256",
+    "backendQuery": "REPLACE-WITH-SHA256"
+  },
+  "toolFiles": [
+    { "path": "C:\\path\\to\\publish-tool.conf", "sha256": "REPLACE-WITH-SHA256" }
+  ]
+}

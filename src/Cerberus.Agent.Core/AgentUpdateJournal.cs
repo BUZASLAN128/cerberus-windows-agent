@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Cerberus.Agent.Core;
 
@@ -16,12 +17,15 @@ public sealed record AgentUpdateReconciliationSnapshot(
     DateTimeOffset? ApplyNotBeforeUtc,
     int RetryCount,
     DateTimeOffset? NextRetryUtc,
-    DateTimeOffset? NextCheckUtc);
+    DateTimeOffset? NextCheckUtc)
+{
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+}
 
 /// <summary>One machine update decision. Installer progress is evidence, never permission to launch again.</summary>
 public sealed record AgentUpdateJournal
 {
-    public string SchemaVersion { get; init; } = "agent.update.journal.v1";
+    public string SchemaVersion { get; init; } = AgentUpdaterContract.JournalSchema;
     public long Revision { get; init; }
     public string ScheduleSeed { get; init; } = Guid.NewGuid().ToString("N");
     public DateTimeOffset? NextCheckUtc { get; init; }
@@ -33,6 +37,10 @@ public sealed record AgentUpdateJournal
     public DateTimeOffset? ApplyNotBeforeUtc { get; init; }
     public int RetryCount { get; init; }
     public DateTimeOffset? NextRetryUtc { get; init; }
+    public DateTimeOffset? BusySinceUtc { get; init; }
+    public int InstallerBusyCount { get; init; }
+    public int PreInstallFailureCount { get; init; }
+    public DateTimeOffset? PreInstallRetryNotBeforeUtc { get; init; }
     /// <summary>Generation that authorized the durable required-policy provenance, when present.</summary>
     public long? RequiredPolicyGeneration { get; init; }
     /// <summary>A signed install request authorizes only this verified attempt, never a successor release.</summary>
@@ -55,8 +63,12 @@ public sealed record AgentUpdateJournal
     public string? FailureCode { get; init; }
     public string? FailureAttemptId { get; init; }
     public string? FailureInstallerResultId { get; init; }
+    public string? AlertCode { get; init; }
+    public string? AlertAttemptId { get; init; }
 
-    public bool MayHaveStartedInstallation => Phase is "install_may_have_started" or "installing" or
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+
+    public bool MayHaveStartedInstallation => Phase is AgentUpdaterContract.InstallMayHaveStartedPhase or "installing" or
         "health_pending" or "pending_reboot" or "recovery_required";
 
     public bool HasUnfinishedAttempt => AttemptId is not null && Phase is not
@@ -79,9 +91,10 @@ public sealed class AgentUpdateJournalStore
         var value = AgentUpdateDurableFile.Read<AgentUpdateJournal>(_path, _root);
         if (value is null)
             return new AgentUpdateJournal();
-        if (value.SchemaVersion != "agent.update.journal.v1" || value.Revision < 0 ||
+        if (value.SchemaVersion != AgentUpdaterContract.JournalSchema || value.Revision < 0 ||
             !KnownPhase(value.Phase) ||
             value.RetryCount is < 0 or > 3 || string.IsNullOrWhiteSpace(value.ScheduleSeed) ||
+            value.InstallerBusyCount is < 0 or > 64 || value.PreInstallFailureCount is < 0 or > 8 ||
             (value.AttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AttemptId)) ||
             value.RequiredPolicyGeneration is < 0 || value.FailedInstallSequence < 0 ||
             (value.RequiredInstallAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.RequiredInstallAttemptId)) ||
@@ -89,6 +102,8 @@ public sealed class AgentUpdateJournalStore
             (value.FailureAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureAttemptId)) ||
             // Result ids are generated GUIDs; the failure cause binds to one by exact match.
             (value.FailureInstallerResultId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.FailureInstallerResultId)) ||
+            (value.AlertCode is not null && !AgentUpdateErrorCodes.IsCode(value.AlertCode)) ||
+            (value.AlertAttemptId is not null && !AgentUpdateSecurity.IsSafeAttemptId(value.AlertAttemptId)) ||
             (value.InstallerResult is { } installerResult && !AgentUpdateSecurity.IsSafeAttemptId(installerResult.ResultId)) ||
             value.InstallRequest is { } request && !request.IsValid() ||
             (value.RequiredPolicyGeneration is not null && !value.Required) ||
@@ -108,7 +123,7 @@ public sealed class AgentUpdateJournalStore
         AgentUpdateStates.Available or AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged or
         AgentUpdateStates.AwaitingConsent or AgentUpdateStates.Installing or AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot or
         AgentUpdateStates.Installed or AgentUpdateStates.RetryableBusy or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.Quarantined or
-        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or "launch_requested" or "install_may_have_started";
+        AgentUpdateStates.Failed or AgentUpdateStates.Blocked or AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase;
 
     public AgentUpdateJournal Change(Func<AgentUpdateJournal, AgentUpdateJournal> change)
     {
@@ -171,12 +186,36 @@ public static class AgentUpdateDurableFile
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
             }
-            File.Move(temporary, path, overwrite: true);
+            Replace(temporary, path);
         }
         finally
         {
             if (File.Exists(temporary))
                 File.Delete(temporary);
+        }
+    }
+
+    private const int ReplaceAttempts = 12;
+    private const int SharingViolation = unchecked((int)0x80070020);
+
+    /// <summary>
+    /// Windows refuses to replace a file while any process has it open (the service, the updater, an MSI helper or an
+    /// antivirus scan reading the record), even when that reader shares delete access. Such reads close within
+    /// milliseconds, so the replace is retried for about a quarter second; a lasting denial still fails.
+    /// </summary>
+    internal static void Replace(string temporary, string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < ReplaceAttempts && ex is UnauthorizedAccessException or IOException { HResult: SharingViolation })
+            {
+                Thread.Sleep(20);
+            }
         }
     }
 }

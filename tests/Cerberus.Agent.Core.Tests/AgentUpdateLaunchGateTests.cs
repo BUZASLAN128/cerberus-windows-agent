@@ -99,6 +99,47 @@ public sealed class AgentUpdateLaunchGateTests
         }
     }
 
+    [Fact]
+    public void PrepareUpdaterRunner_ServerSingleFileCopiesOnlyTheUpdater()
+    {
+        if (!AgentBuildProfile.IsServer) return;
+        var parent = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+        var fixtureName = "cerberus-updater-bundle-test-" + Guid.NewGuid().ToString("N");
+        var root = Path.Combine(parent, fixtureName);
+        try
+        {
+            AgentUpdateSecurity.EnsureProtectedRoot(root);
+            var install = Directory.CreateDirectory(Path.Combine(root, "install")).FullName;
+            var attempt = Directory.CreateDirectory(Path.Combine(root, "attempt")).FullName;
+            var incomplete = Directory.CreateDirectory(Path.Combine(root, "incomplete")).FullName;
+            const string updaterName = "Cerberus.Agent.Updater.exe";
+            var updater = Path.Combine(install, updaterName);
+            SyntheticSingleFileBundle.Write(updater, ("Cerberus.Agent.Updater.dll", 1), ("Cerberus.Agent.Core.dll", 1));
+            File.WriteAllText(Path.Combine(install, "Cerberus.Agent.Service.exe"), "unrelated executable");
+
+            var runner = Path.GetDirectoryName(AgentUpdateRunnerFiles.Prepare(install, attempt))!;
+            Assert.Equal(new[] { updaterName, "inventory.json" },
+                Directory.EnumerateFiles(runner).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+            AgentUpdateRunnerFiles.Validate(runner, attempt);
+            AgentUpdateRunnerFiles.ValidateForLaunch(install, attempt);
+
+            SyntheticSingleFileBundle.Write(updater, ("Cerberus.Agent.Updater.dll", 1));
+            Assert.Throws<InvalidDataException>(() => AgentUpdateRunnerFiles.Prepare(install, incomplete));
+        }
+        finally
+        {
+            var cleanupTarget = Path.GetFullPath(root);
+            if (!string.Equals(Path.GetDirectoryName(cleanupTarget), parent, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileName(cleanupTarget), fixtureName, StringComparison.Ordinal))
+                throw new InvalidOperationException("Runner fixture cleanup target is not the generated disposable child.");
+            if (Directory.Exists(cleanupTarget))
+            {
+                AgentUpdateSecurity.ValidateProtectedTree(cleanupTarget);
+                Directory.Delete(cleanupTarget, recursive: true);
+            }
+        }
+    }
+
     private static AgentUpdateCheckResult Check(string version)
         => new(
             Available: true,

@@ -415,19 +415,6 @@ public sealed class AgentUpdateStager
         _log.Info($"Agent update download progress: {total} bytes.");
     }
 
-    [Obsolete("Direct plan application is disabled; only the SYSTEM updater may apply an attempt.")]
-    public static Task ApplyPlanAsync(string planPath, string targetExecutablePath, CancellationToken ct)
-        => throw new InvalidOperationException("Direct update application is disabled.");
-
-    [Obsolete("Direct plan application is disabled; only the SYSTEM updater may apply an attempt.")]
-    public static Task ApplyPlanAsync(
-        string planPath,
-        string targetExecutablePath,
-        string trustedStagingRoot,
-        string allowedTargetExecutablePath,
-        CancellationToken ct)
-        => throw new InvalidOperationException("Direct update application is disabled.");
-
     private static async Task<string> HashFileAsync(string path, CancellationToken ct)
     {
         await using var stream = File.OpenRead(path);
@@ -461,18 +448,6 @@ public sealed class AgentUpdateStager
         {
             if (File.Exists(path))
                 File.Delete(path);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
-
-    private static void TryDeleteDirectory(string path)
-    {
-        try
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

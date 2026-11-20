@@ -134,19 +134,40 @@ public static class AgentUpdateSecurity
         ValidateProtectedDescendants(root, path => ValidateObjectAuthority(path, allowTrustedInstaller: false, isProductRoot: false));
     }
 
-    internal static void ValidateProtectedDescendants(string root, Action<string> validateAuthority)
+    internal static void ValidateProtectedDescendants(string root, Action<string> validateAuthority,
+        Func<string, FileAttributes>? readAttributes = null)
     {
         var pending = new Stack<string>();
-        pending.Push(NormalizeRoot(root));
+        var fullRoot = NormalizeRoot(root);
+        pending.Push(fullRoot);
         var count = 0;
         while (pending.TryPop(out var directory))
         {
-            foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+            try
             {
-                if (++count > 65536) throw new InvalidOperationException("Protected update inventory exceeds validation bounds.");
-                ValidateNoReparsePoint(path, "Protected update descendant");
-                validateAuthority(path);
-                if (Directory.Exists(path)) pending.Push(path);
+                foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    if (++count > 65536) throw new InvalidOperationException("Protected update inventory exceeds validation bounds.");
+                    try
+                    {
+                        ValidateNoReparsePoint(path, "Protected update descendant", readAttributes);
+                        try { validateAuthority(path); }
+                        catch (InvalidOperationException ex) when (ex.InnerException is Win32Exception { NativeErrorCode: 2 or 3 })
+                        {
+                            continue; // The authority query observed an entry removed after enumeration.
+                        }
+                        if (Directory.Exists(path)) pending.Push(path);
+                    }
+                    catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+                    {
+                        // Durable-file replacement may remove a temporary descendant during validation.
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException &&
+                !string.Equals(directory, fullRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                // A previously validated directory may disappear before its enumeration starts.
             }
         }
     }
@@ -398,9 +419,9 @@ public static class AgentUpdateSecurity
         }
     }
 
-    private static void ValidateNoReparsePoint(string path, string description)
+    private static void ValidateNoReparsePoint(string path, string description, Func<string, FileAttributes>? readAttributes = null)
     {
-        var attributes = File.GetAttributes(path);
+        var attributes = readAttributes is null ? File.GetAttributes(path) : readAttributes(path);
         if ((attributes & FileAttributes.ReparsePoint) != 0)
             throw new InvalidOperationException($"{description} contains a reparse point.");
     }

@@ -83,7 +83,22 @@ public sealed class ServerPackageSetupTests
     {
         var source = File.ReadAllText(Path.Combine(FindRoot(), "src", "Cerberus.Agent.App", "Updates", "AgentUpdateTrustFactory.cs"));
 
+        var builder = File.ReadAllText(Path.Combine(FindRoot(), "src", "Cerberus.Agent.Core", "AgentUpdateTrustBuilder.cs"));
+
         Assert.DoesNotContain("updateAllowedArtifactPrefixes", source);
+        Assert.DoesNotContain("updateAllowedArtifactPrefixes", builder);
+    }
+
+    [Theory]
+    [InlineData("server", "dev")]
+    [InlineData("server", "stable")]
+    [InlineData("desktop", "stable")]
+    public void MajorUpgrade_IsAfterInstallExecuteInEveryBranch(string profile, string channel)
+    {
+        var document = XDocument.Parse(ServerPackageStaticTests.Evaluate(profile, channel));
+        var wix = document.Root!.Name.Namespace;
+        var upgrade = Assert.Single(document.Descendants(wix + "MajorUpgrade"));
+        Assert.Equal("afterInstallExecute", (string?)upgrade.Attribute("Schedule"));
     }
 
     private static string FindRoot()

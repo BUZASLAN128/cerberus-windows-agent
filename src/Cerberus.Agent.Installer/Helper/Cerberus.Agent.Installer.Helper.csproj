@@ -23,7 +23,14 @@
     </AssemblyAttribute>
     <ProjectReference Include="..\..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
     <ProjectReference Include="..\..\Cerberus.Agent.Security\Cerberus.Agent.Security.csproj" />
+  </ItemGroup>
+  <!-- -p:ExcludeUpdateCampaignCode=true leaves the development update campaign admission out. -->
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' != 'true'">
     <Compile Include="..\..\Cerberus.Agent.App\Updates\AgentUpdateLabPolicy.cs" Link="AgentUpdateLabPolicy.cs" />
     <Compile Include="..\..\Cerberus.Agent.App\Updates\AgentUpdateLabRuntimeAdmission.cs" Link="AgentUpdateLabRuntimeAdmission.cs" />
+    <Compile Remove="InstallerCampaignHooks.Release.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' == 'true'">
+    <Compile Remove="InstallerCampaignHooks.cs" />
   </ItemGroup>
 </Project>

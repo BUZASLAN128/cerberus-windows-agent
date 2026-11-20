@@ -95,7 +95,8 @@ version, zero manual interventions, and target health. Observe that RDP/Tailscal
 remain unaffected; do not alter their configuration or use route, portproxy,
 firewall or adapter changes as a test workaround. Do not automatically reboot
 the owner PC. Identity keys and other production services are outside the fault
-scope and must remain untouched. Coordinate feed and collector changes with OPS.
+scope and must remain untouched. Coordinate test feed and backend changes with
+their operators.
 
 The development test window is limited to these two explicitly authorized
 targets and their separate test candidate/feed. It does not authorize an
@@ -133,9 +134,12 @@ exception; RSA manifest signatures, hash/length, enrollment and runtime guards
 remain enforced. Default candidate checks run once; later version variants
 reuse unchanged functional evidence. If `-SkipTests` is used, identify the
 existing exact-candidate checks and every missing check in the delivery report.
-The builder does not upload or install. Route the final candidate and public
-policy/artifact evidence through the required independent/security review
-before bootstrapping either live target.
+`-PackageCount 5` builds only the first five packages (trial campaign); a
+counted campaign needs all eleven. The builder writes
+`campaign-artifacts.json.sha256` for the launcher. It does not upload or
+install. Route the final candidate and public policy/artifact evidence through
+the required independent/security review before bootstrapping either live
+target.
 
 The service admits a compiled local campaign request through the existing
 durable scheduler path; it does not manufacture a signed command. The receipt
@@ -145,18 +149,47 @@ pending revocation/state delivery, expiry and the final launch fence still apply
 Expiry blocks new admission/launch while existing installer reconciliation and
 rollback retain their normal path.
 
-OPS advances only the isolated files on the existing WAN collector path after
-both targets complete the preceding version and recovery, with zero human
-recovery. No collector faults, new listener, firewall, proxy or network changes.
-Transitions 1–7, 9 and 10 exit the service after a durable staging start;
-transition 8 exits the updater after artifact verification and before installer
-handoff. Each version
-has its own protected once receipt. Receipts prove arming only; prove process
-exit/SCM restart, resumed update, backend report receipt and ordinary retry from
-runtime evidence. Do not advance after failed recovery or count the bootstrap.
+The runner, not an operator, advances the isolated test feed.
+`scripts/campaign/start-update-campaign.ps1` (elevated) copies the runner and
+`campaign-lib.ps1` from the frozen commit, and the config, campaign artifacts,
+hold MSI, feed root and pinned tools into a SYSTEM/Administrators-only folder
+under ProgramData. It checks every SHA-256 pin, proves a restricted token cannot
+write there and starts `invoke-update-campaign.ps1` from that folder. The runner
+publishes the next version only after the agent's journal shows the previous one
+installed, produces the hop's fault, waits for the agent's own recovery and
+records the hop. It reads only the agent's local records and the test feed; read
+the backend's version and last-seen time at the start and end of each campaign.
+It stops at the first failure and never retries; a started step never runs
+again. No backend faults, new listener, firewall, proxy or network changes.
+`scripts/campaign/campaign-config.example.json` lists the inputs.
+
+| Counted transition | Fault | Produced by | Expected recovery |
+| --- | --- | --- | --- |
+| 1, 7 | Windows Installer busy (1618) | Runner: the hold MSI keeps the installer busy until the agent records 1618, then fails and rolls back | Agent retries and installs |
+| 2, 4 | Truncated artifact | Feed serves a short file; the runner restores the full file after the agent rejects it | Download rejected, retried after 30 s, installs |
+| 3 | Service killed while the journal shows `health_pending` | Runner, by the service's process id | Service restarts, journal turns `installed`, the next hop installs |
+| 5, 8, 10 | Service exits after durable staging starts and before download | Campaign code in the agent | Service restarts and resumes the update |
+| 6, 9 | Updater exits after artifact verification and before installer handoff | Campaign code in the agent | Agent retries and installs |
+
+Transitions 1–4 carry no in-agent fault. In-agent faults keep a protected once
+receipt per version; receipts prove arming only, so prove process exit, service
+restart, resumed update and backend contact from runtime evidence. If the trial
+shows 1618 cannot be produced, transitions 1 and 7 use a truncated artifact and
+the report keeps "1618 not verified" open. If the runner misses the transition 3
+window, that hop proves only a service crash and restart and is recorded as such.
+
+Before the counted campaign, an uncounted trial campaign (eleven versions, five
+packages) runs its own bootstrap and three hops: D1 installer busy (1618), D2
+truncated artifact, D3 the new service killed inside the 120-second server health
+window. D3 passes only when the install fails (1603), Windows restores the
+previous version and the agent reaches the backend again with the same
+enrollment; hop 4 repeats D3 once if the kill missed. A failed D1–D3 recovery is
+a product or harness defect to fix before the counted campaign. The counted
+campaign is a new campaign with its own bootstrap, built after the trial so its
+versions and sequences are higher.
 
 The lab-only BITS callback validates the actual connection leaf against the
-selected collector root and SAN before the HTTP request, with OS name/date/usage
+selected feed root and SAN before the HTTP request, with OS name/date/usage
 checks retained and redirects disabled. Completion requires an observed callback
 and protected `bits-tls.json`; unit/direct-callback checks are support evidence.
 No callback support means failure, never a weaker fallback or OS-root import.
@@ -180,13 +213,16 @@ plan and MSI launch grant retain the predecessor captured before files change;
 the incoming helper's own version is never used as the installed predecessor.
 Desktop service-install and normal preview/stable signature checks stay intact.
 
-Before freezing versions, reserve eleven increasing lab versions below the
-existing signed return MSI's version. The incoming dev bootstrap permits that
-one preparatory downgrade; its ten counted transitions must then increase.
-Initialize the test feed/controller at the first counted successor, not the
-bootstrap version: a manual bootstrap need not create an updater installed/hash
-record. Its committed ledger gates the agent; the first counted transition then
-supplies the ordinary local proof and backend state required for feed progression.
+Reserve increasing versions above every installed version. Use this order for
+each target: installed version, trial bootstrap, trial hops D1–D3 (and the
+spare), counted bootstrap, counted targets 1–10, signed return R. Each policy
+binds its starting installed version through `bootstrapSourceVersion`. Use a
+separate campaign GUID and host state for each campaign.
+
+Initialize each test feed at the first updater-driven successor. The MSI
+bootstrap's committed ledger gates that first hop, which supplies the updater
+and backend evidence for subsequent feed progression. The owner signs R at the
+next multiple of 10 above all campaign and installed versions.
 Return through the same server MSI major-upgrade path, preserving enrollment,
 protected state and sequence floors. Do not uninstall/re-enroll or clear replay.
 The historic signed manifest can remain below the campaign sequence floor:

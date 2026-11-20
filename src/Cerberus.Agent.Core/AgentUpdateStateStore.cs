@@ -22,8 +22,8 @@ public sealed class AgentUpdateStateStore
 
     public static AgentUpdateStateStore CreateDefault()
         => new(
-            Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-state.json"),
-            Path.Combine(AgentUpdateStager.DefaultStagingRoot, "update-result.json"));
+            Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "update-state.json"),
+            Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "update-result.json"));
 
     public async Task<AgentUpdateState> ReadAsync(string? currentVersion, CancellationToken ct)
         => await ReadPersistedAsync(ct).ConfigureAwait(false) ?? AgentUpdateState.NotChecked(currentVersion);
@@ -212,16 +212,27 @@ public sealed class AgentUpdateStateStore
     }
 
     /// <summary>Returns only a durable ordered report; an untouched agent has no update report yet.</summary>
-    public async Task<AgentUpdateState?> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct)
+    public Task<AgentUpdateState?> ReconcileInstallerResultAsync(string? currentVersion, CancellationToken ct, IAgentLogger? log = null)
+        => ReconcileInstallerResultAsync(currentVersion, ct, log, ReadInstallerResultAsync);
+
+    internal async Task<AgentUpdateState?> ReconcileInstallerResultAsync(
+        string? currentVersion, CancellationToken ct, IAgentLogger? log,
+        Func<CancellationToken, Task<AgentUpdateInstallerResult?>> readInstallerResult)
     {
         var state = await ReadPersistedAsync(ct).ConfigureAwait(false);
-        var result = await ReadInstallerResultAsync(ct).ConfigureAwait(false);
+        var result = await readInstallerResult(ct).ConfigureAwait(false);
         if (result is null || string.Equals(result.ResultId, state?.LastInstallerResultId, StringComparison.Ordinal))
             return state;
 
+        var observed = state;
         state ??= AgentUpdateState.NotChecked(currentVersion);
         if (state.AttemptId is not null && result.AttemptId != state.AttemptId)
-            throw new InvalidOperationException("Installer result does not match the active attempt.");
+        {
+            // A newer attempt may be projected before the prior result reaches a heartbeat.
+            // Leave both durable records intact; only a matching attempt may consume a result.
+            log?.Warn("Installer result ignored: active attempt mismatch. at=AgentUpdateStateStore.ReconcileInstallerResultAsync");
+            return state;
+        }
         var nextState = result.State == AgentUpdateStates.Applied ? AgentUpdateStates.HealthPending : result.State;
         var next = state.Transition(
             nextState,
@@ -235,8 +246,25 @@ public sealed class AgentUpdateStateStore
             retryCount: result.RetryCount,
             retryAfterUtc: result.RetryAfterUtc,
             quarantined: result.Quarantined);
-        await WriteAsync(next, ct).ConfigureAwait(false);
-        return await ReadPersistedAsync(ct).ConfigureAwait(false);
+        return await WriteReconciledStateAsync(observed, next, ct).ConfigureAwait(false);
+    }
+
+    private async Task<AgentUpdateState?> WriteReconciledStateAsync(
+        AgentUpdateState? observed, AgentUpdateState next, CancellationToken ct)
+    {
+        var dir = Path.GetDirectoryName(StatePath);
+        if (!string.IsNullOrWhiteSpace(dir))
+            EnsureStateDirectory(dir);
+        ValidateStatePath();
+        using var reportLock = new FileStream(StatePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var latest = await ReadPersistedAsync(ct).ConfigureAwait(false);
+        // The snapshot includes attempt/result identity and the report sequence. A newer
+        // projection wins without consuming stale evidence or incrementing its sequence.
+        if (latest != observed)
+            return latest;
+        var ordered = next with { ReportSequence = checked((latest?.ReportSequence ?? 0) + 1) };
+        AgentUpdateDurableFile.Write(StatePath, dir!, ordered);
+        return ordered;
     }
 
     public async Task WriteInstallerResultAsync(AgentUpdateInstallerResult result, CancellationToken ct)
@@ -256,7 +284,7 @@ public sealed class AgentUpdateStateStore
             };
             var json = JsonSerializer.Serialize(safeResult, JsonOptions);
             await File.WriteAllTextAsync(tempPath, json, ct).ConfigureAwait(false);
-            File.Move(tempPath, InstallerResultPath, overwrite: true);
+            AgentUpdateDurableFile.Replace(tempPath, InstallerResultPath);
         }
         finally
         {

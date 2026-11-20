@@ -1,5 +1,5 @@
 # Fixture helpers for scripts/test-release-signing.ps1 (dot-source only; no side effects on load).
-# Builds a publish directory that finalize can measure: Cerberus.Agent.dll and Cerberus.Agent.Runtime.dll fixtures
+# Builds a publish directory that finalize can measure: agent, runtime and updater assembly fixtures
 # carrying only AssemblyMetadata, placeholder runtime executables, a Core assembly copy, a fixture MSI and a matching
 # pending payload. The assemblies are written with System.Reflection.Metadata (MetadataBuilder + ManagedPEBuilder),
 # which exists unchanged in .NET 8, so no Reflection.Emit save support is required.
@@ -63,7 +63,7 @@ function Get-TrustPairs {
 function New-FinalizeFixture {
   param(
     [Parameter(Mandatory = $true)][string]$PublishDir,
-    [Parameter(Mandatory = $true)][string]$CoreDll,
+    [Parameter(Mandatory = $true)][string]$UpdaterVerifierDll,
     [Parameter(Mandatory = $true)][string[]]$KeyListB64,
     [Parameter(Mandatory = $true)][string]$SignerPin,
     [Parameter(Mandatory = $true)][string]$Prefix,
@@ -75,6 +75,7 @@ function New-FinalizeFixture {
     # Raw metadata for one DLL (replaces the default pairs); $null keeps the default.
     [object[]]$AgentPairs = $null,
     [object[]]$RuntimePairs = $null,
+    [object[]]$UpdaterPairs = $null,
     [string]$RuntimeNamespace = "System.Reflection",
     # Canonical payload signer identity, when it should differ from the embedded pin.
     [string]$CanonicalSignerPin = "",
@@ -85,13 +86,18 @@ function New-FinalizeFixture {
   )
   $runtime = Join-Path $PublishDir "runtime"
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
-  Copy-Item -LiteralPath $CoreDll -Destination (Join-Path $runtime "Cerberus.Agent.Core.dll")
+  if ([Reflection.AssemblyName]::GetAssemblyName($UpdaterVerifierDll).Name -cne 'Cerberus.Agent.Core') {
+    throw 'Finalize fixture requires the actual Cerberus.Agent.Core verifier assembly.'
+  }
+  Copy-Item -LiteralPath $UpdaterVerifierDll -Destination (Join-Path $runtime 'Cerberus.Agent.Core.dll')
   $embeddedPrefix = if ($EmbeddedPrefix) { $EmbeddedPrefix } else { $Prefix }
   $default = Get-TrustPairs -Keys $KeyListB64 -Pins (@($SignerPin) + @($ExtraPins)) -Prefix $embeddedPrefix -Channel $EmbeddedChannel
   if ($null -eq $AgentPairs) { $AgentPairs = $default }
   if ($null -eq $RuntimePairs) { $RuntimePairs = $default }
+  if ($null -eq $UpdaterPairs) { $UpdaterPairs = $default }
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.dll") -AssemblyName "Cerberus.Agent" -Pairs $AgentPairs
   New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Runtime.dll") -AssemblyName "Cerberus.Agent.Runtime" -Pairs $RuntimePairs -AttributeNamespace $RuntimeNamespace
+  New-MetadataAssembly -Path (Join-Path $runtime "Cerberus.Agent.Updater.dll") -AssemblyName "Cerberus.Agent.Updater" -Pairs $UpdaterPairs
   foreach ($exe in $script:ReleaseRuntimeExecutableNames) { Set-Content -LiteralPath (Join-Path $runtime $exe) -Value "fixture $exe" }
   New-Item -ItemType Directory -Path (Join-Path $runtime "tr") -Force | Out-Null
   Set-Content -LiteralPath (Join-Path $runtime "tr/Cerberus.Agent.resources.dll") -Value "fixture satellite"

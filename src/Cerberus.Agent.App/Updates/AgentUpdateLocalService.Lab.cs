@@ -92,19 +92,36 @@ internal static partial class AgentUpdateLocalService
     }
 
     internal static bool IsClosedLabFailure(AgentUpdateJournal before)
-        => before.Phase == AgentUpdateStates.Failed && !before.HasUnfinishedAttempt && !before.MayHaveStartedInstallation &&
+        => IsClosedLabStagingFailure(before) ||
+           before.Phase == AgentUpdateStates.Failed && !before.HasUnfinishedAttempt && !before.MayHaveStartedInstallation &&
            AgentUpdateSecurity.IsSafeAttemptId(before.AttemptId) &&
            before.InstallRequest is { TerminalReason: "attempt_failed", TerminalUtc: not null,
                TerminalJournalPhase: AgentUpdateStates.Failed, LocalPolicyId: not null,
                VerifiedRelease: not null, ExpectedPlan: not null } request && request.IsValid() &&
            request.BoundAttemptId == before.AttemptId && request.TerminalJournalAttemptId == before.AttemptId &&
            request.LifecycleGeneration == before.LifecycleGeneration && request.ExpectedPlan.Matches(request.VerifiedRelease) &&
-           before.InstallerResult is { State: AgentUpdateStates.Failed, ErrorCode: "msi_failed", RequiresReboot: false,
-               Quarantined: false, MsiExitCode: not null and not 0 } result && result.AttemptId == before.AttemptId;
+           before.InstallerResult is { State: AgentUpdateStates.Failed, RequiresReboot: false, Quarantined: false } result &&
+           result.AttemptId == before.AttemptId && IsClosedLabResult(result);
+
+    /// <summary>A request whose staging gave up before it was bound to an attempt: no installer ran for it.</summary>
+    private static bool IsClosedLabStagingFailure(AgentUpdateJournal before)
+        => before.Phase is AgentUpdateStates.Failed or AgentUpdateStates.Current && !before.HasUnfinishedAttempt &&
+           !before.MayHaveStartedInstallation && before.InstallerResult is null &&
+           before.InstallRequest is { TerminalReason: "staging_failed", TerminalUtc: not null, BoundAttemptId: null,
+               VerifiedRelease: null, LocalPolicyId: not null, ExpectedPlan: not null } request &&
+           request.IsValid() && request.LifecycleGeneration == before.LifecycleGeneration;
+
+    /// <summary>
+    /// An installer that ran and failed, or an updater that stopped before its launch fence: only the updater's own
+    /// failure path records "unknown" without an exit code, and it records Failed only while no installer may have started.
+    /// </summary>
+    private static bool IsClosedLabResult(AgentUpdateInstallerResult result)
+        => result is { ErrorCode: AgentUpdateErrorCodes.MsiFailed, MsiExitCode: not null and not 0 } or
+               { ErrorCode: AgentUpdateErrorCodes.Unknown, MsiExitCode: null };
 
     internal static string PreserveClosedLabFailure(string root, AgentUpdateJournal before)
     {
-        if (!IsClosedLabFailure(before)) throw new InvalidOperationException("Development predecessor is not a closed MSI failure.");
+        if (!IsClosedLabFailure(before)) throw new InvalidOperationException("Development predecessor is not a closed failure.");
         root = AgentUpdateSecurity.NormalizeRoot(root);
         var path = Path.Combine(root, "retired-lab-" + before.InstallRequest!.LocalPolicyId + "-" + before.AttemptId + ".json");
         var retained = AgentUpdateDurableFile.Read<AgentUpdateJournal>(path, root);

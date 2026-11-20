@@ -10,12 +10,27 @@
     <RootNamespace>Cerberus.Agent.Updater</RootNamespace>
     <ApplicationIcon>..\Assets\cerberus-favicon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AgentUpdateManifestPublicKeysB64 Condition="'$(AgentUpdateManifestPublicKeysB64)' == ''"></AgentUpdateManifestPublicKeysB64>
+    <AgentUpdateManifestUrl Condition="'$(AgentUpdateManifestUrl)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/dev-latest/Cerberus.Agent.Bundle-dev-latest.update-manifest.v2.json</AgentUpdateManifestUrl>
+    <AgentUpdateAllowedArtifactPrefixes Condition="'$(AgentUpdateAllowedArtifactPrefixes)' == ''">https://github.com/BUZASLAN128/cerberus-windows-agent/releases/download/</AgentUpdateAllowedArtifactPrefixes>
     <AgentReleaseChannel Condition="'$(AgentReleaseChannel)' == ''">dev</AgentReleaseChannel>
     <AgentUpdateAllowedSignerKeyIdentity Condition="'$(AgentUpdateAllowedSignerKeyIdentity)' == ''"></AgentUpdateAllowedSignerKeyIdentity>
     <AllowUnsignedDevBuild Condition="'$(AllowUnsignedDevBuild)' == ''">false</AllowUnsignedDevBuild>
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestPublicKeysB64</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestPublicKeysB64)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateManifestUrl</_Parameter1>
+      <_Parameter2>$(AgentUpdateManifestUrl)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>AgentUpdateAllowedArtifactPrefixes</_Parameter1>
+      <_Parameter2>$(AgentUpdateAllowedArtifactPrefixes)</_Parameter2>
+    </AssemblyAttribute>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>AgentReleaseChannel</_Parameter1>
       <_Parameter2>$(AgentReleaseChannel)</_Parameter2>
@@ -31,6 +46,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Core\Cerberus.Agent.Core.csproj" />
+    <ProjectReference Include="..\Cerberus.Agent.Runtime\Cerberus.Agent.Runtime.csproj" Condition="'$(AgentUpdateLabPolicyB64)' != ''" />
+    <Compile Remove="UpdaterLab.Runtime.cs" Condition="'$(AgentUpdateLabPolicyB64)' == ''" />
+    <Compile Remove="UpdaterLab.Release.cs" Condition="'$(AgentUpdateLabPolicyB64)' != ''" />
   </ItemGroup>
 </Project>

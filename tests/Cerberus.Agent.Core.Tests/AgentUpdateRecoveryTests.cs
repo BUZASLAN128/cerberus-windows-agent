@@ -1,5 +1,7 @@
 using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace Cerberus.Agent.Core.Tests;
 
@@ -259,13 +261,18 @@ public sealed class AgentUpdateRecoveryTests
     public void RecoveryRollbackPhase_UnreadableRootYieldsNullInsteadOfThrowing()
     {
         Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded, ""));
-        // A plain temp folder (inherited user ACE) fails the protected-root check, so even a valid-looking record is not trusted.
+        // An explicit Users-write ACE makes this root untrusted for either token, even with a valid-looking record.
         var untrusted = Path.Combine(Path.GetTempPath(), "cerberus-recovery-phase-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(untrusted);
         try
         {
             AgentUpdateDurableFile.Write(Path.Combine(untrusted, "a.health-failure.json"), untrusted,
                 new AgentInstallerHealthDiagnostic("v1", "health", Recorded.AddMinutes(1), "stability", "unexpected", "Exception", null, "9.9.9", null, null, null, null));
+            var directory = new DirectoryInfo(untrusted);
+            var security = directory.GetAccessControl();
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), FileSystemRights.Write, AccessControlType.Allow));
+            directory.SetAccessControl(security);
             Assert.Null(AgentUpdateLocalService.RecoveryRollbackPhase(false, Plan, Recorded, untrusted));
         }
         finally { Directory.Delete(untrusted, recursive: true); }

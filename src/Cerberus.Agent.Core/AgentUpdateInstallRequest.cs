@@ -41,6 +41,8 @@ public sealed record AgentUpdateInstallRequest(DateTimeOffset NotBeforeUtc, long
     string? TerminalJournalPhase = null, string? TerminalJournalAttemptId = null, string? LocalPolicyId = null,
     string? LocalSourceVersion = null)
 {
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+
     [JsonIgnore] public bool IsPending => BoundAttemptId is null && TerminalReason is null;
     [JsonIgnore] public bool IsCorrelated => CommandId is not null;
     [JsonIgnore] public bool RetainsReceipt => IsCorrelated || LocalPolicyId is not null;

@@ -23,7 +23,7 @@ public static class AgentUpdateRunnerFiles
         }
         AgentUpdateSecurity.EnsureProtectedRoot(destination);
         var inventory = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var source in EnumerateInstalledSourceFiles(runtimeDirectory))
+        foreach (var source in RunnerSourceFiles(runtimeDirectory))
         {
             var relative = Path.GetRelativePath(runtimeDirectory, source);
             var target = Path.Combine(destination, relative);
@@ -54,11 +54,10 @@ public static class AgentUpdateRunnerFiles
         if (!inventory.ContainsKey("Cerberus.Agent.Updater.exe")) return false;
         // Preserve legacy split runtimes for rollback; new server packages are gated as bundles before signing.
         if (inventory.ContainsKey("Cerberus.Agent.Core.dll")) return true;
-        if (!AgentBuildProfile.IsServer) return false;
+        if (!AgentBuildProfile.IsServer || inventory.Count != 1) return false;
         var host = Path.Combine(directory, "Cerberus.Agent.Updater.exe");
         _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Updater.dll");
         _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Core.dll");
-        _ = AgentSingleFileBundle.ReadAssembly(host, "Cerberus.Agent.Runtime.dll");
         return true;
     }
 
@@ -68,7 +67,7 @@ public static class AgentUpdateRunnerFiles
         AgentUpdateSecurity.ValidateProtectedTree(runnerDirectory);
         var inventory = AgentUpdateDurableFile.Read<Inventory>(Path.Combine(runnerDirectory, "inventory.json"), runnerDirectory)
             ?? throw new InvalidOperationException("Update runner inventory is missing.");
-        if (inventory.Files.Count is < 2 or > 4096 ||
+        if (inventory.Files.Count is < 1 or > 4096 ||
             !HasRunnerDependencies(inventory.Files, runnerDirectory))
             throw new InvalidOperationException("Update runner inventory is invalid.");
         foreach (var (relative, expected) in inventory.Files)
@@ -92,7 +91,7 @@ public static class AgentUpdateRunnerFiles
         var inventory = AgentUpdateDurableFile.Read<Inventory>(Path.Combine(runnerDirectory, "inventory.json"), runnerDirectory)!;
         if (!string.Equals(inventory.SourceDirectory, AgentUpdateSecurity.NormalizeRoot(runtimeDirectory), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Update runner source binding is invalid.");
-        var sourceFiles = EnumerateInstalledSourceFiles(runtimeDirectory).ToArray();
+        var sourceFiles = RunnerSourceFiles(runtimeDirectory).ToArray();
         if (sourceFiles.Length != inventory.Files.Count)
             throw new InvalidOperationException("Update runner source dependency set changed.");
         foreach (var source in sourceFiles)
@@ -103,6 +102,19 @@ public static class AgentUpdateRunnerFiles
             if (!inventory.Files.TryGetValue(relative, out var expected) || Convert.ToHexString(SHA256.HashData(input)) != expected)
                 throw new InvalidOperationException("Update runner does not match its trusted installed source.");
         }
+    }
+
+    private static IEnumerable<string> RunnerSourceFiles(string runtimeDirectory)
+    {
+        AgentUpdateSecurity.ValidateInstalledSource(runtimeDirectory, runtimeDirectory);
+        if (AgentBuildProfile.IsServer && !File.Exists(Path.Combine(runtimeDirectory, "Cerberus.Agent.Core.dll")))
+        {
+            var host = Path.Combine(runtimeDirectory, "Cerberus.Agent.Updater.exe");
+            AgentUpdateSecurity.ValidateInstalledSource(host, runtimeDirectory);
+            if (AgentSingleFileBundle.IsBundle(host))
+                return [host];
+        }
+        return EnumerateInstalledSourceFiles(runtimeDirectory);
     }
 
     private static IEnumerable<string> EnumerateInstalledSourceFiles(string runtimeDirectory)

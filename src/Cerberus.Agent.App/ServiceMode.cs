@@ -324,7 +324,7 @@ internal static partial class ServiceMode
             updateStatusProvider: secondary ? null : async cancel =>
                 (await updateStateStore.ReconcileInstallerResultAsync(
                     WindowsDeviceInfo.GetAgentVersion(),
-                    cancel).ConfigureAwait(false))?.ToHeartbeatStatus(),
+                    cancel, log).ConfigureAwait(false))?.ToHeartbeatStatus(),
             agentVersion: agentVersion,
             buildId: buildId,
             buildChannel: buildChannel,
@@ -391,26 +391,6 @@ internal static partial class ServiceMode
         IAgentLogger log,
         AgentUpdateStateStore stateStore)
         => AgentUpdateTrustFactory.BuildCoordinator(http, log, stateStore);
-
-    internal static string ResolveUpdateManifestPublicKey(
-        string? envPem,
-        string? envBase64,
-        string? registryPem,
-        string? registryBase64)
-        => AgentUpdateTrustFactory.ResolveUpdateManifestPublicKey(envPem, envBase64, registryPem, registryBase64);
-
-    internal static IReadOnlyList<string> ResolveUpdateManifestPublicKeys(
-        string? embeddedBase64,
-        string? envPem,
-        string? envBase64,
-        string? registryPem,
-        string? registryBase64)
-        => AgentUpdateTrustFactory.ResolveUpdateManifestPublicKeys(
-            embeddedBase64,
-            envPem,
-            envBase64,
-            registryPem,
-            registryBase64);
 
     internal static string ResolveConfiguredUpdateManifestUrl(
         string? envUrl,

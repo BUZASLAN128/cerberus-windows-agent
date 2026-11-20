@@ -58,6 +58,22 @@ internal static class AgentUpdateLabRuntime
         scope.Policy.RequireSuccessor(installedVersion, request.VerifiedRelease.Version);
     }
 
+    /// <summary>The campaign's update trust, or null when no campaign policy is compiled in.</summary>
+    internal static AgentUpdateTrust? BuildTrust(IAgentLogger? log)
+    {
+        var lab = Resolve();
+        if (lab is null) return null;
+        if (!AgentUpdateLabRuntimeAdmission.HasCommittedBootstrap(lab.Policy, lab.Context))
+            throw new InvalidOperationException("Development update admission waits for bootstrap MSI commit.");
+        var keys = AgentUpdateTrustFactory.ResolveUpdateManifestPublicKeys(AgentUpdateDefaults.ManifestPublicKeysB64, null, null, null, null, log);
+        if (keys.Count != 1) throw new InvalidOperationException("Development campaign requires one embedded manifest key.");
+        return new(keys, "dev", [lab.Target.ArtifactPrefix], WindowsDeviceInfo.GetAgentVersion(),
+            ConfiguredManifestUrl: lab.Target.ManifestUrl, AllowedSignerKeyIdentity: "unsigned-dev",
+            AllowUnsignedDevBuild: true, RequireManifestV2: true, RequireBitsDownloader: true,
+            RequireSystemAuthority: true, TestCampaignVersions: lab.Policy.Versions,
+            TestCampaignBitsTrust: new(AgentUpdateDefaults.LabFeedRootB64, lab.Target.ArtifactPrefix, lab.Policy.ExpiresAtUtc));
+    }
+
     internal static HttpClientHandler CreateUpdateHandler()
     {
         var handler = BackendTrust.Apply(new HttpClientHandler { MaxAutomaticRedirections = 5 });
