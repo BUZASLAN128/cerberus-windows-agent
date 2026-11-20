@@ -305,11 +305,11 @@ public sealed partial class AgentUpdateLabRemediationTests
         Assert.Equal(policy.CampaignId, admitted.InstallRequest!.LocalPolicyId);
     }
 
-    [Fact]
-    public void StagingThatGaveUpBeforeBindingIsHandedOverWithItsReceipt()
+    [Theory, InlineData(null), InlineData("52e9ac8124e6462798d76bc129a364c0")]
+    public void StagingThatGaveUpBeforeBindingIsHandedOverWithItsReceipt(string? attempt)
     {
         var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-staging-" + Guid.NewGuid().ToString("N"));
-        var store = new AgentUpdateJournalStore(root); store.Change(_ => GaveUpStaging());
+        var store = new AgentUpdateJournalStore(root); store.Change(_ => GaveUpStaging() with { AttemptId = attempt });
         var original = store.Read(); var policy = Policy(); string? retained = null;
         Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(original, policy, "0.2.900", true));
         store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, new("0.2.901", "dev:new", new('a', 64)),
@@ -333,9 +333,9 @@ public sealed partial class AgentUpdateLabRemediationTests
         var closed = GaveUpStaging(); var request = closed.InstallRequest!;
         var failed = changed switch
         {
-            "bound" => closed with { InstallRequest = request with { BoundAttemptId = closed.AttemptId } },
+            "bound" => closed with { InstallRequest = request with { BoundAttemptId = new('c', 32) } },
             "verified-release" => closed with { InstallRequest = request with { VerifiedRelease = request.ExpectedPlan } },
-            "installer-result" => closed with { InstallerResult = ClosedForeignFailure().InstallerResult! with { AttemptId = closed.AttemptId } },
+            "installer-result" => closed with { InstallerResult = ClosedForeignFailure().InstallerResult! with { AttemptId = new('c', 32) } },
             "downloading" => closed with { Phase = AgentUpdateStates.Downloading },
             "awaiting-consent" => closed with { Phase = AgentUpdateStates.AwaitingConsent },
             "generation" => closed with { LifecycleGeneration = 8 },
@@ -346,10 +346,10 @@ public sealed partial class AgentUpdateLabRemediationTests
             7, Now, "0.2.900", true, _ => throw new InvalidOperationException("Invalid predecessors cannot write receipts.")));
     }
 
-    // Three staging tries ran out while the download was paused; the request was never bound to an attempt.
+    // Three staging tries ran out while the download was paused, then a scheduled check failed without an attempt.
     private static AgentUpdateJournal GaveUpStaging() => new()
     {
-        Phase = AgentUpdateStates.Failed, AttemptId = "52e9ac8124e6462798d76bc129a364c0", LifecycleGeneration = 7,
+        Phase = AgentUpdateStates.Failed, LifecycleGeneration = 7,
         HealthyInstalledVersion = "0.2.900", HealthyInstalledSequence = 42,
         InstallRequest = new AgentUpdateInstallRequest(Now.AddHours(-2), 7, Now.AddHours(1), Attempts: 3,
             ExpectedPlan: new("0.2.941", "dev:failed", new('b', 64)), TerminalReason: "staging_failed", TerminalUtc: Now.AddHours(-1),
