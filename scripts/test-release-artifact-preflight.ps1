@@ -84,6 +84,14 @@ Check 'only the one named tailnet host passes; other ts.net hosts and other chec
 $resolvePublic = { param($Uri) $fakeAddress }
 Check 'named tailnet host reaches HEAD and its redirect stays on that host' {
   Assert-ReleaseArtifactReachable $tailnetAsset @($tailnetPrefix) $resolvePublic { [pscustomobject]@{ StatusCode = 200; Locations = @() } } $tailnetHost
+  $hops = [Collections.Generic.List[string]]::new()
+  Assert-ReleaseArtifactReachable $tailnetAsset @($tailnetPrefix) $resolvePublic {
+    param($Uri, $Addresses)
+    $hops.Add($Uri.AbsoluteUri)
+    if ($hops.Count -eq 1) { [pscustomobject]@{ StatusCode = 302; Locations = @('/updates/preview/new.msi') } }
+    else { [pscustomobject]@{ StatusCode = 200; Locations = @() } }
+  } $tailnetHost
+  if ($hops.Count -ne 2 -or $hops[1] -cne ($tailnetPrefix + 'new.msi')) { throw 'Expected one same-host redirect on the named tailnet host.' }
   Assert-Refused { Assert-ReleaseArtifactReachable $tailnetAsset @($tailnetPrefix) $resolvePublic {
       [pscustomobject]@{ StatusCode = 302; Locations = @('https://other.tailnet-fixture.ts.net/updates/preview/agent.msi') }
     } $tailnetHost } 'host must be public'
@@ -278,6 +286,13 @@ Check 'standalone parser uses the exact manifest field and rejects ambiguous inp
       Assert-Refused { . $entry } 'one string artifact_url'
     }
     if ($calls.Count -ne 1 -or $calls[0] -cne $mirrorAsset) { throw 'Expected exactly one valid manifest URL sent to the HEAD probe.' }
+    $UpdateAllowedArtifactPrefixes = $tailnetPrefix
+    [IO.File]::WriteAllText($fixturePath, ('{"artifact_url":"' + $tailnetAsset + '"}'))
+    $AllowedTailnetArtifactHost = ''
+    Assert-Refused { . $entry } 'host must be public'
+    $AllowedTailnetArtifactHost = $tailnetHost
+    . $entry
+    if ($calls.Count -ne 2 -or $calls[1] -cne $tailnetAsset) { throw 'Expected the named tailnet host forwarded to the HEAD probe.' }
   } finally { Remove-Item -LiteralPath $fixturePath -Force }
 }
 
@@ -300,6 +315,14 @@ Check 'detached finalize checks the signed URL against measured trust before wri
   Assert-Refused { . $checkFinalizeUrl } 'host must be public'
   $AllowedTailnetArtifactHost = $tailnetHost
   . $checkFinalizeUrl
+  $finalizeParams = @($finalize.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+  $buildCall = (Read-ScriptAst 'build-agent-public-release.ps1').FindAll({ param($node)
+      $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Complete-ExternalManifestSigning' }, $true)
+  $elements = @($buildCall | ForEach-Object { $_.CommandElements })
+  $forwarded = [array]::FindIndex($elements, [Predicate[object]]{ $args[0] -is [Management.Automation.Language.CommandParameterAst] -and
+      $args[0].ParameterName -ceq 'AllowedTailnetArtifactHost' })
+  if ($finalizeParams -cnotcontains 'AllowedTailnetArtifactHost' -or @($buildCall).Count -ne 1 -or $forwarded -lt 0 -or
+      $elements[$forwarded + 1].Extent.Text -cne '$AllowedTailnetArtifactHost') { throw 'Expected the build to forward the tailnet host to finalize.' }
 }
 
 Write-Host "Release artifact preflight support checks passed: $script:checks"
