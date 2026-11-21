@@ -63,7 +63,31 @@ foreach ($hostName in @('localhost', 'releases', 'release.local', 'release.inter
   }
 }
 
+$tailnetHost = 'feed.tailnet-fixture.ts.net'
+$tailnetPrefix = "https://$tailnetHost/updates/preview/"
+$tailnetAsset = $tailnetPrefix + 'agent.msi'
+Check 'only the one named tailnet host passes; other ts.net hosts and other checks still refuse' {
+  Assert-ReleaseArtifactUrl $tailnetAsset @($tailnetPrefix) -AllowedTailnetHost $tailnetHost
+  Assert-Refused { Assert-ReleaseArtifactUrl $tailnetAsset @($tailnetPrefix) } 'host must be public'
+  $otherPrefix = 'https://other.tailnet-fixture.ts.net/updates/preview/'
+  Assert-Refused { Assert-ReleaseArtifactUrl ($otherPrefix + 'agent.msi') @($otherPrefix) -AllowedTailnetHost $tailnetHost } 'host must be public'
+  Assert-Refused { Assert-ReleaseArtifactUrl ($otherPrefix + 'agent.msi') @($tailnetPrefix) -AllowedTailnetHost $tailnetHost } 'host must be public'
+  Assert-Refused { Assert-ReleaseArtifactUrl "http://$tailnetHost/updates/preview/agent.msi" @($tailnetPrefix) -AllowedTailnetHost $tailnetHost } 'well-formed HTTPS'
+  Assert-Refused { Assert-ReleaseArtifactUrl ($tailnetPrefix + '../agent.msi') @($tailnetPrefix) -AllowedTailnetHost $tailnetHost } 'ambiguous path'
+  Assert-Refused { Assert-ReleaseArtifactUrl "https://$tailnetHost/updates/other/agent.msi" @($tailnetPrefix) -AllowedTailnetHost $tailnetHost } 'outside the allowed'
+  Assert-Refused { Assert-ReleaseArtifactUrl $mirrorAsset @($mirrorPrefix) -AllowedTailnetHost 'feed.tailnet-fixture.ts.net.' } 'one lowercase'
+  foreach ($name in @('Feed.tailnet-fixture.ts.net', 'tailnet-fixture.ts.net', 'release.local', 'feed.tailnet-fixture.ts.net.example', '100.64.0.1')) {
+    Assert-Refused { Assert-ReleaseArtifactUrl $mirrorAsset @($mirrorPrefix) -AllowedTailnetHost $name } 'one lowercase'
+  }
+}
+
 $resolvePublic = { param($Uri) $fakeAddress }
+Check 'named tailnet host reaches HEAD and its redirect stays on that host' {
+  Assert-ReleaseArtifactReachable $tailnetAsset @($tailnetPrefix) $resolvePublic { [pscustomobject]@{ StatusCode = 200; Locations = @() } } $tailnetHost
+  Assert-Refused { Assert-ReleaseArtifactReachable $tailnetAsset @($tailnetPrefix) $resolvePublic {
+      [pscustomobject]@{ StatusCode = 302; Locations = @('https://other.tailnet-fixture.ts.net/updates/preview/agent.msi') }
+    } $tailnetHost } 'host must be public'
+}
 Check 'approved URL receives one HEAD and only the checked IP set is forwarded' {
   $requests = [Collections.Generic.List[uri]]::new()
   Assert-ReleaseArtifactReachable $mirrorAsset @($mirrorPrefix) $resolvePublic {
@@ -211,6 +235,14 @@ Check 'canonical build checks URL before output mutation and retains its local l
     . $checkBuildUrl
     if ($artifactUrl -cne $mirrorAsset) { throw 'Public build URL changed.' }
 
+    $env:AGENT_RELEASE_ARTIFACT_BASE_URL = $tailnetPrefix + 'v1.2.3'
+    $UpdateAllowedArtifactPrefixes = $tailnetPrefix
+    Assert-Refused { . $checkBuildUrl } 'host must be public'
+    $AllowedTailnetArtifactHost = $tailnetHost
+    . $checkBuildUrl
+    if ($artifactUrl -cne ($tailnetPrefix + 'v1.2.3/agent.msi')) { throw 'Tailnet build URL changed.' }
+    $AllowedTailnetArtifactHost = ''
+
     $env:AGENT_RELEASE_ARTIFACT_BASE_URL = 'https://127.0.0.1:8443/agent/v1.2.3'
     $UpdateAllowedArtifactPrefixes = 'https://127.0.0.1:8443/agent/'
     $Channel = 'dev'
@@ -232,8 +264,8 @@ Check 'standalone parser uses the exact manifest field and rejects ambiguous inp
   $entry = [scriptblock]::Create(($ast.EndBlock.Statements[3..($ast.EndBlock.Statements.Count - 1)].Extent.Text -join "`n"))
   $fixturePath = [IO.Path]::GetTempFileName()
   $calls = [Collections.Generic.List[string]]::new()
-  function Assert-ReleaseArtifactReachable($ArtifactUrl, $ArtifactPrefixes) {
-    Assert-ReleaseArtifactUrl $ArtifactUrl $ArtifactPrefixes
+  function Assert-ReleaseArtifactReachable($ArtifactUrl, $ArtifactPrefixes, $AllowedTailnetHost) {
+    Assert-ReleaseArtifactUrl $ArtifactUrl $ArtifactPrefixes -AllowedTailnetHost $AllowedTailnetHost
     $calls.Add($ArtifactUrl)
   }
   try {
@@ -262,6 +294,12 @@ Check 'detached finalize checks the signed URL against measured trust before wri
   . $checkFinalizeUrl
   $manifest.artifact_url = 'https://release.example/agent-other/agent.msi'
   Assert-Refused { . $checkFinalizeUrl } 'outside the allowed HTTPS path prefixes'
+  $trust = @{ ArtifactPrefixes = @($tailnetPrefix) }
+  $manifest.artifact_url = $tailnetAsset
+  $AllowedTailnetArtifactHost = ''
+  Assert-Refused { . $checkFinalizeUrl } 'host must be public'
+  $AllowedTailnetArtifactHost = $tailnetHost
+  . $checkFinalizeUrl
 }
 
 Write-Host "Release artifact preflight support checks passed: $script:checks"

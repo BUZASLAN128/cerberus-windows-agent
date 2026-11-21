@@ -30,7 +30,15 @@ function Test-PublicReleaseAddress([Net.IPAddress]$Address) {
       ($a -eq 0x3f -and $b -eq 0xff -and $c -lt 0x10)))
 }
 
-function ConvertTo-ReleaseArtifactUri([string]$Value, [switch]$AllowLocalHost, [switch]$AllowProviderQuery) {
+function Assert-ReleaseTailnetHostName([string]$AllowedTailnetHost) {
+  if ($AllowedTailnetHost -and $AllowedTailnetHost -cnotmatch '\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2,}ts\.net\z') {
+    throw 'The allowed tailnet artifact host must be one lowercase <machine>.<tailnet>.ts.net name.'
+  }
+}
+
+# AllowedTailnetHost exempts exactly one named *.ts.net host from the private-suffix rule; all other checks still apply.
+function ConvertTo-ReleaseArtifactUri([string]$Value, [switch]$AllowLocalHost, [switch]$AllowProviderQuery, [string]$AllowedTailnetHost) {
+  Assert-ReleaseTailnetHostName $AllowedTailnetHost
   $uri = $null
   $parts = [regex]::Match($Value, '\Ahttps://(?<authority>[^/?#]+)(?<path>[^?#]*)', 'IgnoreCase,CultureInvariant')
   if (-not $parts.Success -or $parts.Groups['authority'].Value.Contains('@') -or $Value -match '[\s\p{C}\\#]' -or
@@ -48,7 +56,8 @@ function ConvertTo-ReleaseArtifactUri([string]$Value, [switch]$AllowLocalHost, [
       if (-not (Test-PublicReleaseAddress $address)) { throw 'Release artifact URL host must be public.' }
     } elseif ($uri.IsLoopback -or $uri.HostNameType -ne [UriHostNameType]::Dns -or
         $hostname -notmatch '\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z' -or
-        $hostname -match '\.(localhost|local|localdomain|internal|intranet|lan|home|corp|home\.arpa|ts\.net)\z') {
+        ($hostname -match '\.(localhost|local|localdomain|internal|intranet|lan|home|corp|home\.arpa|ts\.net)\z' -and
+          -not ($AllowedTailnetHost -and $hostname -ceq $AllowedTailnetHost))) {
       throw 'Release artifact URL host must be public.'
     }
   }
@@ -66,11 +75,14 @@ function Test-ReleaseArtifactPrefix([Uri]$Uri, [Uri[]]$Prefixes) {
 }
 
 function Assert-ReleaseArtifactUrl(
-  [string]$ArtifactUrl, [string[]]$ArtifactPrefixes, [switch]$AllowLocalHost, [switch]$RequirePublicDns, [switch]$PassThru
+  [string]$ArtifactUrl, [string[]]$ArtifactPrefixes, [switch]$AllowLocalHost, [switch]$RequirePublicDns, [switch]$PassThru,
+  [string]$AllowedTailnetHost
 ) {
   if (-not $ArtifactPrefixes.Count) { throw 'Release artifact URL allowlist is empty.' }
-  $prefixes = @(foreach ($prefix in $ArtifactPrefixes) { ConvertTo-ReleaseArtifactUri $prefix -AllowLocalHost:$AllowLocalHost })
-  $uri = ConvertTo-ReleaseArtifactUri $ArtifactUrl -AllowLocalHost:$AllowLocalHost
+  $prefixes = @(foreach ($prefix in $ArtifactPrefixes) {
+    ConvertTo-ReleaseArtifactUri $prefix -AllowLocalHost:$AllowLocalHost -AllowedTailnetHost $AllowedTailnetHost
+  })
+  $uri = ConvertTo-ReleaseArtifactUri $ArtifactUrl -AllowLocalHost:$AllowLocalHost -AllowedTailnetHost $AllowedTailnetHost
   if (-not (Test-ReleaseArtifactPrefix $uri $prefixes)) { throw 'Release artifact URL is outside the allowed HTTPS path prefixes.' }
   if ($RequirePublicDns) { $null = Get-PublicReleaseArtifactAddresses $uri }
   if ($PassThru) { return [pscustomobject]@{ Uri = $uri; Prefixes = $prefixes } }
@@ -155,9 +167,10 @@ function Invoke-ReleaseArtifactHead([Uri]$Uri, [Net.IPAddress[]]$Addresses, [Net
 function Assert-ReleaseArtifactReachable(
   [string]$ArtifactUrl, [string[]]$ArtifactPrefixes,
   [scriptblock]$ResolveAddresses = ${function:Resolve-ReleaseArtifactAddresses},
-  [scriptblock]$SendHead = ${function:Invoke-ReleaseArtifactHead}
+  [scriptblock]$SendHead = ${function:Invoke-ReleaseArtifactHead},
+  [string]$AllowedTailnetHost
 ) {
-  $policy = Assert-ReleaseArtifactUrl $ArtifactUrl $ArtifactPrefixes -PassThru
+  $policy = Assert-ReleaseArtifactUrl $ArtifactUrl $ArtifactPrefixes -PassThru -AllowedTailnetHost $AllowedTailnetHost
   $uri = $policy.Uri
   for ($hop = 0; $hop -le 3; $hop++) {
     $addresses = @(Get-PublicReleaseArtifactAddresses $uri $ResolveAddresses)
@@ -175,7 +188,7 @@ function Assert-ReleaseArtifactReachable(
     # An allowlisted GitHub release download can delegate to GitHub's release asset service.
     # Its short-lived, server-issued query stays in memory and only travels to that destination.
     $fromGithubRelease = $uri.Host -ceq 'github.com' -and $uri.IsDefaultPort -and $uri.AbsolutePath -cmatch '\A/[^/]+/[^/]+/releases/download/'
-    $next = ConvertTo-ReleaseArtifactUri $location -AllowProviderQuery:$fromGithubRelease
+    $next = ConvertTo-ReleaseArtifactUri $location -AllowProviderQuery:$fromGithubRelease -AllowedTailnetHost $AllowedTailnetHost
     $githubAsset = $fromGithubRelease -and $next.Host -cin 'release-assets.githubusercontent.com', 'objects.githubusercontent.com' -and
       $next.IsDefaultPort -and $next.AbsolutePath -cmatch '\A/github-production-release-asset(?:-[a-f0-9]+)?/[^/]+/.+'
     if (-not $githubAsset -and ($location.Contains('?') -or -not (Test-ReleaseArtifactPrefix $next $policy.Prefixes))) {

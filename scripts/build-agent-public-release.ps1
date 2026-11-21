@@ -17,6 +17,7 @@ param(
   [string]$AgentUpdateManifestPublicKeysB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64,
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
+  [string]$AllowedTailnetArtifactHost = "",  # one named <machine>.<tailnet>.ts.net artifact host; other private hosts stay refused
   [int]$DefaultOAuthRedirectPort = 0,
   [long]$ManifestSequence = 0,
   [switch]$SkipTests,
@@ -88,7 +89,8 @@ $requirePublicDns = $env:GITHUB_ACTIONS -ieq 'true'
 if ($signingPlan.Finalize) {
   Complete-ExternalManifestSigning `
     -PublishDir $publishDir -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile -RequirePublicDns:$requirePublicDns
+    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile -RequirePublicDns:$requirePublicDns `
+    -AllowedTailnetArtifactHost $AllowedTailnetArtifactHost
   return
 }
 
@@ -110,7 +112,8 @@ if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
 $artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 # The legacy update lab and the validated campaign build can use a local HTTPS feed.
 $localLab = $null -ne $labBuild -or ($Channel -ceq 'dev' -and $AllowUnsignedDevBuild -and $AllowEphemeralManifestKey -and -not $requirePublicDns)
-Assert-ReleaseArtifactUrl -ArtifactUrl $artifactUrl -ArtifactPrefixes $artifactPrefixList -AllowLocalHost:$localLab -RequirePublicDns:$requirePublicDns
+Assert-ReleaseArtifactUrl -ArtifactUrl $artifactUrl -ArtifactPrefixes $artifactPrefixList -AllowLocalHost:$localLab -RequirePublicDns:$requirePublicDns `
+  -AllowedTailnetHost $AllowedTailnetArtifactHost
 
 Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null

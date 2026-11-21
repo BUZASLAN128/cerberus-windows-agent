@@ -1,7 +1,8 @@
 # Verify the artifact URL from a copy of the manifest after the public release exists.
 param(
   [Parameter(Mandatory = $true)][string]$ManifestPath,
-  [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES
+  [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
+  [string]$AllowedTailnetArtifactHost = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,5 +23,5 @@ if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
   $UpdateAllowedArtifactPrefixes = Get-DefaultReleaseArtifactPrefix
 }
 $prefixes = @(Get-ReleaseArtifactPrefixes $UpdateAllowedArtifactPrefixes)
-Assert-ReleaseArtifactReachable -ArtifactUrl $artifactUrl -ArtifactPrefixes $prefixes
+Assert-ReleaseArtifactReachable -ArtifactUrl $artifactUrl -ArtifactPrefixes $prefixes -AllowedTailnetHost $AllowedTailnetArtifactHost
 Write-Host 'Published release artifact passed anonymous HTTPS HEAD.'

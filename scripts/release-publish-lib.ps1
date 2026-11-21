@@ -238,7 +238,8 @@ function Complete-ExternalManifestSigning(
   [string]$BuildProfile = "desktop",
   # Test seam for opaque fixture bytes; the release entrypoint never passes it.
   [scriptblock]$SetupPayloadCheck = $null,
-  [switch]$RequirePublicDns
+  [switch]$RequirePublicDns,
+  [string]$AllowedTailnetArtifactHost = ""
 ) {
   Write-Step "Verifying detached manifest signature"
   if (-not (Test-Path -LiteralPath $PublicKeyPath -PathType Leaf)) {
@@ -265,7 +266,8 @@ function Complete-ExternalManifestSigning(
     -Canonical $canonical -Signature $signature -ExpectedKeyPem $expectedKey -Trust $trust `
     -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
   if (-not [string]::Equals([string]$manifest["version"], $Version, [StringComparison]::Ordinal)) { throw "Pending manifest version does not match -Version." }
-  Assert-ReleaseArtifactUrl -ArtifactUrl $manifest['artifact_url'] -ArtifactPrefixes $trust.ArtifactPrefixes -RequirePublicDns:$RequirePublicDns
+  Assert-ReleaseArtifactUrl -ArtifactUrl $manifest['artifact_url'] -ArtifactPrefixes $trust.ArtifactPrefixes -RequirePublicDns:$RequirePublicDns `
+    -AllowedTailnetHost $AllowedTailnetArtifactHost
 
   $msi = Join-Path $PublishDir "$InstallerBase.msi"
   if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { throw "MSI installer was not found: $msi" }
