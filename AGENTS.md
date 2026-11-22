@@ -29,7 +29,7 @@ there; they are done and reported outside CI.
 
 1. Finished means built unsigned. When agent code, packaging or release
    tooling work is finished, build that exact head through the official
-   non-lab pipeline, helper, MSI and setup, for every affected profile (both
+   non-lab pipeline, helper, MSI and setup (desktop only), for every affected profile (both
    for shared code):
    `scripts/build-agent-public-release.ps1 -Version <x> -Channel dev
    -AllowUnsignedDevBuild` (server: `-BuildProfile server

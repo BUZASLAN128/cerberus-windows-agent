@@ -156,9 +156,10 @@ public sealed partial class ServerPackageStaticTests
         try
         {
             var lib = Path.Combine(FindRepoRoot(), "scripts", "release-publish-lib.ps1");
+            var setupFile = shipsUninstall ? "'Agent.exe'," : ""; // the server profile ships no setup wrapper
             var command =
                 $". '{lib}'; $d = '{dir}'; " +
-                "foreach ($n in 'Agent.msi','Agent.exe','Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') { Set-Content -LiteralPath (Join-Path $d $n) -Value $n }; " +
+                $"foreach ($n in 'Agent.msi',{setupFile}'Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') {{ Set-Content -LiteralPath (Join-Path $d $n) -Value $n }}; " +
                 "$m = [ordered]@{ sha256 = 'abc'; sequence = 1; expires_at_utc = 'x'; signer_key_identity = 'k' }; " +
                 $"Publish-ReleaseOutputs -PublishDir $d -Channel dev -AssetBase Bundle -InstallerBase Agent -Manifest $m -LegacyManifest $null -AllowUnsignedBuildMetadata $true -Signed $false -BuildProfile {profile}";
             var run = RunPwsh(command);
@@ -168,18 +169,20 @@ public sealed partial class ServerPackageStaticTests
             var expected = new[]
             {
                 $"Cerberus.Agent-dev-latest{suffix}.msi",
-                $"Cerberus.Agent-dev-latest{suffix}.exe",
+                shipsUninstall ? $"Cerberus.Agent-dev-latest{suffix}.exe" : null,
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.provenance.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.sbom.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.update-manifest.v2.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.zip",
-            }.OrderBy(n => n, StringComparer.Ordinal).ToArray();
+            }.OfType<string>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
             Assert.Equal(expected, names);
 
             var gate = File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json"));
             Assert.Equal(shipsUninstall, gate.Contains("uninstall_binary", StringComparison.Ordinal));
+            Assert.Equal(shipsUninstall, gate.Contains("\"setup\"", StringComparison.Ordinal));
+            Assert.Equal(shipsUninstall, File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256")).Contains(".exe", StringComparison.Ordinal));
             Assert.DoesNotContain("Uninstall", shipsUninstall ? "" : gate);
             Assert.Contains("\"updater_binary\": \"app/Cerberus.Agent.Updater.exe\"", gate);
             Assert.DoesNotContain("tray", gate, StringComparison.OrdinalIgnoreCase);
@@ -225,7 +228,7 @@ public sealed partial class ServerPackageStaticTests
         Assert.True(script.IndexOf("Assert-ServerBundleLayout", StringComparison.Ordinal) <
             script.IndexOf("Invoke-FirstPartySigning ", StringComparison.Ordinal));
         var measure = script.IndexOf("$serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash", StringComparison.Ordinal);
-        Assert.True(measure > script.IndexOf("Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput)", StringComparison.Ordinal));
+        Assert.True(measure > script.IndexOf("Invoke-FirstPartySigning $firstPartyPeFiles", StringComparison.Ordinal));
         Assert.True(measure < script.IndexOf("dotnet build $installerProject", StringComparison.Ordinal));
         var root = Path.Combine(Path.GetTempPath(), "service-signing-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -334,13 +337,16 @@ public sealed partial class ServerPackageStaticTests
     }
 
     [Fact]
-    public void ReleaseScript_SignsAndGatesTheInstallerHelperBeforeTheMsiBuild()
+    public void ReleaseScript_SignsRuntimeAndInstallerHelperInOneRunBeforeTheMsiBuild()
     {
         var script = File.ReadAllText(Path.Combine(FindRepoRoot(), "scripts", "build-agent-public-release.ps1"));
-        var sign = script.IndexOf("Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput)", StringComparison.Ordinal);
+        var msiBuild = script.IndexOf("dotnet build $installerProject", StringComparison.Ordinal);
+        var sign = script.IndexOf("Invoke-FirstPartySigning $firstPartyPeFiles", StringComparison.Ordinal);
         Assert.True(sign > script.IndexOf("Installer helper publish failed", StringComparison.Ordinal));
+        Assert.Contains("$firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir) + @(Get-FirstPartyPeFiles $installerHelperOutput)", script);
         Assert.Contains("Assert-FirstPartyPeFilesSigned $installerHelperOutput", script);
-        Assert.True(sign < script.IndexOf("dotnet build $installerProject", StringComparison.Ordinal));
+        Assert.True(sign < msiBuild);
+        Assert.Equal(1, Regex.Matches(script[..msiBuild], @"Invoke-FirstPartySigning\s").Count);
     }
 
     [Fact]
