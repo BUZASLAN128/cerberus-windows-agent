@@ -82,7 +82,18 @@ Ayrıntılar: [güncelleme kabul prosedürü](docs/AGENTS_ACCEPTANCE_GUIDE.md).
 
 `Cerberus.Agent-<channel>-<version>-server.msi` paketini çalıştırın ve tek kullanımlık enrollment proof'u girin. MSI, ilk kurulumda headless kaydı ve hizmet kurulumunu yapar. Upgrade mevcut kaydı korur; yeniden ilk kayıt gibi davranmaz.
 
-Her MSI için aynı taban ada sahip bir Burn `.exe` kurulum sarmalayıcısı da üretilebilir. Sarmalayıcı tam MSI'yı içerir; EULA/privacy ve Server kayıt ekranları MSI'ya aittir. **Ajanın kendi güncellemesi MSI kullanır.** Yönetilen sessiz kurulumlar, GPO/Intune ve MSI bakım işlemleri için de MSI kullanılmalıdır. Burn kaydının kurulu yaşam döngüsü ayrıca doğrulanmalıdır.
+Desktop MSI'ları için aynı taban ada sahip bir Burn `.exe` kurulum sarmalayıcısı da üretilir; Server yalnız MSI ile dağıtılır. Sarmalayıcı tam MSI'yı içerir; EULA/privacy ekranları MSI'ya aittir. **Ajanın kendi güncellemesi MSI kullanır.**
+
+Her yayında iki profil için tek satırlık kurulum betiği de çıkar: `<installer-base>.install.ps1` ve kanalın `-latest` kopyası. Yönetici PowerShell'de:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm https://<feed>/<yol>/Cerberus.Agent-<channel>-latest-server.install.ps1 | iex
+```
+
+- **Ne yapar:** betik, o sürümün MSI adresini, boyutunu ve SHA-256'sını içinde taşır. MSI'ı yalnız Administrators ve SYSTEM'in yazabildiği bir klasöre indirir. Dosyayı okuma kilidi altında doğrular ve aynı dosyayı MSI'ın kendi arayüzüyle açar; EULA ve Server kayıt kodu MSI ekranlarında girilir.
+- **Güven:** betiğin geldiği adrese TLS bağlantısı ve betikteki özettir; MSI'ı elle indirmekle aynı düzeydedir.
+- **Satır başındaki TLS ayarı:** yalnız TLS 1.2'yi varsayılan açmayan eski Windows PowerShell sürümleri için gerekir.
+- **Kurmadan doğrulama:** `& ([scriptblock]::Create((irm <url>))) -DownloadOnly`. Yönetilen sessiz kurulumlar, GPO/Intune ve MSI bakım işlemleri için de MSI kullanılmalıdır. Burn kaydının kurulu yaşam döngüsü ayrıca doğrulanmalıdır.
 
 MSI özellikleri, proxy ve onay ayarları bu belgenin sonundaki [Yapılandırma ve ayarlar](#yapılandırma-ve-ayarlar) bölümündedir.
 
@@ -189,7 +200,7 @@ Native yönetici/SYSTEM kontrolleri gerçek yetkili Windows ortamında çalışt
 
 Public paket üretim yolu `scripts/build-agent-public-release.ps1` ve `auto-publish-exe.yml` dosyasında tanımlıdır. **7 Kasım 2026 itibarıyla public release ve iki Claude review workflow'u GitHub'da devre dışıdır.** Merge, public yayın veya imzalama yapıldığı anlamına gelmez. Bu README workflow'u etkinleştirmez.
 
-Yayın paketleri MSI, isteğe bağlı EXE sarmalayıcı ve bundle/sha256/SBOM/provenance/release-gate/manifest çıktılarından oluşur. MSI ve normal yayın binary'leri imzalanır. Burn sırası: MSI imza/doğrulama → wrapper üretimi → engine detach → engine imza/doğrulama → reattach → wrapper imza/doğrulama. `preview` / `stable` Server paketleri test komut anahtarlarını reddeder.
+Yayın paketleri MSI, tek satırlık kurulum betiği (`.install.ps1`), yalnız Desktop için EXE sarmalayıcı ve bundle/sha256/SBOM/provenance/release-gate/manifest çıktılarından oluşur. MSI ve normal yayın binary'leri imzalanır. Burn sırası: MSI imza/doğrulama → wrapper üretimi → engine detach → engine imza/doğrulama → reattach → wrapper imza/doğrulama. `preview` / `stable` Server paketleri test komut anahtarlarını reddeder.
 
 Entegrasyon dalı `dev`'dir; PR'lar buraya açılır. `main` yalnız açık promotion kararıyla güncellenir.
 

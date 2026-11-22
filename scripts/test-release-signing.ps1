@@ -416,7 +416,8 @@ try {
 
   # Pfx path: a legacy manifest is still written and aliased
   $pfxFixture = New-Fixture
-  $pfxManifest = [ordered]@{ sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pfxFixture.Msi).Hash.ToLowerInvariant(); sequence = 1; expires_at_utc = "2030-01-01T00:00:00Z"; signer_key_identity = $pin }
+  $pfxManifest = [ordered]@{ sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $pfxFixture.Msi).Hash.ToLowerInvariant(); sequence = 1; expires_at_utc = "2030-01-01T00:00:00Z"; signer_key_identity = $pin
+    version = "9.9.9"; artifact_url = "https://feed.example.test/stable/$installerBase.msi"; artifact_length = (Get-Item -LiteralPath $pfxFixture.Msi).Length }
   Publish-ReleaseOutputs -PublishDir $pfxFixture.Publish -Channel stable -AssetBase $assetBase -InstallerBase $installerBase `
     -Manifest $pfxManifest -LegacyManifest ([ordered]@{ version = "9.9.9"; legacy = $true }) -AllowUnsignedBuildMetadata $true -Signed $false
   Check "Pfx path writes the legacy manifest and its latest alias" {

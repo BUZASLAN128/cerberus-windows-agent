@@ -26,7 +26,7 @@
   }
   function Test-NothingPublished([string]$Dir) {
     -not (Test-Path -LiteralPath (Join-Path $Dir $manifestName)) -and -not (Test-Path -LiteralPath (Join-Path $Dir $gateName)) -and
-      -not (Test-Path -LiteralPath (Join-Path $Dir $latestName)) -and
+      -not (Test-Path -LiteralPath (Join-Path $Dir $latestName)) -and -not (Test-Path -LiteralPath (Join-Path $Dir "$installerBase.install.ps1")) -and
       (Test-Path -LiteralPath (Join-Path $Dir $payloadName)) -and (Test-Path -LiteralPath (Join-Path $Dir $pendingName))
   }
 
@@ -70,6 +70,12 @@
     Set-Content -LiteralPath (Join-Path $fakeRoot "tests/fixtures/agent-command-test-anchors.b64") -Value "!!not-base64!!"
     . (Join-Path $fakeRoot "scripts/release-profile-lib.ps1")
     Throws { Test-CommandAnchorsAreTestFixture "QQ==" } "cannot be decoded"
+  }
+  Check "finalize writes the one-line installer for the signed MSI and its latest alias" {
+    $script = Get-Content -Raw -LiteralPath (Join-Path $good.Publish "$installerBase.install.ps1")
+    $msiSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $good.Msi).Hash.ToLowerInvariant()
+    $script.Contains("`$sha256 = '$msiSha'") -and $gate.install_script.artifact_sha256 -ceq $msiSha -and
+      (Test-Path -LiteralPath (Join-Path $good.Publish 'Cerberus.Agent-stable-latest.install.ps1'))
   }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
   $server = New-Fixture; $script:checked = @(); $script:payloadCalls = 0
