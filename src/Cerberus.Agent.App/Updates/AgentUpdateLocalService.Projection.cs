@@ -52,10 +52,16 @@ internal static partial class AgentUpdateLocalService
 
     /// <summary>A recorded failure cause wins only while its attempt and installer result are still the current ones.</summary>
     internal static string? ProjectedErrorCode(AgentUpdateJournal active, string state)
-        => state is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired && active.FailureCode is not null &&
-            active.FailureAttemptId == active.AttemptId && active.FailureInstallerResultId == active.InstallerResult?.ResultId
-            ? active.FailureCode
-            : active.InstallerResult?.ErrorCode;
+    {
+        if (state is AgentUpdateStates.Failed or AgentUpdateStates.RecoveryRequired && active.FailureCode is not null &&
+            active.FailureAttemptId == active.AttemptId && active.FailureInstallerResultId == active.InstallerResult?.ResultId)
+            return active.FailureCode;
+        if (active.AttemptId is not null && active.AlertCode is not null && active.AlertAttemptId == active.AttemptId &&
+            state is AgentUpdaterContract.LaunchRequestedPhase or AgentUpdaterContract.InstallMayHaveStartedPhase or
+                AgentUpdateStates.Installing or AgentUpdateStates.RecoveryRequired or AgentUpdateStates.PendingReboot)
+            return active.AlertCode;
+        return active.InstallerResult?.ErrorCode;
+    }
 
     internal static AgentUpdateJournal CompleteInstallRequest(AgentUpdateJournal active, AgentUpdatePlan? plan, DateTimeOffset now)
     {

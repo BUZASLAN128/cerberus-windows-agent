@@ -4,7 +4,7 @@ using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.App.Updates;
 
-/// <summary>A real, one-shot fault for every transition in the authorized two-target campaign.</summary>
+/// <summary>A real, one-shot fault for selected transitions in the authorized two-target campaign.</summary>
 internal static class AgentUpdateLabFaults
 {
     private sealed record Receipt(string CampaignId, string AgentId, string TenantId, string KeyFingerprint,
@@ -22,8 +22,12 @@ internal static class AgentUpdateLabFaults
         Environment.Exit(86); // Abrupt process exit, no crash dump; SCM owns recovery.
     }
 
+    // Versions[1..4] and [7] carry no in-product fault.
     internal static bool UsesServiceInterruption(AgentUpdateLabPolicy policy, string version)
-        => policy.Versions.Skip(1).Contains(version, StringComparer.Ordinal) && version != policy.Versions[8];
+        => version == policy.Versions[5] || version == policy.Versions[8] || version == policy.Versions[10];
+
+    internal static bool UsesUpdaterInterruption(AgentUpdateLabPolicy policy, string version)
+        => version == policy.Versions[6] || version == policy.Versions[9];
 
     // Called inside the updater launch fence, before a launch grant or the MSI-start marker exists.
     internal static void InterruptUpdaterOnce(AgentUpdateJournal active, AgentUpdatePlan plan,
@@ -49,7 +53,7 @@ internal static class AgentUpdateLabFaults
             AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State) && lifecycle.Generation == scope.Context.Generation &&
             lifecycle.LastEnrollmentNonce == scope.Context.EnrollmentNonce &&
             active.LifecycleGeneration == lifecycle.Generation && active.InstallRequest?.LocalPolicyId == scope.Policy.CampaignId &&
-            plan.Version == scope.Policy.Versions[8] && active.Phase == "launch_requested" &&
+            UsesUpdaterInterruption(scope.Policy, plan.Version) && active.Phase == "launch_requested" &&
             active.InstallRequest.BoundAttemptId == active.AttemptId &&
             AgentUpdateRunnerFiles.OwnsLaunch(active, plan.AttemptId!, processId, startedUtc) &&
             active.InstallRequest.VerifiedRelease is { } release && release.Matches(AgentUpdateExpectedPlan.FromPlan(plan));

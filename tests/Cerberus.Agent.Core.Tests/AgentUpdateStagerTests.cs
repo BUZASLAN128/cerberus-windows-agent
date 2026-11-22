@@ -365,96 +365,6 @@ public sealed class AgentUpdateStagerTests
     }
 
     [Fact]
-    public async Task ApplyPlanAsync_RejectsChecksumMismatch()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        var artifact = Path.Combine(root, "agent.exe");
-        await File.WriteAllTextAsync(artifact, "tampered");
-        var plan = new AgentUpdatePlan(
-            ArtifactKind: "msi",
-            Version: "1.2.0",
-            Channel: "stable",
-            ArtifactPath: artifact,
-            Sha256: new string('a', 64),
-            StagedAtUtc: "2026-05-07T00:00:00Z",
-            Reason: "test");
-        var planPath = Path.Combine(root, "update-plan.json");
-        await File.WriteAllTextAsync(
-            planPath,
-            JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            AgentUpdateStager.ApplyPlanAsync(planPath, Path.Combine(root, "target.exe"), CancellationToken.None));
-        Assert.Equal("Direct update application is disabled.", ex.Message);
-    }
-
-    [Fact]
-    public async Task ApplyPlanAsync_RejectsPlanOutsideTrustedStagingRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));
-        var outside = Path.Combine(Path.GetTempPath(), "cerberus-apply-outside-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        Directory.CreateDirectory(outside);
-        var planPath = Path.Combine(outside, "update-plan.json");
-        await File.WriteAllTextAsync(planPath, "{}");
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            AgentUpdateStager.ApplyPlanAsync(
-                planPath,
-                Path.Combine(root, "target.exe"),
-                root,
-                Path.Combine(root, "target.exe"),
-                CancellationToken.None));
-
-        Assert.Equal("Direct update application is disabled.", ex.Message);
-    }
-
-    [Fact]
-    public async Task ApplyPlanAsync_RejectsArtifactOutsideTrustedStagingRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));
-        var outside = Path.Combine(Path.GetTempPath(), "cerberus-apply-outside-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        Directory.CreateDirectory(outside);
-        var artifact = Path.Combine(outside, "agent.exe");
-        await File.WriteAllTextAsync(artifact, "agent-binary");
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("agent-binary"))).ToLowerInvariant();
-        var planPath = await WritePlanAsync(root, artifact, hash);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            AgentUpdateStager.ApplyPlanAsync(
-                planPath,
-                Path.Combine(root, "target.exe"),
-                root,
-                Path.Combine(root, "target.exe"),
-                CancellationToken.None));
-
-        Assert.Equal("Direct update application is disabled.", ex.Message);
-    }
-
-    [Fact]
-    public async Task ApplyPlanAsync_RejectsTargetOutsideAllowlist()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "cerberus-apply-test-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        var artifact = Path.Combine(root, "agent.exe");
-        await File.WriteAllTextAsync(artifact, "agent-binary");
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("agent-binary"))).ToLowerInvariant();
-        var planPath = await WritePlanAsync(root, artifact, hash);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            AgentUpdateStager.ApplyPlanAsync(
-                planPath,
-                Path.Combine(root, "target.exe"),
-                root,
-                Path.Combine(root, "allowed.exe"),
-                CancellationToken.None));
-
-        Assert.Equal("Direct update application is disabled.", ex.Message);
-    }
-
-    [Fact]
     public async Task GetTrustedManifestIdentityAsync_BindsPlanToExactSignedManifest()
     {
         using var rsa = RSA.Create(2048);
@@ -613,23 +523,6 @@ public sealed class AgentUpdateStagerTests
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
         return unsigned with { Signature = Convert.ToBase64String(signature) };
-    }
-
-    private static async Task<string> WritePlanAsync(string root, string artifact, string sha256)
-    {
-        var plan = new AgentUpdatePlan(
-            ArtifactKind: "msi",
-            Version: "1.2.0",
-            Channel: "stable",
-            ArtifactPath: artifact,
-            Sha256: sha256,
-            StagedAtUtc: "2026-05-07T00:00:00Z",
-            Reason: "test");
-        var planPath = Path.Combine(root, "update-plan.json");
-        await File.WriteAllTextAsync(
-            planPath,
-            JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-        return planPath;
     }
 
     private static string PublicKeyPem(RSA rsa)

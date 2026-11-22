@@ -83,6 +83,17 @@
     <Compile Include="..\Cerberus.Agent.App\Telemetry\**\*.cs" LinkBase="Telemetry" />
   </ItemGroup>
 
+  <!-- Same campaign-code exclusion as Cerberus.Agent.App.csproj, applied after the Updates include above. -->
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' == 'true'">
+    <Compile Remove="..\Cerberus.Agent.App\Updates\AgentUpdateLab*.cs" />
+    <Compile Remove="..\Cerberus.Agent.App\Updates\AgentUpdateLocalService.Lab.cs" />
+    <Compile Remove="..\Cerberus.Agent.App\Updates\AgentUpdateLocalService.LabRecovery.cs" />
+    <Compile Remove="..\Cerberus.Agent.App\Updates\UpdateCampaignHooks.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' != 'true'">
+    <Compile Remove="..\Cerberus.Agent.App\Updates\UpdateCampaignHooks.Release.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="..\..\docs\legal\PRIVACY-NOTICE.md" LogicalName="Cerberus.Agent.PrivacyNotice" />
     <EmbeddedResource Include="..\Cerberus.Agent.App\Localization\AgentStrings.resx" Link="Localization\AgentStrings.resx" />

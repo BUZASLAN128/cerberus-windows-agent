@@ -1,10 +1,7 @@
 using System.Diagnostics;
 using System.IO;
-using Cerberus.Agent.App;
-using Cerberus.Agent.App.Updates;
 using Cerberus.Agent.Core;
 using Microsoft.Win32;
-using Cerberus.Agent.Security;
 
 namespace Cerberus.Agent.Updater;
 
@@ -27,7 +24,7 @@ internal static class Program
         }
 
         AgentUpdatePlan? plan = null;
-        var root = AgentUpdateStager.DefaultStagingRoot;
+        var root = AgentUpdateSecurity.DefaultPrivilegedRoot;
         var journalStore = new AgentUpdateJournalStore(root);
         var ownsAttempt = false;
         using var self = Process.GetCurrentProcess();
@@ -37,14 +34,14 @@ internal static class Program
             var attemptDirectory = AgentUpdateSecurity.ResolveAttemptDirectory(root, attemptId);
             using var executionLock = new FileStream(Path.Combine(attemptDirectory, AgentUpdateRunnerFiles.ExecutionLockFileName), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             var active = journalStore.Read();
-            if (active.AttemptId != attemptId || active.Phase != "launch_requested")
+            if (active.AttemptId != attemptId || active.Phase != AgentUpdaterContract.LaunchRequestedPhase)
                 throw new InvalidOperationException("Update attempt is not authorized for installation.");
-            if (AgentUpdateDefaults.LabPolicyB64.Length > 0)
+            if (UpdaterLab.IsLabBuild)
             {
                 using (AgentUpdateLaunchFence.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult())
                 {
                     active = journalStore.Read();
-                    if (active.Phase != "launch_requested" || !AgentUpdateRunnerFiles.OwnsLaunch(active, attemptId, self.Id, ownStartedUtc))
+                    if (active.Phase != AgentUpdaterContract.LaunchRequestedPhase || !AgentUpdateRunnerFiles.OwnsLaunch(active, attemptId, self.Id, ownStartedUtc))
                         throw new InvalidOperationException("Update runner no longer owns this launch.");
                 }
             }
@@ -54,7 +51,7 @@ internal static class Program
                 throw new InvalidOperationException("Updater must execute from the protected attempt copy.");
             AgentUpdateRunnerFiles.Validate(runnerDirectory, attemptDirectory);
             plan = LoadAndValidateAttempt(attemptId, attemptDirectory, log);
-            var trust = AgentUpdateTrustFactory.BuildTrust();
+            var trust = UpdaterLab.BuildTrust();
             var manifest = LoadAndValidateManifest(plan, attemptDirectory, trust);
             trust.RequireTestCampaignInstallVersion(manifest.Version);
             if (trust.TestCampaignVersions is not null && plan.LabSourceVersion != AgentUpdateCampaignTransition.Release(trust.CurrentVersion))
@@ -68,20 +65,27 @@ internal static class Program
             var exitCode = RunMsiexec(plan, msiLogPath, log);
             var installerResult = AgentUpdateInstallerResult.FromMsiExitCode(
                 exitCode,
-                exitCode == 0 || exitCode == 3010 ? null : "msiexec failed.",
+                AgentUpdaterContract.SuccessExitCodes.Contains(exitCode) ? null : "msiexec failed.",
                 msiLogPath) with
             {
                 AttemptId = plan.AttemptId,
                 RetryCount = active.RetryCount,
             };
-            // The record scan reads files, so it runs before the journal lock is taken.
+            // Scan the helper record and MSI log before taking the journal lock.
             var rollbackPhase = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed
-                ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "installer-transactions"),
+                ? AgentInstallerHealthRecords.NewestPhaseSince(Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, AgentUpdaterContract.InstallerTransactionsDirectoryName),
                     journalStore.Read().InstallerStartedUtc, plan.Version, log.Write) : null;
+            var isEnvironmentFailure = installerResult.ErrorCode == AgentUpdateErrorCodes.MsiFailed &&
+                ClassifyMsiFailure(exitCode, msiLogPath, rollbackPhase) == AgentUpdateMsiFailureKind.Environment;
             journalStore.ChangeAttempt(attemptId, before => !MayWriteRunnerResult(before, attemptId, self.Id, ownStartedUtc) ? before : before with
             {
                 Phase = installerResult.State,
                 InstallerResult = installerResult,
+                AlertCode = null,
+                AlertAttemptId = null,
+                FailureCode = isEnvironmentFailure ? AgentUpdateErrorCodes.MsiEnvironment : before.FailureCode,
+                FailureAttemptId = isEnvironmentFailure ? attemptId : before.FailureAttemptId,
+                FailureInstallerResultId = isEnvironmentFailure ? installerResult.ResultId : before.FailureInstallerResultId,
                 // Only a health rollback pins the release: the scheduler then stages a newer sequence only.
                 // Other installer failures, and a backend-contact, control-pipe or no-answer failure, keep the normal retry behavior.
                 FailedInstallSequence = AgentUpdateRollbackPolicy.NextFailedInstallSequence(before.FailedInstallSequence,
@@ -105,6 +109,8 @@ internal static class Program
                 {
                     Phase = before.MayHaveStartedInstallation ? AgentUpdateStates.RecoveryRequired : AgentUpdateStates.Failed,
                     InstallerResult = before.InstallerResult ?? result,
+                    AlertCode = null,
+                    AlertAttemptId = null,
                 });
             }
             catch (Exception failure) { log.Write($"Updater result persistence failed: {failure.GetType().Name}."); }
@@ -115,7 +121,7 @@ internal static class Program
     private static bool TryReadAttemptId(string[]? args, out string attemptId)
     {
         attemptId = "";
-        if (args is null || args.Length != 2 || !string.Equals(args[0], "--attempt", StringComparison.Ordinal))
+        if (args is null || args.Length != 2 || !string.Equals(args[0], AgentUpdaterContract.AttemptArgument, StringComparison.Ordinal))
             return false;
         if (!AgentUpdateSecurity.IsSafeAttemptId(args[1]))
             return false;
@@ -124,15 +130,15 @@ internal static class Program
     }
 
     private static bool MayWriteRunnerResult(AgentUpdateJournal before, string attemptId, int processId, DateTimeOffset startedUtc)
-        => AgentUpdateDefaults.LabPolicyB64.Length == 0 || AgentUpdateRunnerFiles.OwnsLaunch(before, attemptId, processId, startedUtc);
+        => !UpdaterLab.IsLabBuild || AgentUpdateRunnerFiles.OwnsLaunch(before, attemptId, processId, startedUtc);
 
     private static AgentUpdatePlan LoadAndValidateAttempt(string attemptId, string attemptDirectory, UpdaterLog log)
     {
         var planPath = Path.Combine(attemptDirectory, AgentUpdateSecurity.PlanFileName);
-        AgentUpdateSecurity.ValidateTrustedPath(planPath, AgentUpdateStager.DefaultStagingRoot, allowMissing: false);
+        AgentUpdateSecurity.ValidateTrustedPath(planPath, AgentUpdateSecurity.DefaultPrivilegedRoot, allowMissing: false);
         var plan = AgentUpdateDurableFile.Read<AgentUpdatePlan>(planPath, attemptDirectory)
             ?? throw new InvalidOperationException("Update plan is invalid.");
-        if (!string.Equals(plan.SchemaVersion, "agent.update.plan.v2", StringComparison.Ordinal) ||
+        if (!string.Equals(plan.SchemaVersion, AgentUpdaterContract.PlanSchema, StringComparison.Ordinal) ||
             !string.Equals(plan.AttemptId, attemptId, StringComparison.Ordinal) ||
             !string.Equals(plan.ArtifactKind, "msi", StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(Path.GetFullPath(plan.ArtifactPath), Path.Combine(attemptDirectory, AgentUpdateSecurity.ArtifactFileName), StringComparison.OrdinalIgnoreCase))
@@ -150,7 +156,7 @@ internal static class Program
         AgentUpdateTrust trust)
     {
         var manifestPath = Path.Combine(attemptDirectory, AgentUpdateSecurity.ManifestFileName);
-        AgentUpdateSecurity.ValidateTrustedPath(manifestPath, AgentUpdateStager.DefaultStagingRoot, allowMissing: false);
+        AgentUpdateSecurity.ValidateTrustedPath(manifestPath, AgentUpdateSecurity.DefaultPrivilegedRoot, allowMissing: false);
         if (new FileInfo(manifestPath).Length > AgentUpdateDurableFile.MaxBytes)
             throw new InvalidOperationException("Update manifest exceeds size limit.");
         var manifestJson = File.ReadAllText(manifestPath);
@@ -164,7 +170,7 @@ internal static class Program
             allowChannelDowngrade: false);
         if (trust.RequireManifestV2 && !manifest.IsV2)
             throw new InvalidOperationException("Update manifest v2 is required before installation.");
-        if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(AgentUpdateStager.DefaultStagingRoot) > 0)
+        if (!manifest.IsV2 && AgentUpdateSequenceStore.ReadHighest(AgentUpdateSecurity.DefaultPrivilegedRoot) > 0)
             throw new InvalidOperationException("Legacy update manifest fallback is disabled after v2 trust was accepted.");
         ValidateManifestSignerIdentity(manifest, trust);
         if (manifest.IsV2 && plan.Sequence != manifest.Sequence)
@@ -181,7 +187,7 @@ internal static class Program
         var digest = AgentUpdateManifestValidator.Digest(manifest);
         if (plan.ManifestDigest != digest)
             throw new InvalidOperationException("Update plan manifest digest mismatch.");
-        AgentUpdateSequenceStore.RequireAccepted(AgentUpdateStager.DefaultStagingRoot, manifest.Sequence, digest);
+        AgentUpdateSequenceStore.RequireAccepted(AgentUpdateSecurity.DefaultPrivilegedRoot, manifest.Sequence, digest);
         if (AgentVersionComparer.CompareReleaseCore(manifest.Version, trust.CurrentVersion) is <= 0)
             throw new InvalidOperationException("Post-commit downgrade or replay was denied.");
         return manifest;
@@ -247,32 +253,31 @@ internal static class Program
         Process process;
         using (AgentUpdateLaunchFence.AcquireAsync(CancellationToken.None).GetAwaiter().GetResult())
         {
-            var journalStore = new AgentUpdateJournalStore(AgentUpdateStager.DefaultStagingRoot);
+            var journalStore = new AgentUpdateJournalStore(AgentUpdateSecurity.DefaultPrivilegedRoot);
             var active = journalStore.Read();
-            var lifecycle = new DurableAgentLifecycleStateStore().LoadAsync(CancellationToken.None).GetAwaiter().GetResult();
+            var lifecycle = AgentLifecycleFile.ReadProduction();
             using var self = Process.GetCurrentProcess();
             if (!MayWriteRunnerResult(active, plan.AttemptId!, self.Id, new DateTimeOffset(self.StartTime.ToUniversalTime())))
                 throw new InvalidOperationException("Update runner no longer owns the installer launch.");
-            if (active.AttemptId != plan.AttemptId || active.Phase != "launch_requested" ||
+            if (active.AttemptId != plan.AttemptId || active.Phase != AgentUpdaterContract.LaunchRequestedPhase ||
                 lifecycle.Generation != active.LifecycleGeneration ||
                 (active.Automatic && (!lifecycle.QuiescenceComplete || !AgentLifecycleStates.AllowsAutomaticNetwork(lifecycle.State))))
                 throw new InvalidOperationException("Update attempt authorization changed.");
             // Only an automatic run that started from a fully active agent must prove backend contact before the install commits.
-            AgentUpdateLabRuntime.RequireLaunch(active, lifecycle);
-            AgentUpdateLabFaults.InterruptUpdaterOnce(active, plan, lifecycle, self.Id,
+            UpdaterLab.RequireLaunch(active, lifecycle);
+            UpdaterLab.InterruptUpdaterOnce(active, plan, lifecycle, self.Id,
                 new DateTimeOffset(self.StartTime.ToUniversalTime()), log.Write);
             if (active.InstallRequest?.LocalPolicyId is not null)
             {
                 var transaction = Guid.NewGuid().ToString("D");
-                var lab = AgentUpdateLabRuntime.Resolve() ?? throw new InvalidOperationException("Development launch scope is missing.");
-                AgentUpdateLabRuntimeAdmission.AdmitLaunch(lab.Policy, lab.Context, plan, active.InstallRequest, transaction);
+                UpdaterLab.AdmitLaunch(plan, active.InstallRequest, transaction);
                 psi.ArgumentList.Add("CERBERUS_LAB_TRANSACTION=" + transaction);
             }
             if (AgentUpdateRollbackPolicy.RequiresBackendContact(active.Automatic, lifecycle.State))
                 psi.ArgumentList.Add("CERBERUS_UPDATE_REQUIRE_BACKEND=1");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with
             {
-                Phase = "install_may_have_started", InstallationBootId = AgentUpdateBootIdentity.Read(),
+                Phase = AgentUpdaterContract.InstallMayHaveStartedPhase, InstallationBootId = AgentUpdateBootIdentity.Read(),
             });
             process = Process.Start(psi) ?? throw new InvalidOperationException("Windows Installer could not be started.");
             journalStore.ChangeAttempt(plan.AttemptId!, before => before with
@@ -289,6 +294,21 @@ internal static class Program
         _ = process.StandardError.ReadToEnd();
         log.Write($"msiexec exit code: {process.ExitCode}.");
         return process.ExitCode;
+    }
+
+    private static AgentUpdateMsiFailureKind ClassifyMsiFailure(
+        int exitCode, string msiLogPath, AgentInstallerHealthPhase? rollbackPhase)
+    {
+        try
+        {
+            AgentUpdateSecurity.ValidateProtectedPath(msiLogPath, AgentUpdateSecurity.DefaultPrivilegedRoot, allowMissing: false);
+            using var msiLog = File.OpenRead(msiLogPath);
+            return AgentUpdateMsiFailure.Classify(exitCode, msiLog, rollbackPhase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException)
+        {
+            return AgentUpdateMsiFailure.Classify(exitCode, log: null, rollbackPhase);
+        }
     }
 
     private static void WriteInstallerResult(AgentUpdateInstallerResult result, UpdaterLog log)
@@ -316,10 +336,10 @@ internal static class Program
         if (!File.Exists(servicePath))
             throw new InvalidOperationException("Canonical service executable is missing.");
 
-        using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{ServiceInstaller.ServiceName}", writable: false);
+        using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{AgentInstallIdentity.ServiceName}", writable: false);
         var imagePath = key?.GetValue("ImagePath")?.ToString();
-        var installedPath = ServiceInstaller.ExtractExecutablePathFromServiceImagePath(imagePath);
-        if (!ServiceInstaller.ServiceExecutableMatches(installedPath, servicePath))
+        var installedPath = AgentServiceImagePath.ExtractExecutablePath(imagePath);
+        if (!AgentServiceImagePath.Matches(installedPath, servicePath))
             throw new InvalidOperationException("Installed service path does not match the canonical layout.");
     }
 
@@ -350,14 +370,14 @@ internal static class Program
 
         public static UpdaterLog Create()
         {
-            var root = Path.Combine(AgentUpdateStager.DefaultStagingRoot, "logs");
-            AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateStager.DefaultStagingRoot);
+            var root = Path.Combine(AgentUpdateSecurity.DefaultPrivilegedRoot, "logs");
+            AgentUpdateSecurity.EnsureProtectedRoot(AgentUpdateSecurity.DefaultPrivilegedRoot);
             Directory.CreateDirectory(root);
             return new UpdaterLog(Path.Combine(root, $"updater-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log"));
         }
 
         public string CreateSiblingLogPath(string prefix)
-            => Path.Combine(Path.GetDirectoryName(_path) ?? AgentUpdateStager.DefaultStagingRoot, $"{prefix}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log");
+            => Path.Combine(Path.GetDirectoryName(_path) ?? AgentUpdateSecurity.DefaultPrivilegedRoot, $"{prefix}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Environment.ProcessId}.log");
 
         public void Write(string message)
         {

@@ -1,9 +1,38 @@
+using System.Text.Json;
 using Cerberus.Agent.Core;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class AgentUpdateStateStoreTests
+public sealed partial class AgentUpdateStateStoreTests
 {
+    [Fact]
+    public async Task ReconcileInstallerResult_LeavesNewAttemptUnchangedAcrossRepeatedStaleResults()
+    {
+        var root = NewRoot();
+        try
+        {
+            var store = NewStore(root);
+            var current = await store.WriteTransitionAsync(AgentUpdateStates.Staged, "0.1.0", CancellationToken.None,
+                attemptId: "attempt-b", targetVersion: "0.3.0", installerResultId: "committed-result");
+            await store.WriteInstallerResultAsync(AgentUpdateInstallerResult.FromMsiExitCode(0, null, null) with
+            {
+                AttemptId = "attempt-a", ResultId = "uncommitted-result",
+            }, CancellationToken.None);
+            var stateBytes = await File.ReadAllBytesAsync(store.StatePath);
+            var resultBytes = await File.ReadAllBytesAsync(store.InstallerResultPath);
+            var log = new RecordingLogger();
+
+            for (var i = 0; i < 2; i++)
+                Assert.Equal(current, await NewStore(root).ReconcileInstallerResultAsync("0.1.0", CancellationToken.None, log));
+
+            Assert.Equal(stateBytes, await File.ReadAllBytesAsync(store.StatePath));
+            Assert.Equal(resultBytes, await File.ReadAllBytesAsync(store.InstallerResultPath));
+            Assert.Equal(2, log.Lines.Count);
+            Assert.All(log.Lines, line => Assert.Contains("Installer result ignored: active attempt mismatch. at=AgentUpdateStateStore.ReconcileInstallerResultAsync", line));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public async Task MissingDurableStateDoesNotEmitOrderedHeartbeatReportsOrWriteDuringStatusReads()
     {

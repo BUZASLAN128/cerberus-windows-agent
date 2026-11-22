@@ -1,5 +1,7 @@
 using Cerberus.Agent.App;
 using Cerberus.Agent.Core;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace Cerberus.Agent.Core.Tests;
 
@@ -53,6 +55,12 @@ public sealed class ServiceInstallerTests
 
         try
         {
+            var directory = new DirectoryInfo(root);
+            var security = directory.GetAccessControl();
+            security.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), FileSystemRights.Write, AccessControlType.Allow));
+            directory.SetAccessControl(security);
+
             Assert.Throws<InvalidOperationException>(() => ServiceInstaller.ResolveServiceExecutablePath(setupPath));
             Assert.Throws<InvalidOperationException>(() =>
                 AgentUpdateSecurity.ValidateInstalledServiceSource(servicePath, root));

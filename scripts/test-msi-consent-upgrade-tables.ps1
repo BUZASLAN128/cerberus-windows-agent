@@ -32,6 +32,25 @@ foreach ($profile in @('server','desktop')) {
     if (@($actions | Where-Object { $_[0] -eq 'SetCERBERUS_EXPLICIT_CONSENT' -and $_[1] -eq 'WIX_UPGRADE_DETECTED' }).Count -ne 1) { throw "Bad setter condition: $profile" }
     $setter = @(Query $db "SELECT ``Type``, ``Source``, ``Target`` FROM ``CustomAction`` WHERE ``Action`` = 'SetCERBERUS_EXPLICIT_CONSENT'" 3)
     if ($setter.Count -ne 1 -or $setter[0][0] -ne '51' -or $setter[0][1] -ne 'CERBERUS_EXPLICIT_CONSENT' -or $setter[0][2] -ne '0') { throw "Bad setter: $profile" }
+
+    $upgradeRows = @(Query $db 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5)
+    if (@($upgradeRows | Where-Object { $_[4] -notin @('WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED') }).Count) { throw "Unexpected upgrade detection row: $profile" }
+    $secureRows = @(Query $db "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'SecureCustomProperties'" 1)
+    $secure = @($secureRows | ForEach-Object { $_[0] -split ';' })
+    if ('CERBERUS_NEWER_DETECTED' -in $secure -or 'CERBERUS_ROLLBACK_ATTEMPT' -in $secure) { throw "Unexpected post-install recovery property: $profile" }
+    # Installer health and Windows Installer rollback are the only automatic recovery; the helper runs only these commands.
+    $helperCommands = @('bootstrap', 'enroll', 'enroll-rollback', 'validate-runtime', 'health', 'ensure-running', 'lab-commit',
+        'lab-rollback', 'capture', 'configure', 'restore', 'stop', 'validate-proxy')
+    $helperActions = @(Query $db 'SELECT `Action`, `Source`, `Target` FROM `CustomAction`' 3 | Where-Object { $_[1] -eq 'CerberusInstallerHelper' })
+    if ($helperActions.Count -eq 0) { throw "Installer helper actions are missing: $profile" }
+    $unexpected = @($helperActions | Where-Object { ($_[2] -split ' ', 2)[0] -cnotin $helperCommands })
+    if ($unexpected.Count) { throw "Unexpected installer helper action: $profile $($unexpected[0][0])" }
+    if ($profile -eq 'server') {
+        $scm = @(Query $db 'SELECT `ServiceName`, `FirstFailureActionType`, `SecondFailureActionType`, `ThirdFailureActionType`, `ProgramCommandLine` FROM `Wix4ServiceConfig`' 5)
+        if ($scm.Count -ne 1 -or ($scm[0][1..3] -join '/') -cne 'restart/restart/restart' -or $scm[0][4]) { throw 'Bad server service failure actions' }
+        Write-Output ('SERVER SCM ' + ($scm[0] -join ' | '))
+    }
+
     Write-Output "PROFILE $profile"
     foreach ($spec in @(
         @("SELECT ``ComponentId``, ``Attributes``, ``Condition``, ``KeyPath`` FROM ``Component`` WHERE ``Component`` = '$component'", 4),

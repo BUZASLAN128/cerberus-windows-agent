@@ -127,6 +127,20 @@ public sealed partial class HeartbeatLoop
             dispatcher.HandlerTypes.Contains(EnvelopeTypes.AgentUpdateRequest);
     }
 
+    private async Task<object?> ReadUpdateStatusAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await _updateStatusProvider!(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _log.Warn($"Update status unavailable: {ex.GetType().Name}. at={ExceptionSite.FirstFrame(ex)}");
+            return null;
+        }
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         var degraded = false;
@@ -174,7 +188,7 @@ public sealed partial class HeartbeatLoop
                     ["supported_schema_versions"] = supported.ToArray(),
                     ["tailscale"] = tailscale,
                     ["ad"] = controlRecovery || _adStatusProvider is null ? null : await _adStatusProvider(ct),
-                    ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await _updateStatusProvider(ct),
+                    ["update_status"] = controlRecovery || _updateStatusProvider is null ? null : await ReadUpdateStatusAsync(ct),
                     ["capabilities"] = capabilities,
                     ["signed_state_reset"] = recoveringState,
                     ["signed_state_floor"] = recoveringState ? _signedState!.RecoveryFloor : 0,

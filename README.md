@@ -279,7 +279,7 @@ Eski `CERBERUS_CASDOOR_ENDPOINT`, `CERBERUS_CASDOOR_CLIENT_ID`, `CERBERUS_CASDOO
 
 MSBuild adları kendiliğinden ortam değişkeni değildir. Normal update güveni `AgentUpdateTrustFactory` tarafından gömülü metadata ve izin verilen kurulum ayarlarından oluşturulur. Manifest public-key/URL geliştirme ortamı override'ları yalnız `dev` kanalındadır; `AllowUnsignedDevBuild` de yalnız bu kanalla birlikte anlamlıdır. Süreli test kampanyası normal kurulum ayarı olarak kullanılmaz.
 
-Lab olmayan her yayın derlemesi, imzalamadan önce çıktılarda `AgentUpdateLab*` metadata'sı arar ve bulursa durur (`Assert-NoLabCampaignMetadata`).
+Lab olmayan yayın derlemeleri `-p:ExcludeUpdateCampaignCode=true` ile test kampanyası kodu olmadan derlenir; yayın betikleri bunu kendisi verir. İmzalamadan önce `Assert-NoLabCampaignMetadata`, çıktılarda ve tek dosya paketlerinin içindeki `Cerberus.Agent*` derlemelerinde `AgentUpdateLab*` metadata'sı ya da tipi arar, bulursa durur.
 
 #### Manifest süresini yenileme (yeniden derleme yok)
 

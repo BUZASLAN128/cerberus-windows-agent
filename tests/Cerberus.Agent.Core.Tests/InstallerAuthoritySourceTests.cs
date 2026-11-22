@@ -15,4 +15,12 @@ public sealed class InstallerAuthoritySourceTests
         Assert.True(body.IndexOf("AgentUpdateSecurity.ValidateProtectedTree(runtime)", StringComparison.Ordinal) <
             body.IndexOf("foreach (var name in RuntimeExecutables)", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void InstallerHealth_ServerStabilityWindowIs120SecondsAndDesktopHasNone()
+    {
+        var source = File.ReadAllText(Path.Combine(ServerPackageStaticTests.FindRepoRoot(), "src", "Cerberus.Agent.Installer", "Helper", "Program.Health.cs"));
+        Assert.Contains("Desktop = new(TimeSpan.FromSeconds(60), TimeSpan.Zero, false, false);", source);
+        Assert.Contains("=> new(TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(120), requireBackend, true);", source);
+    }
 }

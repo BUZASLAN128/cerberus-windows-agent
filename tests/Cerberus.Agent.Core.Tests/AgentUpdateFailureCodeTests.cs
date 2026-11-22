@@ -5,6 +5,56 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUpdateFailureCodeTests
 {
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
+    [Fact]
+    public void BusyRetryExhaustion_RecordsCauseWithoutInventingInstallerEvidence()
+    {
+        var now = DateTimeOffset.Parse("2026-11-17T12:00:00Z");
+        var observed = new AgentUpdateJournal { AttemptId = "attempt-a", Phase = "launch_requested",
+            InstallRequest = new AgentUpdateInstallRequest(now, 7, now.AddHours(1),
+                ExpectedPlan: new AgentUpdateExpectedPlan("1.2.0", "dev:42", new string('a', 64)),
+                LocalPolicyId: "11111111-1111-1111-1111-111111111111", LocalSourceVersion: "1.1.0") };
+        var current = observed;
+        for (var i = 0; i < 3; i++)
+        {
+            current = current with { Phase = "launch_requested", NextRetryUtc = null };
+            var busy = AgentUpdateLocalService.RetryUnstartedLabRunner(current, current);
+            Assert.Equal(AgentUpdateStates.RetryableBusy, busy.Phase);
+            current = AgentUpdateLocalService.TransitionBusyRetry(busy, now);
+            if (i < 2) Assert.Equal(AgentUpdateStates.RetryableBusy, current.Phase);
+        }
+        Assert.Equal(AgentUpdateStates.Failed, current.Phase);
+        Assert.Equal(3, current.RetryCount);
+        Assert.Equal("retry_exhausted", current.FailureCode);
+        Assert.Equal(current.AttemptId, current.FailureAttemptId);
+        Assert.Null(current.FailureInstallerResultId);
+        Assert.Null(current.InstallerResult);
+        Assert.Equal("retry_exhausted", AgentUpdateLocalService.ProjectedErrorCode(current, current.Phase));
+        Assert.Equal(current, AgentUpdateLocalService.TransitionBusyRetry(current, now.AddMinutes(1)));
+
+        var root = NewRoot();
+        try
+        {
+            AgentUpdateDurableFile.Write(Path.Combine(root, "transaction.json"), root, current);
+            Assert.Equal(current, new AgentUpdateJournalStore(root).Read());
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+#endif
+
+    [Fact]
+    public void CountedBusyRetryExhaustion_PreservesExistingInstallerCause()
+    {
+        var result = AgentUpdateInstallerResult.Failure(new InvalidOperationException("fixture"));
+        var before = new AgentUpdateJournal { AttemptId = "attempt-a", Phase = AgentUpdateStates.RetryableBusy,
+            RetryCount = 2, InstallerResult = result };
+        var after = AgentUpdateLocalService.TransitionBusyRetry(before, DateTimeOffset.UtcNow);
+        Assert.Equal(AgentUpdateStates.Failed, after.Phase);
+        Assert.Null(after.FailureCode);
+        Assert.Equal(result, after.InstallerResult);
+        Assert.Equal(result.ErrorCode, AgentUpdateLocalService.ProjectedErrorCode(after, after.Phase));
+    }
+
     [Fact]
     public void Classify_SeparatesExpiredManifestFromOtherManifestFailures()
     {
@@ -125,6 +175,7 @@ public sealed class AgentUpdateFailureCodeTests
         }
     }
 
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN
     [Fact]
     public void ClosedLabFailureReceipt_SurvivesAReportedFailure()
     {
@@ -143,6 +194,7 @@ public sealed class AgentUpdateFailureCodeTests
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root,
             closed with { FailedInstallSequence = closed.FailedInstallSequence + 1 }));
     }
+#endif
 
     [Fact]
     public void ProjectedErrorCode_IsHiddenOutsideFailedStates()

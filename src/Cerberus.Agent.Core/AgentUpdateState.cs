@@ -49,9 +49,14 @@ public static class AgentUpdateErrorCodes
     public const string StagingFailed = "staging_failed";
     public const string UacCancelled = "uac_cancelled";
     public const string InstallerBusy = "installer_busy";
+    public const string InstallerBusyTimeout = "installer_busy_timeout";
+    public const string InstallOverdue = "install_overdue";
     public const string RebootRequired = "reboot_required";
+    public const string RebootOverdue = "reboot_overdue";
     public const string MsiFailed = "msi_failed";
+    public const string MsiEnvironment = "msi_environment";
     public const string RecoveryTimeout = "recovery_timeout";
+    public const string RetryExhausted = "retry_exhausted";
     public const string Unknown = "unknown";
 
     public static string Classify(Exception ex)
@@ -260,6 +265,8 @@ public sealed record AgentUpdateInstallerResult(
     [property: JsonPropertyName("retry_after_utc")] string? RetryAfterUtc = null,
     [property: JsonPropertyName("quarantined")] bool Quarantined = false)
 {
+    [JsonExtensionData] public AgentUpdateJsonExtra? Extra { get; init; }
+
     public const string CurrentSchemaVersion = "agent.update.installer_result.v1";
 
     public static AgentUpdateInstallerResult FromMsiExitCode(

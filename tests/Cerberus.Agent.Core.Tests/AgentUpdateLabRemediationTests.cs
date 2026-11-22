@@ -1,5 +1,5 @@
+#if !CERBERUS_EXCLUDE_UPDATE_CAMPAIGN // Campaign code is not compiled with -p:ExcludeUpdateCampaignCode=true.
 using System.Net;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,94 +8,8 @@ using Cerberus.Agent.App.Updates;
 
 namespace Cerberus.Agent.Core.Tests;
 
-public sealed class AgentUpdateLabRemediationTests
+public sealed partial class AgentUpdateLabRemediationTests
 {
-    [Fact]
-    public void NativeProductVersionMatchesWindowsStringProjection()
-    {
-        var image = typeof(AgentUpdateLabRemediationTests).Assembly.Location;
-        var expected = System.Diagnostics.FileVersionInfo.GetVersionInfo(image).ProductVersion;
-        Assert.False(string.IsNullOrEmpty(expected));
-        Assert.Equal(expected, AgentInstalledProductVersion.Read(image));
-    }
-
-    [Fact]
-    public void NativeProductVersionRejectsMissingAndMalformedImages()
-    {
-        Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.Read("relative.exe"));
-        Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.Read("C:\\bad\0.exe"));
-        var path = Path.Combine(Path.GetTempPath(), "cerberus-version-" + Guid.NewGuid().ToString("N"));
-        Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.Read(path));
-        try
-        {
-            File.WriteAllBytes(path, [0x4d, 0x5a, 0, 0, 0, 0]);
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.Read(path));
-        }
-        finally { File.Delete(path); }
-    }
-
-    [Theory]
-    [InlineData(0U)]
-    [InlineData(5U)]
-    [InlineData(1048577U)]
-    [InlineData(uint.MaxValue)]
-    public void NativeProductVersionRejectsInvalidAllocationSizes(uint size) =>
-        Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireResourceSize(size));
-
-    [Fact]
-    public void NativeProductVersionBoundsBorrowedPointersBeforeDereferencing()
-    {
-        var block = Marshal.AllocHGlobal(32);
-        try
-        {
-            AgentInstalledProductVersion.RequireSlice(block, 32, block + 28, 4);
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireSlice(block, 32, IntPtr.Zero, 4));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireSlice(block, 32, block - 2, 4));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireSlice(block, 32, block + 30, 4));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireSlice(block, 32, block + 1, 4));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.RequireSlice(new IntPtr(-4), 32, new IntPtr(-4), 4));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadUnicode(block, 32, block, uint.MaxValue));
-        }
-        finally { Marshal.FreeHGlobal(block); }
-    }
-
-    [Fact]
-    public void NativeProductVersionTranslationUsesBytesAndFirstLanguageCodePage()
-    {
-        byte[] data = [0x09, 0x04, 0xb0, 0x04, 0x1f, 0x04, 0xe4, 0x04];
-        var block = Marshal.AllocHGlobal(data.Length);
-        try
-        {
-            Marshal.Copy(data, 0, block, data.Length);
-            Assert.Equal(0x040904B0U, AgentInstalledProductVersion.ReadTranslation(block, data.Length, block, 8));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadTranslation(block, data.Length, block, 2));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadTranslation(block, data.Length, block, 6));
-        }
-        finally { Marshal.FreeHGlobal(block); }
-    }
-
-    [Fact]
-    public void NativeProductVersionPreservesUnicodeProductStringAndChecksTermination()
-    {
-        const string value = "0.2.1011+\u00e7\u4e2d\U0001f680";
-        var data = Encoding.Unicode.GetBytes(value + "\0");
-        var block = Marshal.AllocHGlobal(data.Length);
-        try
-        {
-            Marshal.Copy(data, 0, block, data.Length);
-            Assert.Equal(value, AgentInstalledProductVersion.ReadUnicode(block, data.Length, block, (uint)data.Length / 2));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadUnicode(block, data.Length, block, 0));
-            Marshal.WriteInt16(block, data.Length - 2, 1);
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadUnicode(block, data.Length, block, (uint)data.Length / 2));
-            Marshal.WriteInt16(block, data.Length - 2, 0);
-            Marshal.WriteInt16(block, 2, 0);
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadUnicode(block, data.Length, block, (uint)data.Length / 2));
-            Marshal.WriteInt16(block, 2, unchecked((short)0xd800));
-            Assert.Throws<InvalidOperationException>(() => AgentInstalledProductVersion.ReadUnicode(block, data.Length, block, (uint)data.Length / 2));
-        }
-        finally { Marshal.FreeHGlobal(block); }
-    }
-
     private const string Feed = "https://feed.example.invalid/updates/devtest/";
     private static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
     private static readonly string Key = "sha256:" + new string('a', 64);
@@ -111,18 +25,18 @@ public sealed class AgentUpdateLabRemediationTests
     {
         var policy = Policy();
         var scope = new AgentUpdateLabRuntime.Scope(policy, policy.Targets[0], Identity());
-        var plan = new AgentUpdatePlan("msi", "0.2.908", "dev", "payload", new('a', 64), Now.ToString("O"), "lab",
-            AttemptId: new('a', 32), Sequence: 8, LabSourceVersion: "0.2.907");
+        var plan = new AgentUpdatePlan("msi", "0.2.909", "dev", "payload", new('a', 64), Now.ToString("O"), "lab",
+            AttemptId: new('a', 32), Sequence: 9, LabSourceVersion: "0.2.908");
         var release = AgentUpdateExpectedPlan.FromPlan(plan);
         var request = new AgentUpdateInstallRequest(Now, 7, Now.AddMinutes(30), ExpectedPlan: release,
-            LocalPolicyId: policy.CampaignId, LocalSourceVersion: "0.2.907", BoundAttemptId: plan.AttemptId, VerifiedRelease: release);
+            LocalPolicyId: policy.CampaignId, LocalSourceVersion: "0.2.908", BoundAttemptId: plan.AttemptId, VerifiedRelease: release);
         var active = new AgentUpdateJournal { Phase = "launch_requested", AttemptId = plan.AttemptId, LifecycleGeneration = 7,
             RunnerProcessId = 123, RunnerStartedUtc = Now, InstallRequest = request };
         var lifecycle = new AgentLifecycleSnapshot { Generation = 7, LastEnrollmentNonce = "nonce" };
         Assert.True(AgentUpdateLocalService.Quarantined(null, isServer: true)); // Deliberately remains fail closed.
         bool Eligible(AgentUpdateJournal a, AgentLifecycleSnapshot l, bool quarantine = false, bool pending = false)
             => AgentUpdateLabFaults.ShouldInterruptUpdater(scope, a, plan, l, 123, Now, quarantine, pending);
-        AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, Now, "0.2.907");
+        AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, Now, "0.2.908");
         Assert.True(Eligible(active, lifecycle));
         Assert.False(Eligible(active, lifecycle, quarantine: true));
         Assert.False(Eligible(active, lifecycle, pending: true));
@@ -130,7 +44,17 @@ public sealed class AgentUpdateLabRemediationTests
         Assert.False(Eligible(active, lifecycle with { LastEnrollmentNonce = "changed" }));
         Assert.False(Eligible(active with { RunnerProcessId = 456 }, lifecycle));
         Assert.False(Eligible(active with { Phase = "install_may_have_started" }, lifecycle));
-        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, policy.ExpiresAtUtc, "0.2.907"));
+        Assert.Throws<InvalidOperationException>(() => AgentUpdateLabRuntime.RequireLaunchScope(scope, active, 7, policy.ExpiresAtUtc, "0.2.908"));
+
+        foreach (var index in new[] { 1, 2, 3, 4, 5, 6, 7, 8, 10 })
+        {
+            var candidate = plan with { Version = policy.Versions[index], LabSourceVersion = policy.Versions[index - 1] };
+            var verified = AgentUpdateExpectedPlan.FromPlan(candidate);
+            var bound = active with { InstallRequest = request with { ExpectedPlan = verified,
+                VerifiedRelease = verified, LocalSourceVersion = candidate.LabSourceVersion } };
+            Assert.Equal(index is 6,
+                AgentUpdateLabFaults.ShouldInterruptUpdater(scope, bound, candidate, lifecycle, 123, Now, false, false));
+        }
     }
 
     [Fact]
@@ -297,11 +221,21 @@ public sealed class AgentUpdateLabRemediationTests
     [InlineData("generation")]
     [InlineData("verified-release")]
     [InlineData("recovery-required")]
+    [InlineData("recovery-timeout")]
+    [InlineData("reboot")]
+    [InlineData("exit-zero")]
+    [InlineData("unknown-with-exit")]
+    [InlineData("pre-launch-recovery-required")]
     public void InconsistentOrUnfinishedFailureCannotBeHandedOver(string changed)
     {
         var policy = Policy(); var failed = ClosedForeignFailure(); var request = failed.InstallRequest!;
         failed = changed switch
         {
+            "recovery-timeout" => failed with { InstallerResult = failed.InstallerResult! with { ErrorCode = "recovery_timeout", MsiExitCode = null } },
+            "reboot" => failed with { InstallerResult = failed.InstallerResult! with { RequiresReboot = true } },
+            "exit-zero" => failed with { InstallerResult = failed.InstallerResult! with { MsiExitCode = 0 } },
+            "unknown-with-exit" => failed with { InstallerResult = failed.InstallerResult! with { ErrorCode = "unknown" } },
+            "pre-launch-recovery-required" => PreLaunchUpdaterFailure() with { Phase = AgentUpdateStates.RecoveryRequired },
             "bound" => failed with { InstallRequest = request with { BoundAttemptId = new('b', 32) } },
             "terminal-attempt" => failed with { InstallRequest = request with { TerminalJournalAttemptId = new('b', 32) } },
             "terminal-phase" => failed with { InstallRequest = request with { TerminalJournalPhase = AgentUpdateStates.Installed } },
@@ -358,6 +292,77 @@ public sealed class AgentUpdateLabRemediationTests
         File.WriteAllText(path, "not-json");
         Assert.Throws<InvalidOperationException>(() => AgentUpdateLocalService.PreserveClosedLabFailure(root, original));
         Assert.Equal(original, store.Read());
+    }
+
+    [Fact]
+    public void UpdaterFailureBeforeItsInstallerLaunchCanBeHandedOver()
+    {
+        var policy = Policy(); var failed = PreLaunchUpdaterFailure(); var writes = 0;
+        var release = new AgentUpdateExpectedPlan("0.2.901", "dev:new", new('a', 64));
+        Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(failed, policy, "0.2.900", true));
+        var admitted = AgentUpdateLocalService.AdmitLabInstallRequest(failed, policy, release, 7, Now, "0.2.900", true, _ => writes++);
+        Assert.Equal(1, writes);
+        Assert.Equal(policy.CampaignId, admitted.InstallRequest!.LocalPolicyId);
+    }
+
+    [Theory, InlineData(null), InlineData("52e9ac8124e6462798d76bc129a364c0")]
+    public void StagingThatGaveUpBeforeBindingIsHandedOverWithItsReceipt(string? attempt)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-lab-handover-staging-" + Guid.NewGuid().ToString("N"));
+        var store = new AgentUpdateJournalStore(root); store.Change(_ => GaveUpStaging() with { AttemptId = attempt });
+        var original = store.Read(); var policy = Policy(); string? retained = null;
+        Assert.True(AgentUpdateLocalService.CanContinueLabCampaign(original, policy, "0.2.900", true));
+        store.Change(before => AgentUpdateLocalService.AdmitLabInstallRequest(before, policy, new("0.2.901", "dev:new", new('a', 64)),
+            7, Now, "0.2.900", true, snapshot => retained = AgentUpdateLocalService.PreserveClosedLabFailure(root, snapshot)));
+        Assert.Equal(original, AgentUpdateDurableFile.Read<AgentUpdateJournal>(retained!, root));
+        Assert.Equal(policy.CampaignId, store.Read().InstallRequest!.LocalPolicyId);
+    }
+
+    [Theory]
+    [InlineData("bound")]
+    [InlineData("verified-release")]
+    [InlineData("installer-result")]
+    [InlineData("downloading")]
+    [InlineData("awaiting-consent")]
+    [InlineData("generation")]
+    [InlineData("plan_mismatch")]
+    [InlineData("release_unavailable")]
+    [InlineData("expired")]
+    public void StagingFailureThatMayHaveProgressedCannotBeHandedOver(string changed)
+    {
+        var closed = GaveUpStaging(); var request = closed.InstallRequest!;
+        var failed = changed switch
+        {
+            "bound" => closed with { InstallRequest = request with { BoundAttemptId = new('c', 32) } },
+            "verified-release" => closed with { InstallRequest = request with { VerifiedRelease = request.ExpectedPlan } },
+            "installer-result" => closed with { InstallerResult = ClosedForeignFailure().InstallerResult! with { AttemptId = new('c', 32) } },
+            "downloading" => closed with { Phase = AgentUpdateStates.Downloading },
+            "awaiting-consent" => closed with { Phase = AgentUpdateStates.AwaitingConsent },
+            "generation" => closed with { LifecycleGeneration = 8 },
+            _ => closed with { InstallRequest = request with { TerminalReason = changed } },
+        };
+        Assert.False(AgentUpdateLocalService.CanContinueLabCampaign(failed, Policy(), "0.2.900", true));
+        Assert.Same(failed, AgentUpdateLocalService.AdmitLabInstallRequest(failed, Policy(), new("0.2.901", "dev:new", new('a', 64)),
+            7, Now, "0.2.900", true, _ => throw new InvalidOperationException("Invalid predecessors cannot write receipts.")));
+    }
+
+    // Three staging tries ran out while the download was paused, then a scheduled check failed without an attempt.
+    private static AgentUpdateJournal GaveUpStaging() => new()
+    {
+        Phase = AgentUpdateStates.Failed, LifecycleGeneration = 7,
+        HealthyInstalledVersion = "0.2.900", HealthyInstalledSequence = 42,
+        InstallRequest = new AgentUpdateInstallRequest(Now.AddHours(-2), 7, Now.AddHours(1), Attempts: 3,
+            ExpectedPlan: new("0.2.941", "dev:failed", new('b', 64)), TerminalReason: "staging_failed", TerminalUtc: Now.AddHours(-1),
+            TerminalJournalPhase: AgentUpdateStates.Failed, TerminalJournalAttemptId: "a0c950fcba90401890bec7511ba0c17c",
+            LocalPolicyId: "d317377e-5553-43cf-9404-bfcb0a236733", LocalSourceVersion: "0.2.940"),
+    };
+
+    // The updater's own failure path, after a busy installer exited and before the next launch fence was written.
+    private static AgentUpdateJournal PreLaunchUpdaterFailure()
+    {
+        var failed = ClosedForeignFailure();
+        return failed with { InstallerBusyCount = 1, InstallerResult = failed.InstallerResult! with
+            { ErrorCode = "unknown", MsiExitCode = null, ErrorMessage = "Updater requires recovery." } };
     }
 
     internal static AgentUpdateJournal ClosedForeignFailure()
@@ -490,3 +495,4 @@ public sealed class AgentUpdateLabRemediationTests
             => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { RequestMessage = request, Content = new StringContent(json) });
     }
 }
+#endif

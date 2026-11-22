@@ -50,7 +50,7 @@ if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 $helperOutput = Join-Path $outputRootPath 'installer-helper'
 & dotnet publish (Join-Path $repoRoot 'src/Cerberus.Agent.Installer/Helper/Cerberus.Agent.Installer.Helper.csproj') `
   -c $Configuration -r $Runtime --self-contained true -p:PublishSingleFile=true -p:Version=$Version `
-  -p:AgentReleaseChannel=dev @profileArgs -o $helperOutput | Out-Host
+  -p:AgentReleaseChannel=dev -p:ExcludeUpdateCampaignCode=true @profileArgs -o $helperOutput | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'CI installer helper publish failed.' }
 $helper = Join-Path $helperOutput 'Cerberus.Agent.Installer.Helper.exe'
 $exeHash = (Get-FileHash -LiteralPath (Join-Path $runtimePublishDir 'Cerberus.Agent.Service.exe')).Hash

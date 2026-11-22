@@ -1,0 +1,13 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <!-- Test-harness MSI only (1618 fault). Same WiX SDK as src/Cerberus.Agent.Installer. -->
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <AcceptEula>wix7</AcceptEula>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName>cerberus-campaign-hold</OutputName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="hold-installer.wxs" />
+  </ItemGroup>
+</Project>

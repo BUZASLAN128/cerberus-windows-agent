@@ -8,6 +8,126 @@ namespace Cerberus.Agent.Core.Tests;
 
 public sealed class AgentUpdateStorageProvenanceTests
 {
+    [Fact]
+    public void DescendantWalk_RejectsMissingRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-walk-" + Guid.NewGuid().ToString("N"));
+        Assert.Throws<DirectoryNotFoundException>(() => AgentUpdateSecurity.ValidateProtectedDescendants(root, _ => { }));
+        Assert.False(Directory.Exists(root));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DescendantWalk_ToleratesDisappearanceBeforeAttributeRead(bool directory)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-walk-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "transient");
+        if (directory) Directory.CreateDirectory(path); else File.WriteAllText(path, "fixture");
+        var read = false;
+        try
+        {
+            AgentUpdateSecurity.ValidateProtectedDescendants(root, _ => Assert.Fail("Vanished entry must not reach authority validation."),
+                candidate =>
+                {
+                    read = true;
+                    Assert.Equal(path, candidate);
+                    if (directory) Directory.Delete(candidate); else File.Delete(candidate);
+                    return File.GetAttributes(candidate);
+                });
+            Assert.True(read);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("authority")]
+    [InlineData("access")]
+    [InlineData("io")]
+    [InlineData("native_access")]
+    public void DescendantWalk_PreservesNonMissingFailures(string failure)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-walk-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "retained.txt");
+        File.WriteAllText(path, "unchanged");
+        Exception expected = failure switch
+        {
+            "authority" => new InvalidOperationException("Protected update storage owner is not trusted."),
+            "access" => new UnauthorizedAccessException(),
+            "io" => new IOException("Read failed."),
+            _ => new InvalidOperationException("Protected update provenance is unavailable.", new System.ComponentModel.Win32Exception(5)),
+        };
+        try
+        {
+            Assert.Same(expected, Record.Exception(() => AgentUpdateSecurity.ValidateProtectedDescendants(root, _ => throw expected)));
+            Assert.Same(expected, Record.Exception(() => AgentUpdateSecurity.ValidateProtectedDescendants(root,
+                _ => { }, _ => throw expected)));
+            Assert.Equal("unchanged", File.ReadAllText(path));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void DescendantWalk_RejectsRealDirectoryReparsePointBeforeAuthorityOrTraversal()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-walk-" + Guid.NewGuid().ToString("N"));
+        var walk = Path.Combine(root, "walk");
+        var target = Path.Combine(root, "target");
+        var link = Path.Combine(walk, "redirect");
+        Directory.CreateDirectory(walk);
+        Directory.CreateDirectory(target);
+        var sentinel = Path.Combine(target, "sentinel.txt");
+        File.WriteAllText(sentinel, "unchanged");
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("cmd.exe") { UseShellExecute = false, CreateNoWindow = true };
+            foreach (var argument in new[] { "/c", "mklink", "/J", link, target }) start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            Assert.True(process.WaitForExit(5000));
+            Assert.Equal(0, process.ExitCode);
+            Assert.True(File.GetAttributes(link).HasFlag(FileAttributes.ReparsePoint));
+            var authorityCalled = false;
+            var error = Assert.Throws<InvalidOperationException>(() => AgentUpdateSecurity.ValidateProtectedDescendants(walk,
+                _ => authorityCalled = true));
+            Assert.Contains("reparse point", error.Message);
+            Assert.False(authorityCalled);
+            Assert.Equal("unchanged", File.ReadAllText(sentinel));
+        }
+        finally
+        {
+            if (Directory.Exists(link)) Directory.Delete(link);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void DescendantWalk_ToleratesAnEntryVanishingDuringAuthorityRead(int nativeError)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-walk-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "transient.tmp");
+        File.WriteAllText(path, "fixture");
+        var visited = false;
+        try
+        {
+            AgentUpdateSecurity.ValidateProtectedDescendants(root, candidate =>
+            {
+                Assert.Equal(path, candidate);
+                visited = true;
+                File.Delete(candidate);
+                throw new InvalidOperationException("Protected update provenance is unavailable.",
+                    new System.ComponentModel.Win32Exception(nativeError));
+            });
+            Assert.True(visited);
+            Assert.False(File.Exists(path));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app\", @"C:\Program Files\Cerberus\Windows Agent\")]
     [InlineData(@"C:\Program Files\Cerberus\Windows Agent\app", @"C:\Program Files\Cerberus\Windows Agent")]

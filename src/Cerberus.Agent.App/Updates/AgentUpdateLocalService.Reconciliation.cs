@@ -47,7 +47,7 @@ internal static partial class AgentUpdateLocalService
         lock (CancellationGate) { _networkOperation = cancellation; }
         try
         {
-            using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler())
+            using var http = new HttpClient(UpdateCampaignHooks.CreateUpdateHandler())
             {
                 Timeout = TimeSpan.FromSeconds(30),
             };
@@ -214,19 +214,20 @@ internal static partial class AgentUpdateLocalService
         long? requiredPolicyGeneration,
         Func<Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> change,
         Func<string, Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeAttempt,
-        Func<AgentUpdateJournal> read)
+        Func<AgentUpdateJournal> read,
+        DateTimeOffset? interruptedRetryAtUtc = null)
     {
         if (active.AttemptId is null)
         {
             if (!IsIncompletePreInstallWithoutAttempt(active))
                 return active;
             return change(before => before.AttemptId is null && IsIncompletePreInstallWithoutAttempt(before)
-                ? TransitionInterruptedPreInstallWithoutAttempt(
+                ? DeferInterruptedPreInstall(before, TransitionInterruptedPreInstallWithoutAttempt(
                     before,
                     lifecycleGeneration,
                     retryAtUtc,
                     required,
-                    requiredPolicyGeneration)
+                    requiredPolicyGeneration), interruptedRetryAtUtc)
                 : before);
         }
 
@@ -239,7 +240,8 @@ internal static partial class AgentUpdateLocalService
             required,
             requiredPolicyGeneration,
             retryAtUtc,
-            changeAttempt);
+            changeAttempt,
+            interruptedRetryAtUtc);
         if (plan is null)
             return read();
 
@@ -252,29 +254,36 @@ internal static partial class AgentUpdateLocalService
                 active.AttemptId,
                 before => before.AttemptId == active.AttemptId &&
                     before.Phase is AgentUpdateStates.Checking or AgentUpdateStates.Downloading or AgentUpdateStates.Staged
-                        ? TransitionReconciliationFailure(
+                        ? DeferInterruptedPreInstall(before, TransitionReconciliationFailure(
                             before,
                             retryAtUtc,
                             required || before.Required,
-                            requiredPolicyGeneration)
+                            requiredPolicyGeneration), interruptedRetryAtUtc)
                         : before);
 
         return active;
     }
 
+    // Development campaign builds retry a check interrupted before installation after 30 seconds; release builds wait 15 minutes.
+    internal static TimeSpan InterruptedPreInstallRetryDelay(bool labBuild)
+        => labBuild ? TimeSpan.FromSeconds(30) : TimeSpan.FromMinutes(15);
+
     private static async Task ReconcileOwnedAsync(CancellationToken ct, bool allowHealth = true)
     {
         var lifecycle = await LoadLifecycleAsync(ct).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        var interruptedRetryAtUtc = now.Add(InterruptedPreInstallRetryDelay(AgentUpdateDefaults.LabPolicyB64.Length > 0));
         var active = RecoverActiveAttempt(
             Root,
             Journal.Read(),
             lifecycle.Generation,
-            DateTimeOffset.UtcNow,
+            now,
             required: false,
             requiredPolicyGeneration: null,
             Journal.Change,
             Journal.ChangeAttempt,
-            Journal.Read);
+            Journal.Read,
+            interruptedRetryAtUtc);
         if (active.AttemptId is null)
         {
             await ProjectAsync(ct).ConfigureAwait(false);
@@ -284,18 +293,15 @@ internal static partial class AgentUpdateLocalService
         {
             if (!IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc))
             {
-                if (active.Phase != "launch_requested" || !await ReconcileUnstartedLabRunnerAsync(active, ct).ConfigureAwait(false))
+                if (active.Phase != "launch_requested" || !await ReconcileUnstartedCampaignRunnerAsync(active, ct).ConfigureAwait(false))
                     Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.RecoveryRequired });
             }
+            else RecordInstallOverdue(active, now, runnerAlive: true);
         }
-        else if (active.Phase == AgentUpdateStates.RetryableBusy && active.NextRetryUtc is null)
+        else if (active.Phase == AgentUpdateStates.RetryableBusy &&
+            (active.NextRetryUtc is null || InstallerBusyTimeoutDue(active, now)))
         {
-            Journal.ChangeAttempt(active.AttemptId, before => before with
-            {
-                RetryCount = Math.Min(3, before.RetryCount + 1),
-                NextRetryUtc = DateTimeOffset.UtcNow.AddSeconds(Math.Min(30, 4 * Math.Pow(2, before.RetryCount))),
-                Phase = before.RetryCount >= 2 ? AgentUpdateStates.Failed : AgentUpdateStates.RetryableBusy,
-            });
+            Journal.ChangeAttempt(active.AttemptId, before => TransitionBusyRetry(before, now));
         }
         else if (active.Phase is AgentUpdateStates.HealthPending or AgentUpdateStates.PendingReboot)
         {
@@ -303,17 +309,25 @@ internal static partial class AgentUpdateLocalService
             AgentUpdatePlan? plan;
             try { plan = ReadPlan(active); }
             catch (Exception ex) when (ex is not OperationCanceledException) { plan = null; }
-            if (active.Phase == AgentUpdateStates.PendingReboot && active.InstallationBootId == AgentUpdateBootIdentity.Read())
+            if (active.Phase == AgentUpdateStates.PendingReboot)
             {
-                await ProjectAsync(ct).ConfigureAwait(false);
-                return;
+                var bootId = AgentUpdateBootIdentity.Read();
+                if (active.InstallationBootId == bootId)
+                {
+                    if (TransitionRebootOverdue(active, now, bootId) != active)
+                        Journal.ChangeAttempt(active.AttemptId, before => TransitionRebootOverdue(before, now, bootId));
+                    await ProjectAsync(ct).ConfigureAwait(false);
+                    return;
+                }
             }
             if (plan is not null && await IsPlanHealthyAsync(plan, ct).ConfigureAwait(false))
-                Journal.ChangeAttempt(active.AttemptId, before => before with
-                {
-                    Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
-                    HealthyInstalledVersion = plan.Version,
-                });
+                Journal.ChangeAttempt(active.AttemptId, before => before.Phase == active.Phase
+                    ? before with
+                    {
+                        Phase = AgentUpdateStates.Installed, HealthyInstalledSequence = plan.Sequence,
+                        HealthyInstalledVersion = plan.Version,
+                    }
+                    : before);
             else if (plan is not null && !HealthRetryExpired(active,DateTimeOffset.UtcNow, SystemStartedUtc.Value))
                 return; // Local readiness can lag on a loaded server; the next tick tries again.
             else
@@ -326,10 +340,13 @@ internal static partial class AgentUpdateLocalService
         else if (active.Phase == AgentUpdateStates.RecoveryRequired)
         {
             if (!allowHealth) return;
+            RecordInstallOverdue(active, now, IsProcessAlive(active.RunnerProcessId, active.RunnerStartedUtc));
             await TryCloseRecoveryAsync(active, ct).ConfigureAwait(false);
         }
         else if (active.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking)
-            Journal.ChangeAttempt(active.AttemptId, before => before with { Phase = AgentUpdateStates.Failed });
+            Journal.ChangeAttempt(active.AttemptId, before => before.Phase is AgentUpdateStates.Downloading or AgentUpdateStates.Checking
+                ? DeferInterruptedPreInstall(before, TransitionFailure(before, AgentUpdateErrorCodes.StagingFailed), interruptedRetryAtUtc)
+                : before);
         await ProjectAsync(ct).ConfigureAwait(false);
     }
 
@@ -375,7 +392,8 @@ internal static partial class AgentUpdateLocalService
         bool required,
         long? requiredPolicyGeneration,
         DateTimeOffset retryAtUtc,
-        Func<string, Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeAttempt)
+        Func<string, Func<AgentUpdateJournal, AgentUpdateJournal>, AgentUpdateJournal> changeAttempt,
+        DateTimeOffset? interruptedRetryAtUtc = null)
     {
         if (active.AttemptId is null)
             throw new InvalidOperationException("Active update attempt is missing.");
@@ -393,11 +411,11 @@ internal static partial class AgentUpdateLocalService
         // process wins the race before this compare/transition.
         var retired = changeAttempt(
             active.AttemptId,
-            before => TransitionReconciliationFailure(
+            before => DeferInterruptedPreInstall(before, TransitionReconciliationFailure(
                 before,
                 retryAtUtc,
                 required,
-                requiredPolicyGeneration));
+                requiredPolicyGeneration), interruptedRetryAtUtc));
         if (retired.Phase == "launch_requested" || retired.MayHaveStartedInstallation)
             throw new InvalidOperationException("Active update plan is missing.");
         return null;

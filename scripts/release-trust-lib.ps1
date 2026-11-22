@@ -87,7 +87,7 @@ function Read-AssemblyMetadataValues {
 }
 
 function Get-EmbeddedReleaseTrust {
-  param([Parameter(Mandatory = $true)][string]$AssemblyPath, [string]$BundlePath = '')
+  param([Parameter(Mandatory = $true)][string]$AssemblyPath, [string]$BundlePath = '', [switch]$BuildComparison)
   # Manifest public keys and signer pins exactly as the shipped agent reads them (runtime assembly metadata).
   $metadata = Read-AssemblyMetadataValues $AssemblyPath -BundlePath $BundlePath
   $keys = New-Object System.Collections.Generic.List[string]
@@ -104,8 +104,11 @@ function Get-EmbeddedReleaseTrust {
     finally { $rsa.Dispose() }
   }
   if ($keys.Count -eq 0) { throw "The built runtime carries no manifest public key." }
-  $pins = ConvertTo-NormalizedSignerPins @(([string]$metadata["AgentUpdateAllowedSignerKeyIdentity"]) -split ',')
-  if (@($pins).Count -eq 0) { throw "The built runtime carries no signer pin." }
+  $pins = @()
+  if (-not $BuildComparison) {
+    $pins = ConvertTo-NormalizedSignerPins @(([string]$metadata["AgentUpdateAllowedSignerKeyIdentity"]) -split ',')
+    if (@($pins).Count -eq 0) { throw "The built runtime carries no signer pin." }
+  }
   $prefixes = @(([string]$metadata["AgentUpdateAllowedArtifactPrefixes"]) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
   return [pscustomobject]@{
     PublicKeyPems = @($keys.ToArray()); SignerPins = @($pins)
@@ -139,6 +142,7 @@ function Assert-NoLabCampaignMetadata {
       if ($Metadata.ContainsKey($key)) { throw "$Label carries lab-campaign metadata '$key'; a non-lab release must not." }
     }
   }
+  # The metadata reader locates a bundled Runtime.dll only in Cerberus.Agent.Service.exe.
   foreach ($name in 'Cerberus.Agent.dll', 'Cerberus.Agent.Runtime.dll') {
     & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir $name)) $name
   }
@@ -148,45 +152,138 @@ function Assert-NoLabCampaignMetadata {
     if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf) -or -not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { continue }
     $entry = [IO.Path]::GetFileNameWithoutExtension($hostName) + '.dll'
     & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir $entry) -BundlePath $hostPath) "Bundle $hostName ($entry)"
-    # Only the service and updater bundles embed the runtime assembly (as in Get-BuiltReleaseTrust); the app bundle does not.
-    if ($hostName -cne 'Cerberus.Agent.exe') {
-      & $check (Read-AssemblyMetadataValues (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath $hostPath) "Bundle $hostName (Cerberus.Agent.Runtime.dll)"
-    }
   }
   foreach ($assembly in $ExtraAssemblies) {
     if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) { throw "Assembly to check for lab metadata was not found: $assembly" }
     & $check (Read-AssemblyMetadataValues $assembly) ([IO.Path]::GetFileName($assembly))
   }
+  # A non-lab release is built with -p:ExcludeUpdateCampaignCode=true, so no AgentUpdateLab* type may be compiled in.
+  # Every managed Cerberus.Agent* entry of a bundle is read: the service bundle carries the App update code in Cerberus.Agent.Runtime.dll.
+  $hits = New-Object System.Collections.Generic.List[string]
+  $scan = {
+    param([byte[]]$Bytes, [string]$Label)
+    $pe = [System.Reflection.PortableExecutable.PEReader]::new([IO.MemoryStream]::new($Bytes))
+    try {
+      $reader = [System.Reflection.Metadata.PEReaderExtensions]::GetMetadataReader($pe)
+      $names = @(foreach ($handle in $reader.TypeDefinitions) {
+        $name = $reader.GetString($reader.GetTypeDefinition($handle).Name)
+        if ($name.StartsWith('AgentUpdateLab', [StringComparison]::Ordinal)) { $name }
+      })
+      if ($names.Count -gt 0) { $hits.Add("$Label defines $($names -join ', ')") }
+    } finally { $pe.Dispose() }
+  }
+  foreach ($name in 'Cerberus.Agent.dll', 'Cerberus.Agent.Runtime.dll', 'Cerberus.Agent.Updater.dll') {
+    $path = Join-Path $RuntimeDir $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) { & $scan ([IO.File]::ReadAllBytes($path)) $name }
+  }
+  foreach ($hostName in 'Cerberus.Agent.exe', 'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe') {
+    $hostPath = Join-Path $RuntimeDir $hostName
+    if (-not (Test-Path -LiteralPath $hostPath -PathType Leaf) -or -not [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($hostPath)) { continue }
+    $entries = @([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadEntries($hostPath) | Where-Object { $_.Kind -eq 1 -and $_.Name -like 'Cerberus.Agent*.dll' })
+    if ($entries.Count -eq 0) { throw "Bundle $hostName has no managed Cerberus.Agent assembly to check for update campaign types." }
+    foreach ($entry in $entries) {
+      & $scan ([Cerberus.Agent.Core.AgentSingleFileBundle]::ReadAssembly($hostPath, $entry.Name)) "Bundle $hostName ($($entry.Name))"
+    }
+  }
+  foreach ($assembly in $ExtraAssemblies) { & $scan ([IO.File]::ReadAllBytes($assembly)) ([IO.Path]::GetFileName($assembly)) }
+  if ($hits.Count -gt 0) {
+    throw "Non-lab release carries update campaign types (build with -p:ExcludeUpdateCampaignCode=true): $($hits -join '; ')."
+  }
+}
+
+function Assert-ReleaseTrustEqual($Agent, $Other, [string]$Label, [switch]$CompareSignerPins) {
+  $nameSets = @('PublicKeyPems', 'ArtifactPrefixes')
+  if ($CompareSignerPins) { $nameSets += 'SignerPins' }
+  foreach ($name in $nameSets) {
+    if (-not (Test-SameStringSet $Agent.$name $Other.$name)) { throw "Cerberus.Agent.dll and $Label embed different $name." }
+  }
+  if (-not (Test-SameStringSet $Agent.Channel $Other.Channel)) { throw "Cerberus.Agent.dll and $Label embed different release channels." }
+  if (-not (Test-SameStringSet $Agent.ManifestUrl $Other.ManifestUrl)) { throw "Cerberus.Agent.dll and $Label embed different update manifest URLs." }
 }
 
 function Get-BuiltReleaseTrust {
   param([Parameter(Mandatory = $true)][string]$RuntimeDir)
-  # The update path reads Cerberus.Agent.Runtime.dll, the app reads Cerberus.Agent.dll: both must carry identical trust values.
-  # Only token finalize and CNG signing call this, so unsigned dev builds are refused unconditionally.
-  $trust = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir "Cerberus.Agent.dll")
-  $runtime = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir "Cerberus.Agent.Runtime.dll")
-  foreach ($name in "PublicKeyPems", "SignerPins", "ArtifactPrefixes") {
-    if (-not (Test-SameStringSet $trust.$name $runtime.$name)) { throw "Cerberus.Agent.dll and Cerberus.Agent.Runtime.dll embed different $name." }
-  }
-  if (-not [string]::Equals($trust.Channel, $runtime.Channel, [StringComparison]::Ordinal)) { throw "Cerberus.Agent.dll and Cerberus.Agent.Runtime.dll embed different release channels." }
-  if (-not [string]::Equals($trust.ManifestUrl, $runtime.ManifestUrl, [StringComparison]::Ordinal)) { throw "Cerberus.Agent.dll and Cerberus.Agent.Runtime.dll embed different update manifest URLs." }
-  Assert-NoUnsignedDevBuild $trust "Cerberus.Agent.dll"
-  Assert-NoUnsignedDevBuild $runtime "Cerberus.Agent.Runtime.dll"
+  # Finalize and CNG signing require the app, service and updater to agree, including signer pins.
   Import-AgentBundleReader
-  if (Test-Path -LiteralPath (Join-Path $RuntimeDir 'Cerberus.Agent.exe')) {
-    $isBundled = [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle((Join-Path $RuntimeDir 'Cerberus.Agent.exe'))
-  } else { $isBundled = $false }
-  if ($isBundled) {
-    if (Test-Path -LiteralPath (Join-Path $RuntimeDir 'Cerberus.Agent.dll')) { throw 'Server bundle carries an external entry assembly.' }
-    foreach ($hostName in @('Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe')) {
-      $embedded = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.Runtime.dll') -BundlePath (Join-Path $RuntimeDir $hostName)
-      foreach ($name in 'PublicKeyPems', 'SignerPins', 'ArtifactPrefixes', 'Channel', 'ManifestUrl', 'AllowUnsignedDevBuild') {
-        if (-not (Test-SameStringSet $trust.$name $embedded.$name)) { throw "Bundle $hostName embeds different $name." }
-      }
-      Assert-NoUnsignedDevBuild $embedded $hostName
+  $agentAssembly = Join-Path $RuntimeDir 'Cerberus.Agent.dll'
+  $agentHost = Join-Path $RuntimeDir 'Cerberus.Agent.exe'
+  $server = (Test-Path -LiteralPath $agentHost -PathType Leaf) -and [Cerberus.Agent.Core.AgentSingleFileBundle]::IsBundle($agentHost)
+  if ($server -and (Test-Path -LiteralPath $agentAssembly)) { throw 'Server bundle carries an external entry assembly.' }
+  $agentBundle = if ($server) { $agentHost } else { '' }
+  $trust = Get-EmbeddedReleaseTrust $agentAssembly -BundlePath $agentBundle
+  Assert-NoUnsignedDevBuild $trust 'Cerberus.Agent.dll'
+  foreach ($pair in @(
+    @('Cerberus.Agent.Runtime.dll', 'Cerberus.Agent.Service.exe'),
+    @('Cerberus.Agent.Updater.dll', 'Cerberus.Agent.Updater.exe')
+  )) {
+    $name, $hostName = $pair
+    $bundle = if ($server) { Join-Path $RuntimeDir $hostName } else { '' }
+    $label = if ($server) { $hostName } else { $name }
+    $other = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir $name) -BundlePath $bundle
+    Assert-ReleaseTrustEqual $trust $other $label -CompareSignerPins
+    if ($server -and -not (Test-SameStringSet $trust.AllowUnsignedDevBuild $other.AllowUnsignedDevBuild)) {
+      throw "Bundle $hostName embeds different AllowUnsignedDevBuild."
     }
+    Assert-NoUnsignedDevBuild $other $label
   }
   return $trust
+}
+
+function Assert-BundleEntryKinds([string]$BundlePath, [string[]]$AllowedNativeNames = @()) {
+  Import-AgentBundleReader
+  $remainingNativeNames = [System.Collections.Generic.HashSet[string]]::new($AllowedNativeNames, [StringComparer]::Ordinal)
+  foreach ($entry in [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadEntries($BundlePath)) {
+    if ($entry.Kind -in @(1, 3, 4, 5)) { continue }
+    if ($entry.Kind -eq 2 -and $remainingNativeNames.Remove($entry.Name)) { continue }
+    throw "Bundle $BundlePath contains disallowed entry kind $($entry.Kind): $($entry.Name)."
+  }
+}
+
+function Assert-UpdaterBundleHasNoNativeEntries([string]$BundlePath) {
+  Assert-BundleEntryKinds $BundlePath
+}
+
+function Assert-ServerAgentBundleEntryKinds([string]$BundlePath) {
+  # The server App still publishes Windows Desktop; the headless Service and Updater do not.
+  Assert-BundleEntryKinds $BundlePath @('D3DCompiler_47_cor3.dll', 'PenImc_cor3.dll',
+    'PresentationNative_cor3.dll', 'vcruntime140_cor3.dll', 'wpfgfx_cor3.dll')
+}
+
+function Assert-UpdaterBuildContract([string]$RuntimeDir, [string]$BuildProfile, [bool]$Lab, [string]$BackendAnchors) {
+  $agent = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.dll') -BuildComparison
+  $updater = Get-EmbeddedReleaseTrust (Join-Path $RuntimeDir 'Cerberus.Agent.Updater.dll') -BuildComparison
+  Assert-ReleaseTrustEqual $agent $updater 'Cerberus.Agent.Updater.dll'
+
+  $contractAssembly = Join-Path $RuntimeDir 'Cerberus.Agent.Core.dll'
+  $expectedAnchors = $BackendAnchors.Replace('%2C', ',')
+  $bundles = if ($BuildProfile -ceq 'server') { @('Cerberus.Agent.exe', 'Cerberus.Agent.Service.exe', 'Cerberus.Agent.Updater.exe') } else { @('') }
+  foreach ($name in $bundles) {
+    $bundle = ''
+    if ($name) {
+      $bundle = Join-Path $RuntimeDir $name
+      if ($name -ceq 'Cerberus.Agent.exe') { Assert-ServerAgentBundleEntryKinds $bundle }
+      else { Assert-UpdaterBundleHasNoNativeEntries $bundle }
+    }
+    $metadata = Read-AssemblyMetadataValues $contractAssembly -BundlePath $bundle
+    if (([string]$metadata['BackendTrustAnchors']) -cne $expectedAnchors) { throw "Built BackendTrustAnchors differ from the backend anchor input in '$name'." }
+  }
+  if ($Lab) { return }
+
+  $allowed = @('Cerberus.Agent.Updater', 'Cerberus.Agent.Core')
+  $libraries = if ($BuildProfile -ceq 'server') {
+    [Cerberus.Agent.Core.AgentSingleFileBundle]::ReadEntries((Join-Path $RuntimeDir 'Cerberus.Agent.Updater.exe')) |
+      Where-Object { $_.Kind -eq 1 } | ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) }
+  } else {
+    $deps = Get-Content -Raw -LiteralPath (Join-Path $RuntimeDir 'Cerberus.Agent.Updater.deps.json') | ConvertFrom-Json -AsHashtable
+    if (-not $deps.libraries -or $deps.libraries -isnot [System.Collections.IDictionary]) { throw 'Updater dependencies have no library map.' }
+    $deps.libraries.Keys | ForEach-Object { ($_ -split '/', 2)[0] }
+  }
+  foreach ($library in $libraries) {
+    if ($library -ilike 'Cerberus.*' -and $library -cnotin $allowed) { throw "Non-lab updater has a forbidden dependency: $library." }
+  }
+  foreach ($required in $allowed) {
+    if ($required -cnotin $libraries) { throw "Non-lab updater is missing a required dependency: $required." }
+  }
 }
 
 function Test-SameStringSet {

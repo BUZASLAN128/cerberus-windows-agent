@@ -2,6 +2,8 @@
 # Dot-source only, after release-signing-lib.ps1 and release-trust-lib.ps1. Loading this file has no side effects.
 # No function here prompts for, accepts or logs a PIN or password.
 
+. (Join-Path $PSScriptRoot 'release-artifact-url-lib.ps1')
+
 $script:ReleaseRuntimeExecutableNames = @(
   "Cerberus.Agent.exe",
   "Cerberus.Agent.Service.exe",
@@ -235,7 +237,9 @@ function Complete-ExternalManifestSigning(
   [scriptblock]$FileSignatureCheck = $null,
   [string]$BuildProfile = "desktop",
   # Test seam for opaque fixture bytes; the release entrypoint never passes it.
-  [scriptblock]$SetupPayloadCheck = $null
+  [scriptblock]$SetupPayloadCheck = $null,
+  [switch]$RequirePublicDns,
+  [string]$AllowedTailnetArtifactHost = ""
 ) {
   Write-Step "Verifying detached manifest signature"
   if (-not (Test-Path -LiteralPath $PublicKeyPath -PathType Leaf)) {
@@ -262,6 +266,8 @@ function Complete-ExternalManifestSigning(
     -Canonical $canonical -Signature $signature -ExpectedKeyPem $expectedKey -Trust $trust `
     -CoreAssembly (Join-Path $runtimeDir "Cerberus.Agent.Core.dll") -Channel $Channel -ArtifactPrefixes @($pending.allowed_artifact_prefixes)
   if (-not [string]::Equals([string]$manifest["version"], $Version, [StringComparison]::Ordinal)) { throw "Pending manifest version does not match -Version." }
+  Assert-ReleaseArtifactUrl -ArtifactUrl $manifest['artifact_url'] -ArtifactPrefixes $trust.ArtifactPrefixes -RequirePublicDns:$RequirePublicDns `
+    -AllowedTailnetHost $AllowedTailnetArtifactHost
 
   $msi = Join-Path $PublishDir "$InstallerBase.msi"
   if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { throw "MSI installer was not found: $msi" }

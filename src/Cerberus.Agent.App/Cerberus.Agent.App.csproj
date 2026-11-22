@@ -89,6 +89,17 @@
     <Compile Remove="SingleInstanceGuard.cs" />
   </ItemGroup>
 
+  <!-- -p:ExcludeUpdateCampaignCode=true leaves the development update campaign code out; the hooks fall back to release behavior. -->
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' == 'true'">
+    <Compile Remove="Updates\AgentUpdateLab*.cs" />
+    <Compile Remove="Updates\AgentUpdateLocalService.Lab.cs" />
+    <Compile Remove="Updates\AgentUpdateLocalService.LabRecovery.cs" />
+    <Compile Remove="Updates\UpdateCampaignHooks.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ExcludeUpdateCampaignCode)' != 'true'">
+    <Compile Remove="Updates\UpdateCampaignHooks.Release.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.14" />
   </ItemGroup>

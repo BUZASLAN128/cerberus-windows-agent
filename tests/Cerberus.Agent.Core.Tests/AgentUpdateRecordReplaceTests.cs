@@ -1,0 +1,61 @@
+using Cerberus.Agent.Core;
+
+namespace Cerberus.Agent.Core.Tests;
+
+/// <summary>A record write must survive another process briefly reading the record it replaces.</summary>
+public sealed class AgentUpdateRecordReplaceTests
+{
+    private sealed record Record(int Value);
+
+    [Fact]
+    public void Write_WaitsForAReaderThatClosesWithinTheRetryWindow()
+    {
+        var root = NewRoot();
+        try
+        {
+            var path = Path.Combine(root, "transaction.json");
+            AgentUpdateDurableFile.Write(path, root, new Record(1));
+            var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            // A dedicated thread, not the thread pool: a busy parallel test run must not delay the release past the window.
+            var release = new Thread(() => { Thread.Sleep(40); reader.Dispose(); }) { IsBackground = true };
+            release.Start();
+
+            AgentUpdateDurableFile.Write(path, root, new Record(2));
+            release.Join();
+
+            Assert.Equal(new Record(2), AgentUpdateDurableFile.Read<Record>(path, root));
+            Assert.Empty(Directory.GetFiles(root, "*.tmp"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Write_FailsAndKeepsTheRecordWhenTheReaderStaysOpen()
+    {
+        var root = NewRoot();
+        try
+        {
+            var path = Path.Combine(root, "transaction.json");
+            AgentUpdateDurableFile.Write(path, root, new Record(1));
+            using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                Assert.Throws<UnauthorizedAccessException>(() => AgentUpdateDurableFile.Write(path, root, new Record(2)));
+
+            Assert.Equal(new Record(1), AgentUpdateDurableFile.Read<Record>(path, root));
+            Assert.Empty(Directory.GetFiles(root, "*.tmp"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static string NewRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "cerberus-update-record-replace-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        return root;
+    }
+}

@@ -1,12 +1,5 @@
 namespace Cerberus.Agent.Core;
 
-public interface IAgentLogger
-{
-    void Info(string message);
-    void Warn(string message);
-    void Error(string message, Exception? ex = null);
-}
-
 public static class ExceptionSite
 {
     /// <summary>Throw frame as <c>Type.Method</c>, plus <c>via</c> the first Cerberus.* frame when it differs; no paths or arguments. "unknown" when absent.</summary>

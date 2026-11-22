@@ -17,6 +17,7 @@ param(
   [string]$AgentUpdateManifestPublicKeysB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEYS_B64,
   [string]$UpdateManifestPublicKeyB64 = $env:CERBERUS_AGENT_UPDATE_MANIFEST_PUBLIC_KEY_B64,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
+  [string]$AllowedTailnetArtifactHost = "",  # one named <machine>.<tailnet>.ts.net artifact host; other private hosts stay refused
   [int]$DefaultOAuthRedirectPort = 0,
   [long]$ManifestSequence = 0,
   [switch]$SkipTests,
@@ -84,12 +85,36 @@ if ($null -ne $labBuild -and (Test-Path -LiteralPath $outputRootPath)) { throw '
 $releaseProfile = Get-ReleaseProfileBuild $BuildProfile $AgentCommandTrustAnchorsFile $TimingOverrides $ProductName $EulaRtf $Channel $BackendTrustAnchorsFile $SecondaryBackendUrl $SecondaryCommandTrustAnchorsFile
 $assetBase = "Cerberus.Agent.Bundle-$Channel-$Version$($releaseProfile.AssetSuffix)"
 $installerBase = "Cerberus.Agent-$Channel-$Version$($releaseProfile.AssetSuffix)"
+$requirePublicDns = $env:GITHUB_ACTIONS -ieq 'true'
 if ($signingPlan.Finalize) {
   Complete-ExternalManifestSigning `
     -PublishDir $publishDir -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile
+    -SignaturePath $ManifestSignatureFile -PublicKeyPath $ManifestSigningPublicKeyFile -BuildProfile $BuildProfile -RequirePublicDns:$requirePublicDns `
+    -AllowedTailnetArtifactHost $AllowedTailnetArtifactHost
   return
 }
+
+if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
+  $UpdateAllowedArtifactPrefixes = Get-DefaultReleaseArtifactPrefix
+}
+$artifactPrefixList = @(Get-ReleaseArtifactPrefixes $UpdateAllowedArtifactPrefixes)
+# The agent splits this list on ','; MSBuild -p: needs the separator and other syntax characters escaped.
+$UpdateAllowedArtifactPrefixes = ConvertTo-MsBuildListValue $artifactPrefixList
+
+$artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
+  $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
+  $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
+}
+if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
+  throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
+}
+$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
+# The legacy update lab and the validated campaign build can use a local HTTPS feed.
+$localLab = $null -ne $labBuild -or ($Channel -ceq 'dev' -and $AllowUnsignedDevBuild -and $AllowEphemeralManifestKey -and -not $requirePublicDns)
+Assert-ReleaseArtifactUrl -ArtifactUrl $artifactUrl -ArtifactPrefixes $artifactPrefixList -AllowLocalHost:$localLab -RequirePublicDns:$requirePublicDns `
+  -AllowedTailnetHost $AllowedTailnetArtifactHost
+
 Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 $runtimePublishDir = Join-Path $publishDir "runtime"
@@ -146,7 +171,6 @@ foreach ($endpoint in @($DefaultBackendUrl, $DefaultSsoBaseUrl)) {
 
 $manifestPrivateKey = $null
 $tokenSigning = $null
-$artifactPrefixList = @()
 if ($tokenMode) {
   $tokenSigning = Initialize-TokenSigning `
     -SigningPlan $signingPlan -SigningCertThumbprint $SigningCertThumbprint -ExtraSignerPins $ExtraSignerPins `
@@ -188,23 +212,6 @@ if ([string]::IsNullOrWhiteSpace($UpdateManifestUrl)) {
     "https://github.com/$manifestRepo/releases/download/$Channel-latest/Cerberus.Agent.Bundle-$Channel-latest.update-manifest.v2.json".Replace("-latest.update", "-latest$($releaseProfile.AssetSuffix).update")
   }
 }
-if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
-  $artifactRepo = if ([string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) { "BUZASLAN128/cerberus-windows-agent" } else { $env:GITHUB_REPOSITORY }
-  $UpdateAllowedArtifactPrefixes = "https://github.com/$artifactRepo/releases/download/"
-}
-# The agent splits this list on ','; MSBuild -p: needs the separator and other syntax characters escaped.
-$artifactPrefixList = @($UpdateAllowedArtifactPrefixes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-$UpdateAllowedArtifactPrefixes = ConvertTo-MsBuildListValue $artifactPrefixList
-
-$artifactUrlBase = [Environment]::GetEnvironmentVariable("AGENT_RELEASE_ARTIFACT_BASE_URL")
-if ([string]::IsNullOrWhiteSpace($artifactUrlBase) -and $Channel -eq "dev" -and -not [string]::IsNullOrWhiteSpace($env:GITHUB_REPOSITORY)) {
-  $releaseTag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
-  $artifactUrlBase = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag"
-}
-if ([string]::IsNullOrWhiteSpace($artifactUrlBase)) {
-  throw "Required environment variable 'AGENT_RELEASE_ARTIFACT_BASE_URL' is missing."
-}
-
 $signerKeyIdentity = if ($Channel -eq "dev" -and $AllowUnsignedDevBuild) { "unsigned-dev" } else { "" }
 $allowUnsignedBuildMetadata = ($Channel -eq "dev" -and $AllowUnsignedDevBuild)
 $pfxSignerIdentity = Get-PfxSignerKeyIdentity ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")) ([Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD"))
@@ -278,6 +285,7 @@ if ($unexpectedRuntimeExecutables.Count -gt 0) {
 
 if ($BuildProfile -eq 'server') { Assert-ServerBundleLayout $runtimePublishDir }
 if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir }
+Assert-UpdaterBuildContract $runtimePublishDir $BuildProfile ($null -ne $labBuild) (Get-BackendTrustAnchorsValue $BackendTrustAnchorsFile)
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
@@ -296,7 +304,7 @@ if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
 }
 Write-Step "Building MSI installer"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
-$helperLabArgs = @()
+$helperLabArgs = @('-p:ExcludeUpdateCampaignCode=true')  # non-lab: no campaign admission code in the helper
 if ($null -ne $labBuild) {
   $runtimeHashes = [ordered]@{}
   foreach ($file in @(Get-FirstPartyPeFiles $runtimePublishDir)) {
@@ -410,7 +418,6 @@ if ($secretHits.Count -gt 0) {
   throw "Release secret scan failed:`n$preview"
 }
 
-$artifactUrl = ($artifactUrlBase.TrimEnd("/") + "/$installerBase.msi")
 $releasedAt = (Get-Date).ToUniversalTime().ToString("O")
 $expiresAt = (Get-Date).ToUniversalTime().AddDays(30).ToString("O")
 $artifactLength = (Get-Item -LiteralPath $msi).Length

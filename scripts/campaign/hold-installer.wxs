@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Test-harness MSI for the 1618 (installer busy) fault. Never part of the product.
+     One deferred SYSTEM custom action keeps the Windows Installer busy until the flag file named by HOLDRELEASE
+     exists, or at most 135 rounds (under 5 minutes), then always fails so Windows rolls the install back and nothing stays registered.
+     It runs right after InstallInitialize, before any folder, file or registry action. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Cerberus Campaign Installer Hold" Manufacturer="Cerberus" Version="1.0.0"
+      ProductCode="{6E0B7D4A-3C1F-4B8E-9A52-7F1D2C3B4A50}" UpgradeCode="{2B9C4E61-8D0A-4F3B-B7E5-1C6A9D2F0E84}"
+      Scope="perMachine" Compressed="yes">
+    <Property Id="HOLDRELEASE" Secure="yes" />
+    <Property Id="ARPSYSTEMCOMPONENT" Value="1" />
+
+    <StandardDirectory Id="System64Folder" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="HOLDFOLDER" Name="CerberusCampaignHold">
+        <Component Id="HoldPlaceholder" Guid="{9A3F6C12-5E7B-4D08-A1C4-3B8E2F7D6A95}" KeyPath="yes">
+          <CreateFolder />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Hold">
+      <ComponentRef Id="HoldPlaceholder" />
+    </Feature>
+
+    <!-- 135 rounds of 2 s plus process start (ping as a delay; timeout.exe needs a console): 270 s at least, under
+         300 s unless each round's overhead exceeds 220 ms. The runner's cap (255 s) stays below the minimum.
+         Exit 1603 on release or at the cap. -->
+    <CustomAction Id="HoldUntilRelease" Directory="System64Folder"
+        ExeCommand='"[System64Folder]cmd.exe" /d /c "(for /L %i in (1,1,135) do @(if exist "[HOLDRELEASE]" (exit 1603) else ping -n 3 127.0.0.1 &gt;nul)) &amp; exit 1603"'
+        Execute="deferred" Impersonate="no" Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="HoldUntilRelease" After="InstallInitialize" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

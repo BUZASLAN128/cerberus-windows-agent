@@ -79,7 +79,7 @@ internal static partial class AgentUpdateLocalService
                         before.ScheduleSeed, TimeSpan.FromHours(6)))));
                 schedulePersisted = true;
                 await ProjectAsync(cancellation.Token).ConfigureAwait(false);
-                using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+                using var http = new HttpClient(UpdateCampaignHooks.CreateUpdateHandler()) { Timeout = TimeSpan.FromSeconds(30) };
                 var trust = AgentUpdateTrustFactory.BuildTrust();
                 var signal = new AgentUpdateSignal(false, true, trust.ConfiguredManifestUrl, "service_update_check", trust.ExpectedChannel);
                 var result = await new AgentUpdateStager(http, trust, Root).CheckAsync(signal, cancellation.Token).ConfigureAwait(false);
@@ -215,8 +215,8 @@ internal static partial class AgentUpdateLocalService
                 incomingRequiredGeneration));
             schedulePersisted = true;
             await ProjectAsync(cancellation.Token).ConfigureAwait(false);
-            AgentUpdateLabFaults.InterruptServiceOnce(installRequest, _requestLog);
-            using var http = new HttpClient(AgentUpdateLabRuntime.CreateUpdateHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+            UpdateCampaignHooks.InterruptServiceOnce(installRequest, _requestLog);
+            using var http = new HttpClient(UpdateCampaignHooks.CreateUpdateHandler()) { Timeout = TimeSpan.FromSeconds(30) };
             var trust = AgentUpdateTrustFactory.BuildTrust();
             var signal = new AgentUpdateSignal(
                 effectiveRequired,
