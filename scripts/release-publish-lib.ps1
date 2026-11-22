@@ -164,7 +164,7 @@ function Publish-ReleaseOutputs(
   $provenance = Join-Path $PublishDir "$AssetBase.provenance.json"
   $msiHash = [string]$Manifest["sha256"]
   $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-  $installScriptText = New-AgentInstallScriptText $Manifest  # validates before anything is written
+  $installScriptText = New-AgentInstallScriptText $Manifest $BuildProfile  # validates before anything is written
 
   $manifestPath = Join-Path $PublishDir "$AssetBase.update-manifest.v2.json"
   $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8

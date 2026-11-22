@@ -82,18 +82,26 @@ Ayrıntılar: [güncelleme kabul prosedürü](docs/AGENTS_ACCEPTANCE_GUIDE.md).
 
 `Cerberus.Agent-<channel>-<version>-server.msi` paketini çalıştırın ve tek kullanımlık enrollment proof'u girin. MSI, ilk kurulumda headless kaydı ve hizmet kurulumunu yapar. Upgrade mevcut kaydı korur; yeniden ilk kayıt gibi davranmaz.
 
-Desktop MSI'ları için aynı taban ada sahip bir Burn `.exe` kurulum sarmalayıcısı da üretilir; Server yalnız MSI ile dağıtılır. Sarmalayıcı tam MSI'yı içerir; EULA/privacy ekranları MSI'ya aittir. **Ajanın kendi güncellemesi MSI kullanır.**
+Desktop MSI'ları için aynı taban ada sahip bir Burn `.exe` kurulum sarmalayıcısı da üretilir; Server yalnız MSI ile dağıtılır. Sarmalayıcı tam MSI'yı içerir; EULA/privacy ekranları MSI'ya aittir. **Ajanın kendi güncellemesi MSI kullanır.** Yönetilen sessiz kurulumlar, GPO/Intune ve MSI bakım işlemleri için de MSI kullanılmalıdır. Burn kaydının kurulu yaşam döngüsü ayrıca doğrulanmalıdır.
 
-Her yayında iki profil için tek satırlık kurulum betiği de çıkar: `<installer-base>.install.ps1` ve kanalın `-latest` kopyası. Yönetici PowerShell'de:
+### Tek satırlık kurulum (`irm | iex`)
+
+Yayın çıktısında iki profil için tek satırlık kurulum betiği de bulunur: `<installer-base>.install.ps1` ve kanalın `-latest` kopyası. Betik feed'e MSI ile birlikte konur; GitHub yayın iş akışı bu dosyayı yüklemez.
+
+Server, yönetici olarak açılmış PowerShell'de:
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; irm https://<feed>/<yol>/Cerberus.Agent-<channel>-latest-server.install.ps1 | iex
 ```
 
-- **Ne yapar:** betik, o sürümün MSI adresini, boyutunu ve SHA-256'sını içinde taşır. MSI'ı yalnız Administrators ve SYSTEM'in yazabildiği bir klasöre indirir. Dosyayı okuma kilidi altında doğrular ve aynı dosyayı MSI'ın kendi arayüzüyle açar; EULA ve Server kayıt kodu MSI ekranlarında girilir.
-- **Güven:** betiğin geldiği adrese TLS bağlantısı ve betikteki özettir; MSI'ı elle indirmekle aynı düzeydedir.
+Desktop: aynı satır `Cerberus.Agent-<channel>-latest.install.ps1` ile, yönetici olarak açılmamış PowerShell'de. Kurulum sırasında Windows yönetici onayı ister.
+
+- **Ne yapar:** betik o sürümün MSI adresini, boyutunu ve SHA-256'sını içinde taşır. MSI'ı indirir, boyutunu ve özetini okuma kilidi altında doğrular, aynı dosyayı MSI'ın kendi arayüzüyle açar. EULA ve Server kayıt kodu MSI ekranlarında girilir; sessiz kurulum yoktur.
+- **İndirme klasörü:** yönetici oturumunda Program Files altında yeni bir klasördür; ona yalnız Administrators ve SYSTEM erişir. Desktop kurulumunda kullanıcının geçici klasörüdür; bu, MSI'ı elle indirip açmakla aynıdır.
+- **Güven:** betiğin geldiği adrese TLS bağlantısı ve betikteki özet. MSI'ın imza sertifikası denetlenmez; sertifika kendinden imzalıdır, yeni bir makine onu geçerli saymaz.
 - **Satır başındaki TLS ayarı:** yalnız TLS 1.2'yi varsayılan açmayan eski Windows PowerShell sürümleri için gerekir.
-- **Kurmadan doğrulama:** `& ([scriptblock]::Create((irm <url>))) -DownloadOnly`. Yönetilen sessiz kurulumlar, GPO/Intune ve MSI bakım işlemleri için de MSI kullanılmalıdır. Burn kaydının kurulu yaşam döngüsü ayrıca doğrulanmalıdır.
+- **Kurmadan doğrulama:** `& ([scriptblock]::Create((irm <url>))) -DownloadOnly`. Doğrulanan MSI'ın yolu yazılır.
+- Kurulum ya da iptalden sonra indirilen dosyalar silinir. Kurulum başarısız olursa günlüğün yolu yazılır.
 
 MSI özellikleri, proxy ve onay ayarları bu belgenin sonundaki [Yapılandırma ve ayarlar](#yapılandırma-ve-ayarlar) bölümündedir.
 

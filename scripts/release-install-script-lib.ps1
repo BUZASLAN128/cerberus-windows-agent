@@ -1,15 +1,16 @@
-# One-line installer published with every release: "irm <url> | iex" downloads this release's MSI and opens it.
-# The script carries the exact artifact URL, length and SHA-256 from the release manifest; trust is TLS to the feed
-# plus that embedded hash (the same as downloading the MSI by hand). Values are validated before they are embedded.
+# One-line installer written with every release: "irm <url> | iex" downloads this release's MSI, checks it against
+# the URL, length and SHA-256 from the release manifest and opens it with the MSI's own UI. The values are validated
+# before they are embedded; the build calls the generator before the manifest is signed, so a bad value stops it early.
 
 $script:AgentInstallTemplatePath = Join-Path $PSScriptRoot "agent-install.template.ps1"
 
-function New-AgentInstallScriptText([System.Collections.IDictionary]$Manifest) {
+function New-AgentInstallScriptText([System.Collections.IDictionary]$Manifest, [string]$BuildProfile) {
+  if ($BuildProfile -cnotmatch '\A(server|desktop)\z') { throw "Install script: invalid build profile '$BuildProfile'." }
   $version = [string]$Manifest["version"]
   $url = [string]$Manifest["artifact_url"]
   $sha256 = [string]$Manifest["sha256"]
   $length = [string]$Manifest["artifact_length"]
-  if ($version -cnotmatch '\A[0-9]+(\.[0-9]+){2,3}(-[0-9A-Za-z.-]+)?\z') { throw "Install script: invalid version '$version'." }
+  if ($version -cnotmatch '\Av?[0-9]+(\.[0-9]+){2,3}([-+][0-9A-Za-z.+-]+)?\z') { throw "Install script: invalid version '$version'." }
   $uri = $null
   if ($url -cnotmatch "\A[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+\z" -or -not [Uri]::TryCreate($url, [UriKind]::Absolute, [ref]$uri) -or
       $uri.Scheme -cne "https" -or -not $uri.AbsolutePath.EndsWith(".msi", [StringComparison]::OrdinalIgnoreCase)) {
@@ -19,7 +20,7 @@ function New-AgentInstallScriptText([System.Collections.IDictionary]$Manifest) {
   if ($length -cnotmatch '\A[1-9][0-9]{0,11}\z') { throw "Install script: invalid artifact length." }
 
   $text = [IO.File]::ReadAllText($script:AgentInstallTemplatePath)
-  $values = [ordered]@{ "__VERSION__" = $version; "__ARTIFACT_URL__" = $url; "__SHA256__" = $sha256; "__LENGTH__" = $length }
+  $values = [ordered]@{ "__VERSION__" = $version; "__PROFILE__" = $BuildProfile; "__ARTIFACT_URL__" = $url; "__SHA256__" = $sha256; "__LENGTH__" = $length }
   foreach ($key in $values.Keys) {
     if (-not $text.Contains($key)) { throw "Install script template lacks $key." }
     $text = $text.Replace($key, $values[$key])

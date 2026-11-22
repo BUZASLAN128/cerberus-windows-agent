@@ -186,6 +186,7 @@ public sealed partial class ServerPackageStaticTests
             Assert.Equal(shipsUninstall, File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256")).Contains(".exe", StringComparison.Ordinal));
             Assert.Contains($"Cerberus.Agent-dev-latest{suffix}.install.ps1", File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256")));
             Assert.Contains("\"install_script\"", gate);
+            Assert.Contains($"$buildProfile = '{profile}'", File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent-dev-latest{suffix}.install.ps1")));
             Assert.DoesNotContain("Uninstall", shipsUninstall ? "" : gate);
             Assert.Contains("\"updater_binary\": \"app/Cerberus.Agent.Updater.exe\"", gate);
             Assert.DoesNotContain("tray", gate, StringComparison.OrdinalIgnoreCase);
