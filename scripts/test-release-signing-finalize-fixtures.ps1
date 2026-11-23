@@ -19,10 +19,10 @@
     if ([string]::IsNullOrEmpty($Signature)) { $Signature = Sign-ManifestPayloadWithCertificate -CanonicalPayload $Fixture.Canonical -Certificate $certB }
     if ($Signature -eq "<none>") { Remove-Item -LiteralPath $sigFile -ErrorAction SilentlyContinue } else { Set-Content -LiteralPath $sigFile -Value $Signature }
   }
-  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB, [string]$Channel = "stable", [scriptblock]$PayloadCheck = {}) {
+  function Invoke-Finalize($Fixture, [scriptblock]$SignatureCheck, [string]$Version = "9.9.9", [string]$Signature = "", [string]$KeyFile = $keyB, [string]$Channel = "stable", [scriptblock]$PayloadCheck = {}, [string]$BuildProfile = "desktop") {
     Write-FixtureSignature $Fixture $Signature
     Complete-ExternalManifestSigning -PublishDir $Fixture.Publish -Channel $Channel -Version $Version -AssetBase $assetBase -InstallerBase $installerBase `
-      -SignaturePath $sigFile -PublicKeyPath $KeyFile -FileSignatureCheck $SignatureCheck -SetupPayloadCheck $PayloadCheck 6>$null | Out-Null
+      -SignaturePath $sigFile -PublicKeyPath $KeyFile -FileSignatureCheck $SignatureCheck -SetupPayloadCheck $PayloadCheck -BuildProfile $BuildProfile 6>$null | Out-Null
   }
   function Test-NothingPublished([string]$Dir) {
     -not (Test-Path -LiteralPath (Join-Path $Dir $manifestName)) -and -not (Test-Path -LiteralPath (Join-Path $Dir $gateName)) -and
@@ -72,6 +72,13 @@
     Throws { Test-CommandAnchorsAreTestFixture "QQ==" } "cannot be decoded"
   }
   Check "gate reports the signature as measured" { $gate.authenticode_signature_present -eq $true -and $gate.installer.authenticode_signature_present -eq $true }
+  $server = New-Fixture; $script:checked = @(); $script:payloadCalls = 0
+  Invoke-Finalize $server $recordAll -BuildProfile server -PayloadCheck { $script:payloadCalls++ }
+  $serverGate = Get-Content -Raw -LiteralPath (Join-Path $server.Publish $gateName) | ConvertFrom-Json
+  Check "server finalize checks the MSI and skips the setup wrapper (signature, payload, gate and alias)" {
+    ($script:checked -contains $server.Msi) -and ($script:checked -notcontains $server.Setup) -and $script:payloadCalls -eq 0 -and
+      ($null -eq $serverGate.setup) -and -not (Test-Path -LiteralPath (Join-Path $server.Publish 'Cerberus.Agent-stable-latest-server.exe'))
+  }
   Check "finalize removes the pending payload and state" {
     -not (Test-Path -LiteralPath (Join-Path $good.Publish $payloadName)) -and -not (Test-Path -LiteralPath (Join-Path $good.Publish $pendingName))
   }

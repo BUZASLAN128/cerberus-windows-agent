@@ -289,20 +289,9 @@ Assert-UpdaterBuildContract $runtimePublishDir $BuildProfile ($null -ne $labBuil
 $certBase64 = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_BASE64")
 $certPassword = [Environment]::GetEnvironmentVariable("WINDOWS_SIGNING_CERT_PASSWORD")
 $signed = $false
-# Sign first-party PE before hashes (service assembly, MSI, zip, SBOM, manifest);
-# Invoke-FirstPartySigning also signs the installer helper below.
-$firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir)
-if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
-  Write-Step "Signing $($firstPartyPeFiles.Count) first-party files"
-  Invoke-FirstPartySigning $firstPartyPeFiles
-  $signed = $true
-}
-if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir }
-
-if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
-  throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."
-}
-Write-Step "Building MSI installer"
+# The installer helper is published before the signing pass so runtime and helper share one signtool run (one token PIN).
+# Lab helpers embed runtime hashes taken here, before signing; release-lab-lib.ps1 refuses signed lab builds.
+Write-Step "Publishing installer helper"
 $installerHelperOutput = Join-Path $outputRootPath "installer-helper"
 $helperLabArgs = @('-p:ExcludeUpdateCampaignCode=true')  # non-lab: no campaign admission code in the helper
 if ($null -ne $labBuild) {
@@ -328,8 +317,19 @@ if ($null -ne $labBuild) {
 }
 if ($null -eq $labBuild) { Assert-NoLabCampaignMetadata $runtimePublishDir -ExtraAssemblies @(Join-Path $repoRoot "src/Cerberus.Agent.Installer/Helper/bin/$Configuration/net10.0-windows/$Runtime/Cerberus.Agent.Installer.Helper.dll") }
 $installerHelperPath = Join-Path $installerHelperOutput "Cerberus.Agent.Installer.Helper.exe"
-# Built after the payload pass and packed into the MSI: sign and gate it here.
-if ($signed) { Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput); Assert-FirstPartyPeFilesSigned $installerHelperOutput }
+# Sign first-party PE before hashes (service assembly, MSI, zip, SBOM, manifest).
+$firstPartyPeFiles = @(Get-FirstPartyPeFiles $runtimePublishDir) + @(Get-FirstPartyPeFiles $installerHelperOutput)
+if ($tokenMode -or -not [string]::IsNullOrWhiteSpace($certBase64)) {
+  Write-Step "Signing $($firstPartyPeFiles.Count) first-party files"
+  Invoke-FirstPartySigning $firstPartyPeFiles
+  $signed = $true
+}
+if ($signed) { Assert-FirstPartyPeFilesSigned $runtimePublishDir; Assert-FirstPartyPeFilesSigned $installerHelperOutput }
+
+if (-not $signed -and -not ($Channel -eq "dev" -and $AllowUnsignedDevBuild)) {
+  throw "Unsigned public agent release denied. Configure WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD."
+}
+Write-Step "Building MSI installer"
 $serviceExeSha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $runtimePublishDir "Cerberus.Agent.Service.exe")).Hash.ToLowerInvariant()
 $serviceAssemblySha256 = Get-ReleaseServiceAssemblyHash $runtimePublishDir $BuildProfile
 $installerProject = Join-Path $repoRoot "src/Cerberus.Agent.Installer/Cerberus.Agent.Installer.wixproj"
@@ -391,21 +391,22 @@ if ($signed) {
   Assert-ReleaseSignerContinuity -Stage PostSign -DeployedPins $DeployedSignerPins -Channel $Channel -SignedFile $msi -RuntimeDll (Join-Path $runtimePublishDir "Cerberus.Agent.Runtime.dll") -AllowUnconfirmedDeployedSigners:$AllowUnconfirmedDeployedSigners
 }
 
-Write-Step "Building manual-download setup wrapper"
-$setup = New-AgentSetupBundle -MsiPath $msi -PublishDir $publishDir -BuildProfile $BuildProfile `
-  -Configuration $Configuration -BuildDirectory (Join-Path $outputRootPath 'setup-build') `
-  -Signed $signed -SignFile { param($file) Invoke-FirstPartySigning @($file) }
+$setup = ''
+if ($BuildProfile -ne 'server') {  # servers install the MSI; the manual-download wrapper is desktop-only
+  Write-Step "Building manual-download setup wrapper"
+  $setup = New-AgentSetupBundle -MsiPath $msi -PublishDir $publishDir -BuildProfile $BuildProfile `
+    -Configuration $Configuration -BuildDirectory (Join-Path $outputRootPath 'setup-build') `
+    -Signed $signed -SignFile { param($file) Invoke-FirstPartySigning @($file) }
+}
 Write-Step "Creating checksums, SBOM, provenance, manifest"
 $zip = Join-Path $publishDir "$assetBase.zip"
 Compress-Archive -Path (Join-Path $runtimePublishDir "*") -DestinationPath $zip -Force
 $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
 $msiHash = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
 $checksums = Join-Path $publishDir "$assetBase.sha256"
-@(
-  "$zipHash  $assetBase.zip",
-  "$msiHash  $installerBase.msi",
-  "$((Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant())  $installerBase.exe"
-) | Set-Content -LiteralPath $checksums -Encoding utf8
+$checksumLines = @("$zipHash  $assetBase.zip", "$msiHash  $installerBase.msi")
+if ($setup) { $checksumLines += "$((Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant())  $installerBase.exe" }
+$checksumLines | Set-Content -LiteralPath $checksums -Encoding utf8
 
 $sbom = Join-Path $publishDir "$assetBase.sbom.json"
 $provenance = Join-Path $publishDir "$assetBase.provenance.json"

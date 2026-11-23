@@ -73,8 +73,8 @@ try {
   Check "release build script runs the gate for non-lab builds before signing and for the helper" {
     $text = Get-Content -LiteralPath (Join-Path $PSScriptRoot "build-agent-public-release.ps1") -Raw
     $gate = [regex]::Matches($text, 'if \(\$null -eq \$labBuild\) \{ Assert-NoLabCampaignMetadata \$runtimePublishDir')
-    $gate.Count -eq 2 -and $gate[0].Index -lt $text.IndexOf('Invoke-FirstPartySigning $firstPartyPeFiles') -and
-      $gate[1].Index -lt $text.IndexOf('Invoke-FirstPartySigning @(Get-FirstPartyPeFiles $installerHelperOutput)')
+    $sign = $text.IndexOf('Invoke-FirstPartySigning $firstPartyPeFiles')
+    $gate.Count -eq 2 -and $sign -gt 0 -and $gate[0].Index -lt $sign -and $gate[1].Index -lt $sign
   }
 } finally {
   Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
