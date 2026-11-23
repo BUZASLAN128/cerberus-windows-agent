@@ -3,6 +3,7 @@
 # No function here prompts for, accepts or logs a PIN or password.
 
 . (Join-Path $PSScriptRoot 'release-artifact-url-lib.ps1')
+. (Join-Path $PSScriptRoot 'release-install-script-lib.ps1')
 
 $script:ReleaseRuntimeExecutableNames = @(
   "Cerberus.Agent.exe",
@@ -114,13 +115,16 @@ function Copy-ChannelLatestAliases(
   [string]$MsiHash,
   [string]$ZipHash,
   [string]$BuildProfile = "desktop",
-  [string]$Setup = ''
+  [string]$Setup = '',
+  [string]$InstallScript = ''
 ) {
   $suffix = if ($BuildProfile -eq "server") { "-server" } else { "" }
   $aliasAssetBase = "Cerberus.Agent.Bundle-$Channel-latest$suffix"
   $aliasInstallerBase = "Cerberus.Agent-$Channel-latest$suffix"
   Copy-Item -LiteralPath $Msi -Destination (Join-Path $PublishDir "$aliasInstallerBase.msi") -Force
   if ($Setup) { Copy-Item -LiteralPath $Setup -Destination (Join-Path $PublishDir "$aliasInstallerBase.exe") -Force }
+  # The alias is a byte copy: it still names this release's versioned MSI and hash.
+  if ($InstallScript) { Copy-Item -LiteralPath $InstallScript -Destination (Join-Path $PublishDir "$aliasInstallerBase.install.ps1") -Force }
   Copy-Item -LiteralPath $Zip -Destination (Join-Path $PublishDir "$aliasAssetBase.zip") -Force
   Copy-Item -LiteralPath $Sbom -Destination (Join-Path $PublishDir "$aliasAssetBase.sbom.json") -Force
   Copy-Item -LiteralPath $Provenance -Destination (Join-Path $PublishDir "$aliasAssetBase.provenance.json") -Force
@@ -133,6 +137,7 @@ function Copy-ChannelLatestAliases(
     "$MsiHash  $aliasInstallerBase.msi"
   )
   if ($Setup) { $hashLines += "$((Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant())  $aliasInstallerBase.exe" }
+  if ($InstallScript) { $hashLines += "$((Get-FileHash -LiteralPath $InstallScript -Algorithm SHA256).Hash.ToLowerInvariant())  $aliasInstallerBase.install.ps1" }
   $hashLines | Set-Content -LiteralPath (Join-Path $PublishDir "$aliasAssetBase.sha256") -Encoding utf8
 }
 
@@ -159,6 +164,7 @@ function Publish-ReleaseOutputs(
   $provenance = Join-Path $PublishDir "$AssetBase.provenance.json"
   $msiHash = [string]$Manifest["sha256"]
   $zipHash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+  $installScriptText = New-AgentInstallScriptText $Manifest $BuildProfile  # validates before anything is written
 
   $manifestPath = Join-Path $PublishDir "$AssetBase.update-manifest.v2.json"
   $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
@@ -212,6 +218,16 @@ function Publish-ReleaseOutputs(
       updater_artifact = $false
     }
   }
+  $installScript = Join-Path $PublishDir "$InstallerBase.install.ps1"
+  $installScriptHash = Write-AgentInstallScript -Path $installScript -Text $installScriptText
+  $gate['install_script'] = [ordered]@{
+    name = "$InstallerBase.install.ps1"
+    checksum_sha256 = $installScriptHash
+    artifact_url = [string]$Manifest["artifact_url"]
+    artifact_sha256 = $msiHash
+    consent_ui = 'msi'
+  }
+  Set-ChecksumLine -Path (Join-Path $PublishDir "$AssetBase.sha256") -Hash $installScriptHash -Name "$InstallerBase.install.ps1"
   $gatePath = Join-Path $PublishDir "$AssetBase.release-gate.json"
   $gate | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $gatePath -Encoding utf8
 
@@ -227,6 +243,7 @@ function Publish-ReleaseOutputs(
     -MsiHash $msiHash `
     -ZipHash $zipHash `
     -Setup $setup `
+    -InstallScript $installScript `
     -BuildProfile $BuildProfile
 }
 

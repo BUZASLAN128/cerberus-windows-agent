@@ -439,6 +439,8 @@ $canonical = @(
   $signerKeyIdentity
 ) -join "`n"
 Assert-ManifestValidityWindow ([DateTimeOffset]::Parse($releasedAt)) ([DateTimeOffset]::Parse($expiresAt))
+# The one-line installer is written after signing; check its inputs before a manifest signature is spent.
+$null = New-AgentInstallScriptText ([ordered]@{ version = $Version; artifact_url = $artifactUrl; sha256 = $msiHash; artifact_length = $artifactLength }) $BuildProfile
 $legacyManifest = $null
 if ($tokenMode) {
   if ($signingPlan.ManifestSigning -eq "External") {

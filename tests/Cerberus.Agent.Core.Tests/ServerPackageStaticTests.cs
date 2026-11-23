@@ -160,7 +160,7 @@ public sealed partial class ServerPackageStaticTests
             var command =
                 $". '{lib}'; $d = '{dir}'; " +
                 $"foreach ($n in 'Agent.msi',{setupFile}'Bundle.zip','Bundle.sbom.json','Bundle.provenance.json') {{ Set-Content -LiteralPath (Join-Path $d $n) -Value $n }}; " +
-                "$m = [ordered]@{ sha256 = 'abc'; sequence = 1; expires_at_utc = 'x'; signer_key_identity = 'k' }; " +
+                "$m = [ordered]@{ sha256 = ('a' * 64); version = '1.2.3'; artifact_url = 'https://feed.example.test/u/Agent.msi'; artifact_length = 9; sequence = 1; expires_at_utc = 'x'; signer_key_identity = 'k' }; " +
                 $"Publish-ReleaseOutputs -PublishDir $d -Channel dev -AssetBase Bundle -InstallerBase Agent -Manifest $m -LegacyManifest $null -AllowUnsignedBuildMetadata $true -Signed $false -BuildProfile {profile}";
             var run = RunPwsh(command);
             Assert.True(run.ExitCode == 0, run.Output);
@@ -170,6 +170,7 @@ public sealed partial class ServerPackageStaticTests
             {
                 $"Cerberus.Agent-dev-latest{suffix}.msi",
                 shipsUninstall ? $"Cerberus.Agent-dev-latest{suffix}.exe" : null,
+                $"Cerberus.Agent-dev-latest{suffix}.install.ps1",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.provenance.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.release-gate.json",
                 $"Cerberus.Agent.Bundle-dev-latest{suffix}.sbom.json",
@@ -183,6 +184,9 @@ public sealed partial class ServerPackageStaticTests
             Assert.Equal(shipsUninstall, gate.Contains("uninstall_binary", StringComparison.Ordinal));
             Assert.Equal(shipsUninstall, gate.Contains("\"setup\"", StringComparison.Ordinal));
             Assert.Equal(shipsUninstall, File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256")).Contains(".exe", StringComparison.Ordinal));
+            Assert.Contains($"Cerberus.Agent-dev-latest{suffix}.install.ps1", File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent.Bundle-dev-latest{suffix}.sha256")));
+            Assert.Contains("\"install_script\"", gate);
+            Assert.Contains($"$buildProfile = '{profile}'", File.ReadAllText(Path.Combine(dir, $"Cerberus.Agent-dev-latest{suffix}.install.ps1")));
             Assert.DoesNotContain("Uninstall", shipsUninstall ? "" : gate);
             Assert.Contains("\"updater_binary\": \"app/Cerberus.Agent.Updater.exe\"", gate);
             Assert.DoesNotContain("tray", gate, StringComparison.OrdinalIgnoreCase);
