@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 
@@ -10,6 +11,8 @@ internal sealed record LocalAdminMember(string Name, string Sid, string Kind);
 /// <summary>Members of the builtin Administrators group, capped; <see cref="Total"/> counts every member.</summary>
 internal sealed record LocalAdminsRead(IReadOnlyList<LocalAdminMember> Members, int Total, bool Truncated, bool Incomplete);
 
+internal sealed record LocalGroupRead(string Name, LocalAdminsRead Membership);
+
 /// <summary>
 /// Reads the builtin Administrators group (S-1-5-32-544) with <c>NetLocalGroupGetMembers</c> level 2. The group is
 /// found by SID and its current name looked up, so a renamed or localized group works. Names and SIDs only.
@@ -17,14 +20,48 @@ internal sealed record LocalAdminsRead(IReadOnlyList<LocalAdminMember> Members, 
 internal static class LocalAdminsProbe
 {
     internal const int MaxMembers = 100;
+    internal const int MaxPrivilegedMembers = 200;
+    internal const string AdministratorsSid = "S-1-5-32-544";
     private const int NerrSuccess = 0;
     private const int ErrorMoreData = 234;
+    private const int ErrorNoSuchAlias = 1376;
+    private const int NerrGroupNotFound = 2220;
     private const int MaxPreferredLength = -1;
 
     private const int SidTypeUser = 1;
     private const int SidTypeGroup = 2;
     private const int SidTypeAlias = 4;
     private const int SidTypeWellKnownGroup = 5;
+
+    internal static readonly ServerAdminRead Server = new((machine, isDc) => ReadGroup(AdministratorsSid,
+        isDc.HasValue ? machine : MachineSid(), isDc ?? (ReadDomainController() == true),
+        MaxPrivilegedMembers, CancellationToken.None));
+
+    internal sealed class ServerAdminRead(Func<SecurityIdentifier?, bool?, LocalGroupRead?> readGroup)
+    {
+        private readonly ConditionalWeakTable<WindowsTelemetryContext, Lazy<Task<LocalGroupRead?>>> _snapshots = new();
+        private readonly InFlightAccountRead<LocalGroupRead?> _reads = new();
+
+        internal async Task<LocalAdminsRead> ReadAdminsAsync(WindowsTelemetryContext context, CancellationToken ct)
+        {
+            var read = (await ReadGroupAsync(context, ct).ConfigureAwait(false))?.Membership
+                ?? throw new Win32Exception(ErrorNoSuchAlias);
+            return read with
+            {
+                Members = read.Members.Take(MaxMembers).ToArray(),
+                Truncated = read.Total > MaxMembers,
+            };
+        }
+
+        internal Task<LocalGroupRead?> ReadGroupAsync(WindowsTelemetryContext context, CancellationToken ct,
+            SecurityIdentifier? machine = null, bool? isDc = null)
+        {
+            ct.ThrowIfCancellationRequested();
+            var read = _snapshots.GetValue(context, _ => new Lazy<Task<LocalGroupRead?>>(
+                () => _reads.GetOrStart(() => readGroup(machine, isDc))));
+            return read.Value.WaitAsync(ct);
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct LocalGroupMembersInfo2
@@ -46,38 +83,68 @@ internal static class LocalAdminsProbe
         ref IntPtr resumeHandle);
 
     [DllImport("netapi32.dll")]
-    private static extern int NetApiBufferFree(IntPtr buffer);
+    internal static extern int NetApiBufferFree(IntPtr buffer);
 
     /// <exception cref="Win32Exception">The group name lookup or the member enumeration failed.</exception>
     public static LocalAdminsRead Read(CancellationToken ct)
     {
-        var groupSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
-        var account = groupSid.Translate(typeof(NTAccount)).Value;
-        var groupName = account[(account.LastIndexOf('\\') + 1)..];
-        var machine = MachineSid();
-        var isDc = IsDomainController();
+        ct.ThrowIfCancellationRequested();
+        return ReadGroup(AdministratorsSid, MachineSid(), ReadDomainController() == true, MaxMembers, ct)?.Membership
+            ?? throw new Win32Exception(ErrorNoSuchAlias);
+    }
 
-        var members = new List<LocalAdminMember>();
+    internal static LocalGroupRead? ReadGroup(string groupSid, SecurityIdentifier? machine, bool isDc, int maxMembers,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        string account;
+        try
+        {
+            account = new SecurityIdentifier(groupSid).Translate(typeof(NTAccount)).Value;
+        }
+        catch (IdentityNotMappedException)
+        {
+            return null;
+        }
+        var groupName = account[(account.LastIndexOf('\\') + 1)..];
+
+        // Retain only the lowest SIDs, keeping the legacy ordering even across native pages.
+        var members = new PriorityQueue<LocalAdminMember, string>(maxMembers,
+            Comparer<string>.Create(static (left, right) => StringComparer.Ordinal.Compare(right, left)));
         var resume = IntPtr.Zero;
+        var total = 0;
         var incomplete = false;
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
+            // A pending resume handle must be drained to release the NetAPI enumeration.
+            if (resume == IntPtr.Zero)
+                ct.ThrowIfCancellationRequested();
             var rc = NetLocalGroupGetMembers(null, groupName, 2, out var buffer, MaxPreferredLength, out var read, out _, ref resume);
             try
             {
+                if (rc is ErrorNoSuchAlias or NerrGroupNotFound)
+                    return null;
                 if (rc is not (NerrSuccess or ErrorMoreData))
                     throw new Win32Exception(rc);
                 var size = Marshal.SizeOf<LocalGroupMembersInfo2>();
-                for (var i = 0; i < read; i++)
+                for (var i = 0; i < read && !ct.IsCancellationRequested; i++)
                 {
                     var info = Marshal.PtrToStructure<LocalGroupMembersInfo2>(buffer + i * size);
                     var sid = new SecurityIdentifier(info.Sid);
-                    members.Add(new LocalAdminMember(
+                    if (members.Count == maxMembers && members.TryPeek(out _, out var largest)
+                        && StringComparer.Ordinal.Compare(sid.Value, largest) >= 0)
+                        continue;
+
+                    var member = new LocalAdminMember(
                         SecurityLogEventParser.Clean(Marshal.PtrToStringUni(info.DomainAndName)) ?? sid.Value,
                         sid.Value,
-                        Kind(sid, info.SidUsage, machine, isDc)));
+                        Kind(sid, info.SidUsage, machine, isDc));
+                    if (members.Count == maxMembers)
+                        members.EnqueueDequeue(member, member.Sid);
+                    else
+                        members.Enqueue(member, member.Sid);
                 }
+                total = checked(total + read);
             }
             finally
             {
@@ -86,15 +153,16 @@ internal static class LocalAdminsProbe
             }
             if (rc != ErrorMoreData)
                 break;
-            if (resume == IntPtr.Zero)
+            if (resume == IntPtr.Zero || read == 0)
             {
                 incomplete = true;
                 break;
             }
         }
 
-        var ordered = members.OrderBy(m => m.Sid, StringComparer.Ordinal).ToList();
-        return new LocalAdminsRead(ordered.Take(MaxMembers).ToList(), ordered.Count, ordered.Count > MaxMembers, incomplete);
+        ct.ThrowIfCancellationRequested();
+        var ordered = members.UnorderedItems.Select(item => item.Element).OrderBy(m => m.Sid, StringComparer.Ordinal).ToArray();
+        return new LocalGroupRead(groupName, new LocalAdminsRead(ordered, total, total > maxMembers, incomplete));
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -137,7 +205,7 @@ internal static class LocalAdminsProbe
     /// domain SID on a domain controller); null when it cannot be read. Works on hosts where the computer name does not
     /// translate to a SID.
     /// </summary>
-    private static SecurityIdentifier? MachineSid()
+    internal static SecurityIdentifier? MachineSid()
     {
         var attributes = new LsaObjectAttributes { Length = Marshal.SizeOf<LsaObjectAttributes>() };
         if (LsaOpenPolicy(IntPtr.Zero, ref attributes, PolicyViewLocalInformation, out var policy) != 0)
@@ -167,16 +235,21 @@ internal static class LocalAdminsProbe
     }
 
     /// <summary>Domain controllers have no local accounts: their account domain is the directory domain.</summary>
-    private static bool IsDomainController()
+    internal static bool? ReadDomainController()
     {
         try
         {
             using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\ProductOptions");
-            return string.Equals(key?.GetValue("ProductType") as string, "LanmanNT", StringComparison.OrdinalIgnoreCase);
+            return (key?.GetValue("ProductType") as string)?.ToUpperInvariant() switch
+            {
+                "LANMANNT" => true,
+                "WINNT" or "SERVERNT" => false,
+                _ => null,
+            };
         }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
         {
-            return false;
+            return null;
         }
     }
 

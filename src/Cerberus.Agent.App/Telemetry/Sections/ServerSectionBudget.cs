@@ -45,7 +45,7 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector, I
         var clock = Runs.GetValue(context, _ => new RunClock(now));
         var remaining = TotalBudget - _time.GetElapsedTime(clock.Started, now);
         if (remaining <= TimeSpan.Zero)
-            return ServerFactText.Unavailable(SectionName, "time_budget_exhausted");
+            return Unavailable("time_budget_exhausted");
 
         var limit = remaining < SectionBudget ? remaining : SectionBudget;
         using var work = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -64,7 +64,16 @@ internal sealed class ServerSectionBudget : IWindowsTelemetrySectionCollector, I
         ct.ThrowIfCancellationRequested();
         work.Cancel();
         _ = task.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
-        return ServerFactText.Unavailable(SectionName, "section_timeout");
+        return Unavailable("section_timeout");
+    }
+
+    private object Unavailable(string reason)
+    {
+        if (SectionName != AgentSnapshotFactory.LocalAccountsSection)
+            return ServerFactText.Unavailable(SectionName, reason);
+
+        TelemetrySectionCapture.Log?.Warn($"Telemetry section local_accounts {reason}");
+        return AgentSnapshotFactory.UnavailableLocalAccounts;
     }
 
     private sealed class RunClock

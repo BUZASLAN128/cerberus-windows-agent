@@ -109,11 +109,13 @@ MSI özellikleri, proxy ve onay ayarları bu belgenin sonundaki [Yapılandırma 
 
 ### Telemetri
 
-Hizmet, backend'in döndürdüğü aralığı profil sınırları içinde uygular ve snapshot zamanına ±%20 jitter ekler. İki profil de aynı 18 bölümü destekler:
+Hizmet, backend'in döndürdüğü aralığı profil sınırları içinde uygular ve snapshot zamanına ±%20 jitter ekler. Desktop ve Server profilleri şu 18 bölümü destekler:
 
 `identity`, `os`, `resources`, `network`, `tailscale`, `rdp`, `firewall`, `security`, `clock`, `runtime`, `capabilities`, `sessions`, `hardware`, `services`, `listening_ports`, `updates`, `software`, `processes`.
 
-Backend'in `snapshot_sections` ilanı gönderilecek alt kümeyi sınırlar. İlan yoksa eski Desktop 11 ve Server 15 bölümlük kümeler uygulanır; Secondary signed-facts yolu kendi 15 bölümlük kümesini korur.
+Server profili ayrıca `local_accounts` bölümünü destekler. Toplam bölüm sayısı Desktop için 18, Server için 19'dur.
+
+Backend'in `snapshot_sections` ilanı gönderilecek alt kümeyi sınırlar. İlan yoksa Desktop 11 bölüm kullanır. Server ve Secondary signed-facts yolları 15 temel bölüme ek olarak, operatörün bölüm listesi boşsa `local_accounts` bölümünü de kullanır.
 
 Güvenlik verisi; protokol bazında başarısız girişleri, başarılı interaktif/RDP girişlerini, yerel yönetici üyeliğini/değişikliklerini, log temizlemeyi, beklenmeyen kapanmayı ve Defender/SMBv1 durumunu kapsar. SQL Server başarısız girişleri çalışan SQL Server hizmet süreciyle ilişkilendirilemediğinde `unverified` kalır. Parola ve süreç komut satırları toplanmaz; başarısız giriş denemeleri denenmiş kullanıcı adı olmadan bildirilir. Backend alınan telemetrinin saklama süresini yönetir.
 

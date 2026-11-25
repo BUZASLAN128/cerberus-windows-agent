@@ -130,6 +130,16 @@ public sealed record AgentDiagnosticBundleAckResponse(
 
 public static class AgentSnapshotFactory
 {
+    internal const string LocalAccountsSection = "local_accounts";
+    internal const string SnapshotSectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
+
+    internal static readonly object UnavailableLocalAccounts = new
+    {
+        status = "unavailable",
+        users = new { count = (int?)null, truncated = false, items = Array.Empty<object>() },
+        privileged_groups = Array.Empty<object>(),
+    };
+
     private static readonly HashSet<string> CoreSections = new(StringComparer.Ordinal)
     {
         "identity",
@@ -153,9 +163,18 @@ public static class AgentSnapshotFactory
     {
         var local = signedFacts ? EnvelopeTypes.ServerFactSections : AllowedSections;
         var fallback = signedFacts || AgentBuildProfile.IsServer ? EnvelopeTypes.ServerFactSections : CoreSections;
-        return (advertised is null ? fallback : advertised.AsEnumerable())
+        var sections = (advertised is null ? fallback : advertised.AsEnumerable())
             .Where(local.Contains).ToHashSet(StringComparer.Ordinal);
+        // Only periodic snapshots use this negotiation. Signed facts use the command catalog directly.
+        if (AgentBuildProfile.IsServer
+            && (advertised is null || advertised.Contains(LocalAccountsSection, StringComparer.Ordinal))
+            && ParseSnapshotSectionAllowlist(Environment.GetEnvironmentVariable(SnapshotSectionAllowlistEnv)).Length == 0)
+            sections.Add(LocalAccountsSection);
+        return sections;
     }
+
+    internal static string[] ParseSnapshotSectionAllowlist(string? configured)
+        => configured?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries) ?? [];
 
     public static AgentSnapshotRequest ForSections(AgentSnapshotRequest request, IReadOnlySet<string> accepted)
     {
@@ -179,7 +198,8 @@ public static class AgentSnapshotFactory
     {
         foreach (var section in sections.Keys)
         {
-            if (!AllowedSections.Contains(section) && !(signedFacts && EnvelopeTypes.ServerFactSections.Contains(section)))
+            if (!AllowedSections.Contains(section) && !(signedFacts && EnvelopeTypes.ServerFactSections.Contains(section))
+                && !(AgentBuildProfile.IsServer && section == LocalAccountsSection))
                 throw new InvalidOperationException($"Unknown agent snapshot section: {section}");
         }
 
@@ -258,11 +278,14 @@ public static class AgentSnapshotFactory
 }
 
 /// <summary>
-/// Server-profile snapshot fitting (contract section e): when the body is over the cap, the largest list is
-/// halved, in the order software, services, listening_ports, and the section's <c>truncated</c> is set.
+/// Server-profile snapshot fitting (contract section e): when the body is over the cap, flat lists are
+/// halved in their existing order before shrinking account inventory.
 /// </summary>
 public static class ServerSnapshotFit
 {
+    // Reserve room for other sections and for the backend's spaced JSONB text representation of this fact.
+    internal const int LocalAccountsMaxBytes = AgentTelemetryLimits.MaxSnapshotBytes / 2;
+
     private static readonly (string Section, string List)[] Order =
     {
         ("software", "software"),
@@ -296,8 +319,60 @@ public static class ServerSnapshotFit
             return true;
         }
 
+        if (sections.TryGetValue(AgentSnapshotFactory.LocalAccountsSection, out var accounts)
+            && JsonSerializer.SerializeToNode(accounts, JsonOpts) is JsonObject accountNode
+            && TryShrinkLocalAccounts(accountNode))
+        {
+            smaller = new Dictionary<string, object?>(sections, StringComparer.Ordinal)
+            {
+                [AgentSnapshotFactory.LocalAccountsSection] = accountNode,
+            };
+            return true;
+        }
+
         smaller = sections;
         return false;
+    }
+
+    internal static object FitLocalAccounts(object section)
+    {
+        if (AgentTelemetryLimits.EstimateJsonBytes(section) <= LocalAccountsMaxBytes)
+            return section;
+
+        var node = (JsonObject)JsonSerializer.SerializeToNode(section, JsonOpts)!;
+        while (AgentTelemetryLimits.EstimateJsonBytes(node) > LocalAccountsMaxBytes)
+        {
+            if (!TryShrinkLocalAccounts(node))
+                return AgentSnapshotFactory.UnavailableLocalAccounts;
+        }
+        return node;
+    }
+
+    private static bool TryShrinkLocalAccounts(JsonObject section)
+    {
+        if (section["users"] is not JsonObject users || section["privileged_groups"] is not JsonArray groups)
+            return false;
+
+        var changed = HalveAccountsList(users, "items");
+        foreach (var group in groups.OfType<JsonObject>())
+            changed |= HalveAccountsList(group, "members");
+
+        if (changed && section["status"]?.GetValue<string>() == "ok")
+            section["status"] = "partial";
+
+        return changed;
+    }
+
+    private static bool HalveAccountsList(JsonObject owner, string key)
+    {
+        if (owner[key] is not JsonArray { Count: > 0 } items)
+            return false;
+
+        var keep = items.Count / 2;
+        while (items.Count > keep)
+            items.RemoveAt(items.Count - 1);
+        owner["truncated"] = true;
+        return true;
     }
 }
 public static class AgentTelemetryFactory

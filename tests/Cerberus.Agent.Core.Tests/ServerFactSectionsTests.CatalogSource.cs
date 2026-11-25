@@ -10,9 +10,15 @@ public sealed partial class ServerFactSectionsTests
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
 
-        var expected = new[] { "identity", "os", "resources", "network", "tailscale", "rdp", "firewall", "security", "clock",
+        var expected = new List<string> { "identity", "os", "resources", "network", "tailscale", "rdp", "firewall", "security", "clock",
             "runtime", "capabilities", "sessions", "hardware", "services", "listening_ports", "updates", "software", "processes" };
+        var signedOutput = EnvelopeTypes.ServerFactSections.ToHashSet(StringComparer.Ordinal);
+        if (AgentBuildProfile.IsServer)
+        {
+            expected.Add(AgentSnapshotFactory.LocalAccountsSection);
+            signedOutput.Add(AgentSnapshotFactory.LocalAccountsSection);
+        }
         Assert.Equal(expected.OrderBy(n => n), names.OrderBy(n => n));
-        Assert.True(EnvelopeTypes.ServerFactSections.SetEquals(WindowsTelemetrySectionCatalog.CreateSignedFacts().Select(s => s.SectionName)));
+        Assert.True(signedOutput.SetEquals(WindowsTelemetrySectionCatalog.CreateSignedFacts().Select(s => s.SectionName)));
     }
 }

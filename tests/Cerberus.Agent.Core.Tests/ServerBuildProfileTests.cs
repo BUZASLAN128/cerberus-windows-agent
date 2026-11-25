@@ -70,8 +70,12 @@ public sealed class ServerBuildProfileTests
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault(configured).Select(s => s.SectionName).ToArray();
 
-        var expected = configured == "tailscale,rdp,capabilities"
-            ? new[] { "tailscale", "rdp", "capabilities" } : PrimarySections;
+        IEnumerable<string> expected = configured switch
+        {
+            null or "" => PrimarySections.Append("local_accounts"),
+            "tailscale,rdp,capabilities" => new[] { "tailscale", "rdp", "capabilities" },
+            _ => PrimarySections,
+        };
         Assert.Equal(expected.OrderBy(n => n), names.OrderBy(n => n));
     }
 
