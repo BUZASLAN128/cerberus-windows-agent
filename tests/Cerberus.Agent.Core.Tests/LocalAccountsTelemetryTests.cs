@@ -27,7 +27,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.Null(WindowsLocalUsersProbe.PasswordLastSet(1700000000, uint.MaxValue));
         Assert.Null(WindowsLocalUsersProbe.PasswordLastSet(1700000000, 1700000000));
     }
-
     [Fact]
     public void PasswordAgeSamplesWithinTheSameMinuteProduceTheSameObservation()
     {
@@ -36,7 +35,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.Equal(first, WindowsLocalUsersProbe.PasswordLastSet(1700000101, 100));
         Assert.Equal("2023-11-14T22:14:00.0000000Z", WindowsLocalUsersProbe.PasswordLastSet(1700000140, 100));
     }
-
     [Fact]
     public void DirectGroupCapUsesTheEntireReturnedListInSortOrder()
     {
@@ -46,7 +44,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.Equal("group-00", capped[0]);
         Assert.Equal("group-31", capped[^1]);
     }
-
     [Fact]
     public void WindowsNativeReadsReturnConsistentCountsAndX64UserInfoLayout()
     {
@@ -71,7 +68,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.NotNull(group);
         Assert.True(group.Membership.Total >= group.Membership.Members.Count);
     }
-
     [Fact]
     public void DomainControllerSkipsUsersButReportsExistingGroupsWithCanonicalIdsAndKinds()
     {
@@ -104,7 +100,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.Equal("Synthetic group", (string?)admin["name"]);
         Assert.Equal(kinds, admin["members"]!.AsArray().Select(member => (string?)member!["kind"]));
     }
-
     [Fact]
     public async Task DeniedConsentSkipsReadAndFailureReturnsUnavailableWithFullShape()
     {
@@ -120,7 +115,6 @@ public sealed class LocalAccountsTelemetryTests
         AssertUnavailable(Obj(await new LocalAccountsTelemetrySectionCollector(() => true, Fail).CollectAsync(Context(), default)));
         Assert.Equal(1, calls);
     }
-
     [Fact]
     public void AFailedProbeKeepsObservedFactsAndCounts()
     {
@@ -253,7 +247,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.True((bool?)result["truncated"]);
         Assert.Equal(1, calls);
     }
-
     [Fact]
     public async Task WorstCaseSectionFitsWithTruthfulCountsAndCompleteNestedObjects()
     {
@@ -299,7 +292,6 @@ public sealed class LocalAccountsTelemetryTests
         AssertUnavailable(Obj(outgoing.Sections[Section]!));
         Assert.Equal(AgentSnapshotFactory.HashSection(outgoing.Sections[Section]), outgoing.SectionHashes[Section]);
     }
-
     [Fact]
     public async Task WildcardFactsFitsAccountInventoryAndExplicitRequestOmitsIt()
     {
@@ -409,13 +401,10 @@ public sealed class LocalAccountsTelemetryTests
 
     private static LocalGroupRead Group(IReadOnlyList<LocalAdminMember> members)
         => new("Synthetic group", new LocalAdminsRead(members, members.Count, false, false));
-
     private static LocalAccountItem User(string name)
         => new(name, "S-1-5-21-1-2-3-1000", true, null, null, null, []);
-
     private static object EmptyRead() => LocalAccountsProbe.Collect(false,
         () => new LocalAccountUserRead(new LocalAccountUsers(0, false, []), false), _ => null, default);
-
     private static object WorstCase()
     {
         var text = new string('\u4E00', 256);
@@ -425,16 +414,13 @@ public sealed class LocalAccountsTelemetryTests
         var group = new LocalGroupRead(text, Group(members).Membership);
         return LocalAccountsProbe.Collect(false, () => new LocalAccountUserRead(users, false), _ => group, default);
     }
-
     private static LocalAccountsTelemetrySectionCollector AccountsCollector(object result) => new(() => true, (_, _) => result);
-
     private static void AssertUnavailable(JsonObject section)
     {
         Assert.Equal("unavailable", (string?)section["status"]);
         AssertEmptyUsers(section);
         Assert.Empty(section["privileged_groups"]!.AsArray());
     }
-
     private static void AssertEmptyUsers(JsonObject section)
     {
         var users = section["users"]!.AsObject();
@@ -443,7 +429,6 @@ public sealed class LocalAccountsTelemetryTests
         Assert.False((bool?)users["truncated"]);
         Assert.Empty(users["items"]!.AsArray());
     }
-
     private static void AssertTruncatedAccounts(JsonObject section, int usersCount, int groupCount)
     {
         Assert.Equal("partial", (string?)section["status"]);
