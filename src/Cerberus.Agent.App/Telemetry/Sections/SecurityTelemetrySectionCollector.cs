@@ -66,7 +66,7 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
             section["failed_logons"] = log.FailedLogons;
             section["successful_logons"] = log.SuccessfulLogons;
             section["log_cleared"] = log.LogCleared;
-            section["local_admins"] = allowed ? await CollectLocalAdminsAsync(log.AdminChanges, ct).ConfigureAwait(false)
+            section["local_admins"] = allowed ? await CollectLocalAdminsAsync(context, log.AdminChanges, ct).ConfigureAwait(false)
                 : SecurityLogFields.Unavailable;
             section["unexpected_shutdowns"] = await CollectUnexpectedShutdownsAsync(ct).ConfigureAwait(false);
             foreach (var (key, value) in _posture.Current())
@@ -103,12 +103,14 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         }
     }
 
-    private static async Task<object> CollectLocalAdminsAsync(AdminChangeReport changes, CancellationToken ct)
+    private static async Task<object> CollectLocalAdminsAsync(WindowsTelemetryContext context, AdminChangeReport changes, CancellationToken ct)
     {
         LocalAdminsRead? members = null;
         try
         {
-            members = await Task.Run(() => LocalAdminsProbe.Read(ct), ct).ConfigureAwait(false);
+            members = await Task.Run(() => AgentBuildProfile.IsServer
+                ? LocalAdminsProbe.ReadServerAdmins(context, ct)
+                : LocalAdminsProbe.Read(ct), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

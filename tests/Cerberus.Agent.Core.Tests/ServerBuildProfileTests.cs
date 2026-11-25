@@ -58,7 +58,7 @@ public sealed class ServerBuildProfileTests
         {
             "os", "resources", "clock", "runtime", "firewall", "network", "security", "identity",
             "sessions", "hardware", "services", "listening_ports", "updates", "software", "processes",
-            "tailscale", "rdp", "capabilities",
+            "tailscale", "rdp", "capabilities", "local_accounts",
         };
 
     [Theory]
@@ -71,7 +71,7 @@ public sealed class ServerBuildProfileTests
         var names = WindowsTelemetrySectionCatalog.CreateDefault(configured).Select(s => s.SectionName).ToArray();
 
         var expected = configured == "tailscale,rdp,capabilities"
-            ? new[] { "tailscale", "rdp", "capabilities" } : PrimarySections;
+            ? new[] { "tailscale", "rdp", "capabilities", "local_accounts" } : PrimarySections;
         Assert.Equal(expected.OrderBy(n => n), names.OrderBy(n => n));
     }
 

@@ -169,11 +169,11 @@ public sealed partial class ServerFactSectionsTests
     // ---- catalog and profile caps ----------------------------------------------------------------------------
 
     [Fact]
-    public void Catalog_ProfilesCarryAllEighteenSectionsWithCap262144()
+    public void Catalog_ProfilesCarryTheExpectedSectionsWithCap262144()
     {
         var names = WindowsTelemetrySectionCatalog.CreateDefault((string?)null).Select(s => s.SectionName).ToArray();
 
-        Assert.Equal(18, names.Length);
+        Assert.Equal(AgentBuildProfile.IsServer ? 19 : 18, names.Length);
         Assert.Contains("processes", names);
         Assert.Subset(names.ToHashSet(), SixSections.ToHashSet());
         Assert.Equal(262144, AgentTelemetryLimits.MaxSnapshotBytes);

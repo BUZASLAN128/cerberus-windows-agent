@@ -7,9 +7,11 @@ internal static class WindowsTelemetrySectionCatalog
 {
     private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
 
-    // Signed facts retain the command allowlist; periodic telemetry includes every core and fact section.
+    // The shared Server catalog includes account inventory for periodic snapshots and wildcard facts results.
     private static readonly HashSet<string> ServerProfileSections =
-        new(EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
+        new(AgentBuildProfile.IsServer
+            ? EnvelopeTypes.ServerFactSections.Append(AgentSnapshotFactory.LocalAccountsSection)
+            : EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
         => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);
@@ -22,9 +24,10 @@ internal static class WindowsTelemetrySectionCatalog
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(
         string? configured,
-        bool publishServiceObservation)
+        bool publishServiceObservation,
+        LocalAccountsTelemetrySectionCollector? localAccounts = null)
     {
-        var sections = CreateAll(publishServiceObservation);
+        var sections = CreateAll(publishServiceObservation, localAccounts);
         if (string.IsNullOrWhiteSpace(configured))
             return sections;
 
@@ -32,21 +35,21 @@ internal static class WindowsTelemetrySectionCatalog
             .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (allowlist.Count == 0)
+        if (!sections.Any(section => allowlist.Contains(section.SectionName)))
             return sections;
 
-        var filtered = sections
+        if (AgentBuildProfile.IsServer)
+            allowlist.Add(AgentSnapshotFactory.LocalAccountsSection);
+
+        return sections
             .Where(section => allowlist.Contains(section.SectionName))
             .ToArray();
-
-        return filtered.Length == 0
-            ? sections
-            : filtered;
     }
 
-    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation)
+    private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation,
+        LocalAccountsTelemetrySectionCollector? localAccounts)
     {
-        var sections = CreateCoreSections(publishServiceObservation);
+        var sections = CreateCoreSections(publishServiceObservation, null, localAccounts);
         // Core sections run under the same run budget, so a slow core collector cannot start outside it.
         return sections
             .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
@@ -54,8 +57,9 @@ internal static class WindowsTelemetrySectionCatalog
             .ToArray();
     }
 
-    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts(Func<bool>? hasDetailConsent = null)
-        => CreateCoreSections(false, hasDetailConsent)
+    internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateSignedFacts(Func<bool>? hasDetailConsent = null,
+        LocalAccountsTelemetrySectionCollector? localAccounts = null)
+        => CreateCoreSections(false, hasDetailConsent, localAccounts)
             .Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, TimeProvider.System))
             .Concat(CreateServerFactSections(TimeProvider.System))
             .Where(section => ServerProfileSections.Contains(section.SectionName))
@@ -75,22 +79,25 @@ internal static class WindowsTelemetrySectionCatalog
         };
         return facts.Select(section => (IWindowsTelemetrySectionCollector)new ServerSectionBudget(section, time)).ToArray();
     }
-    private static IWindowsTelemetrySectionCollector[] CreateCoreSections(bool publishServiceObservation, Func<bool>? hasDetailConsent = null) => new IWindowsTelemetrySectionCollector[]
+    private static IEnumerable<IWindowsTelemetrySectionCollector> CreateCoreSections(bool publishServiceObservation,
+        Func<bool>? hasDetailConsent, LocalAccountsTelemetrySectionCollector? localAccounts)
     {
-        new IdentityTelemetrySectionCollector(),
-        new OsTelemetrySectionCollector(),
-        new ResourcesTelemetrySectionCollector(),
-        new NetworkTelemetrySectionCollector(),
-        new TailscaleTelemetrySectionCollector(),
-        new RdpTelemetrySectionCollector(),
-        new FirewallTelemetrySectionCollector(),
-        new SecurityTelemetrySectionCollector(publishServiceObservation, true, null, hasDetailConsent: hasDetailConsent),
-        new ClockTelemetrySectionCollector(),
-        new RuntimeTelemetrySectionCollector(),
-        publishServiceObservation
+        yield return new IdentityTelemetrySectionCollector();
+        yield return new OsTelemetrySectionCollector();
+        yield return new ResourcesTelemetrySectionCollector();
+        yield return new NetworkTelemetrySectionCollector();
+        yield return new TailscaleTelemetrySectionCollector();
+        yield return new RdpTelemetrySectionCollector();
+        yield return new FirewallTelemetrySectionCollector();
+        yield return new SecurityTelemetrySectionCollector(publishServiceObservation, true, null, hasDetailConsent: hasDetailConsent);
+        if (AgentBuildProfile.IsServer)
+            yield return localAccounts ?? new LocalAccountsTelemetrySectionCollector(hasDetailConsent);
+        yield return new ClockTelemetrySectionCollector();
+        yield return new RuntimeTelemetrySectionCollector();
+        yield return publishServiceObservation
             ? new CapabilitiesTelemetrySectionCollector(
                 LocalUserCommandPolicy.Resolve,
                 LocalUserCommandPolicy.WriteServiceObservation)
-            : new CapabilitiesTelemetrySectionCollector(),
-    };
+            : new CapabilitiesTelemetrySectionCollector();
+    }
 }

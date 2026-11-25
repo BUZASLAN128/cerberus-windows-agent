@@ -15,10 +15,10 @@ public sealed class TelemetryParityTests
     [Theory]
     [InlineData(null)]
     [InlineData("unknown_section")]
-    public void MissingOrUnknownAllowlist_PreservesAllEighteenBudgetedSections(string? configured)
+    public void MissingOrUnknownAllowlist_PreservesAllBudgetedSectionsForTheProfile(string? configured)
     {
         var sections = WindowsTelemetrySectionCatalog.CreateDefault(configured);
-        Assert.Equal(18, sections.Count);
+        Assert.Equal(AgentBuildProfile.IsServer ? 19 : 18, sections.Count);
         Assert.All(sections, s => Assert.IsType<ServerSectionBudget>(s));
         Assert.Equal(TimeSpan.FromSeconds(20), ServerSectionBudget.TotalBudget);
         Assert.Equal(TimeSpan.FromSeconds(5), ServerSectionBudget.SectionBudget);
@@ -91,10 +91,12 @@ public sealed class TelemetryParityTests
     [Fact]
     public async Task AdvertisedSections_CannotWidenTheLocalOperatorAllowlist()
     {
-        var collector = new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateDefault("identity,clock"));
+        var collector = new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateDefault("identity,clock", false,
+            new LocalAccountsTelemetrySectionCollector(() => false)));
         var snapshot = await collector.BuildSnapshotAsync(ServerFactJson.Metadata(),
             ServerFactJson.AdvertisedHeartbeat("identity", "services", "raw_event_log"), default);
-        Assert.Equal(new[] { "identity" }, snapshot.Sections.Keys);
+        var expected = AgentBuildProfile.IsServer ? new[] { "identity", "local_accounts" } : new[] { "identity" };
+        Assert.Equal(expected, snapshot.Sections.Keys);
     }
 }
 
