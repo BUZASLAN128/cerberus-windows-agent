@@ -108,9 +108,9 @@ internal sealed class SecurityTelemetrySectionCollector : IWindowsTelemetrySecti
         LocalAdminsRead? members = null;
         try
         {
-            members = await Task.Run(() => AgentBuildProfile.IsServer
-                ? LocalAdminsProbe.ReadServerAdmins(context, ct)
-                : LocalAdminsProbe.Read(ct), ct).ConfigureAwait(false);
+            members = AgentBuildProfile.IsServer
+                ? await LocalAdminsProbe.Server.ReadAdminsAsync(context, ct).ConfigureAwait(false)
+                : await Task.Run(() => LocalAdminsProbe.Read(ct), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

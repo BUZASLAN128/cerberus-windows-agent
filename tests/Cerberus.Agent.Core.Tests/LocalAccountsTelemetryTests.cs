@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -25,7 +26,50 @@ public sealed class LocalAccountsTelemetryTests
         Assert.Equal(expected, WindowsLocalUsersProbe.FormatTime(seconds));
         Assert.Null(WindowsLocalUsersProbe.PasswordLastSet(1700000000, uint.MaxValue));
         Assert.Null(WindowsLocalUsersProbe.PasswordLastSet(1700000000, 1700000000));
-        Assert.Equal("2023-11-14T22:13:20.0000000Z", WindowsLocalUsersProbe.PasswordLastSet(1700000100, 100));
+    }
+
+    [Fact]
+    public void PasswordAgeSamplesWithinTheSameMinuteProduceTheSameObservation()
+    {
+        var first = WindowsLocalUsersProbe.PasswordLastSet(1700000100, 100);
+        Assert.Equal("2023-11-14T22:13:00.0000000Z", first);
+        Assert.Equal(first, WindowsLocalUsersProbe.PasswordLastSet(1700000101, 100));
+        Assert.Equal("2023-11-14T22:14:00.0000000Z", WindowsLocalUsersProbe.PasswordLastSet(1700000140, 100));
+    }
+
+    [Fact]
+    public void DirectGroupCapUsesTheEntireReturnedListInSortOrder()
+    {
+        var all = Enumerable.Range(0, 40).Select(i => FormattableString.Invariant($"group-{i:D2}")).Reverse().ToArray();
+        var capped = WindowsLocalUsersProbe.SortAndCapDirectGroups(all);
+        Assert.Equal(LocalAccountsProbe.MaxDirectGroups, capped.Length);
+        Assert.Equal("group-00", capped[0]);
+        Assert.Equal("group-31", capped[^1]);
+    }
+
+    [Fact]
+    public void WindowsNativeReadsReturnConsistentCountsAndX64UserInfoLayout()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        if (RuntimeInformation.ProcessArchitecture == Architecture.X64)
+            Assert.Equal(184, Marshal.SizeOf<WindowsLocalUsersProbe.UserInfo3>());
+
+        var isDc = LocalAdminsProbe.ReadDomainController();
+        Assert.NotNull(isDc);
+        var machine = LocalAdminsProbe.MachineSid();
+        if (isDc == false)
+        {
+            var users = WindowsLocalUsersProbe.Read(machine, default).Users;
+            Assert.NotNull(users.Count);
+            Assert.True(users.Count >= users.Items.Count);
+        }
+
+        var group = LocalAdminsProbe.ReadGroup(LocalAdminsProbe.AdministratorsSid, machine, isDc == true,
+            LocalAdminsProbe.MaxPrivilegedMembers, default);
+        Assert.NotNull(group);
+        Assert.True(group.Membership.Total >= group.Membership.Members.Count);
     }
 
     [Fact]
@@ -113,7 +157,7 @@ public sealed class LocalAccountsTelemetryTests
     }
 
     [Fact]
-    public async Task BudgetTimeoutDoesNotStartAnotherNativeReadWhileTheFirstIsBlocked()
+    public async Task OverlappingAccountWaitersShareTheReadAfterAnotherWaiterTimesOut()
     {
         var time = new ManualTimeProvider(T0);
         using var release = new ManualResetEventSlim();
@@ -128,13 +172,20 @@ public sealed class LocalAccountsTelemetryTests
         });
         var context = Context();
         var run = new ServerSectionBudget(blocked, time).CollectAsync(context, default).AsTask();
+        Task<object> follower1;
+        Task<object> follower2;
         try
         {
             await began.Task.WaitAsync(Guard);
             await WaitFor(() => time.ActiveDueTimes().Contains(T0 + ServerSectionBudget.SectionBudget));
+            follower1 = blocked.CollectAsync(Context(), default).AsTask();
+            follower2 = blocked.CollectAsync(Context(), default).AsTask();
+            Assert.False(follower1.IsCompleted);
+            Assert.False(follower2.IsCompleted);
             time.Advance(ServerSectionBudget.SectionBudget);
             AssertUnavailable(Obj(await run.WaitAsync(Guard)));
-            AssertUnavailable(Obj(await blocked.CollectAsync(Context(), default)));
+            Assert.False(follower1.IsCompleted);
+            Assert.False(follower2.IsCompleted);
             Assert.Equal(1, calls);
 
             time.Advance(ServerSectionBudget.TotalBudget);
@@ -146,8 +197,61 @@ public sealed class LocalAccountsTelemetryTests
             release.Set();
         }
 
-        var next = new LocalAccountsTelemetrySectionCollector(() => true, (_, _) => EmptyRead());
-        await WaitFor(() => !ReferenceEquals(next.CollectAsync(Context(), default).Result, AgentSnapshotFactory.UnavailableLocalAccounts));
+        var result = await follower1.WaitAsync(Guard);
+        Assert.Same(result, await follower2.WaitAsync(Guard));
+        Assert.Equal("ok", (string?)Obj(result)["status"]);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task OverlappingAdministratorsWaitersShareNativeDataAndKeepTheLegacyProjection()
+    {
+        using var release = new ManualResetEventSlim();
+        using var cancelFirst = new CancellationTokenSource();
+        var began = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var member = new LocalAdminMember("synthetic-member", User("synthetic-user").Sid, "local_user");
+        var native = Group(Enumerable.Repeat(member, 150).ToArray());
+        var reads = new LocalAdminsProbe.ServerAdminRead((_, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            began.TrySetResult();
+            release.Wait(Guard);
+            return native;
+        });
+        var context = Context();
+        var first = reads.ReadAdminsAsync(context, cancelFirst.Token);
+        Task<LocalAdminsRead> follower1;
+        Task<LocalAdminsRead> follower2;
+        Task<LocalGroupRead?> inventory;
+        try
+        {
+            await began.Task.WaitAsync(Guard);
+            follower1 = reads.ReadAdminsAsync(context, default);
+            follower2 = reads.ReadAdminsAsync(Context(), default);
+            inventory = reads.ReadGroupAsync(context, default);
+            Assert.False(follower1.IsCompleted);
+            Assert.False(follower2.IsCompleted);
+            Assert.False(inventory.IsCompleted);
+            cancelFirst.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.WaitAsync(Guard));
+            Assert.Equal(1, calls);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        Assert.Same(native, await inventory.WaitAsync(Guard));
+        var changes = new AdminChangeReport("ok", null);
+        var result = Obj(SecurityLogFields.LocalAdmins(await follower1.WaitAsync(Guard), changes));
+        var overlap = Obj(SecurityLogFields.LocalAdmins(await follower2.WaitAsync(Guard), changes));
+        Assert.True(JsonNode.DeepEquals(result, overlap));
+        Assert.Equal("ok", (string?)result["status"]);
+        Assert.Equal(150, (int?)result["count"]);
+        Assert.Equal(LocalAdminsProbe.MaxMembers, result["members"]!.AsArray().Count);
+        Assert.True((bool?)result["truncated"]);
+        Assert.Equal(1, calls);
     }
 
     [Fact]
@@ -160,17 +264,26 @@ public sealed class LocalAccountsTelemetryTests
     }
 
 #if CERBERUS_SERVER_PROFILE
-    [Fact]
-    public async Task PrimaryPeriodicSnapshotKeepsAccountSectionWhenHeartbeatAdvertisesOtherSections()
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public async Task PrimaryPeriodicSnapshotAdmitsAccountsOnlyUnderAnApplicableAdvertisement(bool advertised,
+        bool includesAccounts, bool expected)
     {
-        var catalog = WindowsTelemetrySectionCatalog.CreateDefault("clock", false, AccountsCollector(EmptyRead()));
-        Assert.Contains(catalog, section => section.SectionName == Section);
-        var heartbeat = AdvertisedHeartbeat("clock");
+        var catalog = WindowsTelemetrySectionCatalog.CreateDefault(null, false, AccountsCollector(EmptyRead()))
+            .Where(section => section.SectionName is "clock" or Section).ToArray();
+        var heartbeat = advertised ? AdvertisedHeartbeat(includesAccounts ? ["clock", Section] : ["clock"]) : null;
         var snapshot = await new WindowsTelemetryCollector(catalog).BuildSnapshotAsync(Metadata(), heartbeat, default);
-        Assert.Equal("ok", (string?)Obj(snapshot.Sections[Section]!)["status"]);
-        var accepted = AgentSnapshotFactory.SnapshotSectionsFor(heartbeat.SnapshotSections);
+        var accepted = AgentSnapshotFactory.SnapshotSectionsFor(heartbeat?.SnapshotSections);
         var outgoing = AgentSnapshotFactory.ForSections(snapshot, accepted);
-        Assert.Equal(AgentSnapshotFactory.HashSection(outgoing.Sections[Section]), outgoing.SectionHashes[Section]);
+        Assert.Equal(expected, snapshot.Sections.ContainsKey(Section));
+        Assert.Equal(expected, outgoing.Sections.ContainsKey(Section));
+        if (expected)
+        {
+            Assert.Equal("ok", (string?)Obj(outgoing.Sections[Section]!)["status"]);
+            Assert.Equal(AgentSnapshotFactory.HashSection(outgoing.Sections[Section]), outgoing.SectionHashes[Section]);
+        }
     }
 
     [Fact]
@@ -213,18 +326,65 @@ public sealed class LocalAccountsTelemetryTests
     }
 
     [Fact]
-    public void SnapshotSizeFitRehashesAndRetainsUnavailableAtTheMinimumBudget()
+    public void SnapshotSizeFitRehashesAndPreservesEmptyAccountsWhenNoListsCanShrink()
     {
         var payload = new Dictionary<string, object?> { [Section] = WorstCase(), ["clock"] = new { status = "ok" } };
         var fitted = AgentSnapshotFactory.Create(Metadata(), T0, payload, maxBytes: 16 * 1024);
         AssertTruncatedAccounts(Obj(fitted.Sections[Section]!), LocalAccountsProbe.MaxUsers, LocalAdminsProbe.MaxPrivilegedMembers);
         Assert.Equal(AgentSnapshotFactory.HashSection(fitted.Sections[Section]), fitted.SectionHashes[Section]);
 
-        payload[Section] = AgentSnapshotFactory.UnavailableLocalAccounts;
-        var minimum = AgentTelemetryLimits.EstimateJsonBytes(AgentSnapshotFactory.Create(Metadata(), T0, payload));
-        fitted = AgentSnapshotFactory.Fit(fitted, minimum);
-        AssertUnavailable(Obj(fitted.Sections[Section]!));
-        Assert.Equal(AgentSnapshotFactory.HashSection(fitted.Sections[Section]), fitted.SectionHashes[Section]);
+        var emptyAccounts = LocalAccountsProbe.Collect(false,
+            () => new LocalAccountUserRead(new LocalAccountUsers(0, false, []), false),
+            _ => Group([]), default);
+        var runtime = new { info = new string('x', 1024) };
+        var emptySnapshot = AgentSnapshotFactory.Create(Metadata(), T0, new Dictionary<string, object?>
+        {
+            [Section] = emptyAccounts,
+            ["runtime"] = runtime,
+        });
+        var downgraded = AgentSnapshotFactory.Create(Metadata(), T0, new Dictionary<string, object?>
+        {
+            [Section] = AgentSnapshotFactory.UnavailableLocalAccounts,
+            ["runtime"] = runtime,
+        });
+        var budget = AgentTelemetryLimits.EstimateJsonBytes(downgraded);
+        Assert.True(AgentTelemetryLimits.EstimateJsonBytes(emptySnapshot) > budget);
+        Assert.False(ServerSnapshotFit.TryHalve(emptySnapshot.Sections, out var unchanged));
+        Assert.Same(emptySnapshot.Sections, unchanged);
+        Assert.Same(emptyAccounts, unchanged[Section]);
+        var error = Assert.Throws<InvalidOperationException>(() => AgentSnapshotFactory.Fit(emptySnapshot, budget));
+        Assert.StartsWith("Agent telemetry payload too large:", error.Message);
+    }
+
+    [Fact]
+    public async Task LargeSoftwareIsFittedBeforeSmallAccountsInBothWireBodies()
+    {
+        var accounts = LocalAccountsProbe.Collect(false,
+            () => new LocalAccountUserRead(new LocalAccountUsers(1, false, [User("synthetic-user")]), false),
+            _ => null, default);
+        const int softwareCount = 300;
+        var software = new { truncated = false, software = Enumerable.Repeat(new string('x', 1024), softwareCount).ToArray() };
+        var hash = AgentSnapshotFactory.HashSection(accounts);
+        var snapshot = AgentSnapshotFactory.Create(Metadata(), T0, new Dictionary<string, object?>
+        {
+            [Section] = accounts,
+            ["software"] = software,
+        });
+        Assert.Equal(hash, snapshot.SectionHashes[Section]);
+        Assert.Equal(hash, AgentSnapshotFactory.HashSection(snapshot.Sections[Section]));
+        Assert.True((bool?)Obj(snapshot.Sections["software"]!)["truncated"]);
+
+        var catalog = WindowsTelemetrySectionCatalog.CreateSignedFacts(localAccounts: AccountsCollector(accounts));
+        var sections = catalog.Where(section => section.SectionName == Section).ToList();
+        sections.Add(new StubSection("software", _ => ValueTask.FromResult<object>(software)));
+        var handler = new CollectFactsCommandHandler(Metadata(), sections, TimeProvider.System);
+        using var wildcard = JsonDocument.Parse("{}");
+        var result = await handler.HandleAsync(new AgentCommand("synthetic", handler.Type, "wildcard", wildcard.RootElement), default);
+        Assert.Equal("DONE", result.Status);
+        var post = Obj(result.PostVerify!);
+        Assert.Equal(hash, (string?)post["section_hashes"]![Section]);
+        Assert.Equal(hash, AgentSnapshotFactory.HashSection(post["sections"]![Section]));
+        Assert.True((bool?)post["sections"]!["software"]!["truncated"]);
     }
 #else
     [Fact]
@@ -308,3 +468,47 @@ public sealed class LocalAccountsTelemetryTests
             await Task.Delay(10, timeout.Token);
     }
 }
+
+#if CERBERUS_SERVER_PROFILE
+[CollectionDefinition("LocalAccountsOperatorEnvironment", DisableParallelization = true)]
+public sealed class LocalAccountsOperatorEnvironmentCollection { }
+
+[Collection("LocalAccountsOperatorEnvironment")]
+public sealed class LocalAccountsOperatorEnvironmentTests
+{
+    [Theory]
+    [InlineData("clock")]
+    [InlineData("unknown_section")]
+    [InlineData("local_accounts")]
+    public async Task OperatorAllowlistSuppressesPeriodicAccountsAndKeepsWildcardFacts(string configured)
+    {
+        const string section = AgentSnapshotFactory.LocalAccountsSection;
+        var variable = AgentSnapshotFactory.SnapshotSectionAllowlistEnv;
+        var previous = Environment.GetEnvironmentVariable(variable);
+        try
+        {
+            Environment.SetEnvironmentVariable(variable, configured);
+            Assert.DoesNotContain(WindowsTelemetrySectionCatalog.CreateDefault(), item => item.SectionName == section);
+
+            var catalog = WindowsTelemetrySectionCatalog.CreateSignedFacts(localAccounts:
+                new LocalAccountsTelemetrySectionCollector(() => true, (_, _) => AgentSnapshotFactory.UnavailableLocalAccounts));
+            var sections = catalog.Where(item => item.SectionName is "clock" or section).ToArray();
+            var secondary = new WindowsTelemetryCollector(sections, signedFacts: true);
+            var heartbeat = AdvertisedHeartbeat("clock", section);
+            var snapshot = await secondary.BuildSnapshotAsync(Metadata(), heartbeat, default);
+            Assert.Equal("clock", Assert.Single(snapshot.Sections).Key);
+            Assert.DoesNotContain(section, AgentSnapshotFactory.SnapshotSectionsFor(null, signedFacts: true));
+
+            var handler = new CollectFactsCommandHandler(Metadata(), sections, TimeProvider.System);
+            using var wildcard = JsonDocument.Parse("{}");
+            var result = await handler.HandleAsync(new AgentCommand("synthetic", handler.Type, "wildcard", wildcard.RootElement), default);
+            Assert.Equal("DONE", result.Status);
+            Assert.Equal("unavailable", (string?)Obj(result.PostVerify!)["sections"]![section]!["status"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, previous);
+        }
+    }
+}
+#endif

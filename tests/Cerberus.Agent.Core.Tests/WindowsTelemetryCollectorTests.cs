@@ -52,8 +52,7 @@ public sealed class WindowsTelemetryCollectorTests
     public async Task BuildSnapshotAsync_HonorsTelemetrySectionAllowlist()
     {
         var collector = new WindowsTelemetryCollector(
-            WindowsTelemetrySectionCatalog.CreateDefault("identity,clock", false,
-                new LocalAccountsTelemetrySectionCollector(() => false)));
+            WindowsTelemetrySectionCatalog.CreateDefault("identity,clock"));
         var snapshot = await collector.BuildSnapshotAsync(
             new AgentBuildMetadata(
                 AgentVersion: "1.2.3",
@@ -64,8 +63,7 @@ public sealed class WindowsTelemetryCollectorTests
             lastHeartbeat: null,
             ct: CancellationToken.None);
 
-        var expected = AgentBuildProfile.IsServer ? new[] { "clock", "identity", "local_accounts" } : new[] { "clock", "identity" };
-        Assert.Equal(expected, snapshot.Sections.Keys.OrderBy(x => x));
+        Assert.Equal(new[] { "clock", "identity" }, snapshot.Sections.Keys.OrderBy(x => x));
     }
     [Fact]
     public async Task CapabilitiesTelemetry_OmitsLocalUserCreateWhenPolicyDisabled()

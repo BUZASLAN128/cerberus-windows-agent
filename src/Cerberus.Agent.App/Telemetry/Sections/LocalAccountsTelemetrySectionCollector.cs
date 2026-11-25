@@ -8,36 +8,28 @@ internal sealed class LocalAccountsTelemetrySectionCollector(
     Func<bool>? hasDetailConsent = null,
     Func<WindowsTelemetryContext, CancellationToken, object>? read = null) : IWindowsTelemetrySectionCollector
 {
-    // NetAPI calls cannot be cancelled while inside Windows. A timed-out read keeps this slot until it returns.
-    private static int _readInProgress;
+    private static readonly InFlightAccountRead<object> NativeReads = new();
+    private readonly InFlightAccountRead<object> _reads = read is null ? NativeReads : new();
     private readonly Func<bool> _hasDetailConsent = hasDetailConsent ?? SecurityTelemetryConsent.IsAllowed;
     private readonly Func<WindowsTelemetryContext, CancellationToken, object> _read = read ?? LocalAccountsProbe.Read;
 
     public string SectionName => AgentSnapshotFactory.LocalAccountsSection;
 
-    public ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
+    public async ValueTask<object> CollectAsync(WindowsTelemetryContext context, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         try
         {
-            if (!_hasDetailConsent() || Interlocked.CompareExchange(ref _readInProgress, 1, 0) != 0)
-                return ValueTask.FromResult(AgentSnapshotFactory.UnavailableLocalAccounts);
+            if (!_hasDetailConsent())
+                return AgentSnapshotFactory.UnavailableLocalAccounts;
 
-            try
-            {
-                var section = _read(context, ct);
-                ct.ThrowIfCancellationRequested();
-                return ValueTask.FromResult(ServerSnapshotFit.FitLocalAccounts(section));
-            }
-            finally
-            {
-                Volatile.Write(ref _readInProgress, 0);
-            }
+            return await _reads.GetOrStart(() => ServerSnapshotFit.FitLocalAccounts(_read(context, CancellationToken.None)))
+                .WaitAsync(ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             WarnProbe("inventory", ex);
-            return ValueTask.FromResult(AgentSnapshotFactory.UnavailableLocalAccounts);
+            return AgentSnapshotFactory.UnavailableLocalAccounts;
         }
     }
 

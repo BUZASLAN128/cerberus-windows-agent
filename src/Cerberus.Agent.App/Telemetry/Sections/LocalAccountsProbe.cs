@@ -47,7 +47,7 @@ internal static class LocalAccountsProbe
         var machine = LocalAdminsProbe.MachineSid();
         return Collect(isDc.Value, () => WindowsLocalUsersProbe.Read(machine, ct), sid =>
             sid == LocalAdminsProbe.AdministratorsSid
-                ? LocalAdminsProbe.ReadServerAdministratorsGroup(context, ct, machine, isDc)
+                ? LocalAdminsProbe.Server.ReadGroupAsync(context, ct, machine, isDc).GetAwaiter().GetResult()
                 : LocalAdminsProbe.ReadGroup(sid, machine, isDc.Value, LocalAdminsProbe.MaxPrivilegedMembers, ct), ct);
     }
 

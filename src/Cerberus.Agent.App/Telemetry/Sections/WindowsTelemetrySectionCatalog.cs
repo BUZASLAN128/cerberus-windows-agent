@@ -5,8 +5,6 @@ namespace Cerberus.Agent.App.Telemetry.Sections;
 
 internal static class WindowsTelemetrySectionCatalog
 {
-    private const string SectionAllowlistEnv = "CERBERUS_AGENT_TELEMETRY_SECTIONS";
-
     // The shared Server catalog includes account inventory for periodic snapshots and wildcard facts results.
     private static readonly HashSet<string> ServerProfileSections =
         new(AgentBuildProfile.IsServer
@@ -14,13 +12,13 @@ internal static class WindowsTelemetrySectionCatalog
             : EnvelopeTypes.ServerFactSections, StringComparer.OrdinalIgnoreCase);
 
     public static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault()
-        => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation: false);
+        => CreateDefault(Environment.GetEnvironmentVariable(AgentSnapshotFactory.SnapshotSectionAllowlistEnv), publishServiceObservation: false);
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(string? configured)
         => CreateDefault(configured, publishServiceObservation: false);
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(bool publishServiceObservation)
-        => CreateDefault(Environment.GetEnvironmentVariable(SectionAllowlistEnv), publishServiceObservation);
+        => CreateDefault(Environment.GetEnvironmentVariable(AgentSnapshotFactory.SnapshotSectionAllowlistEnv), publishServiceObservation);
 
     internal static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateDefault(
         string? configured,
@@ -28,22 +26,15 @@ internal static class WindowsTelemetrySectionCatalog
         LocalAccountsTelemetrySectionCollector? localAccounts = null)
     {
         var sections = CreateAll(publishServiceObservation, localAccounts);
-        if (string.IsNullOrWhiteSpace(configured))
+        var configuredSections = AgentSnapshotFactory.ParseSnapshotSectionAllowlist(configured);
+        if (configuredSections.Length == 0)
             return sections;
 
-        var allowlist = configured
-            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var allowlist = configuredSections.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var baseline = sections.Where(section => section.SectionName != AgentSnapshotFactory.LocalAccountsSection).ToArray();
+        var filtered = baseline.Where(section => allowlist.Contains(section.SectionName)).ToArray();
 
-        if (!sections.Any(section => allowlist.Contains(section.SectionName)))
-            return sections;
-
-        if (AgentBuildProfile.IsServer)
-            allowlist.Add(AgentSnapshotFactory.LocalAccountsSection);
-
-        return sections
-            .Where(section => allowlist.Contains(section.SectionName))
-            .ToArray();
+        return filtered.Length == 0 ? baseline : filtered;
     }
 
     private static IReadOnlyList<IWindowsTelemetrySectionCollector> CreateAll(bool publishServiceObservation,

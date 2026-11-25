@@ -97,15 +97,15 @@ internal static class WindowsLocalUsersProbe
         {
             if (rc is not (0 or ErrorMoreData))
                 throw new Win32Exception(rc);
-            var groups = new string[Math.Min(read, LocalAccountsProbe.MaxDirectGroups)];
+            var groups = new string[read];
             for (var i = 0; i < groups.Length; i++)
             {
                 ct.ThrowIfCancellationRequested();
                 var group = Marshal.PtrToStringUni(Marshal.ReadIntPtr(buffer, i * IntPtr.Size)) ?? "";
                 groups[i] = LocalAccountsProbe.CleanText(group);
             }
-            Array.Sort(groups, StringComparer.OrdinalIgnoreCase);
-            return (groups, rc == ErrorMoreData || total > groups.Length || read > groups.Length);
+            var retained = SortAndCapDirectGroups(groups);
+            return (retained, rc == ErrorMoreData || total > retained.Length || read > retained.Length);
         }
         finally
         {
@@ -119,10 +119,20 @@ internal static class WindowsLocalUsersProbe
             : DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
 
     internal static string? PasswordLastSet(long now, uint passwordAge)
-        => passwordAge == uint.MaxValue ? null : FormatTime(now - passwordAge);
+    {
+        var lastSet = now - passwordAge;
+        return passwordAge == uint.MaxValue || lastSet == uint.MaxValue
+            ? null : FormatTime(lastSet - lastSet % 60);
+    }
+
+    internal static string[] SortAndCapDirectGroups(string[] groups)
+    {
+        Array.Sort(groups, StringComparer.OrdinalIgnoreCase);
+        return groups.Length > LocalAccountsProbe.MaxDirectGroups ? groups[..LocalAccountsProbe.MaxDirectGroups] : groups;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct UserInfo3
+    internal struct UserInfo3
     {
         public IntPtr Name;
         public IntPtr Password;

@@ -33,13 +33,34 @@ internal static class LocalAdminsProbe
     private const int SidTypeAlias = 4;
     private const int SidTypeWellKnownGroup = 5;
 
-    private static readonly ConditionalWeakTable<WindowsTelemetryContext, ServerAdminRead> ServerReads = new();
-    private static int _serverReadInProgress;
+    internal static readonly ServerAdminRead Server = new((machine, isDc) => ReadGroup(AdministratorsSid,
+        isDc.HasValue ? machine : MachineSid(), isDc ?? (ReadDomainController() == true),
+        MaxPrivilegedMembers, CancellationToken.None));
 
-    private sealed class ServerAdminRead
+    internal sealed class ServerAdminRead(Func<SecurityIdentifier?, bool?, LocalGroupRead?> readGroup)
     {
-        public int Started;
-        public LocalGroupRead? Result;
+        private readonly ConditionalWeakTable<WindowsTelemetryContext, Lazy<Task<LocalGroupRead?>>> _snapshots = new();
+        private readonly InFlightAccountRead<LocalGroupRead?> _reads = new();
+
+        internal async Task<LocalAdminsRead> ReadAdminsAsync(WindowsTelemetryContext context, CancellationToken ct)
+        {
+            var read = (await ReadGroupAsync(context, ct).ConfigureAwait(false))?.Membership
+                ?? throw new Win32Exception(ErrorNoSuchAlias);
+            return read with
+            {
+                Members = read.Members.Take(MaxMembers).ToArray(),
+                Truncated = read.Total > MaxMembers,
+            };
+        }
+
+        internal Task<LocalGroupRead?> ReadGroupAsync(WindowsTelemetryContext context, CancellationToken ct,
+            SecurityIdentifier? machine = null, bool? isDc = null)
+        {
+            ct.ThrowIfCancellationRequested();
+            var read = _snapshots.GetValue(context, _ => new Lazy<Task<LocalGroupRead?>>(
+                () => _reads.GetOrStart(() => readGroup(machine, isDc))));
+            return read.Value.WaitAsync(ct);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -70,40 +91,6 @@ internal static class LocalAdminsProbe
         ct.ThrowIfCancellationRequested();
         return ReadGroup(AdministratorsSid, MachineSid(), ReadDomainController() == true, MaxMembers, ct)?.Membership
             ?? throw new Win32Exception(ErrorNoSuchAlias);
-    }
-
-    internal static LocalAdminsRead? ReadServerAdmins(WindowsTelemetryContext context, CancellationToken ct)
-    {
-        var read = ReadServerAdministratorsGroup(context, ct)?.Membership;
-        return read is null ? null : read with
-        {
-            Members = read.Members.Take(MaxMembers).ToArray(),
-            Truncated = read.Total > MaxMembers,
-        };
-    }
-
-    internal static LocalGroupRead? ReadServerAdministratorsGroup(WindowsTelemetryContext context, CancellationToken ct,
-        SecurityIdentifier? machine = null, bool? isDc = null)
-    {
-        ct.ThrowIfCancellationRequested();
-        var snapshot = ServerReads.GetValue(context, static _ => new ServerAdminRead());
-        if (Interlocked.Exchange(ref snapshot.Started, 1) != 0)
-            return Volatile.Read(ref snapshot.Result) ?? throw new InvalidOperationException("Administrator membership unavailable.");
-        if (Interlocked.CompareExchange(ref _serverReadInProgress, 1, 0) != 0)
-            throw new InvalidOperationException("Administrator membership read is still running.");
-
-        try
-        {
-            var result = ReadGroup(AdministratorsSid, machine ?? MachineSid(),
-                isDc ?? (ReadDomainController() == true), MaxPrivilegedMembers, ct);
-            ct.ThrowIfCancellationRequested();
-            Volatile.Write(ref snapshot.Result, result);
-            return result;
-        }
-        finally
-        {
-            Volatile.Write(ref _serverReadInProgress, 0);
-        }
     }
 
     internal static LocalGroupRead? ReadGroup(string groupSid, SecurityIdentifier? machine, bool isDc, int maxMembers,

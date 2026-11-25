@@ -18,7 +18,7 @@ public sealed class TelemetryParityTests
     public void MissingOrUnknownAllowlist_PreservesAllBudgetedSectionsForTheProfile(string? configured)
     {
         var sections = WindowsTelemetrySectionCatalog.CreateDefault(configured);
-        Assert.Equal(AgentBuildProfile.IsServer ? 19 : 18, sections.Count);
+        Assert.Equal(AgentBuildProfile.IsServer && configured is null ? 19 : 18, sections.Count);
         Assert.All(sections, s => Assert.IsType<ServerSectionBudget>(s));
         Assert.Equal(TimeSpan.FromSeconds(20), ServerSectionBudget.TotalBudget);
         Assert.Equal(TimeSpan.FromSeconds(5), ServerSectionBudget.SectionBudget);
@@ -91,12 +91,10 @@ public sealed class TelemetryParityTests
     [Fact]
     public async Task AdvertisedSections_CannotWidenTheLocalOperatorAllowlist()
     {
-        var collector = new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateDefault("identity,clock", false,
-            new LocalAccountsTelemetrySectionCollector(() => false)));
+        var collector = new WindowsTelemetryCollector(WindowsTelemetrySectionCatalog.CreateDefault("identity,clock"));
         var snapshot = await collector.BuildSnapshotAsync(ServerFactJson.Metadata(),
             ServerFactJson.AdvertisedHeartbeat("identity", "services", "raw_event_log"), default);
-        var expected = AgentBuildProfile.IsServer ? new[] { "identity", "local_accounts" } : new[] { "identity" };
-        Assert.Equal(expected, snapshot.Sections.Keys);
+        Assert.Equal(new[] { "identity" }, snapshot.Sections.Keys);
     }
 }
 
@@ -137,6 +135,35 @@ public sealed partial class AgentApiClientTelemetryTests
         AssertSentSections(wire.Snapshots[0], ServerFactJson.PeriodicSections);
         AssertSentSections(wire.Snapshots[1], LegacySections());
     }
+
+#if CERBERUS_SERVER_PROFILE
+    [Fact]
+    public async Task SnapshotSections_422RestoresAccountsThroughTheNoAdvertisementFallback()
+    {
+        const string section = AgentSnapshotFactory.LocalAccountsSection;
+        var wire = new SnapshotBudgetWire { AdvertisedSections = new[] { "identity" }, RejectFirstSnapshot = true };
+        using var http = new HttpClient(wire) { BaseAddress = new Uri("https://backend.test") };
+        var api = new AgentApiClient(http, new StaticSecretStore(), new StaticTokenManager(), new StaticSigner());
+        var snapshot = AgentSnapshotFactory.Create(Metadata(), DateTimeOffset.UtcNow, new Dictionary<string, object?>
+        {
+            ["identity"] = new { status = "ok" },
+            [section] = AgentSnapshotFactory.UnavailableLocalAccounts,
+        });
+        await api.HeartbeatAsync(new { }, default);
+        Assert.DoesNotContain(section, api.SnapshotSections);
+        await Assert.ThrowsAnyAsync<HttpRequestException>(() => api.SubmitSnapshotAsync(snapshot, default));
+        AssertSentSections(Assert.Single(wire.Snapshots), new[] { "identity" });
+
+        Assert.Contains(section, api.SnapshotSections);
+        await api.SubmitSnapshotAsync(snapshot, default);
+        await api.HeartbeatAsync(new { }, default);
+        Assert.Contains(section, api.SnapshotSections);
+        await api.SubmitSnapshotAsync(snapshot, default);
+        Assert.Equal(3, wire.Snapshots.Count);
+        foreach (var fallback in wire.Snapshots.Skip(1))
+            AssertSentSections(fallback, new[] { "identity", section });
+    }
+#endif
 
     [Theory]
     [InlineData(false)]
@@ -338,6 +365,7 @@ public sealed partial class AgentApiClientTelemetryTests
         public int? Advertised;
         public IReadOnlyList<string>? AdvertisedSections = ServerFactJson.PeriodicSections;
         public bool RejectAbove64KiB;
+        public bool RejectFirstSnapshot { get; init; }
         public bool RejectNonLegacySections;
         public List<string> Snapshots { get; } = [];
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -351,6 +379,8 @@ public sealed partial class AgentApiClientTelemetryTests
             }
             var json = await request.Content!.ReadAsStringAsync(ct);
             Snapshots.Add(json);
+            if (RejectFirstSnapshot && Snapshots.Count == 1)
+                return new HttpResponseMessage(HttpStatusCode.UnprocessableEntity) { Content = new StringContent("{}") };
             if (RejectNonLegacySections)
             {
                 using var doc = JsonDocument.Parse(json);
