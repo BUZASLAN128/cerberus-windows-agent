@@ -96,4 +96,23 @@ public sealed class AgentServerManualUpdatePolicyTests
             throw new OperationCanceledException(cts.Token);
         }, cts.Token));
     }
+
+    [Fact]
+    public void ServiceHostHandlesOnlyStartAndStop()
+    {
+        var host = typeof(Cerberus.Agent.App.WindowsServiceHost);
+        const System.Reflection.BindingFlags declared = System.Reflection.BindingFlags.Instance |
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+            System.Reflection.BindingFlags.DeclaredOnly;
+        var overrides = host.GetMethods(declared)
+            .Where(method => method.GetBaseDefinition().DeclaringType != host)
+            .Select(method => method.Name)
+            .OrderBy(name => name, StringComparer.Ordinal);
+        Assert.Equal(new[] { "OnStart", "OnStop" }, overrides);
+
+        Type?[] types;
+        try { types = host.Assembly.GetTypes(); }
+        catch (System.Reflection.ReflectionTypeLoadException partial) { types = partial.Types; }
+        Assert.Single(types, type => type is not null && typeof(System.ServiceProcess.ServiceBase).IsAssignableFrom(type));
+    }
 }

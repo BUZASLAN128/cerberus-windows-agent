@@ -1,15 +1,12 @@
 using System.ServiceProcess;
-using Cerberus.Agent.App.Updates;
 
 namespace Cerberus.Agent.App;
 
+// Update check and apply requests go through the local control pipe only.
 internal sealed class WindowsServiceHost : ServiceBase
 {
-    internal const int ApplyUpdateCommand = 129;
-
     private CancellationTokenSource? _cts;
     private Task? _runTask;
-    private int _applyUpdateRunning;
     private int _stopping;
 
     public WindowsServiceHost()
@@ -64,35 +61,6 @@ internal sealed class WindowsServiceHost : ServiceBase
             // Log for diagnostics but allow graceful service stop.
             _ = ex; // Suppress unused variable warning
         }
-    }
-
-    protected override void OnCustomCommand(int command)
-    {
-        if (command == ApplyUpdateCommand)
-        {
-            StartApplyUpdateCommand();
-            return;
-        }
-
-        base.OnCustomCommand(command);
-    }
-
-    private void StartApplyUpdateCommand()
-    {
-        if (Interlocked.Exchange(ref _applyUpdateRunning, 1) == 1)
-            return;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await UpdateCommandMode.RunAsync(apply: true, CancellationToken.None).ConfigureAwait(false);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _applyUpdateRunning, 0);
-            }
-        });
     }
 
     public static void RunAsService()
