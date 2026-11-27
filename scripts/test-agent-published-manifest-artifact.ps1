@@ -2,7 +2,9 @@
 param(
   [Parameter(Mandatory = $true)][string]$ManifestPath,
   [string]$UpdateAllowedArtifactPrefixes = $env:CERBERUS_AGENT_UPDATE_ALLOWED_ARTIFACT_PREFIXES,
-  [string]$AllowedTailnetArtifactHost = ""
+  [string]$AllowedTailnetArtifactHost = "",
+  # Feed publication: the one-line install scripts are served next to the MSI. GitHub releases do not carry them.
+  [switch]$CheckInstallScripts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,4 +26,14 @@ if ([string]::IsNullOrWhiteSpace($UpdateAllowedArtifactPrefixes)) {
 }
 $prefixes = @(Get-ReleaseArtifactPrefixes $UpdateAllowedArtifactPrefixes)
 Assert-ReleaseArtifactReachable -ArtifactUrl $artifactUrl -ArtifactPrefixes $prefixes -AllowedTailnetHost $AllowedTailnetArtifactHost
-Write-Host 'Published release artifact passed anonymous HTTPS HEAD.'
+if ($CheckInstallScripts) {
+  if ($artifactUrl -cnotmatch '\A(?<dir>https://.+/)(?<base>Cerberus\.Agent-(?<channel>[a-z]+)-[0-9]+\.[0-9]+\.[0-9]+(?<suffix>-server)?)\.msi\z') {
+    throw 'Release artifact name does not follow the installer naming; cannot derive the install script URLs.'
+  }
+  $scriptDir = $Matches.dir
+  $scriptNames = @("$($Matches.base).install.ps1", "Cerberus.Agent-$($Matches.channel)-latest$($Matches.suffix).install.ps1")
+  foreach ($scriptName in $scriptNames) {
+    Assert-ReleaseArtifactReachable -ArtifactUrl ($scriptDir + $scriptName) -ArtifactPrefixes $prefixes -AllowedTailnetHost $AllowedTailnetArtifactHost
+  }
+}
+Write-Host $(if ($CheckInstallScripts) { 'Published release artifact and install scripts passed anonymous HTTPS HEAD.' } else { 'Published release artifact passed anonymous HTTPS HEAD.' })

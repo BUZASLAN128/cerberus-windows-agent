@@ -86,7 +86,7 @@ Desktop MSI'ları için aynı taban ada sahip bir Burn `.exe` kurulum sarmalayı
 
 ### Tek satırlık kurulum (`irm | iex`)
 
-Yayın çıktısında iki profil için tek satırlık kurulum betiği de bulunur: `<installer-base>.install.ps1` ve kanalın `-latest` kopyası. Betik feed'e MSI ile birlikte konur; GitHub yayın iş akışı bu dosyayı yüklemez.
+Yayın çıktısında iki profil için tek satırlık kurulum betiği de bulunur: `<installer-base>.install.ps1` ve kanalın `-latest` kopyası. Betik feed'e MSI ile birlikte konur; GitHub yayın iş akışı bu dosyayı yüklemez. Feed'e koyduktan sonra, feed'e genel DNS ile ulaşan (tailnet üyesi olmayan) bir makinede `pwsh scripts/test-agent-published-manifest-artifact.ps1 -ManifestPath <yayınlanan manifest> -AllowedTailnetArtifactHost <feed host> -CheckInstallScripts` çalıştırılır. Bu kontrol MSI'ın ve iki betiğin anonim HTTPS HEAD ile 2xx döndüğünü doğrular; feed sunucusu bir dosya türünü sunmuyorsa yayın burada durur.
 
 Server, yönetici olarak açılmış PowerShell'de:
 

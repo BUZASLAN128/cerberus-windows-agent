@@ -296,6 +296,38 @@ Check 'standalone parser uses the exact manifest field and rejects ambiguous inp
   } finally { Remove-Item -LiteralPath $fixturePath -Force }
 }
 
+Check 'feed publication check also probes both install scripts next to the MSI' {
+  $ast = Read-ScriptAst 'test-agent-published-manifest-artifact.ps1'
+  $entry = [scriptblock]::Create(($ast.EndBlock.Statements[3..($ast.EndBlock.Statements.Count - 1)].Extent.Text -join "`n"))
+  $fixturePath = [IO.Path]::GetTempFileName()
+  $calls = [Collections.Generic.List[string]]::new()
+  function Assert-ReleaseArtifactReachable($ArtifactUrl, $ArtifactPrefixes, $AllowedTailnetHost) {
+    Assert-ReleaseArtifactUrl $ArtifactUrl $ArtifactPrefixes -AllowedTailnetHost $AllowedTailnetHost
+    $calls.Add($ArtifactUrl)
+  }
+  try {
+    $ManifestPath = $fixturePath
+    $UpdateAllowedArtifactPrefixes = $tailnetPrefix
+    $AllowedTailnetArtifactHost = $tailnetHost
+    $CheckInstallScripts = $true
+    foreach ($case in @(
+        @{ msi = 'Cerberus.Agent-preview-0.2.1232-server.msi'; scripts = @('Cerberus.Agent-preview-0.2.1232-server.install.ps1', 'Cerberus.Agent-preview-latest-server.install.ps1') },
+        @{ msi = 'Cerberus.Agent-dev-0.2.1229.msi'; scripts = @('Cerberus.Agent-dev-0.2.1229.install.ps1', 'Cerberus.Agent-dev-latest.install.ps1') })) {
+      $calls.Clear()
+      [IO.File]::WriteAllText($fixturePath, ('{"artifact_url":"' + $tailnetPrefix + $case.msi + '"}'))
+      . $entry
+      $expected = @($tailnetPrefix + $case.msi) + @($case.scripts | ForEach-Object { $tailnetPrefix + $_ })
+      if (($calls -join '|') -cne ($expected -join '|')) { throw "Expected MSI then both install scripts, got: $($calls -join ', ')" }
+    }
+    [IO.File]::WriteAllText($fixturePath, ('{"artifact_url":"' + $tailnetAsset + '"}'))
+    Assert-Refused { . $entry } 'does not follow the installer naming'
+    $CheckInstallScripts = $false
+    $calls.Clear()
+    . $entry
+    if ($calls.Count -ne 1) { throw 'Without -CheckInstallScripts only the MSI is probed.' }
+  } finally { Remove-Item -LiteralPath $fixturePath -Force }
+}
+
 Check 'detached finalize checks the signed URL against measured trust before writing release outputs' {
   $ast = Read-ScriptAst 'release-publish-lib.ps1'
   $finalize = $ast.EndBlock.Statements | Where-Object { $_.Name -ceq 'Complete-ExternalManifestSigning' }
